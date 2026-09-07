@@ -1,0 +1,154 @@
+# CI (P0-2-5 · plan D-1).
+#
+# 순서에 의미가 있다: 싸고 빠른 검사부터 돌려 실패를 일찍 만난다.
+#   ruff(초) → pyright(십수 초) → lint-imports(초) → pytest
+#
+# 게이트 G0 의 마지막 항목이 "CI 파이프라인 전체 그린"이다.
+
+name: CI
+
+on:
+  # 🔴 **브랜치를 열거하지 않는다.** 예전에는 `[main, 'phase-**']` 였는데, 작업이
+  #    `feature/ai-chart-analysis` 로 옮겨가자 **푸시가 CI 를 아예 안 태웠다.**
+  #    2026-08-14 이후 8번 넘게 푸시하는 동안 한 번도 안 돌았고, 그동안 pyright 가
+  #    깨진 채로 있었다 — 게이트가 꺼진 줄도 모르는 상태였다.
+  #
+  #    목록 방식은 **브랜치 이름 규칙이 바뀔 때마다 조용히 깨진다.** 이미 한 번
+  #    (`[main]` → `[main, 'phase-**']`) 기웠고 이번이 두 번째다. 세 번째를 만들지
+  #    않으려면 열거를 없애는 것이 맞다.
+  #
+  #    ⚠️ 대가는 실행 횟수다. 이 워크플로는 1분 안팎이라 그 대가가 "게이트가 꺼진 줄
+  #    모르는 것"보다 훨씬 싸다.
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: lint · typecheck · boundaries · test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # 마이그레이션 테스트(P0-4-8)에는 실제 PostgreSQL 이 필요하다.
+    # `integration` 마커(외부 API)와 달리 이건 서비스 컨테이너로 재현 가능하므로
+    # CI 에서 돌린다 — 스키마·권한·파티션이 깨진 채 머지되면 안 된다.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: updown
+          POSTGRES_PASSWORD: ci_only_not_a_secret
+          POSTGRES_DB: updown
+          TZ: UTC
+          PGTZ: UTC
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      # 액션은 **정확한 릴리스 태그로 고정**한다.
+      # astral-sh/setup-uv 는 v7 까지만 부동(floating) 메이저 태그를 발행하고
+      # v8·v9 는 발행하지 않았다 — `@v9` 는 존재하지 않아 워크플로가 시작조차 못 한다.
+      # 두 액션의 표기를 섞지 않으려고 checkout 도 같은 방식으로 고정했다.
+      # 갱신은 수동이다: `git ls-remote --tags <repo>` 로 확인하고 올린다.
+      - uses: actions/checkout@v7.0.1
+
+      - name: uv 설치
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: 의존성 동기화
+        # --locked: uv.lock 과 pyproject.toml 이 어긋나면 실패시킨다.
+        # 락 파일을 갱신하지 않고 의존성만 고친 커밋을 여기서 잡는다.
+        run: uv sync --locked
+
+      - name: ruff — lint
+        run: uv run ruff check .
+
+      - name: ruff — format
+        run: uv run ruff format --check .
+
+      - name: pyright — 타입 검사
+        run: uv run pyright
+
+      - name: import-linter — 도메인 경계
+        # 경계 위반 import 는 여기서 종료코드 1 로 CI 를 레드로 만든다 (tasks.md P0-2 DoD).
+        run: uv run lint-imports
+
+      - name: 문서 래칫 — 끊긴 링크 · docstring 절 누락이 늘지 않는다
+        # 2026-09-06 재정리 때 만든 두 도구. 링크는 기준선(줄이는 것만 허용) · docstring 절 누락은 0 이어야 한다.
+        run: |
+          uv run python scripts/dev/check_md_links.py --baseline 113
+          uv run python scripts/dev/docstring_audit.py --strict
+
+      - name: pytest
+        # 통합 테스트(@pytest.mark.integration)는 제외한다 — 외부 API 장애가
+        # CI 를 깨는 것을 원하지 않는다.
+        #
+        # **P0-7-7 에서 확정**(D-1 의 미결 항목): 계속 제외한다. 업비트 통합 테스트는
+        # 시세가 계속 변하는 실 API 를 호출하므로 (a) 업비트 점검·장애가 우리 CI 를
+        # 레드로 만들고 (b) 실패가 우리 코드 문제인지 외부 문제인지 구분되지 않는다.
+        # 회귀 방지 가치는 픽스처 기반 단위 테스트가 이미 제공하며, 픽스처는 손으로 쓴
+        # 가짜가 아니라 **실측 응답**이라 필드 이름 변경도 잡는다.
+        # 규격 변경 감시는 `make test-all` 을 P0-8 백필 착수 전·Phase 경계에서 수동 실행한다
+        # (docs/platform/upbit_api_notes.md §9 "재확인이 필요해지는 신호").
+        #
+        # `db` 마커는 포함한다 — 위 서비스 컨테이너로 재현 가능하다.
+        run: uv run pytest -m "not integration"
+        env:
+          DATABASE_URL: postgresql+psycopg://updown:ci_only_not_a_secret@localhost:5432/updown
+
+  frontend:
+    name: ${{ matrix.app }} · typecheck · test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # ⛔ **화면이 하나로 줄었다** (사용자 확정 2026-08-20). 옛 화면(`frontend/`)은
+    #    `legacy/frontend/` 로 물러났고 `make dev` 도 안 띄운다 — 안 쓰는 것을 CI 가
+    #    지키면 그 시간이 매 푸시마다 든다.
+    #
+    #    ⚠️ 대신 **썩는다는 것을 받아들인 것**이다. 되살릴 때는 고쳐야 한다고 전제한다
+    #      (`legacy/README.md`).
+    #
+    # ⚠️ 목록은 남긴다 — 화면이 다시 둘이 되면 여기 한 줄로 돌아온다.
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [web]
+
+    # 🔴 파이썬과 **별도 잡**이다. 프론트가 깨져도 측정 파이프라인 검사는 돌아야 하고,
+    #    그 반대도 마찬가지다 — 한 잡에 묶으면 앞 단계 실패가 뒤를 가린다.
+    #
+    # ⚠️ 이 잡이 없던 동안 `frontend/` 는 **CI 가 한 번도 안 봤다.** 타입 오류가 있는
+    #    채로 머지될 수 있었고, 테스트는 아예 돌릴 자리가 없었다.
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v4.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+
+      - name: 의존성 설치
+        # `npm ci` 는 package-lock.json 과 어긋나면 실패한다 — `uv sync --locked` 와
+        # 같은 이유로 락 파일을 갱신하지 않은 커밋을 여기서 잡는다.
+        run: npm ci
+        working-directory: ${{ matrix.app }}
+
+      - name: tsc — 타입 검사
+        run: npm run typecheck
+        working-directory: ${{ matrix.app }}
+
+      - name: vitest
+        run: npm test
+        working-directory: ${{ matrix.app }}

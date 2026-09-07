@@ -1,0 +1,73 @@
+# AI 차트 분석 — LLM 후보 풀 (Phase 5 §5-4)
+#
+# 사용자가 고른 10종(docs/providers/nvidia_llm_api_docs.md)을 기준으로 하되,
+# **실제 카탈로그에 맞춰 6종을 후속 판으로 교체했다** (2026-08-10 실검증).
+#
+# 무슨 일이 있었나: 사용자 목록 10종을 찔러 보니 3종만 살아 있었다. 나머지는
+# `410 Gone — The model has been deprecated` 였다. `nvidia_llm_models.md` 가 낡았다.
+# 교체는 **같은 자리를 같은 성격으로** 채우는 원칙으로 했다 (아래 `대체` 주석).
+#
+# ⛔ 이 목록을 성과를 보고 갈아 끼우지 않는다. 모델을 바꾸면 **새 참가자**이고
+#    표본을 새로 쌓는다 (§5.6.2 자동조율 금지의 LLM 판 · G-AI-5).
+#    ⚠️ 지금의 교체는 성과가 아니라 **존재 여부** 때문이므로 그 금지에 걸리지 않는다.
+#
+# 🔴 검증은 `scripts/research/verify_llm_pool.py` 로 한다. 폐기 모델을 조용히 두면 그 모델이
+#    "항상 무효응답" 으로 기록되어 비교표가 거짓말한다 (절대 규칙 #8).
+#
+# ⚠️ **`/v1/models` 목록에 있어도 호출은 안 될 수 있다.** 배포된 추론 함수가 없으면
+#    404 `Function ... not found` 가 온다 (kimi-k2.6 · palmyra-fin 이 그랬다).
+#    목록은 필요조건이지 충분조건이 아니므로, 아래 10종은 전부 **실호출로** 확인했다.
+#
+# ⚠️ 콜드 스타트 지연 편차가 크다 (실측 0.65초 ~ 109초). 첫 호출로 모델 속도를
+#    판단하면 안 된다 — 비교표의 지연은 **웜 호출**로 재야 한다.
+
+endpoint: https://integrate.api.nvidia.com/v1/chat/completions
+
+fanout:
+  # ⚠️ 90초로는 부족했다 — glm-5.2 가 첫 호출(콜드 스타트)에서 60초를 넘겼다.
+  #    타임아웃이 짧으면 "느린 모델" 이 "죽은 모델" 로 기록된다.
+  timeout_seconds: 180
+  max_concurrency: 10
+  schema_retries: 1
+  temperature: 0.2
+
+models:
+  - id: z-ai/glm-5.2
+    rank: 1
+    note: 오픈웨이트 Intelligence Index 51. 최종 종합 판단용 1순위 (사용자 지정 · 카탈로그 확인)
+
+  - id: deepseek-ai/deepseek-v4-flash-0731
+    rank: 2
+    note: "대체 — deepseek-v4-pro/flash 는 410 폐기. 카탈로그에 남은 유일한 deepseek 이며 저비용 티어 자리를 잇는다"
+
+  - id: nvidia/nemotron-3-ultra-550b-a55b
+    rank: 3
+    note: 1M 컨텍스트 · 에이전트 오케스트레이션 특화. 멀티 TF 페이로드를 한 번에 (사용자 지정 · 응답 확인)
+
+  - id: thinkingmachines/inkling
+    rank: 4
+    note: "대체 — kimi 계열은 목록엔 있으나 **호출하면 404**(배포된 추론 함수 없음). 실호출로 확인된 추론형 자리"
+
+  - id: minimaxai/minimax-m3
+    rank: 5
+    note: "대체 — minimax-m2.7 은 410 폐기. 후속 판이며 교차검증용 두 번째 의견 자리"
+
+  - id: nvidia/nemotron-3-super-120b-a12b
+    rank: 6
+    note: Ultra 경량판. 중간 티어 폴백 (사용자 지정 · 응답 확인)
+
+  - id: openai/gpt-oss-120b
+    rank: 7
+    note: 무난한 기준선. **JSON 출력 안정성 비교군** (사용자 지정 · 응답 확인)
+
+  - id: meta/llama-3.3-70b-instruct
+    rank: 8
+    note: "대체 — qwen 계열이 카탈로그에서 통째로 사라졌다. 범용 기준선 자리를 llama 로 잇는다"
+
+  - id: nvidia/llama-3.3-nemotron-super-49b-v1.5
+    rank: 9
+    note: "대체 — 금융 특화 palmyra-fin 을 넣으려 했으나 **호출하면 404** 였다. 중형 nemotron 으로 대체"
+
+  - id: nvidia/nvidia-nemotron-nano-9b-v2
+    rank: 10
+    note: "**소형 대조군**. 전부 대형만 넣으면 '큰 모델이 낫다' 를 검증할 수 없다"

@@ -1,0 +1,140 @@
+# ── 시크릿 (절대 커밋 금지 — spec §8, §12.4) ────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+certs/
+secrets/
+
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+.Python
+/build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# ── 데이터 / 산출물 ──────────────────────────────────────
+/data/
+docs/ref_file/data/
+*.db
+*.sqlite3
+*.csv
+*.parquet
+reports/
+# 🔴 `logs/` 통째가 아니라 `logs/*` 다. 통째로 무시하면 git 이 안으로 안 들어가서
+#    아래 예외가 안 먹는다.
+logs/*
+*.log
+
+# ── 사람의 판단 기록은 산출물이 아니다 (예외) ──────────────
+#
+# 아래 둘은 **다시 만들 수 없다.** 측정 결과는 코드를 다시 돌리면 나오지만, 사람이
+# 화면을 보고 "이 선은 틀렸다"고 남긴 것은 그 사람이 다시 앉아야만 나온다.
+# WSL 디스크의 파일 몇 개가 유일본이던 상태를 끝낸다.
+#
+# ⚠️ `reveals` 를 같이 넣는 이유는 **기록이 틀려지기 때문**이다. 이것을 잃으면 "이
+#    시점의 결과를 이미 봤다"는 기억이 사라지고, 이후 그 시점에 낸 이의제기가
+#    `saw_outcome=false` 로 남는다 — 없는 것이 아니라 **거짓**이 된다 (§1-0s).
+!logs/objections/
+!logs/reveals/
+# 델타는 **과거를 못 받는다** — 지금 안 받으면 영영 없다. 재생성 불가라 남긴다.
+!logs/delta/
+
+# ── 프론트엔드 (Phase 1 P1-11 이후) ───────────────────────
+node_modules/
+frontend/dist/
+# 어느 깊이에 생기든 잡는다 — vite 가 루트에도 캐시를 만드는 경우가 있다.
+.vite/
+
+# ── 에디터 / OS ─────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# 프론트엔드 빌드 산출물
+frontend/node_modules/
+frontend/dist/
+
+# ⛔ 점검기 기록(`logs/objections` · `logs/reveals`)을 여기서 다시 무시하지 않는다.
+#    gitignore 는 **마지막에 맞는 규칙이 이긴다** — 위쪽 예외를 적어 놓고 여기서 한 줄
+#    더 적으면 예외가 조용히 무효가 된다. 실제로 그 상태였다.
+
+# vite/tsc 빌드 산출물 — 매 빌드마다 바뀌어 워킹트리를 더럽힌다
+*.tsbuildinfo
+
+# 커밋 메시지 임시 파일. 🔴 `git add -A` 가 집어 올린 적이 있다 (d82169a) — 커밋 메시지를
+# 파일로 넘기는 방식이라 `git commit` **전에** 존재하고, 그때 스테이징에 들어간다.
+.commitmsg.tmp
+
+# Windows 가 "인터넷에서 받은 파일"에 붙이는 표식 (대체 데이터 스트림).
+# WSL 에서는 별도 파일로 보이며 내용은 다운로드 출처 URL 이다 — 코드도 문서도 아니다.
+#
+# 🔴 아래 한 줄만으로는 **안 걸린다** (2026-08-18 실측). WSL 은 파일명에 쓸 수 없는
+#    `:` 를 사용자 영역 문자 U+F03A 로 바꿔 저장하므로, ASCII 콜론 패턴과 다른 글자다 —
+#    `git add -A` 가 그대로 집어 올렸다. 구분자를 안 적어 둘 다 걸리게 한다.
+*Zone.Identifier
+*:Zone.Identifier
+
+# 외부 참고 코드 원문 — 추적하지 않는다 (사용자 확정 2026-08-25)
+docs/ref_file/
+
+# 연구용 1분봉 원본 (276만 봉 · 200MB) — `scripts/research/scalp_1m/fetch.py` 로 다시 받는다
+data/scalp_1m/
+cache/
+
+# 발굴 파생 산출물 — 재현 가능하므로 커밋하지 않는다 (리포트 .md 는 남긴다)
+# results/ 는 런타임 산출물(백테스트 리포트 JSON) 자리다 — 기록으로 남길 것은 docs/measurements/ 로 옮겼다 (2026-09-06)
+results/
+
+# T221 데모 API 로그·펀드 JSON (dev)
+logs_demo/
+!.env.demo.example
+
+# ── 퍼블릭 저장소 점검 (2026-09-06) — 자격증명·주소·백업은 어떤 이름이든 막는다 ──
+*.env
+!.env.example
+!.env.demo.example
+host.env
+scripts/ops/host.env
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*.ppk
+*.jks
+*.keystore
+*.gpg
+*.asc
+*.kdbx
+.netrc
+.npmrc
+.pypirc
+.aws/
+.ssh/
+kubeconfig*
+*.tfstate*
+*.dump
+*.bak
+backups/
+*.har
+*.local.yml
+*.local.yaml
+docker/*.override.yml
+.claude/
+
+# 견본 근거 부분 결과 (종목마다 적어 두는 임시 파일 · 완료되면 지워진다)
+config/evidence/*.partial.json
