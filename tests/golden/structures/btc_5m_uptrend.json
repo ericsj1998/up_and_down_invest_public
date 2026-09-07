@@ -1,0 +1,1731 @@
+{
+  "fixture": "btc_5m_uptrend",
+  "rule_version": "structures@1.0.0",
+  "bar_count": 288,
+  "shape": "uptrend",
+  "segments": [
+    [
+      0,
+      288
+    ]
+  ],
+  "pivots": [
+    {
+      "i": 7,
+      "ts": "2026-02-06T00:15:00+00:00",
+      "kind": "low",
+      "price": "89000000.00000000"
+    },
+    {
+      "i": 18,
+      "ts": "2026-02-06T01:10:00+00:00",
+      "kind": "high",
+      "price": "96652000.00000000"
+    },
+    {
+      "i": 19,
+      "ts": "2026-02-06T01:15:00+00:00",
+      "kind": "low",
+      "price": "95000000.00000000"
+    },
+    {
+      "i": 28,
+      "ts": "2026-02-06T02:00:00+00:00",
+      "kind": "high",
+      "price": "98385000.00000000"
+    },
+    {
+      "i": 32,
+      "ts": "2026-02-06T02:20:00+00:00",
+      "kind": "low",
+      "price": "95185000.00000000"
+    },
+    {
+      "i": 36,
+      "ts": "2026-02-06T02:40:00+00:00",
+      "kind": "high",
+      "price": "96940000.00000000"
+    },
+    {
+      "i": 42,
+      "ts": "2026-02-06T03:10:00+00:00",
+      "kind": "low",
+      "price": "95704000.00000000"
+    },
+    {
+      "i": 44,
+      "ts": "2026-02-06T03:20:00+00:00",
+      "kind": "high",
+      "price": "96400000.00000000"
+    },
+    {
+      "i": 50,
+      "ts": "2026-02-06T03:50:00+00:00",
+      "kind": "low",
+      "price": "94766000.00000000"
+    },
+    {
+      "i": 57,
+      "ts": "2026-02-06T04:25:00+00:00",
+      "kind": "high",
+      "price": "96438000.00000000"
+    },
+    {
+      "i": 60,
+      "ts": "2026-02-06T04:40:00+00:00",
+      "kind": "low",
+      "price": "95842000.00000000"
+    },
+    {
+      "i": 64,
+      "ts": "2026-02-06T05:00:00+00:00",
+      "kind": "low",
+      "price": "96177000.00000000"
+    },
+    {
+      "i": 76,
+      "ts": "2026-02-06T06:00:00+00:00",
+      "kind": "high",
+      "price": "99471000.00000000"
+    },
+    {
+      "i": 85,
+      "ts": "2026-02-06T06:45:00+00:00",
+      "kind": "low",
+      "price": "96400000.00000000"
+    },
+    {
+      "i": 88,
+      "ts": "2026-02-06T07:00:00+00:00",
+      "kind": "low",
+      "price": "96073000.00000000"
+    },
+    {
+      "i": 92,
+      "ts": "2026-02-06T07:20:00+00:00",
+      "kind": "high",
+      "price": "97100000.00000000"
+    },
+    {
+      "i": 93,
+      "ts": "2026-02-06T07:25:00+00:00",
+      "kind": "low",
+      "price": "96275000.00000000"
+    },
+    {
+      "i": 96,
+      "ts": "2026-02-06T07:40:00+00:00",
+      "kind": "high",
+      "price": "97400000.00000000"
+    },
+    {
+      "i": 100,
+      "ts": "2026-02-06T08:00:00+00:00",
+      "kind": "low",
+      "price": "95911000.00000000"
+    },
+    {
+      "i": 101,
+      "ts": "2026-02-06T08:05:00+00:00",
+      "kind": "high",
+      "price": "96841000.00000000"
+    },
+    {
+      "i": 104,
+      "ts": "2026-02-06T08:20:00+00:00",
+      "kind": "high",
+      "price": "96991000.00000000"
+    },
+    {
+      "i": 108,
+      "ts": "2026-02-06T08:40:00+00:00",
+      "kind": "low",
+      "price": "96000000.00000000"
+    },
+    {
+      "i": 111,
+      "ts": "2026-02-06T08:55:00+00:00",
+      "kind": "high",
+      "price": "96663000.00000000"
+    },
+    {
+      "i": 113,
+      "ts": "2026-02-06T09:05:00+00:00",
+      "kind": "low",
+      "price": "96230000.00000000"
+    },
+    {
+      "i": 119,
+      "ts": "2026-02-06T09:35:00+00:00",
+      "kind": "high",
+      "price": "98150000.00000000"
+    },
+    {
+      "i": 121,
+      "ts": "2026-02-06T09:45:00+00:00",
+      "kind": "low",
+      "price": "97538000.00000000"
+    },
+    {
+      "i": 122,
+      "ts": "2026-02-06T09:50:00+00:00",
+      "kind": "high",
+      "price": "98431000.00000000"
+    },
+    {
+      "i": 126,
+      "ts": "2026-02-06T10:10:00+00:00",
+      "kind": "low",
+      "price": "97390000.00000000"
+    },
+    {
+      "i": 128,
+      "ts": "2026-02-06T10:20:00+00:00",
+      "kind": "high",
+      "price": "98299000.00000000"
+    },
+    {
+      "i": 138,
+      "ts": "2026-02-06T11:10:00+00:00",
+      "kind": "low",
+      "price": "97060000.00000000"
+    },
+    {
+      "i": 145,
+      "ts": "2026-02-06T11:45:00+00:00",
+      "kind": "low",
+      "price": "97899000.00000000"
+    },
+    {
+      "i": 147,
+      "ts": "2026-02-06T11:55:00+00:00",
+      "kind": "high",
+      "price": "98817000.00000000"
+    },
+    {
+      "i": 151,
+      "ts": "2026-02-06T12:15:00+00:00",
+      "kind": "low",
+      "price": "98029000.00000000"
+    },
+    {
+      "i": 153,
+      "ts": "2026-02-06T12:25:00+00:00",
+      "kind": "high",
+      "price": "98461000.00000000"
+    },
+    {
+      "i": 154,
+      "ts": "2026-02-06T12:30:00+00:00",
+      "kind": "low",
+      "price": "97910000.00000000"
+    },
+    {
+      "i": 164,
+      "ts": "2026-02-06T13:20:00+00:00",
+      "kind": "high",
+      "price": "100161000.00000000"
+    },
+    {
+      "i": 166,
+      "ts": "2026-02-06T13:30:00+00:00",
+      "kind": "low",
+      "price": "99131000.00000000"
+    },
+    {
+      "i": 170,
+      "ts": "2026-02-06T13:50:00+00:00",
+      "kind": "high",
+      "price": "100474000.00000000"
+    },
+    {
+      "i": 177,
+      "ts": "2026-02-06T14:25:00+00:00",
+      "kind": "low",
+      "price": "98523000.00000000"
+    },
+    {
+      "i": 181,
+      "ts": "2026-02-06T14:45:00+00:00",
+      "kind": "high",
+      "price": "101484000.00000000"
+    },
+    {
+      "i": 184,
+      "ts": "2026-02-06T15:00:00+00:00",
+      "kind": "low",
+      "price": "100474000.00000000"
+    },
+    {
+      "i": 186,
+      "ts": "2026-02-06T15:10:00+00:00",
+      "kind": "high",
+      "price": "101575000.00000000"
+    },
+    {
+      "i": 193,
+      "ts": "2026-02-06T15:45:00+00:00",
+      "kind": "high",
+      "price": "102890000.00000000"
+    },
+    {
+      "i": 194,
+      "ts": "2026-02-06T15:50:00+00:00",
+      "kind": "low",
+      "price": "101425000.00000000"
+    },
+    {
+      "i": 200,
+      "ts": "2026-02-06T16:20:00+00:00",
+      "kind": "high",
+      "price": "103790000.00000000"
+    },
+    {
+      "i": 207,
+      "ts": "2026-02-06T16:55:00+00:00",
+      "kind": "high",
+      "price": "104256000.00000000"
+    },
+    {
+      "i": 208,
+      "ts": "2026-02-06T17:00:00+00:00",
+      "kind": "low",
+      "price": "103390000.00000000"
+    },
+    {
+      "i": 214,
+      "ts": "2026-02-06T17:30:00+00:00",
+      "kind": "high",
+      "price": "105994000.00000000"
+    },
+    {
+      "i": 224,
+      "ts": "2026-02-06T18:20:00+00:00",
+      "kind": "low",
+      "price": "102464000.00000000"
+    },
+    {
+      "i": 228,
+      "ts": "2026-02-06T18:40:00+00:00",
+      "kind": "high",
+      "price": "103994000.00000000"
+    },
+    {
+      "i": 231,
+      "ts": "2026-02-06T18:55:00+00:00",
+      "kind": "low",
+      "price": "102999000.00000000"
+    },
+    {
+      "i": 233,
+      "ts": "2026-02-06T19:05:00+00:00",
+      "kind": "high",
+      "price": "103642000.00000000"
+    },
+    {
+      "i": 235,
+      "ts": "2026-02-06T19:15:00+00:00",
+      "kind": "low",
+      "price": "102861000.00000000"
+    },
+    {
+      "i": 242,
+      "ts": "2026-02-06T19:50:00+00:00",
+      "kind": "high",
+      "price": "104746000.00000000"
+    },
+    {
+      "i": 247,
+      "ts": "2026-02-06T20:15:00+00:00",
+      "kind": "low",
+      "price": "103850000.00000000"
+    },
+    {
+      "i": 251,
+      "ts": "2026-02-06T20:35:00+00:00",
+      "kind": "high",
+      "price": "104849000.00000000"
+    },
+    {
+      "i": 252,
+      "ts": "2026-02-06T20:40:00+00:00",
+      "kind": "low",
+      "price": "103900000.00000000"
+    },
+    {
+      "i": 254,
+      "ts": "2026-02-06T20:50:00+00:00",
+      "kind": "high",
+      "price": "104593000.00000000"
+    },
+    {
+      "i": 257,
+      "ts": "2026-02-06T21:05:00+00:00",
+      "kind": "low",
+      "price": "103500000.00000000"
+    },
+    {
+      "i": 261,
+      "ts": "2026-02-06T21:25:00+00:00",
+      "kind": "high",
+      "price": "104464000.00000000"
+    },
+    {
+      "i": 263,
+      "ts": "2026-02-06T21:35:00+00:00",
+      "kind": "low",
+      "price": "103830000.00000000"
+    },
+    {
+      "i": 268,
+      "ts": "2026-02-06T22:00:00+00:00",
+      "kind": "low",
+      "price": "104199000.00000000"
+    },
+    {
+      "i": 269,
+      "ts": "2026-02-06T22:05:00+00:00",
+      "kind": "high",
+      "price": "104860000.00000000"
+    },
+    {
+      "i": 275,
+      "ts": "2026-02-06T22:35:00+00:00",
+      "kind": "high",
+      "price": "106250000.00000000"
+    },
+    {
+      "i": 281,
+      "ts": "2026-02-06T23:05:00+00:00",
+      "kind": "high",
+      "price": "106801000.00000000"
+    },
+    {
+      "i": 285,
+      "ts": "2026-02-06T23:25:00+00:00",
+      "kind": "low",
+      "price": "104846000.00000000"
+    }
+  ],
+  "prior_swings": [
+    {
+      "i": 7,
+      "kind": "low",
+      "price": "89000000.00000000"
+    },
+    {
+      "i": 18,
+      "kind": "high",
+      "price": "96652000.00000000"
+    },
+    {
+      "i": 19,
+      "kind": "low",
+      "price": "95000000.00000000"
+    },
+    {
+      "i": 28,
+      "kind": "high",
+      "price": "98385000.00000000"
+    },
+    {
+      "i": 32,
+      "kind": "low",
+      "price": "95185000.00000000"
+    },
+    {
+      "i": 36,
+      "kind": "high",
+      "price": "96940000.00000000"
+    },
+    {
+      "i": 42,
+      "kind": "low",
+      "price": "95704000.00000000"
+    },
+    {
+      "i": 44,
+      "kind": "high",
+      "price": "96400000.00000000"
+    },
+    {
+      "i": 50,
+      "kind": "low",
+      "price": "94766000.00000000"
+    },
+    {
+      "i": 57,
+      "kind": "high",
+      "price": "96438000.00000000"
+    },
+    {
+      "i": 60,
+      "kind": "low",
+      "price": "95842000.00000000"
+    },
+    {
+      "i": 76,
+      "kind": "high",
+      "price": "99471000.00000000"
+    },
+    {
+      "i": 88,
+      "kind": "low",
+      "price": "96073000.00000000"
+    },
+    {
+      "i": 92,
+      "kind": "high",
+      "price": "97100000.00000000"
+    },
+    {
+      "i": 93,
+      "kind": "low",
+      "price": "96275000.00000000"
+    },
+    {
+      "i": 96,
+      "kind": "high",
+      "price": "97400000.00000000"
+    },
+    {
+      "i": 100,
+      "kind": "low",
+      "price": "95911000.00000000"
+    },
+    {
+      "i": 104,
+      "kind": "high",
+      "price": "96991000.00000000"
+    },
+    {
+      "i": 108,
+      "kind": "low",
+      "price": "96000000.00000000"
+    },
+    {
+      "i": 111,
+      "kind": "high",
+      "price": "96663000.00000000"
+    },
+    {
+      "i": 113,
+      "kind": "low",
+      "price": "96230000.00000000"
+    },
+    {
+      "i": 119,
+      "kind": "high",
+      "price": "98150000.00000000"
+    },
+    {
+      "i": 121,
+      "kind": "low",
+      "price": "97538000.00000000"
+    },
+    {
+      "i": 122,
+      "kind": "high",
+      "price": "98431000.00000000"
+    },
+    {
+      "i": 126,
+      "kind": "low",
+      "price": "97390000.00000000"
+    },
+    {
+      "i": 128,
+      "kind": "high",
+      "price": "98299000.00000000"
+    },
+    {
+      "i": 138,
+      "kind": "low",
+      "price": "97060000.00000000"
+    },
+    {
+      "i": 147,
+      "kind": "high",
+      "price": "98817000.00000000"
+    },
+    {
+      "i": 151,
+      "kind": "low",
+      "price": "98029000.00000000"
+    },
+    {
+      "i": 153,
+      "kind": "high",
+      "price": "98461000.00000000"
+    },
+    {
+      "i": 154,
+      "kind": "low",
+      "price": "97910000.00000000"
+    },
+    {
+      "i": 164,
+      "kind": "high",
+      "price": "100161000.00000000"
+    },
+    {
+      "i": 166,
+      "kind": "low",
+      "price": "99131000.00000000"
+    },
+    {
+      "i": 170,
+      "kind": "high",
+      "price": "100474000.00000000"
+    },
+    {
+      "i": 177,
+      "kind": "low",
+      "price": "98523000.00000000"
+    },
+    {
+      "i": 181,
+      "kind": "high",
+      "price": "101484000.00000000"
+    },
+    {
+      "i": 184,
+      "kind": "low",
+      "price": "100474000.00000000"
+    },
+    {
+      "i": 193,
+      "kind": "high",
+      "price": "102890000.00000000"
+    },
+    {
+      "i": 194,
+      "kind": "low",
+      "price": "101425000.00000000"
+    },
+    {
+      "i": 207,
+      "kind": "high",
+      "price": "104256000.00000000"
+    },
+    {
+      "i": 208,
+      "kind": "low",
+      "price": "103390000.00000000"
+    },
+    {
+      "i": 214,
+      "kind": "high",
+      "price": "105994000.00000000"
+    },
+    {
+      "i": 224,
+      "kind": "low",
+      "price": "102464000.00000000"
+    },
+    {
+      "i": 228,
+      "kind": "high",
+      "price": "103994000.00000000"
+    },
+    {
+      "i": 231,
+      "kind": "low",
+      "price": "102999000.00000000"
+    },
+    {
+      "i": 233,
+      "kind": "high",
+      "price": "103642000.00000000"
+    },
+    {
+      "i": 235,
+      "kind": "low",
+      "price": "102861000.00000000"
+    },
+    {
+      "i": 242,
+      "kind": "high",
+      "price": "104746000.00000000"
+    },
+    {
+      "i": 247,
+      "kind": "low",
+      "price": "103850000.00000000"
+    },
+    {
+      "i": 251,
+      "kind": "high",
+      "price": "104849000.00000000"
+    },
+    {
+      "i": 252,
+      "kind": "low",
+      "price": "103900000.00000000"
+    },
+    {
+      "i": 254,
+      "kind": "high",
+      "price": "104593000.00000000"
+    },
+    {
+      "i": 257,
+      "kind": "low",
+      "price": "103500000.00000000"
+    },
+    {
+      "i": 261,
+      "kind": "high",
+      "price": "104464000.00000000"
+    },
+    {
+      "i": 263,
+      "kind": "low",
+      "price": "103830000.00000000"
+    },
+    {
+      "i": 281,
+      "kind": "high",
+      "price": "106801000.00000000"
+    },
+    {
+      "i": 285,
+      "kind": "low",
+      "price": "104846000.00000000"
+    }
+  ],
+  "trendlines": [
+    {
+      "kind": "support",
+      "touches": [
+        194,
+        224,
+        235,
+        268,
+        285
+      ],
+      "slope_per_bar": "37593.40659341",
+      "price_at_last": "104921186.81318685",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        28,
+        76,
+        181,
+        186
+      ],
+      "slope_per_bar": "20189.87341772",
+      "price_at_last": "103614177.21519000",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        101,
+        119,
+        200,
+        207
+      ],
+      "slope_per_bar": "69952.83018868",
+      "price_at_last": "109852226.41509429",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        184,
+        263,
+        268,
+        285
+      ],
+      "slope_per_bar": "43287.12871287",
+      "price_at_last": "104932574.25742571",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        177,
+        257,
+        263,
+        268
+      ],
+      "slope_per_bar": "62373.62637363",
+      "price_at_last": "105384098.90109886",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        92,
+        122,
+        164,
+        170
+      ],
+      "slope_per_bar": "43256.41025641",
+      "price_at_last": "105534999.99999995",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        96,
+        122,
+        164,
+        170
+      ],
+      "slope_per_bar": "41540.54054054",
+      "price_at_last": "105334243.24324333",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        108,
+        113,
+        138,
+        177
+      ],
+      "slope_per_bar": "36565.21739130",
+      "price_at_last": "102545173.91304342",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        194,
+        224,
+        235,
+        263
+      ],
+      "slope_per_bar": "34855.07246377",
+      "price_at_last": "104666521.73913042",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        50,
+        100,
+        108,
+        113
+      ],
+      "slope_per_bar": "23238.09523810",
+      "price_at_last": "100273428.57142852",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        184,
+        224,
+        231,
+        247
+      ],
+      "slope_per_bar": "53587.30158730",
+      "price_at_last": "105993492.06349211",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        194,
+        224,
+        235,
+        257
+      ],
+      "slope_per_bar": "32936.50793651",
+      "price_at_last": "104488095.23809524",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        96,
+        119,
+        128,
+        147
+      ],
+      "slope_per_bar": "27784.31372549",
+      "price_at_last": "102706803.92156859",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        64,
+        88,
+        100,
+        108
+      ],
+      "slope_per_bar": "-4022.72727273",
+      "price_at_last": "95279931.81818188",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        170,
+        181,
+        193,
+        207
+      ],
+      "slope_per_bar": "102216.21621622",
+      "price_at_last": "112433297.29729727",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        92,
+        200,
+        207
+      ],
+      "slope_per_bar": "62226.08695652",
+      "price_at_last": "109234086.95652179",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        101,
+        122,
+        214
+      ],
+      "slope_per_bar": "81000.00000000",
+      "price_at_last": "111907000.00000000",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        104,
+        119,
+        214
+      ],
+      "slope_per_bar": "81845.45454546",
+      "price_at_last": "111968718.18181826",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        92,
+        122,
+        186
+      ],
+      "slope_per_bar": "47606.38297872",
+      "price_at_last": "106383244.68085098",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        96,
+        181,
+        186
+      ],
+      "slope_per_bar": "46388.88888889",
+      "price_at_last": "106260277.77777780",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        122,
+        200,
+        207
+      ],
+      "slope_per_bar": "68529.41176471",
+      "price_at_last": "109738352.94117649",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        184,
+        235,
+        268
+      ],
+      "slope_per_bar": "44345.23809524",
+      "price_at_last": "105041559.52380951",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        128,
+        200,
+        207
+      ],
+      "slope_per_bar": "75405.06329114",
+      "price_at_last": "110288405.06329110",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        184,
+        257,
+        263
+      ],
+      "slope_per_bar": "42481.01265823",
+      "price_at_last": "104849544.30379748",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        92,
+        119,
+        164
+      ],
+      "slope_per_bar": "42513.88888889",
+      "price_at_last": "105390208.33333336",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        177,
+        235,
+        247
+      ],
+      "slope_per_bar": "76100.00000000",
+      "price_at_last": "106894000.00000000",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        184,
+        224,
+        252
+      ],
+      "slope_per_bar": "50382.35294118",
+      "price_at_last": "105663382.35294113",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        147,
+        193,
+        207
+      ],
+      "slope_per_bar": "90650.00000000",
+      "price_at_last": "111508000.00000000",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        194,
+        231,
+        252
+      ],
+      "slope_per_bar": "42672.41379310",
+      "price_at_last": "105393534.48275858",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        177,
+        224,
+        231
+      ],
+      "slope_per_bar": "82888.88888889",
+      "price_at_last": "107640777.77777779",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        228,
+        242,
+        281
+      ],
+      "slope_per_bar": "52962.26415094",
+      "price_at_last": "107118773.58490564",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        60,
+        88,
+        113
+      ],
+      "slope_per_bar": "7320.75471698",
+      "price_at_last": "97503811.32075469",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        76,
+        122,
+        128
+      ],
+      "slope_per_bar": "-22538.46153846",
+      "price_at_last": "94715384.61538452",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        184,
+        224,
+        235
+      ],
+      "slope_per_bar": "46803.92156863",
+      "price_at_last": "105294803.92156858",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        60,
+        100,
+        108
+      ],
+      "slope_per_bar": "3291.66666667",
+      "price_at_last": "96589208.33333341",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        214,
+        251,
+        261
+      ],
+      "slope_per_bar": "-32553.19148936",
+      "price_at_last": "103617617.02127657",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        228,
+        242,
+        275
+      ],
+      "slope_per_bar": "48000.00000000",
+      "price_at_last": "106826000.00000000",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        164,
+        193,
+        207
+      ],
+      "slope_per_bar": "95232.55813954",
+      "price_at_last": "111874604.65116280",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        50,
+        88,
+        93
+      ],
+      "slope_per_bar": "35093.02325581",
+      "price_at_last": "103083046.51162792",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        128,
+        164,
+        170
+      ],
+      "slope_per_bar": "51785.71428571",
+      "price_at_last": "106532928.57142853",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        147,
+        170,
+        186
+      ],
+      "slope_per_bar": "70717.94871795",
+      "price_at_last": "108717512.82051286",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        100,
+        113,
+        138
+      ],
+      "slope_per_bar": "30236.84210526",
+      "price_at_last": "101565289.47368418",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        147,
+        164,
+        181
+      ],
+      "slope_per_bar": "78441.17647059",
+      "price_at_last": "109798764.70588232",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        60,
+        88,
+        93
+      ],
+      "slope_per_bar": "13121.21212121",
+      "price_at_last": "98820515.15151512",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        145,
+        151,
+        177
+      ],
+      "slope_per_bar": "19500.00000000",
+      "price_at_last": "100668000.00000000",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        170,
+        193,
+        200
+      ],
+      "slope_per_bar": "110533.33333333",
+      "price_at_last": "113406399.99999996",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        186,
+        200,
+        214
+      ],
+      "slope_per_bar": "157821.42857143",
+      "price_at_last": "117514964.28571433",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        242,
+        251,
+        269
+      ],
+      "slope_per_bar": "4222.22222222",
+      "price_at_last": "104935999.99999999",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        254,
+        275,
+        281
+      ],
+      "slope_per_bar": "81777.77777778",
+      "price_at_last": "107291666.66666667",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        76,
+        96,
+        101
+      ],
+      "slope_per_bar": "-105200.00000000",
+      "price_at_last": "77273800.00000000",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        85,
+        93,
+        108
+      ],
+      "slope_per_bar": "-17391.30434783",
+      "price_at_last": "92886956.52173915",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        164,
+        170,
+        186
+      ],
+      "slope_per_bar": "64272.72727273",
+      "price_at_last": "108066545.45454542",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        193,
+        200,
+        214
+      ],
+      "slope_per_bar": "147809.52380952",
+      "price_at_last": "116784095.23809526",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        181,
+        193,
+        200
+      ],
+      "slope_per_bar": "121368.42105263",
+      "price_at_last": "114349052.63157899",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        242,
+        254,
+        261
+      ],
+      "slope_per_bar": "-14842.10526316",
+      "price_at_last": "104078105.26315789",
+      "body_violations": 0
+    },
+    {
+      "kind": "support",
+      "touches": [
+        121,
+        126,
+        138
+      ],
+      "slope_per_bar": "-28117.64705882",
+      "price_at_last": "92870470.58823522",
+      "body_violations": 0
+    },
+    {
+      "kind": "resistance",
+      "touches": [
+        96,
+        104,
+        111
+      ],
+      "slope_per_bar": "-49133.33333333",
+      "price_at_last": "88015533.33333340",
+      "body_violations": 0
+    }
+  ],
+  "channels": [
+    {
+      "basis_kind": "resistance",
+      "basis_touches": [
+        28,
+        76,
+        181,
+        186
+      ],
+      "lower_at_last": "99551000.00000011",
+      "upper_at_last": "103614177.21519000",
+      "opposite_touches": [
+        50,
+        108
+      ]
+    },
+    {
+      "basis_kind": "resistance",
+      "basis_touches": [
+        96,
+        119,
+        128,
+        147
+      ],
+      "lower_at_last": "100973392.15686271",
+      "upper_at_last": "102706803.92156859",
+      "opposite_touches": [
+        108,
+        113
+      ]
+    },
+    {
+      "basis_kind": "resistance",
+      "basis_touches": [
+        228,
+        242,
+        281
+      ],
+      "lower_at_last": "105088867.92452829",
+      "upper_at_last": "107118773.58490564",
+      "opposite_touches": [
+        257,
+        263
+      ]
+    },
+    {
+      "basis_kind": "resistance",
+      "basis_touches": [
+        76,
+        122,
+        128
+      ],
+      "lower_at_last": "91587846.15384606",
+      "upper_at_last": "94715384.61538452",
+      "opposite_touches": [
+        88,
+        100
+      ]
+    },
+    {
+      "basis_kind": "resistance",
+      "basis_touches": [
+        228,
+        242,
+        275
+      ],
+      "lower_at_last": "104940000.00000000",
+      "upper_at_last": "106826000.00000000",
+      "opposite_touches": [
+        257,
+        263
+      ]
+    },
+    {
+      "basis_kind": "resistance",
+      "basis_touches": [
+        128,
+        164,
+        170
+      ],
+      "lower_at_last": "104776071.42857139",
+      "upper_at_last": "106532928.57142853",
+      "opposite_touches": [
+        138,
+        154
+      ]
+    },
+    {
+      "basis_kind": "resistance",
+      "basis_touches": [
+        254,
+        275,
+        281
+      ],
+      "lower_at_last": "105752777.77777778",
+      "upper_at_last": "107291666.66666667",
+      "opposite_touches": [
+        263,
+        268
+      ]
+    },
+    {
+      "basis_kind": "support",
+      "basis_touches": [
+        121,
+        126,
+        138
+      ],
+      "lower_at_last": "92870470.58823522",
+      "upper_at_last": "93828294.11764698",
+      "opposite_touches": [
+        122,
+        128
+      ]
+    }
+  ],
+  "boxes": [
+    {
+      "kind": "high",
+      "level": "96752000.00000000",
+      "low": "96652000.00000000",
+      "high": "96940000.00000000",
+      "touches": [
+        18,
+        36,
+        101,
+        111
+      ]
+    },
+    {
+      "kind": "high",
+      "level": "104849000.00000000",
+      "low": "104746000.00000000",
+      "high": "104860000.00000000",
+      "touches": [
+        242,
+        251,
+        269
+      ]
+    },
+    {
+      "kind": "low",
+      "level": "103850000.00000000",
+      "low": "103830000.00000000",
+      "high": "103900000.00000000",
+      "touches": [
+        247,
+        252,
+        263
+      ]
+    },
+    {
+      "kind": "high",
+      "level": "96419000.00000000",
+      "low": "96400000.00000000",
+      "high": "96438000.00000000",
+      "touches": [
+        44,
+        57
+      ]
+    },
+    {
+      "kind": "high",
+      "level": "97045500.00000000",
+      "low": "96991000.00000000",
+      "high": "97100000.00000000",
+      "touches": [
+        92,
+        104
+      ]
+    },
+    {
+      "kind": "high",
+      "level": "98342000.00000000",
+      "low": "98299000.00000000",
+      "high": "98385000.00000000",
+      "touches": [
+        28,
+        128
+      ]
+    },
+    {
+      "kind": "high",
+      "level": "98446000.00000000",
+      "low": "98431000.00000000",
+      "high": "98461000.00000000",
+      "touches": [
+        122,
+        153
+      ]
+    },
+    {
+      "kind": "high",
+      "level": "101529500.00000000",
+      "low": "101484000.00000000",
+      "high": "101575000.00000000",
+      "touches": [
+        181,
+        186
+      ]
+    },
+    {
+      "kind": "low",
+      "level": "95092500.00000000",
+      "low": "95000000.00000000",
+      "high": "95185000.00000000",
+      "touches": [
+        19,
+        32
+      ]
+    },
+    {
+      "kind": "low",
+      "level": "95773000.00000000",
+      "low": "95704000.00000000",
+      "high": "95842000.00000000",
+      "touches": [
+        42,
+        60
+      ]
+    },
+    {
+      "kind": "low",
+      "level": "95955500.00000000",
+      "low": "95911000.00000000",
+      "high": "96000000.00000000",
+      "touches": [
+        100,
+        108
+      ]
+    },
+    {
+      "kind": "low",
+      "level": "96125000.00000000",
+      "low": "96073000.00000000",
+      "high": "96177000.00000000",
+      "touches": [
+        64,
+        88
+      ]
+    },
+    {
+      "kind": "low",
+      "level": "96252500.00000000",
+      "low": "96230000.00000000",
+      "high": "96275000.00000000",
+      "touches": [
+        93,
+        113
+      ]
+    },
+    {
+      "kind": "low",
+      "level": "97904500.00000000",
+      "low": "97899000.00000000",
+      "high": "97910000.00000000",
+      "touches": [
+        145,
+        154
+      ]
+    },
+    {
+      "kind": "low",
+      "level": "102930000.00000000",
+      "low": "102861000.00000000",
+      "high": "102999000.00000000",
+      "touches": [
+        231,
+        235
+      ]
+    },
+    {
+      "kind": "low",
+      "level": "103445000.00000000",
+      "low": "103390000.00000000",
+      "high": "103500000.00000000",
+      "touches": [
+        208,
+        257
+      ]
+    }
+  ],
+  "confluence_at_last_bar": [
+    {
+      "price": "104854040.63146997",
+      "score": 4,
+      "zone_count": 9,
+      "kinds": [
+        "box_resistance",
+        "channel_boundary",
+        "trendline_resistance",
+        "trendline_support"
+      ]
+    },
+    {
+      "price": "105127715.02821509",
+      "score": 3,
+      "zone_count": 8,
+      "kinds": [
+        "channel_boundary",
+        "trendline_resistance",
+        "trendline_support"
+      ]
+    },
+    {
+      "price": "104799547.99827807",
+      "score": 3,
+      "zone_count": 6,
+      "kinds": [
+        "box_resistance",
+        "channel_boundary",
+        "trendline_support"
+      ]
+    },
+    {
+      "price": "96383104.16666670",
+      "score": 3,
+      "zone_count": 4,
+      "kinds": [
+        "box_resistance",
+        "box_support",
+        "trendline_support"
+      ]
+    },
+    {
+      "price": "102703086.95652171",
+      "score": 3,
+      "zone_count": 3,
+      "kinds": [
+        "box_support",
+        "trendline_resistance",
+        "trendline_support"
+      ]
+    },
+    {
+      "price": "105479093.13725485",
+      "score": 2,
+      "zone_count": 7,
+      "kinds": [
+        "trendline_resistance",
+        "trendline_support"
+      ]
+    },
+    {
+      "price": "96200000.00000000",
+      "score": 2,
+      "zone_count": 4,
+      "kinds": [
+        "box_resistance",
+        "box_support"
+      ]
+    },
+    {
+      "price": "103665000.00000000",
+      "score": 2,
+      "zone_count": 4,
+      "kinds": [
+        "box_support",
+        "trendline_resistance"
+      ]
+    },
+    {
+      "price": "96545000.00000000",
+      "score": 2,
+      "zone_count": 3,
+      "kinds": [
+        "box_resistance",
+        "trendline_support"
+      ]
+    },
+    {
+      "price": "103194500.00000000",
+      "score": 2,
+      "zone_count": 3,
+      "kinds": [
+        "box_support",
+        "trendline_support"
+      ]
+    },
+    {
+      "price": "105828437.20821662",
+      "score": 2,
+      "zone_count": 3,
+      "kinds": [
+        "channel_boundary",
+        "trendline_support"
+      ]
+    }
+  ]
+}

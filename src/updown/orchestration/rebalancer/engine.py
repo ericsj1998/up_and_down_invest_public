@@ -1,0 +1,72 @@
+"""리밸런싱 엔진 — 배분(decision)과 성과원장(portfolio)을 엮는 조립기 (T61 M1).
+
+## 무슨 일을 하나 (한 틱)
+매 리밸런스 주기(4h)마다:
+1. 종목별 세션의 현재 평가금액을 받아 **총자본**을 낸다.
+2. 성과원장(TWR)에 그 총자본을 찍고, 이 주기의 **외부 입출금**을 흡수한다.
+3. 새 총자본을 목표 비중대로 쪼개 **종목별 새 예산**을 낸다.
+→ 조정자(live)가 이 예산을 각 세션의 `sizing_base` 로 넣으면, 세션이 알아서 리밸런싱 주문을 낸다.
+
+## 왜 여기(orchestration)인가
+스스로 **판단하지 않는다.** 비중 판단은 `decision.allocation`, 성과 셈은 `portfolio.performance`
+가 한다. 엔진은 둘을 **호출·조립만** 한다 (orchestration 입주 조건). 순수하므로 라이브 I/O 없이
+백테스트·테스트로 검증된다 — 실제 세션 생성·주문은 이 위의 조정자(라이브)가 얹는다.
+
+## 결정론 (규칙 #5)
+같은 입력(평가금액·바스켓·입출금)이면 같은 예산. 난수·현재시각 참조 없음. 라이브만 시각을 준다.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from decimal import Decimal
+
+from updown.decision.allocation import Basket, target_budgets
+from updown.portfolio.performance import CashFlow, TwrLedger
+
+
+@dataclass(slots=True)
+class RebalanceEngine:
+    """바스켓 하나를 굴리는 리밸런싱 브레인 (순수).
+
+    Attributes:
+        basket: 구성 종목·비중 (버전 포함).
+        ledger: 성과·현금흐름 원장 (TWR).
+    """
+
+    basket: Basket
+    ledger: TwrLedger
+
+    def rebalance(
+        self,
+        equities: dict[str, Decimal],
+        flow: CashFlow | None = None,
+    ) -> dict[str, Decimal]:
+        """한 주기를 마감하고 종목별 새 예산을 낸다.
+
+        Args:
+            equities: `{종목: 지금 세션 평가금액}`. 거래손익까지 반영된 **입출금 직전** 값.
+                바스켓에 없는 종목(제거 예정)도 총자본에는 포함된다 — 그 돈은 실재하니까.
+            flow: 이 주기 말의 외부 입출금. 없으면 None.
+
+        Returns:
+            `{종목: 새 예산}` — **바스켓 구성원에 대해서만**. 바스켓에서 빠진 종목은 여기 없다
+            (조정자가 그 세션을 청산·정리한다). 합은 입출금 반영 총자본.
+
+        Note:
+            🔴 총자본은 **모든 실재 자금**(바스켓 밖 종목 포함)으로 잡고, 예산은 **바스켓 구성원**
+            에만 나눈다. 이래야 종목을 뺄 때 그 돈이 사라지지 않고 남은 종목으로 재분배된다.
+        """
+        total = sum(equities.values(), Decimal(0))
+        self.ledger.step(total, flow)
+        return target_budgets(self.ledger.balance, self.basket)
+
+    @property
+    def balance(self) -> Decimal:
+        """현재 총 잔고 (입출금 포함)."""
+        return self.ledger.balance
+
+    @property
+    def twr_return(self) -> Decimal:
+        """누적 시간가중수익률 (순수 전략 성과)."""
+        return self.ledger.twr_return

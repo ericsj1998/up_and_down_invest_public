@@ -1,0 +1,12 @@
+# 예시 매매법 — 이동평균 교차 (T224). 공개 저장소가 매매법 없이도 끝까지 도는지 보는 표본이다.
+# ⛔ 엣지를 주장하지 않는다. 값은 교과서 기본값이고 측정한 적이 없다 — 실제 매매법은 비공개 패키지가 붙인다.
+rule_id: sample_ma_cross
+version: "0.1"
+enabled: true
+buckets: [swing]
+params:
+  fast: 20          # 빠른 단순이동평균
+  slow: 50          # 느린 단순이동평균 — fast 보다 커야 한다
+  sl_atr: "2.0"     # 손절 거리 = 2 x ATR14
+  rr: "2.0"         # 목표 = 손절 거리의 2배
+  allow_short: false  # 아래로 지나면 숏도 내나 — 예시는 롱만

@@ -1,0 +1,53 @@
+# TLS 앞단 — **외부에 열 때만** 얹는다 (2026-08-30 배포 준비).
+#
+#     docker compose --env-file .env.live \
+#       -f docker/compose.base.yml -f docker/compose.live.yml -f docker/compose.proxy.yml up -d
+#
+# ## 왜 별도 파일인가
+#
+# 로컬 개발에는 필요 없고, 있으면 방해가 된다 (80·443 을 잡고 인증서를 받으려 든다).
+# `live` 에 섞어 두면 도메인이 없는 상태에서 실거래 스택을 못 띄운다.
+#
+# ## 🔴 필요한 것 두 개
+#
+#     PUBLIC_DOMAIN=updown.example.com     인증서를 받을 도메인
+#     ACME_EMAIL=you@example.com           만료 안내 받을 주소
+#
+# ⚠️ 도메인의 A 레코드가 **이 서버를 가리켜야** 인증서가 나온다. Let's Encrypt 가
+#    그 주소로 되찾아오기 때문이다.
+#
+# ## ⚠️ 화면 포트를 안쪽으로 돌린다
+#
+# `compose.live.yml` 은 화면을 `127.0.0.1:5177` 로 연다. 앞단이 생기면 그 포트는
+# 필요 없고, 열어 두면 **TLS 를 우회하는 길**이 남는다 — 여기서 닫는다.
+
+name: updown_live
+
+services:
+  proxy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 🔴 인증서를 **볼륨에 남긴다.** 컨테이너 fs 에 두면 재기동마다 새로 발급받고,
+      #    Let's Encrypt 의 발급 한도(주당)에 걸려 어느 날 갑자기 인증서가 안 나온다.
+      - caddydata:/data
+      - caddyconfig:/config
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?PUBLIC_DOMAIN 이 없다 — 인증서를 받을 도메인}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL 이 없다 — 인증서 만료 안내를 받을 주소}
+    depends_on:
+      web:
+        condition: service_healthy
+
+  web:
+    # ⚠️ 앞단이 생겼으므로 호스트 포트를 **닫는다** — 열어 두면 TLS 우회로가 남는다.
+    #    프록시는 같은 네트워크 안에서 `web:80` 으로 닿는다.
+    ports: !reset []
+
+volumes:
+  caddydata:
+  caddyconfig:

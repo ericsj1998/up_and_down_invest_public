@@ -1,0 +1,37 @@
+# 커밋 시점 방어선 (P0-1-5).
+#
+# CI 워크플로(P0-2-5)가 서기 전까지는 이것이 유일한 방어선이다.
+# detect-private-key / check-added-large-files 는 .gitignore 와 함께
+# 시크릿 커밋에 대한 이중 방어를 이룬다 (spec §8, 부록 A).
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # 마크다운의 줄끝 공백 2개는 <br> 의미이므로 보존한다.
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # ⚠️ Compose 는 표준 YAML 에 없는 태그를 쓴다 — `!reset` 이 그것이다
+        #   (앞단이 생겼을 때 화면 포트를 **지우는** 유일한 방법이고, `ports: []` 는
+        #   시퀀스가 병합될 때 덧붙기라 안 지워진다).
+        #
+        # ⛔ 그 파일 때문에 태그를 허용하는 옵션을 켜지 않는다 — 다른 YAML 의 오타까지
+        #   같이 통과한다. 파일 하나만 뺀다. compose 문법은 `docker compose config` 가 본다.
+        exclude: ^docker/compose\.proxy\.yml$
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+        # ⚠️ 근거 화면 산출물(T222)은 화면이 읽는 자료라 저장소에 싣는다 — 45미래 경로 3.5 MB · 합성 상세(일봉·청산 창)
+        #   7.3 MB · E1 백테스트(봉·매매) 2.5 MB. 재생성은 `scenario_paths.py` 3분 · `backtest_paths.py` 1분. 한도를
+        #   올리는 대신 **이 디렉토리의 원시 배열과 머리(JSON)만** 뺀다: 다른 큰 파일(데이터·로그)의 실수 커밋은 여전히 막는다.
+        exclude: ^config/evidence/.*\.(f32|i32|json)$
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.1
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format

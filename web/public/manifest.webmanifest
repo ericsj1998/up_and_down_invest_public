@@ -1,0 +1,12 @@
+{
+  "name": "업 앤 다운 인베스트",
+  "short_name": "업 앤 다운",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f5f2",
+  "theme_color": "#f5f5f2",
+  "icons": [
+    { "src": "/favicon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

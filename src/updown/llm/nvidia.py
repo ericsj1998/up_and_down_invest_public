@@ -1,0 +1,171 @@
+"""NVIDIA NIM 어댑터 — 유일한 구체 LLM 공급자 (Phase 5 §5-2).
+
+엔드포인트가 하나이고 모델 60여 종이 **같은 스키마**를 쓴다. 10종 동시 호출이 가능한
+이유가 그것이다 (`docs/providers/nvidia_llm_api_docs.md`).
+
+## 키는 서버에만 둔다
+
+`NVIDIA_API_KEY` 는 `.env*` 에서 읽고 **응답 어디에도 싣지 않는다** (절대 규칙 #1).
+프론트가 직접 NVIDIA 를 부르는 구조를 만들지 않는 것도 같은 이유다 — 그러면 키가
+브라우저로 내려간다.
+"""
+
+import os
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
+from updown.common.logging.setup import get_logger
+from updown.llm.port import FailureKind, LlmFailure, LlmOutcome, LlmSuccess
+
+_logger = get_logger("llm.nvidia")
+
+DEFAULT_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions"
+API_KEY_ENV = "NVIDIA_LLM_ACCESS_KEY"
+"""환경변수 이름.
+
+`UPBIT_ACCESS_KEY`·`TOSS_MARKETDATA_CLIENT_ID` 와 같은 규칙을 따른다 —
+`{공급자}_{용도}_{종류}`. 문서의 `$NVIDIA_API_KEY` 는 NVIDIA 쪽 예시 표기이고,
+우리 `.env` 의 이름이 실제 계약이다.
+"""
+HTTP_OK = 200
+MODEL_MISSING_CODES = frozenset({404, 410})
+""""그 모델은 없다"를 뜻하는 응답 코드들.
+
+404 = 처음부터 없는 id · **410 Gone = 폐기된 id**. 둘을 같은 칸으로 세는 이유는
+처방이 같기 때문이다 — 설정에서 고쳐야 하고, 모델 능력과는 무관하다.
+"""
+MS = 1000
+
+
+class MissingApiKeyError(RuntimeError):
+    """API 키가 없다 — 조용히 진행하지 않는다 (절대 규칙 #8)."""
+
+
+@dataclass(slots=True)
+class NvidiaClient:
+    """NVIDIA NIM 채팅 완성 클라이언트.
+
+    Attributes:
+        endpoint: 완성 엔드포인트.
+        client: 주입된 HTTP 클라이언트. **테스트가 여기로 대역을 넣는다** — 실제 API 를
+            부르는 테스트는 느리고 돈이 들며 네트워크에 의존한다.
+    """
+
+    endpoint: str = DEFAULT_ENDPOINT
+    client: httpx.AsyncClient | None = None
+
+    def _headers(self) -> dict[str, str]:
+        """인증 헤더.
+
+        Returns:
+            헤더 dict.
+
+        Raises:
+            MissingApiKeyError: 키가 환경에 없는 경우.
+        """
+        key = os.environ.get(API_KEY_ENV)
+        if not key:
+            raise MissingApiKeyError(
+                f"{API_KEY_ENV} 가 없다 — .env 를 확인하라. 키 없이 진행하면 전 모델이 "
+                "'무효응답' 으로 기록되어 비교표가 거짓말한다"
+            )
+        return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+    async def complete(
+        self,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        temperature: float,
+        timeout_seconds: float,
+    ) -> LlmOutcome:
+        """모델 하나를 부른다 (`LlmClient` 구현).
+
+        Args:
+            model: 모델 id.
+            system_prompt: 페르소나.
+            user_prompt: 지시 + 데이터.
+            temperature: 표집 온도.
+            timeout_seconds: 타임아웃.
+
+        Returns:
+            성공 또는 실패. 네트워크 예외도 값으로 바꿔 돌려준다.
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": temperature,
+        }
+        started = time.perf_counter()
+
+        def elapsed() -> int:
+            """호출 시작부터 지금까지 걸린 시간.
+
+            Returns:
+                밀리초 정수 — 성공·실패 결과에 같은 단위로 실린다.
+            """
+            return int((time.perf_counter() - started) * MS)
+
+        owned = self.client is None
+        http = self.client or httpx.AsyncClient(timeout=timeout_seconds)
+        try:
+            response = await http.post(self.endpoint, json=payload, headers=self._headers())
+        except httpx.TimeoutException as exc:
+            return LlmFailure(model, FailureKind.TIMEOUT, str(exc), elapsed())
+        except httpx.HTTPError as exc:
+            return LlmFailure(model, FailureKind.TRANSPORT, str(exc), elapsed())
+        finally:
+            if owned:
+                await http.aclose()
+
+        if response.status_code in MODEL_MISSING_CODES:
+            # 🔴 카탈로그에 없거나 폐기된 id 다. 일반 실패로 뭉개면 "그 모델은 늘 무효" 로
+            #    보이고 진짜 원인(오타·문서 노후)이 숨는다 (config/llm_pool.yml 주석).
+            #
+            #    410 을 빠뜨렸다가 실제로 당했다 — NVIDIA 는 폐기 모델에 404 가 아니라
+            #    **410 Gone** 을 주며, 그래서 검증 스크립트가 6종이 죽은 것을 못 봤다.
+            return LlmFailure(
+                model,
+                FailureKind.UNKNOWN_MODEL,
+                f"{response.status_code} — 카탈로그에 없거나 폐기됨: {response.text[:200]}",
+                elapsed(),
+            )
+        if response.status_code != HTTP_OK:
+            return LlmFailure(
+                model,
+                FailureKind.TRANSPORT,
+                f"{response.status_code} {response.text[:200]}",
+                elapsed(),
+            )
+
+        try:
+            body: dict[str, Any] = response.json()
+            choices: list[dict[str, Any]] = body["choices"]
+            text = str(choices[0]["message"]["content"])
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            return LlmFailure(
+                model,
+                FailureKind.TRANSPORT,
+                f"응답 형식이 예상 밖이다: {exc}",
+                elapsed(),
+            )
+
+        usage: dict[str, Any] = body.get("usage") or {}
+        _logger.info(
+            "llm_completed",
+            payload={"model": model, "latency_ms": elapsed(), "chars": len(text)},
+        )
+        return LlmSuccess(
+            model=model,
+            text=text,
+            latency_ms=elapsed(),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+        )
