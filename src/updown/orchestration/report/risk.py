@@ -45,24 +45,30 @@ TIER_RULES: dict[Tier, TierRule] = {
 }
 
 
-def underwater_pct(values: Sequence[float]) -> float:
-    """자본 곡선이 직전 고점 **아래**에 있던 점의 비율 (%) — "수면 아래".
+UNDERWATER_MIN_DD_PCT = 2.0
+"""수면 아래로 세는 최소 낙폭 (%). 0 이면 고점 바로 아래 0.01% 도 세어 어떤 곡선이든 90% 가 된다
+(2026-09-09 실측: MDD 4.6% 매매법이 수면 92%). 의미 있는 낙폭만 센다 — 결정 필요 (T231 · 기본값)."""
+
+
+def underwater_pct(values: Sequence[float], *, min_dd_pct: float = UNDERWATER_MIN_DD_PCT) -> float:
+    """자본 곡선이 직전 고점보다 `min_dd_pct` 이상 **아래**에 있던 점의 비율 (%) — "수면 아래".
 
     Args:
         values: 시각 순 자본(또는 배수). 빈 목록은 0.
+        min_dd_pct: 이만큼은 내려가야 수면 아래로 센다.
 
     Returns:
-        0~100. 첫 점은 고점이라 세지 않는다. 고점과 같은 점은 수면 위다.
+        0~100. 첫 점은 고점이라 세지 않는다.
     """
     if len(values) < 2:
         return 0.0
     peak = values[0]
     under = 0
     for v in values[1:]:
-        if v < peak:
-            under += 1
-        else:
+        if v > peak:
             peak = v
+        elif peak > 0 and (peak - v) / peak * 100 >= min_dd_pct:
+            under += 1
     return round(under / (len(values) - 1) * 100, 2)
 
 
@@ -124,6 +130,7 @@ def risk_tier(*, mdd_pct: float, liquidation_rate_pct: float, underwater_pct: fl
 __all__ = [
     "TIER_LABELS",
     "TIER_RULES",
+    "UNDERWATER_MIN_DD_PCT",
     "Tier",
     "TierRule",
     "liquidation_rate_pct",

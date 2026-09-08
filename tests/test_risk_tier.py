@@ -11,10 +11,15 @@ from updown.orchestration.report.risk import (
 
 class TestMetrics:
     def test_underwater_counts_points_below_the_running_peak(self) -> None:
-        # 고점 10 → 9(아래) → 11(새 고점) → 11(같음 = 위) → 8(아래)
+        # 고점 10 → 9(-10% 아래) → 11(새 고점) → 11(같음 = 위) → 8(아래)
         assert underwater_pct([10, 9, 11, 11, 8]) == 50.0
         assert underwater_pct([1.0]) == 0.0
         assert underwater_pct([1, 2, 3]) == 0.0
+
+    def test_tiny_dips_are_not_underwater(self) -> None:
+        # 고점 100 바로 아래 99.5(-0.5%)는 안 센다 · 97(-3%)은 센다 — 문턱 2%
+        assert underwater_pct([100, 99.5, 99.8, 97]) == round(1 / 3 * 100, 2)
+        assert underwater_pct([100, 99.5, 97], min_dd_pct=0) == 100.0
 
     def test_max_drawdown_is_peak_to_trough(self) -> None:
         assert max_drawdown_pct([100, 80, 120, 60]) == 50.0
