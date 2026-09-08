@@ -71,7 +71,12 @@ export function BacktestPanel() {
   useEffect(() => {
     if (!id) return;
     let alive = true;
+    // 🔴 백테스트를 바꾸면 종목·봉·오류를 먼저 비운다 — 옛 종목(E1 "BTCUSDT")으로 새 백테스트(견본 "BTC_USDT")의
+    //    봉을 청하면 404 "모르는 종목" 이 났고, 오류가 지워지지 않아 화면이 그대로 멈췄다 (사용자 2026-09-08).
     setDetail(null);
+    setCandles(null);
+    setSymbol("");
+    setError("");
     backtestDetail(id)
       .then((got) => {
         if (!alive) return;
@@ -87,16 +92,28 @@ export function BacktestPanel() {
   }, [id]);
 
   useEffect(() => {
-    if (!id || !symbol) return;
+    // 종목이 **지금 백테스트의 것**일 때만 봉을 청한다 — 상태가 갈아 끼워지는 사이의 헛 요청을 막는다.
+    if (
+      !id ||
+      !symbol ||
+      !detail ||
+      detail.id !== id ||
+      !detail.symbols?.includes(symbol)
+    )
+      return;
     let alive = true;
     setCandles(null);
     backtestCandles(id, symbol)
-      .then((got) => alive && setCandles(got))
+      .then((got) => {
+        if (!alive) return;
+        setCandles(got);
+        setError("");
+      })
       .catch((exc: unknown) => alive && setError(String(exc)));
     return () => {
       alive = false;
     };
-  }, [id, symbol]);
+  }, [id, symbol, detail]);
 
   const bars = useMemo(
     () => (candles ? toOhlc(candles.candles) : []),
