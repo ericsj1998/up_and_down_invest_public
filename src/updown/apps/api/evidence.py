@@ -30,6 +30,7 @@ from updown.common.logging.setup import get_logger
 from updown.common.security.redact import redact_pnl
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.report import live_match as lm
+from updown.orchestration.report.risk import TIER_LABELS
 from updown.orchestration.walkforward.store import RunStore, RunStoreError
 
 router = APIRouter(prefix="/evidence", tags=["evidence"])
@@ -430,11 +431,20 @@ async def _backtest_list() -> dict[str, Any]:
         `{backtests: [...]}`. 파일이 없는 항목은 `missing: true` 로 남긴다 — 빈 줄로 숨기지 않는다.
     """
     rows: list[dict[str, Any]] = []
+    adopted = {book.playbook_id for book in load_playbooks() if book.recommended}
     for bt_id in BACKTESTS:
         try:
-            rows.append(ec.bt_summary(_backtest_store(bt_id)))
+            row = ec.bt_summary(_backtest_store(bt_id))
         except HTTPException as exc:
             rows.append({"id": bt_id, "missing": True, "reason": str(exc.detail)})
+            continue
+        # ⭐ T231 — 채택 여부는 `playbooks.yml` 의 `recommended`, 등급은 저장소가 계산해 적은 값.
+        playbook = str(row.get("playbook") or "").split("@", 1)[0]
+        row["recommended"] = playbook in adopted
+        tier = row.get("risk_tier")
+        labels = {str(key): value for key, value in TIER_LABELS.items()}
+        row["risk_tier_label"] = labels.get(tier) if isinstance(tier, str) else None
+        rows.append(row)
     return {"backtests": rows}
 
 

@@ -2897,6 +2897,70 @@ async def start(request: Request, payload: Annotated[dict[str, Any], Body()]) ->
     return await _start(payload, request=request)
 
 
+def apply_playbook_knobs(session: Session, book: Playbook, catalog: dict[str, RuleConfig]) -> None:
+    """매매법 선언·룰 설정이 정하는 세션 스위치들을 한 곳에서 켠다 (T231).
+
+    백테스트 창구(`_start`)와 저장소 생성기(`playbook_evidence.py`)가 같은 배선을 쓴다.
+
+    Args:
+        session: 방금 만든 봉인 세션 (원장에 배율이 들어 있어야 한다).
+        book: 대표 매매법 (묶음이면 첫 구성원).
+        catalog: 룰 설정 (`load_rules()`).
+
+    Raises:
+        RiskConfigError: 배율에 짝인 β·손절 하한이 없으면 — 부르는 쪽이 시작을 거부한다 (규칙 #8).
+
+    Note:
+        2026-09-09 까지 `_start` 안에 있던 블록 그대로다 — 동작 변화 없음. 여기 두는 이유는
+        `scripts/build/playbook_evidence.py` 가 **같은 스위치**로 저장소를 만들어야 화면 숫자와
+        라이브 설정이 한 출처가 되기 때문이다.
+    """
+    session.flip_on_opposite = any(
+        bool(catalog[name].params.get("symmetric")) for name in book.setups if name in catalog
+    )
+    # ⭐ T46 — 돌파 사건에만 반응하는 전환 스위치 (백테스트 `walk_session` 과 같은 배선).
+    session.flip_on_event = any(item.flip_on_opposite for item in session.playbooks)
+    # T66-e/T68 — 건당 리스크는 **제안을 낸 플레이북**이 정한다 (_exposure 인자).
+    #    여기서는 상한만 판의 배율로 맞춘다 — 세션 전역 risk_pct 를 넣으면 번들에서
+    #    추세(고정 배율)까지 r 사이징으로 오염된다.
+    if any(item.risk_pct is not None for item in session.playbooks):
+        session.leverage_cap = session.ledger.leverage
+    # 🔴 β — 손절을 청산거리 안쪽으로 당기는 상한 (T120~T146).
+    #    `require_stop_cap` 이 **배율과 짝을 강제한다**: 문턱(3x)을 넘는 배율인데 β 가
+    #    없으면 여기서 터진다. 측정이 말하는 것은 "6x 가 좋다" 가 아니라 "β 를 켠 6x 가
+    #    좋다" 이고(6x β0 은 청산 25건 · T144), 둘을 따로 켤 수 있게 두면 언젠가 반쪽만
+    #    켜지는데 그 반쪽이 하필 위험한 쪽이다.
+    _risk = load_risk_settings()
+    session.stop_cap_ratio = require_stop_cap(_risk, session.ledger.leverage)
+    # 🔴 손절 하한 (T147~T150) — β 의 짝. 손절거리를 [하한, β x 청산거리] 로 가둔다.
+    session.stop_min_pct = _risk.stop_min_pct
+    # ⭐ T42 ⑤ — 국면 RANGE 판정이 탐지기와 같은 최소 폭을 쓴다 (백테스트와 같은 배선).
+    session.span_cover = span_cover_of(catalog, book)
+    # ✅ T42 ④ (사용자 확정 2026-08-22) — 라이브 원장도 체결 유형대로 센다. 일간 리포트의
+    #    거래소 실제 수수료와 같은 자가 된다. 관문은 0.15% 그대로.
+    session.fill_cost = True
+    # 🔴 백테스트도 같은 규칙이다 — 진입가는 방아쇠 봉의 종가다 (T17 ③). 라이브만
+    #    고치면 재는 것과 도는 것이 달라지고, 그러면 측정이 의미를 잃는다.
+    session.price_frame = trigger_frame(catalog, book)
+    # ⭐ 걸어 두고 받는 판이면 여기서 켜진다 (T19 ④). 선언이 없으면 시장가 그대로다.
+    session.limit_entry = wants_limit(catalog, book)
+    session.post_only_entry = wants_post_only(catalog, book)
+    # 🔴 **걸어 두고 받는 판만 우편함을 든다** (T19 ⑤). 시장가 판에 꽂으면 아무도
+    #     를 안 부르므로 무해하지만, 없는 편이 *"이 판이 무엇으로 도는가"* 가
+    #    분명하다.
+    session.shallow_entry = wants_shallow(catalog, book)
+    # ⭐ 0.52 — 옮긴 진입가로 비용을 다시 잰다. 선언 없으면 0.5·0.51 그대로다.
+    session.recheck_after_shift = wants_recheck(catalog, book)
+    # 🔴 워크는 **봉 판정 필러**를 단다 (T202 3차 시도의 발견). `LiveFiller` 는 거래소
+    #    답을 옮기는 우편함이라 봉인 워크에선 아무도 체결을 안 넣는다 — limit_entry
+    #    플레이북(지정가 진입형)을 태우면 지정가가 영원히 미체결 = 매매 0 이 된다.
+    #    실측: 탐지 5,808 · 제안 5,808 · 차단 0 · 진입 0. 기존 워크는 시장가 룰
+    #    (시장가 진입형)만 태워 이 결함이 드러난 적이 없다 — 동작 변화 없음.
+    #    백테스트(gate_backtest)와 같은 배선: SealedFiller + 익절도 뚫어야 체결.
+    session.filler = SealedFiller() if session.limit_entry else None
+    session.strict_fills = session.limit_entry
+
+
 async def _start(payload: dict[str, Any], *, request: Request | None) -> dict[str, Any]:
     """`start` 의 본체 — 되살리기(`request=None`)도 이 길을 탄다. T230 문은 request 가 있을 때만."""
     # ⭐ 기본값은 recommended 파생 (T63 ②) — 이전의 플레이북 이름 리터럴은 대청소로
@@ -2991,54 +3055,11 @@ async def _start(payload: dict[str, Any], *, request: Request | None) -> dict[st
     # ⭐ **반대 신호 청산은 룰이 정하고 여기서 켠다** — 세션이 플레이북 id 를 알면
     #    층 위반이다 (`orchestration/` 입주 조건). 룰 설정의 `symmetric` 을 본다.
     catalog = load_rules()
-    session.flip_on_opposite = any(
-        bool(catalog[name].params.get("symmetric")) for name in book.setups if name in catalog
-    )
-    # ⭐ T46 — 돌파 사건에만 반응하는 전환 스위치 (백테스트 `walk_session` 과 같은 배선).
-    session.flip_on_event = any(item.flip_on_opposite for item in session.playbooks)
-    # T66-e/T68 — 건당 리스크는 **제안을 낸 플레이북**이 정한다 (_exposure 인자).
-    #    여기서는 상한만 판의 배율로 맞춘다 — 세션 전역 risk_pct 를 넣으면 번들에서
-    #    추세(고정 배율)까지 r 사이징으로 오염된다.
-    if any(item.risk_pct is not None for item in session.playbooks):
-        session.leverage_cap = session.ledger.leverage
-    # 🔴 β — 손절을 청산거리 안쪽으로 당기는 상한 (T120~T146).
-    #    `require_stop_cap` 이 **배율과 짝을 강제한다**: 문턱(3x)을 넘는 배율인데 β 가
-    #    없으면 여기서 터진다. 측정이 말하는 것은 "6x 가 좋다" 가 아니라 "β 를 켠 6x 가
-    #    좋다" 이고(6x β0 은 청산 25건 · T144), 둘을 따로 켤 수 있게 두면 언젠가 반쪽만
-    #    켜지는데 그 반쪽이 하필 위험한 쪽이다.
     try:
-        _risk = load_risk_settings()
-        session.stop_cap_ratio = require_stop_cap(_risk, session.ledger.leverage)
-        # 🔴 손절 하한 (T147~T150) — β 의 짝. 손절거리를 [하한, β x 청산거리] 로 가둔다.
-        session.stop_min_pct = _risk.stop_min_pct
+        apply_playbook_knobs(session, book, catalog)
     except RiskConfigError as exc:
         # ⛔ 시작을 거부한다 — 시작해 두고 청산이 나는 것보다 낫다 (절대 규칙 #8).
         raise HTTPException(400, str(exc)) from exc
-    # ⭐ T42 ⑤ — 국면 RANGE 판정이 탐지기와 같은 최소 폭을 쓴다 (백테스트와 같은 배선).
-    session.span_cover = span_cover_of(catalog, book)
-    # ✅ T42 ④ (사용자 확정 2026-08-22) — 라이브 원장도 체결 유형대로 센다. 일간 리포트의
-    #    거래소 실제 수수료와 같은 자가 된다. 관문은 0.15% 그대로.
-    session.fill_cost = True
-    # 🔴 백테스트도 같은 규칙이다 — 진입가는 방아쇠 봉의 종가다 (T17 ③). 라이브만
-    #    고치면 재는 것과 도는 것이 달라지고, 그러면 측정이 의미를 잃는다.
-    session.price_frame = trigger_frame(catalog, book)
-    # ⭐ 걸어 두고 받는 판이면 여기서 켜진다 (T19 ④). 선언이 없으면 시장가 그대로다.
-    session.limit_entry = wants_limit(catalog, book)
-    session.post_only_entry = wants_post_only(catalog, book)
-    # 🔴 **걸어 두고 받는 판만 우편함을 든다** (T19 ⑤). 시장가 판에 꽂으면 아무도
-    #     를 안 부르므로 무해하지만, 없는 편이 *"이 판이 무엇으로 도는가"* 가
-    #    분명하다.
-    session.shallow_entry = wants_shallow(catalog, book)
-    # ⭐ 0.52 — 옮긴 진입가로 비용을 다시 잰다. 선언 없으면 0.5·0.51 그대로다.
-    session.recheck_after_shift = wants_recheck(catalog, book)
-    # 🔴 워크는 **봉 판정 필러**를 단다 (T202 3차 시도의 발견). `LiveFiller` 는 거래소
-    #    답을 옮기는 우편함이라 봉인 워크에선 아무도 체결을 안 넣는다 — limit_entry
-    #    플레이북(지정가 진입형)을 태우면 지정가가 영원히 미체결 = 매매 0 이 된다.
-    #    실측: 탐지 5,808 · 제안 5,808 · 차단 0 · 진입 0. 기존 워크는 시장가 룰
-    #    (시장가 진입형)만 태워 이 결함이 드러난 적이 없다 — 동작 변화 없음.
-    #    백테스트(gate_backtest)와 같은 배선: SealedFiller + 익절도 뚫어야 체결.
-    session.filler = SealedFiller() if session.limit_entry else None
-    session.strict_fills = session.limit_entry
     key = _safe_key(str(payload.get("session_id") or uuid4().hex[:12]))
     # 🔴 원장을 파일로 남긴다 — 메모리에만 두면 서버 재시작에 통째로 날아간다.
     session.journal_path = JOURNAL_ROOT / f"{key}.json"

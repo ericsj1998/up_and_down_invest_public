@@ -194,23 +194,38 @@ export function BacktestPanel() {
         role="tablist"
         aria-label="백테스트"
       >
-        {list.map((b) => (
-          <button
-            key={b.id}
-            type="button"
-            role="tab"
-            aria-selected={b.id === id}
-            disabled={b.missing}
-            className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${
-              b.id === id
-                ? "border-gray-900 bg-gray-900 text-white dark:border-blue-gray-100 dark:bg-blue-gray-100 dark:text-gray-900"
-                : "border-blue-gray-200 text-blue-gray-700 hover:bg-blue-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-blue-gray-200 dark:hover:bg-gray-800"
-            }`}
-            onClick={() => setId(b.id)}
-          >
-            {b.label ?? b.id}
-          </button>
-        ))}
+        {/* 채택(추천)된 매매법이 앞에 — 등급은 저장소가 계산한 값 (T231). 가려진 항목은 이름만. */}
+        {[...list]
+          .sort(
+            (a, b) =>
+              Number(Boolean(b.recommended)) - Number(Boolean(a.recommended)) ||
+              Number(Boolean(a.redacted)) - Number(Boolean(b.redacted)),
+          )
+          .map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              role="tab"
+              aria-selected={b.id === id}
+              disabled={b.missing}
+              title={
+                b.risk_tier_label
+                  ? `${b.risk_tier_label} · MDD ${b.mdd_pct ?? "—"}% · 청산률 ${b.liquidation_rate_pct ?? "—"}% · 수면 아래 ${b.underwater_pct ?? "—"}%`
+                  : undefined
+              }
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                b.id === id
+                  ? "border-gray-900 bg-gray-900 text-white dark:border-blue-gray-100 dark:bg-blue-gray-100 dark:text-gray-900"
+                  : "border-blue-gray-200 text-blue-gray-700 hover:bg-blue-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-blue-gray-200 dark:hover:bg-gray-800"
+              }`}
+              onClick={() => setId(b.id)}
+            >
+              {b.recommended ? "★ 추천 · " : ""}
+              {b.risk_tier_label ? `${b.risk_tier_label} · ` : ""}
+              {b.label ?? b.id}
+              {b.redacted ? " · 🔒" : ""}
+            </button>
+          ))}
       </div>
 
       {!detail ? (
@@ -244,6 +259,15 @@ export function BacktestPanel() {
               value={`${(detail.trades_count ?? 0).toLocaleString("ko-KR")} · ${detail.liquidations ?? 0}건`}
             />
             <Fact label="칼마" value={detail.calmar?.toFixed(2) ?? "—"} />
+            {/* T231 — 등급을 정한 두 지표. MDD 는 위. */}
+            <Fact
+              label="청산률 · 수면 아래"
+              value={`${detail.liquidation_rate_pct ?? "—"}% · ${detail.underwater_pct ?? "—"}%`}
+            />
+            <Fact
+              label="위험 등급"
+              value={`${detail.recommended ? "★ 추천 · " : ""}${detail.risk_tier_label ?? "—"}`}
+            />
           </div>
           {detail.redacted ? (
             <AuditNotice what="전체 수익률 · CAGR · 칼마 · 자본 곡선 · 매매별 손익" />

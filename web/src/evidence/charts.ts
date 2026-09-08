@@ -142,6 +142,13 @@ export interface BacktestSummary {
   reason?: string;
   /** 서버가 이 항목의 손익을 가렸다 — 그 매매법의 백테스트 권한이 없다 (T230). */
   redacted?: boolean;
+  /** 채택된 매매법(`playbooks.yml` recommended) — "추천" 배지 (T231). */
+  recommended?: boolean;
+  /** 위험 등급 — 저장소가 MDD·청산률·수면 아래로 계산해 적은 값 (T231). */
+  risk_tier?: "safe" | "balanced" | "aggressive";
+  risk_tier_label?: string;
+  liquidation_rate_pct?: number;
+  underwater_pct?: number;
 }
 
 export interface BacktestDetail extends BacktestSummary {
