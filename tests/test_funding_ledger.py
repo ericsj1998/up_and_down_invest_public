@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -261,3 +262,37 @@ class TestRealizedAdjust:
         before = session.position
         session.apply_realized_adjust(Decimal(0))
         assert session.position == before
+
+
+class TestTightenKeepsMultipliers:
+    """β·꼬리 손절로 손절을 당겨도 크기 승수(변동성 타게팅 · 숏 0.51)는 남아야 한다 (T232).
+
+    예전엔 `_exposure()` 값(r 없으면 원장 고정 배율)으로 덮어써 모든 매매가 6x 로 나갔다 —
+    연구 엔진(+128%)과 세션(-143%)이 갈린 첫 원인.
+    """
+
+    def test_fixed_leverage_playbook_keeps_the_scaled_leverage(self) -> None:
+        session = _session_holding_long(model_funding=False)
+        held = session.position
+        assert held is not None
+        # 원장 배율 1 · 기록 배율은 승수가 곱해진 0.4 (변동성 타게팅 0.8 x 숏 0.5 같은 것)
+        scaled = replace(held, leverage=Decimal("0.4"))
+        tighter_stop = scaled.entry - (scaled.entry - scaled.planned_stop) / 2
+        got = session._rescaled_leverage(scaled, tighter_stop)  # pyright: ignore[reportPrivateUsage]
+        assert got == Decimal("0.4")
+
+    def test_r_sized_playbook_rescales_but_keeps_the_ratio(self) -> None:
+        session = _session_holding_long(model_funding=False)
+        session.risk_pct = Decimal("0.01")
+        held = session.position
+        assert held is not None
+        base = session._exposure(held.entry, held.planned_stop, risk_pct=Decimal("0.01"))  # pyright: ignore[reportPrivateUsage]
+        assert base is not None and base > 0
+        scaled = replace(held, leverage=base * Decimal("0.5"))  # 승수 0.5
+        tighter_stop = (
+            held.entry - (held.entry - held.planned_stop) / 2
+        )  # 손절 거리 절반 → 노출 2배
+        got = session._rescaled_leverage(scaled, tighter_stop)  # pyright: ignore[reportPrivateUsage]
+        after = session._exposure(held.entry, tighter_stop, risk_pct=Decimal("0.01"))  # pyright: ignore[reportPrivateUsage]
+        assert after is not None
+        assert got == after * Decimal("0.5")

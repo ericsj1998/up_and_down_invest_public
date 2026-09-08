@@ -2053,7 +2053,7 @@ class Session:
         )
         if capped == record.planned_stop:
             return record
-        exposure = self._exposure(record.entry, capped, risk_pct=self._book_of(record).risk_pct)
+        exposure = self._rescaled_leverage(record, capped)
         if exposure is None:
             return record
         tightened = replace(record, planned_stop=capped, leverage=exposure)
@@ -2092,7 +2092,7 @@ class Session:
         correct = cand > record.entry if short else cand < record.entry
         if not (tighter and correct):
             return record
-        exposure = self._exposure(record.entry, cand, risk_pct=self._book_of(record).risk_pct)
+        exposure = self._rescaled_leverage(record, cand)
         if exposure is None:
             return record
         tightened = replace(record, planned_stop=cand, leverage=exposure)
@@ -2100,6 +2100,34 @@ class Session:
             return record
         self._count("wick_stop")
         return tightened
+
+    def _rescaled_leverage(self, record: TradeRecord, new_stop: Decimal) -> Decimal | None:
+        """손절을 당긴 뒤의 배율 — 크기 승수는 지키고 손절 거리 몫만 다시 도출한다 (T232).
+
+        Args:
+            record: 손절·배율이 정해진 기록. `leverage` 에는 이미 변동성 타게팅(`size_mult`) ·
+                숏 비중(`short_size_mult`) · 연속손절 축소가 곱해져 있다.
+            new_stop: 당긴 손절.
+
+        Returns:
+            새 배율. 손절이 청산보다 바깥이면 None.
+
+        Note:
+            🔴 2026-09-09 실측(T232): 예전엔 `_exposure()` 값으로 덮어썼다. r 이 없는 매매법
+            (추세 VS)에서 그 값은 원장 고정 배율이라 β 가 손절을 당길 때마다 변동성 타게팅과
+            숏 0.51 이 지워져
+            모든 매매가 6x 로 나갔다 — 연구 엔진(+128%)과 세션(-143%)이 갈린 첫 원인. r 이 있으면
+            새 손절 거리로 다시 도출하되 승수 비율(`record.leverage / 옛 도출값`)은 유지한다.
+        """
+        risk_pct = self._book_of(record).risk_pct
+        before = self._exposure(record.entry, record.planned_stop, risk_pct=risk_pct)
+        after = self._exposure(record.entry, new_stop, risk_pct=risk_pct)
+        if after is None:
+            return None
+        if before is None or before <= 0:
+            return after
+        # 승수(변동성 타게팅 · 숏 비중 · 연속손절)는 record.leverage / before 에 들어 있다.
+        return after * (record.leverage / before)
 
     def _exposure(
         self, entry: Decimal, stop: Decimal, risk_pct: Decimal | None = None
