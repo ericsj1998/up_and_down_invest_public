@@ -25,7 +25,7 @@ from updown.common.security.playbooks import (
 )
 from updown.common.security.roles import Role
 
-REAL = "private_strategy"
+REAL = "alpha_private_book"  # 실제 매매법 이름을 시험에 적지 않는다 — 공개본 스캔
 
 
 class TestPolicy:
