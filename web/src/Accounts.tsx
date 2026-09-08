@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   accounts,
+  clearAccountPlaybook,
   contacts,
   deleteAccount,
   deleteRole,
@@ -35,10 +36,13 @@ import {
   setAccountCollection,
   setAccountHold,
   setAccountNote,
+  setAccountPlaybook,
   setHoldSettings,
   type AccountRow,
   type CapInfo,
   type ContactRow,
+  type PlaybookGrantView,
+  type PlaybookPolicy,
   type RoleCollection,
   type Who,
 } from "./api";
@@ -212,6 +216,151 @@ function CapChips({
           </select>
         </label>
       ) : null}
+    </div>
+  );
+}
+
+const KIND_ICON: Record<"view" | "backtest" | "trade", string> = {
+  view: "👁",
+  backtest: "📊",
+  trade: "▶",
+};
+const KIND_LABEL: Record<"view" | "backtest" | "trade", string> = {
+  view: "보기",
+  backtest: "백테스트",
+  trade: "사용",
+};
+
+/** 매매법별 권한 칩 — 칩 하나가 매매법 하나, 안의 아이콘 셋이 보기·백테스트·사용 (T230).
+ *  아이콘을 누르면 그 칸이 뒤집힌다. 보기를 끄면 셋이 다 꺼지고, 백테스트/사용을 켜면 보기도 켜진다
+ *  (서버 규칙 "보기 없는 백테스트·사용 금지"). 덮어쓴 칩은 점선 — × 로 묶음 기본값에 돌린다. */
+function PlaybookChips({
+  rows,
+  canEdit,
+  onSet,
+  onClear,
+}: {
+  rows: PlaybookGrantView[];
+  canEdit: boolean;
+  onSet: (
+    id: string,
+    grant: { view: boolean; backtest: boolean; trade: boolean },
+  ) => void;
+  onClear: (id: string) => void;
+}) {
+  const flip = (
+    row: PlaybookGrantView,
+    kind: "view" | "backtest" | "trade",
+  ) => {
+    const next = { view: row.view, backtest: row.backtest, trade: row.trade };
+    next[kind] = !next[kind];
+    if (kind === "view" && !next.view) {
+      next.backtest = false;
+      next.trade = false;
+    }
+    if (kind !== "view" && next[kind]) next.view = true;
+    onSet(row.id, next);
+  };
+  return (
+    <div className="chips" aria-label="매매법 권한">
+      {rows.map((row) => (
+        <span
+          key={row.id}
+          className={`chip ${row.custom ? "extra" : ""}`}
+          title={`${row.id}${row.custom ? " · 묶음 기본값을 덮어씀" : " · 묶음 기본값"}`}
+        >
+          {row.label}
+          {(["view", "backtest", "trade"] as const).map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              className="chip-kind"
+              aria-pressed={row[kind]}
+              aria-label={`${row.label} ${KIND_LABEL[kind]} ${row[kind] ? "켜짐" : "꺼짐"}`}
+              title={`${KIND_LABEL[kind]} ${row[kind] ? "켜짐" : "꺼짐"}`}
+              disabled={!canEdit}
+              style={{ opacity: row[kind] ? 1 : 0.3 }}
+              onClick={() => flip(row, kind)}
+            >
+              {KIND_ICON[kind]}
+            </button>
+          ))}
+          {row.custom && canEdit ? (
+            <button
+              type="button"
+              aria-label={`${row.label} 묶음 기본값으로`}
+              title="묶음 기본값으로"
+              onClick={() => onClear(row.id)}
+            >
+              ×
+            </button>
+          ) : null}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+const POLICY_CHOICES: { key: string; label: string; value: "*" | string[] }[] =
+  [
+    { key: "all", label: "전부", value: "*" },
+    { key: "sample", label: "견본만", value: ["sample_ma_cross"] },
+    { key: "none", label: "없음", value: [] },
+  ];
+
+function policyKey(value: "*" | string[]): string {
+  if (value === "*") return "all";
+  if (value.length === 0) return "none";
+  if (value.length === 1 && value[0] === "sample_ma_cross") return "sample";
+  return `list:${value.join(",")}`;
+}
+
+function policyLabel(value: "*" | string[]): string {
+  const key = policyKey(value);
+  const hit = POLICY_CHOICES.find((one) => one.key === key);
+  return hit ? hit.label : `목록 ${value === "*" ? "" : value.length}`;
+}
+
+/** 묶음의 매매법 정책 — 칸마다 전부 / 견본만 / 없음 (보기 없는 백테스트·사용은 서버가 거른다). */
+function PolicyEditor({
+  policy,
+  onChange,
+}: {
+  policy: PlaybookPolicy;
+  onChange: (next: PlaybookPolicy) => void;
+}) {
+  return (
+    <div className="chips">
+      {(["view", "backtest", "trade"] as const).map((kind) => {
+        const key = policyKey(policy[kind]);
+        return (
+          <label
+            key={kind}
+            className="chip"
+            title={`${KIND_LABEL[kind]} 기본 범위`}
+          >
+            {KIND_ICON[kind]} {KIND_LABEL[kind]}
+            <select
+              value={POLICY_CHOICES.some((one) => one.key === key) ? key : ""}
+              onChange={(event) => {
+                const picked = POLICY_CHOICES.find(
+                  (one) => one.key === event.target.value,
+                );
+                if (picked) onChange({ ...policy, [kind]: picked.value });
+              }}
+            >
+              {!POLICY_CHOICES.some((one) => one.key === key) ? (
+                <option value="">{policyLabel(policy[kind])}</option>
+              ) : null}
+              {POLICY_CHOICES.map((one) => (
+                <option key={one.key} value={one.key}>
+                  {one.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        );
+      })}
     </div>
   );
 }
@@ -579,6 +728,21 @@ export function Accounts({ who }: { who: Who | null }) {
                             )
                           }
                         />
+                        {/* 매매법별 권한 (T230) — 보기 · 백테스트 · 사용 */}
+                        <PlaybookChips
+                          rows={row.playbooks ?? []}
+                          canEdit={mayTouch && busy === ""}
+                          onSet={(id, grant) =>
+                            act(row.id, () =>
+                              setAccountPlaybook(row.email, id, grant),
+                            )
+                          }
+                          onClear={(id) =>
+                            act(row.id, () =>
+                              clearAccountPlaybook(row.email, id),
+                            )
+                          }
+                        />
                       </div>
                     )}
                   </td>
@@ -769,8 +933,8 @@ export function Accounts({ who }: { who: Who | null }) {
         labels={labels}
         mayRoles={mayRoles}
         busy={busy}
-        onSave={(name, label, caps) =>
-          act(`role:${name}`, () => saveRole(name, label, caps))
+        onSave={(name, label, caps, policy) =>
+          act(`role:${name}`, () => saveRole(name, label, caps, policy))
         }
         onDelete={(name) => act(`role:${name}`, () => deleteRole(name))}
       />
@@ -872,20 +1036,31 @@ function RolesCard({
   labels: Map<string, string>;
   mayRoles: boolean;
   busy: string;
-  onSave: (name: string, label: string, caps: string[]) => void;
+  onSave: (
+    name: string,
+    label: string,
+    caps: string[],
+    policy?: PlaybookPolicy,
+  ) => void;
   onDelete: (name: string) => void;
 }) {
   const [editing, setEditing] = useState<{
     name: string;
     label: string;
     caps: string[];
+    policy: PlaybookPolicy;
   } | null>(null);
   const [fresh, setFresh] = useState<{ name: string; label: string } | null>(
     null,
   );
 
   const start = (one: RoleCollection) =>
-    setEditing({ name: one.name, label: one.label, caps: [...one.caps] });
+    setEditing({
+      name: one.name,
+      label: one.label,
+      caps: [...one.caps],
+      policy: one.playbook_policy ?? { view: "*", backtest: [], trade: [] },
+    });
 
   return (
     <div className="card">
@@ -901,6 +1076,7 @@ function RolesCard({
           <tr>
             <th>묶음</th>
             <th>기능</th>
+            <th>매매법 기본</th>
             <th>사용</th>
             <th className="head-act">조치</th>
           </tr>
@@ -961,6 +1137,23 @@ function RolesCard({
                     </div>
                   )}
                 </td>
+                <td>
+                  {draft ? (
+                    <PolicyEditor
+                      policy={draft.policy}
+                      onChange={(policy) => setEditing({ ...draft, policy })}
+                    />
+                  ) : (
+                    <span className="faint" title="보기 · 백테스트 · 사용">
+                      {KIND_ICON.view}{" "}
+                      {policyLabel(one.playbook_policy?.view ?? [])} ·{" "}
+                      {KIND_ICON.backtest}{" "}
+                      {policyLabel(one.playbook_policy?.backtest ?? [])} ·{" "}
+                      {KIND_ICON.trade}{" "}
+                      {policyLabel(one.playbook_policy?.trade ?? [])}
+                    </span>
+                  )}
+                </td>
                 <td className="faint">{one.in_use}명</td>
                 <td className="act">
                   {mayRoles ? (
@@ -971,7 +1164,12 @@ function RolesCard({
                           primary
                           disabled={busy !== ""}
                           onClick={() => {
-                            onSave(draft.name, draft.label, draft.caps);
+                            onSave(
+                              draft.name,
+                              draft.label,
+                              draft.caps,
+                              draft.policy,
+                            );
                             setEditing(null);
                           }}
                         />

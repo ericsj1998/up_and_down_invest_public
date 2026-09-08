@@ -38,8 +38,8 @@ import time
 import urllib.parse
 import uuid
 from collections import deque
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, cast
 
@@ -49,9 +49,16 @@ from fastapi import APIRouter, Body, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from updown.common.db.models.accounts import Account, AccountContact, RoleCollection
-from updown.common.db.models.ops import AppSetting
-from updown.common.logging.context import actor_context
+from updown.analysis.playbook.select import load_playbooks
+from updown.common.db.models.accounts import (
+    Account,
+    AccountContact,
+    PlaybookGrantRow,
+    RoleCollection,
+)
+from updown.common.db.models.enums import LogLevel
+from updown.common.db.models.ops import AppSetting, EventLog
+from updown.common.logging.context import actor_context, get_trace_id, new_trace_id
 from updown.common.logging.setup import get_logger
 from updown.common.security.caps import (
     ADMIN_CAPS,
@@ -68,9 +75,11 @@ from updown.common.security.caps import (
     effective_caps,
     may_assign,
     parse_caps,
+    policy_of,
     required_cap,
     role_for,
 )
+from updown.common.security.playbooks import PlaybookGrant, PlaybookPolicy, effective_grant
 from updown.common.security.roles import (
     GUEST_EMAIL,
     READ_METHODS,
@@ -472,6 +481,10 @@ class Caller:
     """유효 권한 (묶음 + 개별). None 이면 등급의 내장 묶음으로 본다 — 등급만 아는 호출자(시험)용."""
     collection: str = ""
     """권한 묶음 이름."""
+    policy: PlaybookPolicy | None = None
+    """묶음의 매매법 정책 (T230). None 이면 등급의 내장값으로 본다."""
+    playbook_rows: Mapping[str, PlaybookGrant] = field(default_factory=dict[str, PlaybookGrant])
+    """사람별 매매법 덮어쓰기 행들 (`playbook_grants`)."""
 
     @property
     def held(self) -> bool:
@@ -493,6 +506,23 @@ class Caller:
             묶음 + 개별 부여를 합친 `granted` 에 들어 있으면 참.
         """
         return cap in self.granted
+
+    def playbook(self, playbook_id: str) -> PlaybookGrant:
+        """이 매매법의 유효 권한 — 사람별 행 > 묶음 정책 · 감사는 보기·백테스트를 전부 연다 (T230).
+
+        Args:
+            playbook_id: 매매법 id.
+
+        Returns:
+            `view` · `backtest` · `trade` 가 정해진 권한.
+        """
+        policy = self.policy if self.policy is not None else policy_of(None, self.role)
+        return effective_grant(
+            playbook_id,
+            policy=policy,
+            row=self.playbook_rows.get(playbook_id),
+            audit=self.has(Cap.AUDIT),
+        )
 
 
 COLLECTIONS_CACHE_S = 60.0
@@ -516,7 +546,15 @@ async def collections() -> dict[str, Collection]:
                 rows = list(await session.scalars(sa.select(RoleCollection)))
             for row in rows:
                 table[row.name] = Collection(
-                    row.name, row.label or row.name, parse_caps(row.caps), builtin=row.builtin
+                    row.name,
+                    row.label or row.name,
+                    parse_caps(row.caps),
+                    builtin=row.builtin,
+                    policy=(
+                        PlaybookPolicy.from_json(row.playbook_policy)
+                        if row.playbook_policy is not None
+                        else None
+                    ),
                 )
         except Exception as exc:
             _logger.warning("role_collections_unreadable: %s", str(exc)[:160])
@@ -528,6 +566,130 @@ def invalidate_collections() -> None:
     """묶음을 고친 뒤 캐시를 비운다 — 이 프로세스에는 즉시, 다른 프로세스에는 1분 안에 듣는다."""
     global _collections_cache
     _collections_cache = None
+
+
+PLAYBOOK_ROWS_CACHE_S = 60.0
+_playbook_rows_cache: dict[str, tuple[float, dict[str, PlaybookGrant]]] = {}
+
+
+async def playbook_rows_of(email: str) -> dict[str, PlaybookGrant]:
+    """한 사람의 매매법 덮어쓰기 행들 — 60초 캐시 (미들웨어가 매 요청 부른다 · T230).
+
+    Args:
+        email: 소문자 이메일.
+
+    Returns:
+        매매법 id → 행. 표를 못 읽으면 빈 dict — 묶음 기본값으로 떨어진다.
+    """
+    now = time.monotonic()
+    hit = _playbook_rows_cache.get(email)
+    if hit is not None and now - hit[0] < PLAYBOOK_ROWS_CACHE_S:
+        return hit[1]
+    rows: dict[str, PlaybookGrant] = {}
+    if _factory is not None:
+        try:
+            async with _store()() as session:
+                found = await session.scalars(
+                    sa.select(PlaybookGrantRow).where(PlaybookGrantRow.email == email)
+                )
+                for row in found:
+                    rows[row.playbook_id] = PlaybookGrant(
+                        row.playbook_id, row.view, row.backtest, row.trade
+                    )
+        except Exception as exc:
+            _logger.warning("playbook_grants_unreadable: %s", str(exc)[:160])
+    _playbook_rows_cache[email] = (now, rows)
+    return rows
+
+
+def invalidate_playbook_rows(email: str | None = None) -> None:
+    """덮어쓰기 행을 고친 뒤 캐시를 비운다.
+
+    Args:
+        email: 그 사람만. None 이면 전부 (묶음 정책이 바뀌었을 때).
+    """
+    if email is None:
+        _playbook_rows_cache.clear()
+    else:
+        _playbook_rows_cache.pop(email, None)
+
+
+def _record_permission(
+    session: AsyncSession,
+    *,
+    email: str,
+    what: str,
+    before: object,
+    after: object,
+    by: str,
+) -> None:
+    """권한 변경 이력 — `event_logs` 에 한 줄 (추가만 · 규칙 8-2 · T230).
+
+    Args:
+        session: 같은 트랜잭션 — 권한 변경과 이력이 함께 들어가거나 함께 안 들어간다.
+        email: 대상 계정.
+        what: `collection` · `caps` · `playbook` · `role_policy`.
+        before: 바꾸기 전 값 (JSON 가능한 것).
+        after: 바꾼 뒤 값.
+        by: 바꾼 사람.
+    """
+    session.add(
+        EventLog(
+            trace_id=get_trace_id() or new_trace_id(),
+            actor=by,
+            module="apps.api.auth",
+            level=LogLevel.INFO,
+            event_type="permission_changed",
+            payload_json={"email": email, "what": what, "before": before, "after": after, "by": by},
+        )
+    )
+
+
+def require_playbook_trade(request: Request, playbook_ids: Iterable[str]) -> None:
+    """이 매매법으로 판·펀드를 열 권한(T230 `trade`)이 없으면 403.
+
+    서버 축(`demo_trade`/`live_trade`)은 미들웨어가 이미 봤다 — 여기는 "이 매매법을" 만 본다.
+
+    Args:
+        request: 요청 (`state.caller`). 호출자가 없으면(시험 우회) 통과.
+        playbook_ids: 쓰려는 매매법들.
+
+    Raises:
+        HTTPException: 403 `playbook_forbidden`.
+    """
+    who = getattr(request.state, "caller", None)
+    if who is None:
+        return
+    for playbook_id in playbook_ids:
+        if not who.playbook(playbook_id).trade:
+            raise HTTPException(
+                403,
+                {
+                    "code": "playbook_forbidden",
+                    "playbook": playbook_id,
+                    "message": f"{playbook_id} 매매법을 쓸 권한이 없다 — 관리자가 준다",
+                },
+            )
+
+
+def _playbooks_json(
+    item: Account, picked: Collection | None, grants: Mapping[str, PlaybookGrant], *, audit: bool
+) -> list[dict[str, Any]]:
+    """관리자 표 한 줄의 매매법 칸 — 선언된 매매법마다 유효 권한 + 덮어쓰기 여부."""
+    policy = policy_of(picked, item.role)
+    out: list[dict[str, Any]] = []
+    for book in load_playbooks():
+        eff = effective_grant(
+            book.playbook_id, policy=policy, row=grants.get(book.playbook_id), audit=audit
+        )
+        out.append(
+            {
+                **eff.as_json(),
+                "label": book.label or book.attribution,
+                "custom": book.playbook_id in grants,
+            }
+        )
+    return out
 
 
 def _caps_of(account: Account, table: dict[str, Collection]) -> frozenset[Cap]:
@@ -570,7 +732,8 @@ async def caller_of(request: Request) -> Caller | None:
     found = await account_of(note.email)
     if found is None or found.blocked:
         return None
-    caps = _caps_of(found, await collections())
+    table = await collections()
+    caps = _caps_of(found, table)
     return Caller(
         email=found.email,
         role=found.role,
@@ -579,6 +742,8 @@ async def caller_of(request: Request) -> Caller | None:
         audit=Cap.AUDIT in caps,
         caps=caps,
         collection=found.role_collection or "",
+        policy=policy_of(table.get(found.role_collection or ""), found.role),
+        playbook_rows=await playbook_rows_of(found.email),
         standing=standing_of(
             role=found.role,
             blocked=found.blocked,
@@ -900,6 +1065,11 @@ async def users() -> dict[str, Any]:
                 .group_by(AccountContact.email)
             )
         }
+        grants_by_email: dict[str, dict[str, PlaybookGrant]] = {}
+        for grant in await session.scalars(sa.select(PlaybookGrantRow)):
+            grants_by_email.setdefault(grant.email, {})[grant.playbook_id] = PlaybookGrant(
+                grant.playbook_id, grant.view, grant.backtest, grant.trade
+            )
     now = datetime.now(UTC)
     span = await hold_after()
     table = await collections()
@@ -912,6 +1082,7 @@ async def users() -> dict[str, Any]:
             contacts_open=open_counts.get(item.email, 0),
             hold_after=span,
             table=table,
+            grants=grants_by_email.get(item.email),
         )
         for item in found
     ]
@@ -968,6 +1139,7 @@ def _account_row(
     contacts_open: int = 0,
     hold_after: timedelta = HOLD_AFTER,
     table: dict[str, Collection] | None = None,
+    grants: Mapping[str, PlaybookGrant] | None = None,
 ) -> dict[str, Any]:
     """관리자 표의 한 줄 — 등급과 처지를 같이 낸다 (2026-09-07).
 
@@ -977,6 +1149,7 @@ def _account_row(
         contacts_open: 아직 처리 안 한 문의 수.
         hold_after: 보류 유예 (관리자 설정).
         table: 권한 묶음 표 — 없으면 내장값.
+        grants: 이 사람의 매매법 덮어쓰기 행들 (T230). 없으면 묶음 기본값만으로 그린다.
 
     Returns:
         JSON 으로 나가는 행.
@@ -1009,6 +1182,8 @@ def _account_row(
         "extra_caps": sorted(cap.value for cap in parse_caps(item.extra_caps)),
         "audit": Cap.AUDIT in caps,
         "demo_trade": Cap.DEMO_TRADE in caps,
+        # ⭐ 매매법별 권한 (T230) — 선언된 매매법마다 보기·백테스트·사용 + 덮어쓰기 여부
+        "playbooks": _playbooks_json(item, picked, grants or {}, audit=Cap.AUDIT in caps),
         "standing": standing.value,
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "approved_at": item.approved_at.isoformat() if item.approved_at else None,
@@ -1616,7 +1791,146 @@ async def _apply_grant(
             "by": actor.email if actor else "?",
         },
     )
-    return _account_row(found, now=datetime.now(UTC), hold_after=await hold_after(), table=table)
+    _record_permission(
+        session,
+        email=found.email,
+        what="caps",
+        before={"collection": found.role_collection, "caps": sorted(c.value for c in before)},
+        after={"collection": next_collection, "caps": sorted(c.value for c in after)},
+        by=actor.email if actor else "?",
+    )
+    return _account_row(
+        found,
+        now=datetime.now(UTC),
+        hold_after=await hold_after(),
+        table=table,
+        grants=await _grants_in(session, found.email),
+    )
+
+
+async def _grants_in(session: AsyncSession, email: str) -> dict[str, PlaybookGrant]:
+    """열린 세션에서 한 사람의 덮어쓰기 행들 (캐시 안 거침 — 방금 바꾼 것을 그대로 보여 준다)."""
+    rows = await session.scalars(sa.select(PlaybookGrantRow).where(PlaybookGrantRow.email == email))
+    return {r.playbook_id: PlaybookGrant(r.playbook_id, r.view, r.backtest, r.trade) for r in rows}
+
+
+@router.put("/users/{email}/playbooks/{playbook_id}")
+async def set_playbook_grant(
+    request: Request, email: str, playbook_id: str, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
+    """한 사람의 매매법 권한을 덮어쓴다 — `{view, backtest, trade}` (T230).
+
+    Args:
+        request: 요청 (관리자).
+        email: 대상.
+        playbook_id: 매매법 id.
+        payload: 칸 셋. 빠진 칸은 참.
+
+    Returns:
+        갱신된 계정 행.
+
+    Raises:
+        HTTPException: 400 보기 없는 백테스트/사용 · 404 계정·매매법 없음.
+    """
+    if playbook_id not in {book.playbook_id for book in load_playbooks()}:
+        raise HTTPException(404, f"모르는 매매법이다 — {playbook_id!r}")
+    grant = PlaybookGrant(
+        playbook_id,
+        view=bool(payload.get("view", True)),
+        backtest=bool(payload.get("backtest", True)),
+        trade=bool(payload.get("trade", True)),
+    )
+    try:
+        grant.validate()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    actor = _actor_of(request)
+    by = actor.email if actor else "?"
+    target = email.strip().lower()
+    factory = _store()
+    async with factory() as session, session.begin():
+        found = await session.scalar(sa.select(Account).where(Account.email == target))
+        if found is None:
+            raise HTTPException(404, f"{target} 계정이 없다")
+        row = await session.get(PlaybookGrantRow, (target, playbook_id))
+        before = (
+            None
+            if row is None
+            else PlaybookGrant(playbook_id, row.view, row.backtest, row.trade).as_json()
+        )
+        if row is None:
+            session.add(
+                PlaybookGrantRow(
+                    email=target,
+                    playbook_id=playbook_id,
+                    view=grant.view,
+                    backtest=grant.backtest,
+                    trade=grant.trade,
+                    granted_by=by,
+                )
+            )
+        else:
+            row.view, row.backtest, row.trade, row.granted_by = (
+                grant.view,
+                grant.backtest,
+                grant.trade,
+                by,
+            )
+        _record_permission(
+            session, email=target, what="playbook", before=before, after=grant.as_json(), by=by
+        )
+        await session.flush()
+        invalidate_playbook_rows(target)
+        table = await collections()
+        return _account_row(
+            found,
+            now=datetime.now(UTC),
+            hold_after=await hold_after(),
+            table=table,
+            grants=await _grants_in(session, target),
+        )
+
+
+@router.delete("/users/{email}/playbooks/{playbook_id}")
+async def clear_playbook_grant(request: Request, email: str, playbook_id: str) -> dict[str, Any]:
+    """덮어쓰기를 지운다 — 그 매매법은 묶음 기본값으로 돌아간다 (T230).
+
+    Args:
+        request: 요청 (관리자).
+        email: 대상.
+        playbook_id: 매매법 id.
+
+    Returns:
+        갱신된 계정 행. 덮어쓰기가 없었으면 그대로.
+
+    Raises:
+        HTTPException: 404 계정 없음.
+    """
+    actor = _actor_of(request)
+    by = actor.email if actor else "?"
+    target = email.strip().lower()
+    factory = _store()
+    async with factory() as session, session.begin():
+        found = await session.scalar(sa.select(Account).where(Account.email == target))
+        if found is None:
+            raise HTTPException(404, f"{target} 계정이 없다")
+        row = await session.get(PlaybookGrantRow, (target, playbook_id))
+        if row is not None:
+            before = PlaybookGrant(playbook_id, row.view, row.backtest, row.trade).as_json()
+            await session.delete(row)
+            _record_permission(
+                session, email=target, what="playbook", before=before, after=None, by=by
+            )
+            await session.flush()
+        invalidate_playbook_rows(target)
+        table = await collections()
+        return _account_row(
+            found,
+            now=datetime.now(UTC),
+            hold_after=await hold_after(),
+            table=table,
+            grants=await _grants_in(session, target),
+        )
 
 
 async def _grant_route(
@@ -1797,6 +2111,7 @@ async def list_roles() -> dict[str, Any]:
                 "caps": sorted(cap.value for cap in item.caps),
                 "builtin": item.builtin,
                 "in_use": counts.get(item.name, 0),
+                "playbook_policy": policy_of(item, None).to_json(),
             }
             for item in sorted(table.values(), key=lambda one: (not one.builtin, one.name))
         ],
@@ -1833,10 +2148,19 @@ async def put_role(
     label = str(payload.get("label", "")).strip()[:40] or key
     if key == "super_admin" and Cap.MANAGE_ROLES not in caps:
         raise HTTPException(400, "슈퍼 관리자 묶음에서 권한 묶음 편집을 뺄 수 없다")
+    # ⭐ 매매법 정책 (T230) — 주면 바꾸고, 안 주면 그대로 (없던 묶음은 내장값 또는 기본값).
+    policy = (
+        PlaybookPolicy.from_json(payload.get("playbook_policy"))
+        if "playbook_policy" in payload
+        else None
+    )
     actor = _actor_of(request)
+    by = actor.email if actor else "?"
     factory = _store()
     async with factory() as session, session.begin():
         found = await session.get(RoleCollection, key)
+        before_caps = None if found is None else found.caps
+        before_policy = None if found is None else found.playbook_policy
         if found is None:
             found = RoleCollection(
                 name=key, label=label, caps=dump_caps(caps), builtin=key in BUILTIN_BY_NAME
@@ -1845,8 +2169,19 @@ async def put_role(
         else:
             found.label = label
             found.caps = dump_caps(caps)
-        found.updated_by = actor.email if actor else "?"
+        if policy is not None:
+            found.playbook_policy = policy.to_json()
+        found.updated_by = by
+        _record_permission(
+            session,
+            email=f"@{key}",
+            what="role_policy",
+            before={"caps": before_caps, "playbook_policy": before_policy},
+            after={"caps": dump_caps(caps), "playbook_policy": found.playbook_policy},
+            by=by,
+        )
     invalidate_collections()
+    invalidate_playbook_rows()
     _logger.info(
         "role_collection_saved",
         payload={
@@ -1855,7 +2190,13 @@ async def put_role(
             "by": actor.email if actor else "?",
         },
     )
-    return {"name": key, "label": label, "caps": sorted(cap.value for cap in caps)}
+    saved = (await collections()).get(key)
+    return {
+        "name": key,
+        "label": label,
+        "caps": sorted(cap.value for cap in caps),
+        "playbook_policy": policy_of(saved, None).to_json(),
+    }
 
 
 @router.delete("/roles/{name}")

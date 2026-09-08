@@ -140,8 +140,8 @@ export interface BacktestSummary {
   generated?: string;
   missing?: boolean;
   reason?: string;
-  /** 감사와 무관하게 다 보이는 항목 — 견본 매매법 (2026-09-08). */
-  public?: boolean;
+  /** 서버가 이 항목의 손익을 가렸다 — 그 매매법의 백테스트 권한이 없다 (T230). */
+  redacted?: boolean;
 }
 
 export interface BacktestDetail extends BacktestSummary {
@@ -162,7 +162,7 @@ export const syntheticCandles = (k: number, symbol: string, window?: number) =>
     60_000,
   );
 export const backtestList = () =>
-  request<{ backtests: BacktestSummary[]; redacted?: boolean }>(
+  request<{ backtests: BacktestSummary[] }>(
     "/evidence/backtest",
     undefined,
     60_000,

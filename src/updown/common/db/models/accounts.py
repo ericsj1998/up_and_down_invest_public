@@ -23,7 +23,7 @@ from datetime import datetime
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
-from updown.common.db.base import Base, enum_column
+from updown.common.db.base import Base, JsonDict, enum_column
 from updown.common.security.roles import Role
 
 
@@ -111,6 +111,33 @@ class RoleCollection(Base):
         server_default=sa.func.now(), onupdate=sa.func.now()
     )
     updated_by: Mapped[str] = mapped_column(default="", server_default="")
+    playbook_policy: Mapped[JsonDict | None] = mapped_column(default=None)
+    """매매법 기본 정책 — 칸(view·backtest·trade)마다 `"*"` 또는 id 목록 (T230 · 0115).
+
+    NULL 이면 내장값(`security.playbooks.BUILTIN_POLICIES`).
+    """
+
+
+class PlaybookGrantRow(Base):
+    """사람별 매매법 권한 덮어쓰기 — 행이 있으면 그 매매법은 이 행이 정한다 (T230 · 0115).
+
+    Note:
+        이력은 여기 없다 — 변경마다 `event_logs` 에 `permission_changed` 가 남는다 (규칙 8-2).
+        행을 지우면 묶음 기본값으로 돌아간다.
+    """
+
+    __tablename__ = "playbook_grants"
+
+    email: Mapped[str] = mapped_column(primary_key=True)
+    playbook_id: Mapped[str] = mapped_column(primary_key=True)
+    view: Mapped[bool] = mapped_column(default=True, server_default=sa.true())
+    backtest: Mapped[bool] = mapped_column(default=True, server_default=sa.true())
+    trade: Mapped[bool] = mapped_column(default=True, server_default=sa.true())
+    granted_by: Mapped[str] = mapped_column(default="", server_default="")
+    granted_at: Mapped[datetime] = mapped_column(
+        server_default=sa.func.now(), onupdate=sa.func.now()
+    )
+    note: Mapped[str] = mapped_column(default="", server_default="")
 
 
 class AccountContact(Base):

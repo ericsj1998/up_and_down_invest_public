@@ -33,10 +33,11 @@ from typing import Annotated, Any, cast
 from uuid import uuid4
 
 import yaml
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 
 from updown.analysis.playbook.select import default_playbook, load_playbooks
 from updown.apps.api.admin import instrument_of
+from updown.apps.api.auth import require_playbook_trade
 from updown.apps.api.walkforward import (
     LIVE_RUNNERS,
     SESSIONS,
@@ -804,10 +805,11 @@ async def defaults(market: str = "GATE") -> dict[str, Any]:
 
 
 @router.post("")
-async def create(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     """펀드를 만든다 — 바스켓·시작자본·레버리지.
 
     Args:
+        request: 요청 — 이 매매법으로 펀드를 열 권한을 본다 (T230).
         payload: `{label, total_cash, leverage, playbook, market, members: [{symbol, weight}]}`.
             `market` 은 GATE(기본)/BINANCE — 펀드의 모든 세션이 그 거래소로 나간다 (T62 P3b).
 
@@ -828,6 +830,7 @@ async def create(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     if total <= 0:
         raise HTTPException(400, f"시작 자본이 0 이하다: {total}")
     book = str(payload.get("playbook") or default_playbook())
+    require_playbook_trade(request, (book,))  # T230 — 이 매매법으로 펀드를 열 권한
     # 🔴 **배율을 안 주면 매매법이 선언한 값을 쓴다** (2026-08-30). 리터럴 `3` 이
     #    여기 박혀 있어서, 6x 에서 측정한 1.3.0 을 배율 없이 만들면 조용히 3x 로 떴다.
     #    ⛔ 선언이 없는 매매법에서만 3 으로 떨어진다 (옛 판들의 값 — 동작 불변).
@@ -1028,11 +1031,12 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
 
 @router.put("/{fund_id}/playbook")
 async def change_playbook(
-    fund_id: str, payload: Annotated[dict[str, Any], Body()]
+    request: Request, fund_id: str, payload: Annotated[dict[str, Any], Body()]
 ) -> dict[str, Any]:
     """전략(매매법)을 바꾼다 — 모든 세션을 새 전략으로 다시 띄운다 (동적 전환).
 
     Args:
+        request: 요청 — 새 매매법을 쓸 권한을 본다 (T230).
         fund_id: 펀드.
         payload: `{playbook}` — 새 전략 id (예: `sample_ma_cross`).
 
@@ -1057,6 +1061,7 @@ async def change_playbook(
     new_pb = str(payload.get("playbook", ""))
     if new_pb not in {p.playbook_id for p in load_playbooks()}:
         raise HTTPException(400, f"모르는 전략: {new_pb!r}")
+    require_playbook_trade(request, (new_pb,))  # T230
     if new_pb == fund.playbook:
         return await _status(fund)
 

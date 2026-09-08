@@ -264,7 +264,6 @@ def _write_chart_store(
         "by_reason": dict(by_reason),
         "trades_by_symbol": dict(by_symbol),
         "trades": trades,
-        "public": True,
         "documented": {
             "note": (
                 "견본 매매법 — 엣지 주장이 아니다. 실계좌와 같은 봉인 세션 엔진 · 종목마다 시드 "

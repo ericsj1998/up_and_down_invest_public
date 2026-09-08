@@ -36,7 +36,7 @@ from typing import Annotated, Any, cast
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from updown.analysis.detectors.registry import SetupRegistry
@@ -53,6 +53,7 @@ from updown.analysis.playbook.types import Playbook
 from updown.analysis.structures.box_range import SPAN_COVER
 from updown.apps.api.admin import instrument_of, rules_config
 from updown.apps.api.analysis import as_json
+from updown.apps.api.auth import require_playbook_trade
 from updown.common.costs import (
     DEFAULT_CONFIG_PATH,
     TICK_RATIO,
@@ -683,10 +684,13 @@ async def _load(
 
 
 @router.post("/live")
-async def live_start(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def live_start(
+    request: Request, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
     """새 RUN 을 만든다 — 사람이 콘솔에서 누르는 길.
 
     Args:
+        request: 요청 — 이 매매법을 쓸 권한을 본다 (T230).
         payload: 아래 `_live_start` 와 같다.
 
     Returns:
@@ -697,10 +701,12 @@ async def live_start(payload: Annotated[dict[str, Any], Body()]) -> dict[str, An
         있나"* 검사가 붙는다 — 새로 만드는 것이니 옳다. 이어받기는 이미 자기 돈이
         포지션에 들어가 있는 것이 정상이라 그 검사를 받으면 안 된다.
     """
-    return await _live_start(payload)
+    return await _live_start(payload, request=request)
 
 
-async def _live_start(payload: dict[str, Any], *, reviving: bool = False) -> dict[str, Any]:
+async def _live_start(
+    payload: dict[str, Any], *, reviving: bool = False, request: Request | None = None
+) -> dict[str, Any]:
     """**라이브 페이퍼 세션**을 띄운다 — Gate testnet 페이크머니 (T13).
 
     Args:
@@ -710,6 +716,7 @@ async def _live_start(payload: dict[str, Any], *, reviving: bool = False) -> dic
             증거금 검사를 건너뛴다 — 그 판의 돈은 이미 자기 포지션에 들어가 있어서
             `available` 이 비어 있는 것이 정상이기 때문이다. 새로 만들 때는 거짓이며,
             그때는 잔액을 넘는 예산을 막아야 한다.
+        request: 사람이 누른 요청 — 이 매매법을 쓸 권한을 본다 (T230). 되살리기는 None.
 
     Returns:
         상태. `session_id` 로 목록·차트·매매 로그를 그대로 본다.
@@ -754,6 +761,10 @@ async def _live_start(payload: dict[str, Any], *, reviving: bool = False) -> dic
         for item in books
         for member in (tuple(_playbook(m) for m in item.bundle) if item.bundle else (item,))
     )
+    # 🔴 이 매매법을 쓸 권한 (T230) — 서버 축(demo/live_trade)은 미들웨어가 봤다.
+    #    되살리기(request 없음)는 통과.
+    if request is not None:
+        require_playbook_trade(request, (item.playbook_id for item in books))
     book = books[0]
     set_id = "+".join(item.playbook_id for item in books)
     set_attribution = "+".join(item.attribution for item in books)
@@ -2770,8 +2781,26 @@ def _live_markets() -> tuple[str, ...]:
 
 
 @router.get("/playbooks")
-async def playbooks() -> dict[str, Any]:
-    """고를 수 있는 플레이북들 (T13 ①).
+async def playbooks(request: Request) -> dict[str, Any]:
+    """고를 수 있는 플레이북들 — 호출자가 **볼 수 있는**(`view`) 것만 (T13 ① · T230).
+
+    Args:
+        request: 요청 (`state.caller`). 호출자가 없으면(시험 우회) 전부.
+
+    Returns:
+        `{playbooks: [...]}`.
+    """
+    who = getattr(request.state, "caller", None)
+    listing = _playbooks_all()
+    if who is not None:
+        listing["playbooks"] = [
+            item for item in listing["playbooks"] if who.playbook(str(item["id"])).view
+        ]
+    return listing
+
+
+def _playbooks_all() -> dict[str, Any]:
+    """선언된 플레이북 전부 (T13 ①).
 
     Returns:
         `{playbooks: [...]}`. 각 항목에 국면·시간축·셋업이 실린다.
@@ -2847,10 +2876,11 @@ def flag_names(given: object) -> list[str]:
 
 
 @router.post("/start")
-async def start(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def start(request: Request, payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     """세션을 연다 (T13 ①③④).
 
     Args:
+        request: 요청 — 이 매매법을 쓸 권한을 본다 (T230).
         payload: `{playbook, symbol, market, cash, start, days, seed, flags, applied}`.
             `start` 를 안 주면 **랜덤**이다 (T13 ③).
 
@@ -2864,11 +2894,18 @@ async def start(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
         🔴 **랜덤이 기본이다.** 사람이 "잘 나올 것 같은 구간"을 고르면 그 결과는 성과가
         아니라 선택의 결과다. 시드를 실어 재현만 가능하게 한다.
     """
+    return await _start(payload, request=request)
+
+
+async def _start(payload: dict[str, Any], *, request: Request | None) -> dict[str, Any]:
+    """`start` 의 본체 — 되살리기(`request=None`)도 이 길을 탄다. T230 문은 request 가 있을 때만."""
     # ⭐ 기본값은 recommended 파생 (T63 ②) — 이전의 플레이북 이름 리터럴은 대청소로
     #    아카이브된 뒤 400 을 던지는 낡은 배선이었다. 리터럴 기본값은 반드시 낡는다.
     book = _playbook(str(payload.get("playbook") or default_playbook()))
     # T68 — 번들은 구성원으로 펼친다 (라이브 시작 경로와 같은 규칙).
     sealed_books = tuple(_playbook(m) for m in book.bundle) if book.bundle else (book,)
+    if request is not None:
+        require_playbook_trade(request, (item.playbook_id for item in sealed_books))
     book = sealed_books[0]
     symbol = str(payload.get("symbol", "KRW-BTC"))
     market = Market(str(payload.get("market", "UPBIT")))
@@ -3918,7 +3955,7 @@ async def resume(key: str) -> dict[str, Any]:
     #    원장이 나오고, 커서를 지나 그 뒤로 이어진다. 기록을 역직렬화해 내부 상태를
     #    흉내 내는 것보다 정직하며, 어긋나면 그 자체가 결함 신호다 (절대 규칙 #5).
     payload["session_id"] = key
-    return await start(payload)
+    return await _start(payload, request=None)
 
 
 async def _sweep(symbol: str) -> int:

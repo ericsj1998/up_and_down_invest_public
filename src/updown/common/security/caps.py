@@ -35,6 +35,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from updown.common.security.playbooks import BUILTIN_POLICIES, DEFAULT_POLICY, PlaybookPolicy
 from updown.common.security.roles import (
     ADMIN_PREFIXES,
     PUBLIC_PATHS,
@@ -130,6 +131,8 @@ class Collection:
     label: str
     caps: frozenset[Cap]
     builtin: bool = False
+    policy: PlaybookPolicy | None = None
+    """매매법 기본 정책 (T230). None 이면 내장값(`playbooks.BUILTIN_POLICIES`) — `policy_of` 가 푼다."""
 
 
 _DEMO_READ = frozenset({Cap.DEMO_ACCOUNT_READ, Cap.DEMO_RUNS_READ})
@@ -172,6 +175,24 @@ LEGACY_COLLECTION: dict[Role, str | None] = {
     Role.GUEST: "guest",
 }
 """옛 등급 → 묶음. 마이그레이션 백필과, 묶음 없이 등급만 아는 호출자(시험)의 기본값."""
+
+
+def policy_of(collection: Collection | None, role: Role | None) -> PlaybookPolicy:
+    """묶음(또는 등급)의 매매법 기본 정책 (T230).
+
+    Args:
+        collection: 계정의 묶음. None 이면 등급으로 내장 묶음을 찾는다.
+        role: 옛 등급 — 묶음 없이 등급만 아는 호출자(시험).
+
+    Returns:
+        표에 적힌 정책이 있으면 그것, 없으면 내장 기본값, 그것도 없으면 `DEFAULT_POLICY`(보기 + 견본 백테스트).
+    """
+    if collection is not None:
+        if collection.policy is not None:
+            return collection.policy
+        return BUILTIN_POLICIES.get(collection.name, DEFAULT_POLICY)
+    name = LEGACY_COLLECTION.get(role) if role is not None else None
+    return BUILTIN_POLICIES.get(name or "", DEFAULT_POLICY)
 
 
 def parse_caps(text: str | None) -> frozenset[Cap]:

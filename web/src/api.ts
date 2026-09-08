@@ -297,6 +297,23 @@ export function guestLogin(): Promise<{
   return request("/auth/guest", { method: "POST" });
 }
 
+/** 한 사람의 한 매매법 권한 — 보기·백테스트·사용 + 묶음 기본값을 덮어썼나 (T230 · 2026-09-08). */
+export type PlaybookGrantView = {
+  id: string;
+  label: string;
+  view: boolean;
+  backtest: boolean;
+  trade: boolean;
+  custom: boolean;
+};
+
+/** 묶음의 매매법 기본 정책 — 칸마다 "*"(전부) 또는 매매법 id 목록. */
+export type PlaybookPolicy = {
+  view: "*" | string[];
+  backtest: "*" | string[];
+  trade: "*" | string[];
+};
+
 export type AccountRow = {
   id: string;
   email: string;
@@ -304,6 +321,8 @@ export type AccountRow = {
   picture: string;
   role: "pending" | "viewer" | "trader" | "admin" | "guest";
   blocked: boolean;
+  /** 매매법별 권한 (T230) — 선언된 매매법마다 하나. */
+  playbooks: PlaybookGrantView[];
   /** 감사 권한 — 등급과 별개로 관리자가 준다 (2026-09-06). */
   audit: boolean;
   /** 데모 거래 — 열람자에게 테스트넷 주문만 허용 (2026-09-07). 거래자·관리자에겐 표시용. */
@@ -470,6 +489,8 @@ export type RoleCollection = {
   label: string;
   caps: string[];
   builtin: boolean;
+  /** 매매법 기본 정책 (T230). */
+  playbook_policy: PlaybookPolicy;
   /** 이 묶음을 가진 계정 수 — 0 이어야 지울 수 있다. */
   in_use: number;
 };
@@ -487,12 +508,47 @@ export function saveRole(
   name: string,
   label: string,
   caps: string[],
-): Promise<{ name: string; label: string; caps: string[] }> {
+  playbook_policy?: PlaybookPolicy,
+): Promise<{
+  name: string;
+  label: string;
+  caps: string[];
+  playbook_policy: PlaybookPolicy;
+}> {
   return request(`/auth/roles/${encodeURIComponent(name)}`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ label, caps }),
+    body: JSON.stringify(
+      playbook_policy ? { label, caps, playbook_policy } : { label, caps },
+    ),
   });
+}
+
+/** 한 사람의 매매법 권한을 덮어쓴다 — 보기 없는 백테스트/사용은 서버가 400 (T230). */
+export function setAccountPlaybook(
+  email: string,
+  playbookId: string,
+  grant: { view: boolean; backtest: boolean; trade: boolean },
+): Promise<AccountRow> {
+  return request(
+    `/auth/users/${encodeURIComponent(email)}/playbooks/${encodeURIComponent(playbookId)}`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(grant),
+    },
+  );
+}
+
+/** 덮어쓰기를 지워 묶음 기본값으로 돌린다. */
+export function clearAccountPlaybook(
+  email: string,
+  playbookId: string,
+): Promise<AccountRow> {
+  return request(
+    `/auth/users/${encodeURIComponent(email)}/playbooks/${encodeURIComponent(playbookId)}`,
+    { method: "DELETE" },
+  );
 }
 
 export function deleteRole(name: string): Promise<unknown> {

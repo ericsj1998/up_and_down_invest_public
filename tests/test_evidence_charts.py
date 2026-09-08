@@ -175,7 +175,7 @@ class TestWriter:
         path = tmp_path / "backtest_x.json"
         ec.write_backtest_store(
             path,
-            head={"id": "x", "symbols": ["A", "B"], "trades": [], "public": True},
+            head={"id": "x", "symbols": ["A", "B"], "trades": []},
             candles={
                 "A": ([100, 200], [(10, 11, 9, 10.5), (10.5, 12, 10, 11.5)]),
                 "B": ([100], [(1, 2, 0.5, 1.5)]),
@@ -191,4 +191,4 @@ class TestWriter:
         assert ts == [100, 200] and abs(values[1] - 1.1) < 1e-6
         assert store.head["equity"] == {"ts_offset": 3, "f32_offset": 12, "bars": 2}
         assert store.head["dtype"]["i32"].startswith("int32")
-        assert ec.bt_summary(store)["public"] is True
+        assert ec.bt_summary(store)["id"] == "x"

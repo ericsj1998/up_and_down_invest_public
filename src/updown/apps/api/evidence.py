@@ -21,13 +21,13 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from updown.analysis.playbook.select import default_playbook, load_playbooks
 from updown.apps.api.admin import instrument_of
 from updown.apps.api.auth import on_real_money
 from updown.apps.api.report import _sessions  # pyright: ignore[reportPrivateUsage] — 같은 풀을 쓴다
 from updown.common.domain.instrument import Market, Timeframe
 from updown.common.logging.setup import get_logger
 from updown.common.security.redact import redact_pnl
-from updown.common.security.roles import may_audit
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.report import live_match as lm
 from updown.orchestration.walkforward.store import RunStore, RunStoreError
@@ -516,20 +516,34 @@ async def _backtest_candles(
 _bundle_cache: tuple[float, dict[str, Any]] | None = None
 
 
-def _gate(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
-    """감사 권한이 없으면 손익을 가린 사본을 준다.
+def _gate(request: Request, payload: dict[str, Any], playbook_id: str) -> dict[str, Any]:
+    """그 매매법의 백테스트를 볼 권한(T230 `backtest`)이 없으면 손익을 가린 사본을 준다.
 
     Args:
-        request: 요청 — 미들웨어가 붙인 `state.caller` 를 본다 (없으면 로그인 안 함 · 시험 우회).
+        request: 요청 — 미들웨어가 붙인 `state.caller` 를 본다 (없으면 시험 우회 → 원본).
         payload: 원 응답.
+        playbook_id: 이 자료가 속한 매매법.
 
     Returns:
-        감사면 원본 그대로, 아니면 `redact_pnl` 사본 (`redacted: True`).
+        권한이 있으면 원본 그대로, 아니면 `redact_pnl` 사본 (`redacted: True`).
     """
     who = getattr(request.state, "caller", None)
-    if may_audit(getattr(who, "role", None), bool(getattr(who, "audit", False))):
+    if who is None or who.playbook(playbook_id).backtest:
         return payload
     return redact_pnl(payload)
+
+
+def _lineage_playbook() -> str:
+    """근거 묶음·합성 45미래·라이브 대조가 속한 매매법 — 운용 매매법(기본 플레이북)의 계보."""
+    return default_playbook()
+
+
+def _store_playbook(bt_id: str) -> str:
+    """저장소의 매매법 — 머리 `playbook`(`id@version`)이 선언된 것이면 그것, 아니면 운용 계보."""
+    head = _backtest_store(bt_id).head
+    raw = str(head.get("playbook") or "").split("@", 1)[0].strip()
+    known = {book.playbook_id for book in load_playbooks()}
+    return raw if raw in known else _lineage_playbook()
 
 
 def _bundle() -> dict[str, Any]:
@@ -563,7 +577,7 @@ async def bundle(request: Request) -> dict[str, Any]:
     Returns:
         묶음. 감사가 아니면 수익률·연차별·표 행이 가려진다 (`redacted: True`).
     """
-    return _gate(request, _bundle())
+    return _gate(request, _bundle(), _lineage_playbook())
 
 
 SAMPLE_FILE = PATHS_FILE.with_name("sample_backtest.json")
@@ -603,7 +617,7 @@ async def synthetic_list(request: Request) -> dict[str, Any]:
     Returns:
         45행 목록과 강제청산 요약. 감사가 아니면 `total_pct` 가 None.
     """
-    return _gate(request, await _synthetic_list())
+    return _gate(request, await _synthetic_list(), _lineage_playbook())
 
 
 @router.get("/synthetic/{k}")
@@ -617,7 +631,7 @@ async def synthetic_detail(request: Request, k: int) -> dict[str, Any]:
     Returns:
         상세. 감사가 아니면 수익률과 펀드 자본 곡선(`equity.fund`)이 None — 시장 지수는 남는다.
     """
-    return _gate(request, await _synthetic_detail(k))
+    return _gate(request, await _synthetic_detail(k), _lineage_playbook())
 
 
 @router.get("/synthetic/{k}/candles")
@@ -635,37 +649,12 @@ async def synthetic_candles(
     Returns:
         봉과 청산 매매 표기. 봉·진입·손절선·청산가는 감사와 무관하게 보인다.
     """
-    return _gate(request, await _synthetic_candles(k, symbol, window))
-
-
-def unredact_public(
-    originals: list[dict[str, Any]], redacted: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """가려진 목록에서 **공개(`public`) 항목만** 원본으로 되돌린다 — 견본 매매법 (2026-09-08).
-
-    Args:
-        originals: 가리기 전 행들.
-        redacted: `redact_pnl` 을 거친 같은 순서의 행들.
-
-    Returns:
-        공개 항목은 원본, 나머지는 가려진 행.
-    """
-    return [
-        orig if orig.get("public") else red for orig, red in zip(originals, redacted, strict=True)
-    ]
-
-
-def _is_public(bt_id: str) -> bool:
-    """저장소 머리에 `public: true` 가 있나 — 견본 매매법은 감사와 무관하게 다 보인다."""
-    try:
-        return bool(_backtest_store(bt_id).head.get("public"))
-    except HTTPException:
-        return False
+    return _gate(request, await _synthetic_candles(k, symbol, window), _lineage_playbook())
 
 
 def _gate_backtest(request: Request, bt_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """공개 백테스트면 그대로, 아니면 `_gate`."""
-    return payload if _is_public(bt_id) else _gate(request, payload)
+    """저장소의 매매법으로 `_gate` (T230)."""
+    return _gate(request, payload, _store_playbook(bt_id))
 
 
 @router.get("/backtest")
@@ -679,11 +668,13 @@ async def backtest_list(request: Request) -> dict[str, Any]:
         목록. 감사가 아니면 수익률·CAGR·칼마가 None (MDD·매매 수·청산 수는 남는다) — 단 `public`
         항목(견본 매매법)은 그대로다.
     """
-    listing = await _backtest_list()
-    gated = _gate(request, listing)
-    if gated.get("redacted"):
-        gated["backtests"] = unredact_public(listing["backtests"], gated["backtests"])
-    return gated
+    rows: list[dict[str, Any]] = []
+    for row in (await _backtest_list())["backtests"]:
+        if row.get("missing"):
+            rows.append(row)
+            continue
+        rows.append(_gate(request, row, _store_playbook(str(row["id"]))))
+    return {"backtests": rows}
 
 
 @router.get("/backtest/{bt_id}")

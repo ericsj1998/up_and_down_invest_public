@@ -6,7 +6,12 @@
 "삭제 대상"으로 인식한다.
 """
 
-from updown.common.db.models.accounts import Account, AccountContact, RoleCollection
+from updown.common.db.models.accounts import (
+    Account,
+    AccountContact,
+    PlaybookGrantRow,
+    RoleCollection,
+)
 from updown.common.db.models.analysis import AnalysisReport, Structure
 from updown.common.db.models.market import Candle, CandleQualityIssue
 from updown.common.db.models.master import BrokerCredential, Instrument, User
@@ -48,6 +53,7 @@ __all__ = [
     "Instrument",
     "Notification",
     "Order",
+    "PlaybookGrantRow",
     "PortfolioSnapshot",
     "Position",
     "RiskPlanRevision",
@@ -81,7 +87,8 @@ SETTINGS_TABLE_COUNT = 1
 #: 로그인 계정 (T37 · 2026-08-29) — `accounts`. §9 의 `users` 와 다르다: 구글 이메일 · 등급 · 승인.
 #: + `account_contacts`(T227 · 0110 · 보류 문의) + `role_collections`(T228 · 0112 · 권한 묶음).
 #: ⚠️ 두 표를 더하고 여기를 안 올려 2026-09-07~08 CI 가 붉었다 (1.3.1 에서 고침).
-ACCOUNTS_TABLE_COUNT = 3
+#: + `playbook_grants`(T230 · 0115 · 매매법별 권한 덮어쓰기).
+ACCOUNTS_TABLE_COUNT = 4
 
 #: `tests/test_migrations.py` 가 실제 DB 와 대조하는 총합.
 #:

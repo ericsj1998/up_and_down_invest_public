@@ -55,11 +55,10 @@ export function BacktestPanel() {
       .then((got) => {
         if (!alive) return;
         setList(got.backtests);
-        // 감사가 없으면(가려진 목록) 공개 항목(견본)부터 — 가려진 E1 을 첫 화면으로 주지 않는다.
+        // 볼 수 있는(가려지지 않은) 항목부터 — 권한 없는 백테스트를 첫 화면으로 주지 않는다 (T230).
         const first =
-          (got.redacted
-            ? got.backtests.find((b) => !b.missing && b.public)
-            : undefined) ?? got.backtests.find((b) => !b.missing);
+          got.backtests.find((b) => !b.missing && !b.redacted) ??
+          got.backtests.find((b) => !b.missing);
         if (first) setId(first.id);
       })
       .catch((exc: unknown) => alive && setError(String(exc)));
