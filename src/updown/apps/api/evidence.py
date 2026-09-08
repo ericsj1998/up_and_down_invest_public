@@ -225,7 +225,11 @@ from updown.orchestration.report import evidence_charts as ec  # noqa: E402
 
 DETAIL_FILE = PATHS_FILE.with_name("synth_detail_b15-90.json")
 BACKTESTS: dict[str, Path] = {
-    p.stem.removeprefix("backtest_"): p for p in sorted(PATHS_FILE.parent.glob("backtest_*.json"))
+    p.stem.removeprefix("backtest_"): p
+    for p in sorted(PATHS_FILE.parent.glob("backtest_*.json"))
+    if not p.name.endswith(
+        ".partial.json"
+    )  # 생성 중 부분 파일은 저장소가 아니다 (2026-09-09 배포 실측)
 }
 """백테스트 번들 — `config/evidence/backtest_<이름>.json` 을 이름으로 발견한다."""
 POINTS = 1500  # 자본 곡선 그리기용 점 수

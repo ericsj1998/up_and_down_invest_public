@@ -37,3 +37,6 @@
 **/.pytest_cache
 **/.mypy_cache
 **/.ruff_cache
+
+# 생성 중인 근거 저장소 부분 파일 — 이미지에 들어가면 화면에 빈 칩이 뜬다 (2026-09-09 v1.4.0 실측)
+config/evidence/*.partial.json
