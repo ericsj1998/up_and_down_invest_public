@@ -4604,6 +4604,26 @@ class LiveRunner:
             # ⭐ 익절 다리를 새 크기로 다시 건다 — 안 하면 늘린 뒤 다리가 포지션보다
             #   작아, 목표에 닿아도 일부만 나간다.
             await self._rearm_ladders(held, target)
+            # 🔴 T229 — 줄이는 재레버는 그 계약의 손익을 **지금** 실현한다. 원장이 청산까지
+            #    안 세면 마감 때 `pnl_drift` 가 난다 (NEAR 29→26 · BTC 3→1 실측). 체결 평단이
+            #    응답에 있으면 (평단 - 진입) x 방향 x 계약 x 승수 를 매매에 누적한다.
+            adjust = Decimal(0)
+            if not grow and done.average_price is not None and done.filled_quantity > 0:
+                adjust = (
+                    (done.average_price - held.entry)
+                    * held.direction.sign
+                    * done.filled_quantity
+                    * multiplier
+                )
+                self._session.apply_realized_adjust(adjust)
+            elif not grow:
+                self._log.warning(
+                    "live_resize_pnl_unknown",
+                    payload={
+                        "trade_id": held.trade_id,
+                        "note": "감축 체결 평단이 응답에 없다 — 실현 조정을 못 적었다 (T229)",
+                    },
+                )
             self._log.info(
                 "live_resized",
                 payload={
@@ -4613,6 +4633,7 @@ class LiveRunner:
                     "capital": str(capital),
                     "unrealised": str(unreal),
                     "status": done.status.value,
+                    "realized_adjust": str(adjust),
                 },
             )
         except Exception as exc:

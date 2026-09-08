@@ -2501,6 +2501,19 @@ class Session:
         self.apply_funding(paid=Decimal(0), pct=charge)
         self._count("funding:settlements")
 
+    def apply_realized_adjust(self, amount: Decimal) -> None:
+        """열린 매매에 재레버 감축의 실현 손익을 더한다 (T229).
+
+        Args:
+            amount: USDT · 부호째 (거래소 `pnl` 행과 같은 부호 — 번 것이 양수).
+        """
+        held = self._open
+        if held is None or amount == 0:
+            return
+        held = replace(held, realized_adjust=held.realized_adjust + amount)
+        self._open = held
+        self.ledger.replace(held)
+
     def apply_funding(
         self,
         *,

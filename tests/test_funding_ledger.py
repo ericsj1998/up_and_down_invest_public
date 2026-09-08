@@ -241,3 +241,23 @@ class TestModelFundingInSealedSessions:
         assert held.funding_paid == Decimal("0.42") and held.funding_pct == Decimal("0.0002")
         assert session.ledger.find("t-long") is not None
         assert session.ledger.find("t-long").funding_paid == Decimal("0.42")  # type: ignore[union-attr]
+
+
+class TestRealizedAdjust:
+    """재레버 감축의 부분 실현 (T229 · 2026-09-09) — 원장 실현 = 거래소 실현."""
+
+    def test_adjust_adds_to_the_trade_and_the_ledger(self) -> None:
+        session = _session_holding_long(model_funding=False)
+        session.apply_realized_adjust(Decimal("-0.24"))
+        session.apply_realized_adjust(Decimal("0.10"))
+        held = session.position
+        assert held is not None
+        assert held.realized_adjust == Decimal("-0.14")
+        found = session.ledger.find("t-long")
+        assert found is not None and found.realized_adjust == Decimal("-0.14")
+
+    def test_zero_is_a_no_op(self) -> None:
+        session = _session_holding_long(model_funding=False)
+        before = session.position
+        session.apply_realized_adjust(Decimal(0))
+        assert session.position == before

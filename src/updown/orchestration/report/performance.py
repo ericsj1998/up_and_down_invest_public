@@ -53,6 +53,8 @@ class LedgerSummary:
     """
 
     trades: int = 0
+    adjust_sum: Decimal = Decimal(0)
+    """재레버 감축으로 실현된 손익 합 (USDT · T229) — 손익률 합과 단위가 달라 따로 낸다."""
     longs: int = 0
     shorts: int = 0
     wins: int = 0
@@ -146,6 +148,7 @@ def summarize_records(records: Sequence[tuple[str, TradeRecord]], window: Window
         shorts=sum(1 for _, item in closed if item.direction is Direction.SHORT),
         wins=sum(1 for gain in gains if gain > 0),
         gain_sum_pct=sum(gains, Decimal(0)),
+        adjust_sum=sum((item.realized_adjust for _, item in closed), Decimal(0)),
         mean_rr=(sum(rrs, Decimal(0)) / len(rrs)) if rrs else None,
         max_drawdown_pct=drawdown,
         by_outcome=dict(Counter(item.outcome.value for _, item in closed)),
