@@ -613,8 +613,30 @@ async def sample() -> dict[str, Any]:
         실제 매매법 대신 **이것을 기본으로** 본다(화면이 노란 카드로 그 사실을 말한다).
     """
     global _sample_cache
+    # ⭐ T231 — 견본 저장소(`backtest_sample_ma_cross`)가 있으면 그 머리에서 표를 만든다.
+    if "sample_ma_cross" in BACKTESTS:
+        head = _backtest_store("sample_ma_cross").head
+        per_symbol = head.get("per_symbol")
+        if isinstance(per_symbol, list):
+            return {
+                "generated_at": head.get("generated"),
+                "playbook": head.get("playbook"),
+                "label": head.get("label"),
+                "engine": head.get("engine"),
+                "seed_cash": 10_000,
+                "rules": [
+                    "견본 매매법이다 — 엣지 주장이 아니고 측정으로 고른 값도 아니다 "
+                    "(SMA20/50 교차 · 손절 2xATR · 목표 2R).",
+                    "수익률엔 MDD 를 병기한다 · 배율은 선언값 · 수수료·슬리피지는 config/costs.yml "
+                    "· 펀딩은 8h 모형.",
+                    "실측 봉 한 경로의 값이지 기댓값이 아니다 — 합성 미래·표본 검정은 없다.",
+                ],
+                "symbols": per_symbol,
+            }
     if not SAMPLE_FILE.exists():
-        raise HTTPException(404, "견본 근거가 없다 — scripts/build/sample_evidence.py 로 만든다")
+        raise HTTPException(
+            404, "견본 근거가 없다 — scripts/build/playbook_evidence.py --playbook sample_ma_cross"
+        )
     stamp = SAMPLE_FILE.stat().st_mtime
     if _sample_cache is None or _sample_cache[0] != stamp:
         _sample_cache = (stamp, json.loads(SAMPLE_FILE.read_text(encoding="utf-8")))
