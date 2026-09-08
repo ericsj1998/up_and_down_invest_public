@@ -1,0 +1,8 @@
+# WSL(LF) ↔ Windows(CRLF) 혼용 환경에서 줄바꿈을 LF로 통일한다.
+* text=auto eol=lf
+
+# 바이너리 취급
+*.png binary
+*.jpg binary
+*.parquet binary
+*.whl binary

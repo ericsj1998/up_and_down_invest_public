@@ -1,0 +1,134 @@
+# live override — base 와의 **차이만** 둔다 (D-10).
+#
+# ⚠️ dev/paper 와 결정적으로 다른 점: **호스트 포트를 공개하지 않는다.**
+# 실거래 DB 를 로컬 포트로 노출할 이유가 없고, 노출은 그 자체로 공격면이다 (spec §8).
+# 접속이 필요하면 `make psql ENV=live` 가 `docker compose exec` 로 들어간다.
+#
+# 실거래 개시 시점은 P2-8 이며, 게이트 G1 통과가 선행 조건이다.
+#
+# 🔴 **1 GB 호스트(Lightsail $7) 프로필** — 2026-09-04 사용자 결정. 실측 근거(T47):
+#   api 골격 122 MiB · 판당 약 15 MiB(Gate 6판 ≈ 210) · postgres 181→shared_buffers 32MB 로 약 90 ·
+#   engine 112 · web 16 · redis 8. 합계 약 440 MiB + OS·Docker 약 250 = 약 690 / 1,024.
+#   블루그린 겹침 구간(api 두 슬롯)엔 +210 이라 **스왑 2 GB 가 전제**다 (deploy.md §12).
+#   아래 limits 는 폭주 방지 상한이지 예약이 아니다 — 합이 호스트보다 커도 된다.
+
+name: updown_live
+
+volumes:
+  # 데모 API 전용 산출물 (펀드 파일 · 스냅샷 · 대기 주문 파일). 실계좌 `runlogs` 와 섞이면 안 된다 — 위 api_demo 주석.
+  demologs:
+
+services:
+  postgres:
+    # ports 없음 — 의도적이다. 위 주석 참조
+    restart: always
+    # 1 GB 호스트용 감량 — 기본 shared_buffers 128MB 가 RSS 의 대부분이었다 (실측 181 MiB).
+    # 라이브 DB 는 코인 6종·15m 위주라 작업 집합이 작다. 커지면 T64 디스크 산정과 함께 다시 잰다.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=32MB
+      - -c
+      - max_connections=40
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - effective_cache_size=256MB
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    # 실거래 DB 는 재기동 후에도 반드시 살아나야 한다 (spec §7 재기동 복구).
+    healthcheck:
+      retries: 20
+      start_period: 30s
+
+  redis:
+    restart: always
+    # 락·상태·알림 큐만 든다 (실측 1.2 MiB). 상한을 넘어도 **버리지 않는다** — 리더 락이
+    # 증발하면 두 api 가 동시에 리더가 될 수 있다 (noeviction = 쓰기 실패로 드러난다, 규칙 #8).
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "48mb", "--maxmemory-policy", "noeviction"]
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+  web:
+    # 🔴 서버에서 빌드하지 않는다 — release-images 워크플로가 만든 태그를 받는다 (1 GB 호스트).
+    image: ghcr.io/ericsj1998/up_and_down_invest/web:${IMAGE_TAG:?IMAGE_TAG 가 없다 — 배포할 릴리스 태그를 지정한다}
+    # ⚠️ 화면은 **사람이 봐야 하므로** 포트를 연다 — API 와 다르다. 다만 이 포트에
+    #    TLS·인증이 없으므로 외부에 그대로 열지 않는다. 리버스 프록시를 앞에 둔다 (P4).
+    ports:
+      - "127.0.0.1:5177:80"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+  api: &api_live
+    image: ghcr.io/ericsj1998/up_and_down_invest/app:${IMAGE_TAG:?IMAGE_TAG 가 없다 — 배포할 릴리스 태그를 지정한다}
+    # ports 없음 — 의도적이다. 실거래 API 를 호스트에 노출하지 않는다 (spec §8).
+    # 접근이 필요하면 리버스 프록시를 앞에 두고 그쪽에서 TLS·인증을 건다 (P4).
+    restart: always
+    env_file:
+      - ../.env.live
+    environment:
+      # 🔴 engine 잡을 리더 api 안에서 돌린다 (T47 · -110 MiB · `apps/api/inproc_engine`).
+      #    아래 engine 서비스는 프로필 뒤로 물러나 기본 기동에서 빠진다.
+      UPDOWN_ENGINE_INPROC: "1"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # T212 블루그린 두 번째 슬롯 — api 와 동일 (배포 중에만 둘이 겹친다 · 메모리 산정 시 x2)
+  api_b: *api_live
+
+  # 일회성 마이그레이션도 같은 앱 이미지다 — 서버에 로컬 빌드가 없으므로 여기서도 태그를 받는다
+  migrate:
+    image: ghcr.io/ericsj1998/up_and_down_invest/app:${IMAGE_TAG:?IMAGE_TAG 가 없다 — 배포할 릴리스 태그를 지정한다}
+
+  # ── T221 Demo Trading — 데모 API. 🔴 env 는 .env.demo (라이브 키 없음 · 테스트넷 키 · 구글/세션은 실계좌와 같은 값).
+  #    상한 256M — 실측 기동 97 MiB(판 0) · 판마다 ~9 MB. 사용자 결정(2026-09-05): **$7 유지**, 자원 창에서 스왑을 지켜보고
+  #    늘면 $12 로. matplotlib 지연 import(chart.py)·MALLOC_ARENA_MAX=2 가 그 여유를 만들었다.
+  migrate_demo:
+    image: ghcr.io/ericsj1998/up_and_down_invest/app:${IMAGE_TAG:?IMAGE_TAG 가 없다 — 배포할 릴리스 태그를 지정한다}
+    env_file:
+      - ../.env.demo
+
+  api_demo:
+    image: ghcr.io/ericsj1998/up_and_down_invest/app:${IMAGE_TAG:?IMAGE_TAG 가 없다 — 배포할 릴리스 태그를 지정한다}
+    restart: always
+    env_file:
+      - ../.env.demo
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    # 🔴 실계좌와 **다른 볼륨** (2026-09-08 실측). base 의 api 슬롯을 물려받아 같은 `runlogs` 를 쓰니
+    #    데모가 실계좌 펀드 파일(`logs/funds`)을 읽어 테스트넷에 자기 판을 만들고 그 파일을 같이 썼고,
+    #    자산 스냅샷(테스트넷 10,078 USDT)을 실계좌 `logs/equity/daily.jsonl` 에 적어 차트가 틀렸다.
+    #    compose 는 같은 컨테이너 경로의 마운트를 override 가 이긴다.
+    volumes:
+      - demologs:/app/logs
+
+  # ⏸ 별도 engine 은 **기본 기동에서 빠진다** (사용자 결정 2026-09-04 · 1 GB). 자원 비트는
+  #    리더 api 가 돌린다(위 UPDOWN_ENGINE_INPROC). 다시 분리하려면 `--profile separate-engine`
+  #    을 켜고 api 의 플래그를 지운다 — 둘 다 켜면 같은 Redis 키를 두 프로세스가 쓴다.
+  engine:
+    profiles: ["separate-engine"]
+    image: ghcr.io/ericsj1998/up_and_down_invest/app:${IMAGE_TAG:?IMAGE_TAG 가 없다 — 배포할 릴리스 태그를 지정한다}
+    restart: always
+    env_file:
+      - ../.env.live
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    # engine 은 **api 보다 오래 살아야 한다** (spec §2.1) — 웹 재배포가 손절 감시를
+    # 죽이지 않는 것이 프로세스를 나눈 이유다. 종료 유예를 넉넉히 줘서 진행 중인
+    # 잡과 락 해제가 끝날 시간을 보장한다.
+    stop_grace_period: 60s

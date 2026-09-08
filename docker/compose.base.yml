@@ -1,0 +1,274 @@
+# 공통 서비스 정의 — 단일 소스 (D-10).
+#
+# 환경별 파일에 서비스 정의를 복제하지 않는다. 3벌이 되면 포트·볼륨·healthcheck 를 고칠 때
+# 한 곳을 빠뜨리게 되고, 그것이 "dev 는 되는데 live 는 안 되는" 최악의 버그가 된다.
+# override 파일에는 **차이만** 둔다 (env_file, 소스 마운트, 리로드, 리소스 제한).
+#
+# 실행은 Makefile 이 감싼다:
+#   docker compose --env-file .env.dev -f docker/compose.base.yml -f docker/compose.dev.yml up -d
+
+name: updown
+
+# 🔴 Docker json-file 로그 상한 (T211 · 2026-09-04). 없으면 stderr 로그가 **무한히** 자라
+#    디스크를 먹는다 — 배포 머신에서 그것이 첫 장애가 된다. 앱 로그의 내려받기용 복사본은
+#    `runlogs/app/` 의 회전 파일이 따로 맡는다 (`common/logging/files.py`).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+x-app: &app
+  logging: *logging
+  # api 와 engine 은 **같은 이미지, 다른 커맨드**다 (spec §2.1 동일 코드베이스).
+  # 이미지를 하나로 두면 "api 에만 배포된 수정이 engine 에 빠지는" 일이 구조적으로 불가능하다.
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  image: updown-app:local
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  environment:
+    APP_ENV: ${APP_ENV:?APP_ENV 가 .env 에 없다}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # 컨테이너에서는 호스트가 **서비스 이름**이다. WSL 셸의 localhost:5433 과 다르다 —
+    # 이 혼동이 "연결 거부"의 대부분이다 (부록 A).
+    DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    REDIS_URL: redis://redis:6379/0
+    TZ: UTC
+    # ⭐ glibc malloc 아레나를 2개로 — 스레드마다 아레나가 생겨 RSS 가 조각나는 것을 막는다 (1 GB 서버 · T221 메모리 점검).
+    #    파이썬 서비스에서 흔히 10~20% 를 돌려준다. 성능 영향은 이 워크로드(요청 몇 개/초)에서 무시할 수준.
+    MALLOC_ARENA_MAX: "2"
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      # `:?` 는 값이 없으면 즉시 실패시킨다 — 조용한 폴백 금지 (spec §7).
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER 가 .env 에 없다}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 가 .env 에 없다}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB 가 .env 에 없다}
+      # 모든 타임스탬프는 UTC 로 저장한다 (spec §12.3). 표시만 KST.
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      # named volume — `docker compose down` 으로 컨테이너를 지워도 데이터는 남는다.
+      # 백필 1년치가 여기 들어간다. `down -v` 는 이것까지 지우므로 Makefile 에 두지 않는다.
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *logging
+    # 볼륨을 붙이는 이상 영속화를 켠다. 시세 캐시는 날아가도 되지만
+    # 알림 큐(§4.12)는 재기동으로 유실되면 안 된다.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # 🔴 **마이그레이션은 기동의 일부다** (T213 · 2026-09-04). 지금까지 `make migrate` 를
+  #    호스트에서 손으로 쳤다 — 새 이미지에 새 revision 이 있는데 잊으면 api 가 옛 스키마에
+  #    붙어 **런타임에** 터진다. 일회성 서비스로 두면 api·engine 이 `service_completed_
+  #    successfully` 를 기다리므로 (a) 스키마가 안 맞으면 아예 안 뜨고(규칙 #8), (b) 컨테이너가
+  #    하나뿐이라 api·engine 이 동시에 돌리는 경합이 구조적으로 없다 (advisory lock 불필요).
+  #
+  # ⚠️ 앵커의 `restart: unless-stopped` 를 **`no` 로 덮는다** — 아니면 끝난 마이그레이션을
+  #    영원히 다시 돌린다. live override 는 이 서비스를 건드리지 않는다 (restart: always 가
+  #    api·engine 에만 있다 — 그래야 한다).
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    # 앵커의 healthcheck 없음 — 종료 코드가 판정이다.
+
+  api: &api_slot
+    <<: *app
+    # YAML 앵커 병합은 **얕다** — `depends_on` 을 여기 적으면 앵커의 것을 통째로 대체한다.
+    # 그래서 postgres·redis 를 다시 적는다. 셋 중 하나라도 빠지면 기동 순서가 깨진다.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # 🔴 T212 — 내려갈 때 거래 루프를 거두고 트레이더 락을 놓을 시간 (기본 10s 는 짧다).
+    #    락이 TTL 만료까지 남으면 새 슬롯의 승격이 그만큼 늦는다.
+    stop_grace_period: 30s
+    command:
+      - uvicorn
+      - updown.apps.api.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+    healthcheck:
+      # `/health` 는 의존성이 죽어도 200 을 준다 (liveness). DB 장애에 503 을 주면
+      # 컨테이너가 API 를 계속 재시작하는데, 재시작이 DB 를 살리지 못해 플래핑만 늘고
+      # 로그가 재시작으로 덮인다. 트래픽 판정은 `/health/ready` 가 한다.
+      # ⚠️ 이미지에 curl·wget 이 없다. 파이썬을 띄우던 검사는 1 GB 서버(CPU 스틸 70~90%)에서
+      #    기동만 5초를 넘겨 **살아 있는 api 를 unhealthy 로 판정**했고 블루그린이 두 번 되돌려졌다
+      #    (2026-09-05 실측 · /health 는 200 을 주고 있었다). bash 의 /dev/tcp 로 인터프리터 없이 본다.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8000 &&
+          printf 'GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
+          head -n 1 <&3 | grep -q ' 200 '
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      # ⚠️ 1 GB 서버가 CPU 스틸 상태면 앱 import 만 2~3분 걸린다 (2026-09-05 실측 · 블루그린이
+      #    "unhealthy" 로 되돌렸다). start_period 안의 실패는 세지 않으므로 넉넉히 준다.
+      start_period: 240s
+    volumes:
+      # 로그 폴백 파일(§1.2.1)이 컨테이너 재생성으로 사라지면 **집행된 리스크 감소 행동의
+      # 기록이 유실된다.** named volume 으로 붙인다.
+      - runlogs:/app/logs
+
+  # 🔴 **두 번째 api 슬롯 — 블루그린 배포용** (T212 · 2026-09-04). 평소엔 안 뜬다
+  #    (`profiles`). 배포 스크립트가 새 이미지로 이 슬롯을 띄우면 **팔로워**로 올라오고
+  #    (`TradingLeader` · UI·조회만 · 거래 POST 는 503), 옛 슬롯을 내리면 트레이더 락을 이어받아
+  #    RUN 을 입양한다. nginx 는 두 슬롯을 upstream 에 두고 살아 있는 쪽으로 넘긴다.
+  #    다음 배포는 반대 방향(api_b → api)이다 — `scripts/deploy/bluegreen.sh` 가 고른다.
+  api_b:
+    <<: *api_slot
+    profiles: ["bluegreen"]
+
+  # ── T221 Demo Trading — 데모 API (별도 프로세스 · 별도 DB · 테스트넷) ──────────────────
+  # 🔴 실계좌 키를 **읽을 수 없다**: `APP_ENV=paper` 면 config.py 가 live 키 존재 자체를 거부한다.
+  #    그래서 env_file 은 override 마다 다르다 — dev 는 .env.dev(라이브 키 없음), live 는 .env.demo(라이브 키 없음).
+  #    `environment` 가 env_file 보다 우선하므로 APP_ENV·DB·Redis·스위치는 여기서 못 박는다.
+  # ⚠️ nginx 가 `updown_mode=demo` 쿠키를 보고 여기로 보낸다 (web/nginx.conf). 게스트 입장(/auth/guest)은 늘 여기다.
+  migrate_demo:
+    <<: *app
+    restart: "no"
+    environment:
+      APP_ENV: paper
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}_demo
+      REDIS_URL: redis://redis:6379/1
+      TZ: UTC
+    # DB 가 없으면 만든 뒤(기존 볼륨에선 initdb 가 다시 안 돈다) 스키마를 올린다.
+    command: ["bash", "-c", "python -m updown.common.db.ensure_db && alembic upgrade head"]
+
+  api_demo:
+    <<: *api_slot
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate_demo:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: paper
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}_demo
+      # 🔴 계정·문의·관리자 설정은 **실계좌 DB 의 표를 함께 쓴다** (사용자 2026-09-07 "유저 풀을 합쳐"). 사람은 한 명이고
+      #    실계좌냐 데모냐는 권한의 종류다 — 데모 거래만 주려면 `demo_trade` 토글. 원장·캔들은 여전히 `_demo` DB 다.
+      #    같은 PG 계정이라 새 비밀은 없다. (표 셋만 닿는 별도 PG 역할로 좁히는 것은 T227 후속.)
+      ACCOUNTS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/1
+      TZ: UTC
+      UPDOWN_ENGINE_INPROC: "1"
+      LIVE_ORDERS: "0"
+      UPDOWN_MARKETS: GATE
+
+  # 🔴 **화면도 서비스다** (2026-08-20). 지금까지 화면은 `make dev` 안의 vite 프로세스
+  #    로만 떴고, WSL 이 업데이트로 재시작한 06:47 에 API 와 함께 죽어 아무도 되살리지
+  #    못했다. 여기 있으면 `restart: unless-stopped` 가 데려온다.
+  #
+  # ⚠️ **api 를 기다리지 않는다.** 화면은 API 가 죽어도 떠야 한다 — 그래야 사람이
+  #    "서버가 안 붙는다" 는 배너를 볼 수 있다 (`Disconnected`). depends_on 으로 묶으면
+  #    API 장애에 화면까지 사라져 **아무것도 안 보이는 상태**가 된다.
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    image: updown-web:local
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      TZ: UTC
+
+  engine:
+    <<: *app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: ["python", "-m", "updown.apps.engine.main"]
+    healthcheck:
+      # **이벤트 루프가 도는지**를 본다 (§12.6 데드맨 스위치). engine 은 PID 1 이라
+      # "프로세스 생존"은 거의 항진명제이고, 정작 위험한 것은 루프가 멈춘 채 컨테이너가
+      # running 인 상태다 — 그때 손절 감시도 멈춰 있다.
+      #
+      # **락 보유는 판정 기준이 아니다** — 락을 기다리는 대기 인스턴스는 정상이며(P0-9-4),
+      # unhealthy 로 재시작시키면 페일오버 대기가 불가능해진다.
+      test: ["CMD", "python", "-m", "updown.apps.engine.liveness"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    volumes:
+      - runlogs:/app/logs
+
+  # 🔴 **백업** (T213 · 사용자: "데이터는 항상 유지되며, 이어져야 한다"). 볼륨은 컨테이너를
+  #    지워도 남지만 디스크 장애·실수(`down -v`)·이전(다른 서버)에는 답이 아니다.
+  #    postgres 이미지를 그대로 써서 `pg_dump` 버전이 서버와 같다. 하루 1회 + 기동 시 1회,
+  #    보존 7일. 펀드 JSON(`logs/funds`)도 같이 묶는다 — 그것도 원장이다.
+  #
+  #    복구는 `docker/restore.sh` — 절차와 연습 기록은 docs/platform/deploy.md §9.
+  backup:
+    image: postgres:16
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER 가 .env 에 없다}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 가 .env 에 없다}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB 가 .env 에 없다}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+      TZ: UTC
+    volumes:
+      - backups:/backups
+      - runlogs:/app/logs:ro
+      - ../docker/backup.sh:/backup.sh:ro
+    entrypoint: ["/bin/bash", "/backup.sh"]
+
+volumes:
+  pgdata:
+  redisdata:
+  # 백업 산출물 — pgdata 와 **다른 볼륨**이어야 한다. 같은 곳이면 볼륨을 잃을 때 같이 잃는다.
+  backups:
+  # 🔴 **하나**다. 예전엔 `apilogs`·`enginelogs` 로 갈려 있었고, 그러면 엔진이 남긴
+  #    산출물을 API 가 못 본다 — 호스트/컨테이너 사이에서 겪은 것과 같은 사고가
+  #    컨테이너끼리도 난다 (`common/paths.py`).
+  runlogs:

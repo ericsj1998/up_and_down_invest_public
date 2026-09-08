@@ -1,0 +1,13 @@
+# 기본 바스켓 — 펀드를 만들 때 미리 채워지는 종목·비중 (공개본 견본).
+#
+# 공개본은 **BTC·ETH 동일 비중** 둘만 둔다. 어떤 종목을 어떤 비중으로 담는지는 매매법의 일부라 실제 구성은
+# 여기 없다. 화면(펀드 생성)에서 종목·비중을 바꿀 수 있고, 이 파일은 그 첫 값이다.
+#
+# testnet_missing: 테스트넷에 그 계약이 없는 종목 — 데모 서버에서는 목록에서 빠진다.
+default:
+  members:
+    - { symbol: BTC_USDT, weight: "1" }
+    - { symbol: ETH_USDT, weight: "1" }
+  testnet_missing:
+    GATE: []
+    BINANCE: []

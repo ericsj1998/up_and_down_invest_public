@@ -1,0 +1,101 @@
+/**
+ * 디자인 토큰 — **Material Tailwind 팔레트로 재매핑** (T220 · 2026-09-05).
+ *
+ * 옛 이름(stone·cyan)을 그대로 둔 채 값만 템플릿(material-tailwind-dashboard-react)의 blue-gray 계열로
+ * 바꿨다 — 컴포넌트 CSS 전부가 이 이름을 직접 읽어서, 이름을 바꾸면 1,000줄을 같이 고쳐야 한다.
+ * 옛 화면 컴포넌트가 하나씩 Tailwind 로 옮겨 가면 이 파일은 줄어들고, 6단계에서 사라진다.
+ *
+ * ⚠️ 손익 두 색(gain·loss)은 장식이 아니라 **정보**다 — tailwind.config.cjs 의 `gain`/`loss` 와 같은 값이어야
+ *    새 화면(Tailwind)과 옛 화면(CSS)의 손익 색이 같다.
+ */
+
+:root {
+  /* ── 색 (MT blue-gray 계열) ────────────────────────── */
+  --stone-canvas: #f4f6f8; /* 바탕 — 셸의 bg-blue-gray-50/50 과 같은 톤 */
+  --pure-white: #ffffff;
+  --stone-border: #e3e8eb; /* 카드 테두리 — blue-gray-100 보다 한 톤 연하게 (표 선이 많다) */
+  --stone-muted: #b0bec5; /* blue-gray-200 · 입력 테두리 */
+  --ash-gray: #90a4ae; /* blue-gray-300 · 흐린 글자 */
+  --warm-gray: #607d8b; /* blue-gray-500 · 보조 글자 */
+  --ink-black: #263238; /* blue-gray-900 · 본문 */
+  --soot: #212121; /* gray-900 · 채운 단추·선택 */
+  --sky-wash: #e3f2fd;
+  --cyan-signal: #2196f3; /* MT blue-500 · 강조 하나 */
+  --ma-line: #8957e5; /* 트레일 청산선(SMA) — 판정 파랑과 구별되는 보라 */
+  --adx-line: #0e7490; /* 추세강도(ADX) — SMA 보라와 겹치지 않는 청록 */
+  --cyan-edge: #1e88e5; /* MT blue-600 */
+
+  /* ── 손익 부호 (정보이지 장식이 아니다 · tailwind.config.cjs 와 같은 값) ── */
+  --gain: #0f7b6c;
+  --gain-wash: #dcf0eb;
+  --loss: #b4423a;
+  --loss-wash: #f8e5e3;
+  /* 진입 계획선 — 익절(gain)·손절(loss)과 다른 세 번째 색이어야 한다 (T33). */
+  --entry-line: #b8860b;
+
+  /* ── 타이포 ───────────────────────────────────────── */
+  --font-display: "Inter", "Pretendard", "Apple SD Gothic Neo", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", "Pretendard", "Apple SD Gothic Neo", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  --text-caption: 10px;
+  --text-body: 14px;
+  --text-body-lg: 16px;
+  --text-subheading: 20px;
+  --text-heading: 24px;
+
+  /* ── 간격 (4px 기본) ──────────────────────────────── */
+  --sp-4: 4px;
+  --sp-8: 8px;
+  --sp-12: 12px;
+  --sp-16: 16px;
+  --sp-24: 24px;
+  --sp-32: 32px;
+  --sp-40: 40px;
+  --sp-48: 48px;
+  --sp-64: 64px;
+
+  /* ── 모양 (MT: 카드 rounded-xl · 입력 rounded-lg) ─── */
+  --r-card: 12px;
+  --r-input: 8px;
+  --r-pill: 9999px;
+  --r-feature: 16px;
+
+  /* ── 그림자 (MT shadow-sm) ───────────────────────── */
+  --shadow-subtle: rgb(0 0 0 / 5%) 0 1px 2px 0;
+  --shadow-md: rgb(0 0 0 / 5%) 0 1px 2px 0;
+  --shadow-xl: rgb(17 12 46 / 12%) 0 12px 45px 0;
+
+  --page-max: none;
+}
+
+/**
+ * 다크 모드 (T34) — **원 토큰을 통째로 재정의한다.** 셸(Tailwind `dark:`)이 쓰는 gray-950/900/800 과 같은 값.
+ *
+ * ⚠️ 손익 두 색은 **어두운 바탕용으로 밝기만 올린다** — 뜻(정보)은 그대로다.
+ * 차트는 CSS 를 못 읽으므로 Chart.tsx 가 data-theme 변화를 관찰해 다시 칠한다.
+ */
+[data-theme="dark"] {
+  --stone-canvas: #030712; /* gray-950 */
+  --pure-white: #111827; /* gray-900 — 카드 */
+  --stone-border: #1f2937; /* gray-800 */
+  --stone-muted: #374151; /* gray-700 */
+  --ash-gray: #6b7280;
+  --warm-gray: #9ca3af;
+  --ink-black: #f9fafb;
+  --soot: #e5e7eb;
+  --sky-wash: #0c2a4a;
+  --cyan-signal: #42a5f5;
+  --ma-line: #a371f7;
+  --adx-line: #22d3ee;
+  --cyan-edge: #64b5f6;
+
+  --gain: #2fa08f;
+  --gain-wash: #12312c;
+  --loss: #d0655c;
+  --loss-wash: #3a201d;
+  --entry-line: #d3a637;
+
+  --shadow-md: rgb(0 0 0 / 35%) 0 1px 2px 0;
+  --shadow-xl: rgb(0 0 0 / 45%) 0 12px 45px 0;
+}

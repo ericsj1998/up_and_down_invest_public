@@ -1,0 +1,1031 @@
+@import "./tokens.css";
+
+/**
+ * 옛 화면 컴포넌트의 공용 클래스 — **템플릿 모양으로 재단** (T220 · 2026-09-05).
+ *
+ * 셸(사이드바·상단바·리포트 대시보드)은 Tailwind + Material Tailwind 다. 나머지 화면(콘솔·판·관리)의
+ * 컴포넌트는 아직 이 클래스들(.card .btn .chip .notice .field .table-wrap …)을 쓴다. 여기서 그 클래스들을
+ * 템플릿의 모양(흰 카드 · rounded-xl · 연한 테두리 · 검은 채움 단추)으로 맞춰, 화면을 하나씩 Tailwind 로
+ * 옮기는 동안에도 **전체가 한 디자인으로 보이게** 한다. 옮긴 만큼 여기서 지운다.
+ *
+ * ⛔ 상단 탭 리본(.topbar .tabs .run-tab .more)은 지웠다 — 사이드바가 그 역할이다.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--stone-canvas);
+  color: var(--ink-black);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono,
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.brand-mark {
+  width: 18px;
+  height: 18px;
+  color: var(--cyan-signal);
+}
+
+/* ── 연결 표시 ───────────────────────────────────────── */
+.link-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 12px;
+  color: var(--warm-gray);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-pill);
+  background: var(--ash-gray);
+  flex: none;
+}
+
+.dot.ok {
+  background: var(--gain);
+}
+
+.dot.bad {
+  background: var(--loss);
+}
+
+.dot.warn {
+  background: #f59e0b;
+}
+
+/* ── 페이지 ───────────────────────────────────────────
+   셸(main)이 여백을 준다 — 여기는 세로 간격만. 제목은 상단바가 보여 주므로 h1 은 감춘다
+   (같은 글자가 두 번 뜨면 화면이 말을 반복한다 · 실측 2026-09-05). 설명문(p)은 남긴다. */
+.page {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+  padding-bottom: var(--sp-48);
+}
+
+/* 🔴 flex 자식의 min-width 기본값은 min-content 다 — 줄바꿈 없는 표 하나가 페이지 폭을 밀어낸다 (모바일 실측
+   2026-09-05). 자식은 부모보다 넓어질 수 없고, 넓은 것은 자기 상자 안에서 스크롤한다. */
+.page > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.page-head h1 {
+  display: none;
+}
+
+.page-head p {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--warm-gray);
+  font-size: var(--text-body);
+  line-height: 1.6;
+}
+
+.hl {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--sky-wash);
+  color: var(--cyan-edge);
+}
+
+/* ── 매매법 근거 카드 (펀드 생성 · 2026-09-03) ────────── */
+.book-card {
+  margin-top: var(--sp-8);
+  padding: var(--sp-12) var(--sp-16);
+  background: var(--pure-white);
+  border: 1px solid var(--stone-border);
+  border-radius: var(--r-card);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.book-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+}
+
+.book-chip {
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--sky-wash);
+  color: var(--cyan-edge);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.book-chip.strong {
+  font-weight: 700;
+}
+
+/* ── 카드 (MT Card: 흰 바탕 · rounded-xl · 연한 테두리 · shadow-sm) ── */
+.cards {
+  display: grid;
+  /* min(200px, 100%): 컨테이너가 200px 보다 좁아도 칸이 넘치지 않는다.
+     auto-fit: 마지막 줄 카드가 남은 폭을 채운다 — 5+2 로 떨어질 때 둘째 줄이 비어 보이지 않는다 (UX 점검). */
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: var(--sp-12);
+}
+
+/* 🔴 그리드 칸의 min-width 도 auto(min-content) 다 — 넓은 표를 든 wide 카드가 트랙을 벌린다. */
+.cards > * {
+  min-width: 0;
+}
+
+.card.wide {
+  overflow-x: auto;
+}
+
+.card {
+  padding: var(--sp-16);
+  background: var(--pure-white);
+  border: 1px solid var(--stone-border);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.card.wide {
+  grid-column: 1 / -1;
+}
+
+.card > h2,
+.card > h3 {
+  margin: 0 0 var(--sp-8);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.card-name {
+  font-size: 12px;
+  color: var(--warm-gray);
+}
+
+.card-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-subheading);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.005em;
+  word-break: break-word;
+}
+
+.card-value.gain {
+  color: var(--gain);
+}
+
+.card-value.loss {
+  color: var(--loss);
+}
+
+.card-hint {
+  font-size: 12px;
+  color: var(--ash-gray);
+}
+
+/* ── 버튼 (MT Button: rounded-lg · outlined 기본 · 주 동작은 gray-900 채움) ── */
+.btn {
+  padding: 7px 14px;
+  border: 1px solid var(--stone-muted);
+  border-radius: var(--r-input);
+  background: var(--pure-white);
+  color: var(--ink-black);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    background 0.12s,
+    box-shadow 0.12s;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--warm-gray);
+  box-shadow: var(--shadow-subtle);
+}
+
+.btn:disabled {
+  color: var(--ash-gray);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.btn.primary {
+  background: var(--soot);
+  border-color: var(--soot);
+  color: var(--pure-white);
+}
+
+.btn.primary:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.btn.danger {
+  border-color: var(--loss);
+  color: var(--loss);
+}
+
+.btn.small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.btn.picked {
+  background: var(--soot);
+  border-color: var(--soot);
+  color: var(--pure-white);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--cyan-signal);
+  outline-offset: 2px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+/* ── 알림 (MT Alert 톤) ─────────────────────────────── */
+.notice {
+  padding: 10px 14px;
+  border: 1px solid var(--stone-border);
+  border-left-width: 3px;
+  border-radius: var(--r-input);
+  background: var(--pure-white);
+  font-size: 13px;
+}
+
+/* 오류 카드 — 실패는 눈에 띄어야 한다 (사용자 2026-09-07). 가로로 길게 · 붉은 채움 · 흰 글자. */
+.error-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 10px 0;
+  padding: 14px 18px;
+  border-radius: var(--r-input);
+  background: var(--loss);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1.45;
+  box-shadow: 0 6px 18px rgba(180, 66, 58, 0.25);
+}
+
+.error-card .error-card-mark {
+  font-size: 22px;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.error-card .error-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.error-card .error-card-title {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  opacity: 0.9;
+  margin-bottom: 2px;
+}
+
+.error-card .error-card-text {
+  font-size: 15px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.error-card .error-card-meta {
+  font-size: 12px;
+  opacity: 0.85;
+  margin-top: 4px;
+  font-family: var(--mono, monospace);
+  word-break: break-all;
+}
+
+.error-card .error-card-close {
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  color: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.notice.bad {
+  border-color: var(--loss);
+  background: var(--loss-wash);
+  color: var(--loss);
+}
+
+.notice.warn {
+  border-color: #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+[data-theme="dark"] .notice.warn {
+  background: #2a1f05;
+  color: #fcd34d;
+}
+
+/* ── 표 (MT Table: 머리글 작은 대문자 톤 · 얇은 줄) ─── */
+.table-wrap {
+  overflow-x: auto;
+  background: var(--pure-white);
+  border: 1px solid var(--stone-border);
+  border-radius: var(--r-card);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th {
+  padding: 10px var(--sp-12);
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--warm-gray);
+  border-bottom: 1px solid var(--stone-border);
+  white-space: nowrap;
+}
+
+td {
+  padding: 9px var(--sp-12);
+  border-bottom: 1px solid var(--stone-border);
+  white-space: nowrap;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+td.num,
+th.num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--warm-gray);
+}
+
+.faint {
+  color: var(--ash-gray);
+}
+
+.gain {
+  color: var(--gain);
+}
+
+.loss {
+  color: var(--loss);
+}
+
+/* 상태 칩 (MT Chip: 둥근 · 옅은 채움) */
+.chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: var(--stone-canvas);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--warm-gray);
+  white-space: nowrap;
+}
+
+.chip.gain {
+  background: var(--gain-wash);
+  color: var(--gain);
+}
+
+.chip.loss {
+  background: var(--loss-wash);
+  color: var(--loss);
+}
+
+.chip.live {
+  background: var(--sky-wash);
+  color: var(--cyan-edge);
+}
+
+/* ── RUN 머리말 ──────────────────────────────────── */
+.run-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  font-size: 13px;
+}
+
+.lev {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.lev-input {
+  width: 64px;
+  padding: 2px 6px;
+  border: 1px solid var(--stone-muted);
+  border-radius: var(--r-input);
+  font: inherit;
+  font-size: 12px;
+  text-align: right;
+}
+
+/* 🔴 **최상단으로** (2026-08-19). 스크롤이 한 화면을 넘겨야 나타난다. */
+.to-top {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--stone-border);
+  border-radius: 50%;
+  background: var(--pure-white);
+  color: var(--warm-gray);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 12%);
+  z-index: 20;
+}
+
+.to-top:hover {
+  border-color: var(--cyan-edge);
+  color: var(--cyan-edge);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* 단추가 들어가는 마지막 열 — 머리와 몸이 **같은 정렬**이어야 한 열로 읽힌다. */
+th.head-act,
+td.act {
+  text-align: right;
+  white-space: nowrap;
+  /* 🔴 **좌우로 밀어도 따라온다** (사용자 요구 2026-08-30). 표가 넓어서 가로로
+     스크롤하면 편집·열기·새 탭 단추가 화면 밖으로 나갔다.
+
+     ⚠️ 배경을 **불투명하게** 깔아야 한다. 안 깔면 밑을 지나가는 다른 칸의 글자가
+     단추 위로 비쳐 보인다. `--pure-white` 는 다크 모드에서 어두운 값으로 바뀌므로
+     양쪽 테마에서 안전하다.
+
+     ⚠️ `border-collapse: collapse` 라 고정된 칸에는 **테두리가 안 그려진다** —
+     그래서 왼쪽 경계를 `inset` 그림자로 직접 그린다. */
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--pure-white);
+  box-shadow: inset 1px 0 var(--stone-border);
+}
+
+td.act > * + * {
+  margin-left: 6px;
+}
+
+th.head-act {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.purse {
+  margin: 8px 0 0;
+  padding-left: var(--sp-12);
+  list-style: none;
+  font-size: 12px;
+}
+
+.purse li {
+  padding: 2px 0;
+}
+
+/* 차트 머리 — 어느 종목의 봉인지. */
+.chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.chart-head .faint {
+  font-size: 12px;
+}
+
+/* 판 정보 — 12px 두 줄로 흘러가던 사실들을 **카드 하나의 격자**로 (UX 점검 2026-09-05). 스캔이 된다. */
+.run-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  gap: 10px 16px;
+  margin-top: 10px;
+  padding: var(--sp-12) var(--sp-16);
+  background: var(--pure-white);
+  border: 1px solid var(--stone-border);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-md);
+  font-size: 13px;
+}
+
+.fact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fact-name {
+  font-size: 11px;
+  color: var(--warm-gray);
+}
+
+.fact .faint {
+  font-size: 11px;
+}
+
+/* ── 접기 (T18 ⑥) — 접어도 한 줄은 남긴다. */
+.fold {
+  margin-bottom: var(--sp-16, 16px);
+}
+
+.fold-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fold-head:hover .card-name {
+  color: var(--cyan-edge);
+}
+
+.fold-mark {
+  color: var(--ash-gray);
+  font-size: 12px;
+}
+
+.fold-head .card-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-black);
+}
+
+.why.on {
+  border-color: var(--cyan-edge);
+  color: var(--cyan-edge);
+}
+
+/* ── 진입 근거 펼치기 (T16 ①) ──────────────────────── */
+.why {
+  padding: 1px 8px;
+  border: 1px solid var(--stone-border);
+  border-radius: var(--r-pill);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  color: var(--warm-gray);
+  cursor: pointer;
+}
+
+.why:hover {
+  border-color: var(--cyan-edge);
+  color: var(--cyan-edge);
+}
+
+.why-row td {
+  white-space: normal;
+  background: var(--stone-canvas);
+}
+
+.why-row ul {
+  margin: 0;
+  padding-left: var(--sp-12);
+  list-style: "· ";
+}
+
+.why-row li {
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.why-row p {
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+
+/* ── 폼 (MT Input: rounded-lg · 포커스에 진한 테두리) ── */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  font-size: 12px;
+  color: var(--warm-gray);
+}
+
+.field input,
+.field select,
+.input {
+  padding: 7px 12px;
+  border: 1px solid var(--stone-muted);
+  border-radius: var(--r-input);
+  background: var(--pure-white);
+  color: var(--ink-black);
+  font: inherit;
+  font-size: var(--text-body);
+}
+
+.field input:focus,
+.field select:focus,
+.input:focus {
+  outline: none;
+  border-color: var(--soot);
+  box-shadow: 0 0 0 1px var(--soot);
+}
+
+.section-title {
+  margin: var(--sp-8) 0 0;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.empty {
+  padding: var(--sp-24);
+  text-align: center;
+  color: var(--ash-gray);
+  font-size: 13px;
+}
+
+/* ── 차트 ───────────────────────────────────────────── */
+.chart-wrap {
+  background: var(--pure-white);
+  border: 1px solid var(--stone-border);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.chart-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-12);
+  border-bottom: 1px solid var(--stone-border);
+  font-size: 11px;
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.chart.grabbing {
+  cursor: grabbing;
+}
+
+.chart-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-12);
+  padding: var(--sp-8) var(--sp-12);
+  border-top: 1px solid var(--stone-border);
+  font-size: 11px;
+}
+
+/* 점검이 가리킨 봉 — 1초 안에 끝난다 (0.5초 x 2). */
+@keyframes chart-flash {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.chart-flash {
+  animation: chart-flash 0.5s ease-in-out 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-flash {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* 규칙 설명 — ⓘ 를 눌렀을 때만 펼쳐진다. */
+.rules {
+  margin: 2px 0 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--stone-border);
+  border-radius: var(--r-input);
+  background: var(--pure-white);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.rule + .rule {
+  margin-top: 8px;
+}
+
+.rule-title {
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.rules ol {
+  margin: 2px 0 0;
+  padding-left: 20px;
+}
+
+.rules ol li::marker {
+  color: var(--warm-gray);
+}
+
+.rule-note {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  border-top: 1px solid var(--stone-border);
+  padding-top: 8px;
+  color: var(--warm-gray);
+  list-style: "· ";
+}
+
+/* 🔴 **지금 만들어지고 있는 봉** — 살아 있다는 것이 보여야 한다. 마감 봉보다 조용하게. */
+@keyframes chart-forming {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.chart-forming {
+  animation: chart-forming 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-forming {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+/* 설명용 작은 표 — RUN 생성 칸의 뜻과 단위를 한눈에 (T21). */
+table.mini {
+  margin: 12px 0 8px;
+  font-size: 12px;
+}
+
+table.mini th,
+table.mini td {
+  padding: 6px 10px;
+}
+
+table.mini td:last-child,
+table.mini th:last-child {
+  text-align: right;
+  white-space: nowrap;
+  color: var(--warm-gray);
+}
+
+table.mini td:first-child {
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+/* 메일 미리보기(서버 HTML)는 자기 색을 들고 온다 — 다크에서도 흰 종이 위에 그대로 보인다. */
+.report-html {
+  color: #263238;
+  background: #ffffff;
+}
+
+/* ── 처지 배지 · 관리자 계정 표 (2026-09-07) ─────────────── */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--stone-border);
+  background: var(--stone-bg, transparent);
+  color: var(--warm-gray);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge.warn {
+  border-color: #f0b429;
+  background: #fff7e0;
+  color: #8a5a00;
+}
+
+.badge.bad {
+  border-color: #e5484d;
+  background: #fdecec;
+  color: #a12226;
+}
+
+.warn {
+  color: #b7791f;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+}
+
+textarea.input {
+  resize: vertical;
+  min-width: 180px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .badge.warn {
+    background: rgba(240, 180, 41, 0.15);
+    color: #f5c453;
+  }
+  :root:not([data-theme="light"]) .badge.bad {
+    background: rgba(229, 72, 77, 0.18);
+    color: #ff8a8e;
+  }
+}
+
+:root[data-theme="dark"] .badge.warn {
+  background: rgba(240, 180, 41, 0.15);
+  color: #f5c453;
+}
+
+:root[data-theme="dark"] .badge.bad {
+  background: rgba(229, 72, 77, 0.18);
+  color: #ff8a8e;
+}
+
+/* ── 표 도구줄 — 표 머리줄 바로 위 · 왼쪽 보기 · 오른쪽 검색 (계정 관리 2026-09-07) ── */
+.table-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  width: 100%;
+  margin-top: var(--sp-8);
+  padding-bottom: var(--sp-8);
+}
+
+.table-tools-view {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  font-size: 12px;
+}
+
+.table-tools-view select.input {
+  padding-right: 28px;
+}
+
+.search {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 260px;
+}
+
+.search svg {
+  position: absolute;
+  left: 10px;
+  color: var(--warm-gray);
+  pointer-events: none;
+}
+
+.search input.input {
+  width: 100%;
+  padding-left: 32px;
+}
+
+.search input.input::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+
+/* ── 기능 칩 — 계정 행·권한 묶음 카드 (2026-09-07) ─────────── */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 420px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--stone-border);
+  background: var(--stone-bg, transparent);
+  color: var(--ink-black);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.chip.extra {
+  border-style: dashed;
+}
+
+.chip.live {
+  border-color: #e5484d;
+  color: #a12226;
+}
+
+.chip.admin {
+  border-color: #6b5bd2;
+  color: #4c3fb0;
+}
+
+.chip button {
+  all: unset;
+  cursor: pointer;
+  padding: 0 2px;
+  color: var(--warm-gray);
+  line-height: 1;
+}
+
+.chip button:hover {
+  color: #a12226;
+}
+
+.chip.add {
+  cursor: pointer;
+  border-style: dashed;
+  color: var(--warm-gray);
+}
+
+.chip.add select {
+  all: unset;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.chip.muted {
+  opacity: 0.55;
+}

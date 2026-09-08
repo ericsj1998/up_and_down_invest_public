@@ -1,0 +1,39 @@
+# 배포 이미지 빌드 컨텍스트 — **화이트리스트** (T214 · 2026-09-04).
+#
+# 🔴 이 파일이 없던 동안 `docker/compose.base.yml` 의 `context: ..` 가 **저장소 14G** 를
+#    빌드마다 데몬에 보냈다 (logs 9.4G · data 2.1G · results 0.5G · cache 0.3G). Dockerfile 이
+#    골라 COPY 하므로 이미지엔 안 들어갔지만, 전송 자체가 빌드를 분 단위로 늘리고 배포
+#    머신의 디스크를 태운다.
+#
+# 방식: 전부 막고(`*`) 필요한 것만 연다(`!`). 새 런타임 파일이 생기면 **여기에 열어야**
+# 이미지에 들어간다 — 조용히 빠지는 것보다 빌드가 실패하는 편이 낫다 (규칙 #8).
+#
+# ⚠️ `web/` 은 자기 컨텍스트(`context: ../web`)와 자기 `.dockerignore` 를 쓴다.
+
+*
+
+# 파이썬 패키지 정의 — Dockerfile 이 `uv sync --locked` 에 쓴다 (README 는 pyproject 가 참조)
+!pyproject.toml
+!uv.lock
+!README.md
+
+# 실행 코드와 설정
+!src
+!config
+!alembic.ini
+!alembic
+
+# 런타임에 컨테이너 안에서 부르는 스크립트만 — 나머지 `scripts/` 는 연구·백테스트 도구다
+!scripts/runtime/seed_instruments.py
+!scripts/runtime/backfill_cli.py
+!scripts/runtime/measure_costs.py
+!scripts/runtime/_progress.py
+# 배포 절차 스크립트 — 컨테이너 안에서 `python scripts/deploy/...` 로 돈다 (T216)
+!scripts/deploy
+
+# 열어 둔 디렉터리 안에서도 캐시·컴파일 산출물은 막는다
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache

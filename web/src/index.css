@@ -1,0 +1,10 @@
+/*
+ * Tailwind 진입점 (T220). 옛 `app.css` 는 화면을 옮기는 동안 나란히 산다 — 옛 화면 컴포넌트가
+ * 아직 `.card` `.row` `.btn` 같은 클래스를 쓰기 때문이다. 6단계에서 지운다.
+ *
+ * ⚠️ preflight(리셋)는 옛 CSS 와 부딪힌다 — 특히 `h1~h3` 여백·`button` 배경. 옛 화면이 살아 있는
+ *    동안은 `app.css` 가 뒤에 로드되어 이기도록 `main.tsx` 의 import 순서를 지킨다 (index.css → app.css).
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

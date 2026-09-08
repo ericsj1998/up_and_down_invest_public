@@ -1,0 +1,89 @@
+# 도메인 경계의 기계적 강제 (P0-2-3).
+#
+# 근거와 판정 매트릭스는 docs/architecture_boundaries.md 에 있다.
+# 규칙을 완화하려면 그 문서에 근거를 먼저 남긴다 — 근거 없이 뚫리는 것을 막기 위해서다.
+
+[importlinter]
+root_package = updown
+
+# ------------------------------------------------------------
+# 계약 1 — 계층 순서 (plan D-6)
+#
+# 이 순서는 스펙 §3.2 의 데이터 흐름 그 자체다:
+#   analysis(TradeProposal) → decision(ApprovedOrder) → execution(집행)
+#
+# 위가 상위 계층이다. 상위는 하위를 import 할 수 있고, 역방향은 차단된다.
+#
+# exhaustive = true 인 이유: 새 최상위 패키지를 만들면서 계약에 등록하지 않으면
+# 그 패키지만 규칙 밖에 남는다. 등록을 강제해 "조용히 경계 밖에 사는 코드"를 막는다.
+# ------------------------------------------------------------
+[importlinter:contract:layers]
+name = 도메인 계층 순서 (common → … → apps 단방향)
+type = layers
+containers =
+    updown
+layers =
+    apps
+    orchestration
+    execution
+    decision
+    analysis
+    portfolio
+    llm
+    marketdata
+    common
+exhaustive = true
+
+# ------------------------------------------------------------
+# 계약 2 — 분석 ⇏ 집행 (원칙 P4)
+#
+# 계약 1의 계층 순서로 이미 차단되지만, tasks.md P0-2 가 명시한 **유일한 규칙**이므로
+# 별도 계약으로 가시화한다. 나중에 계층 순서를 손대더라도 이 규칙만은 남는다.
+# ------------------------------------------------------------
+[importlinter:contract:analysis-not-execution]
+name = 분석은 집행을 직접 import 하지 않는다 (P4 · tasks.md P0-2)
+type = forbidden
+source_modules =
+    updown.analysis
+forbidden_modules =
+    updown.execution
+
+# ------------------------------------------------------------
+# 계약 3 — 탐지 ⇏ 이행률 측정 (spec §5.6.6 · P1-5)
+#
+# `analysis.evaluation` 은 **일부러 미래 봉을 본다.** 이행 여부는 미래에만 있으므로
+# 그것이 측정의 정의다. 탐지기가 이걸 부르는 순간 `AsOfSequence`(P1-3)가 막아온
+# 미래 참조가 정문으로 들어오고, 백테스트 성과가 조용히 부풀려진다.
+#
+# 계층 계약은 최상위 패키지 사이만 보므로 `analysis` 내부의 이 방향은 잡지 못한다.
+# ------------------------------------------------------------
+[importlinter:contract:detectors-not-evaluation]
+name = 탐지기는 이행률 측정을 import 하지 않는다 (미래 참조 차단 · spec §5.6.6)
+type = forbidden
+source_modules =
+    updown.analysis.detectors
+    updown.analysis.structures
+    updown.analysis.indicators
+    updown.analysis.trend
+    updown.analysis.context
+forbidden_modules =
+    updown.analysis.evaluation
+
+# ------------------------------------------------------------
+# 계약 4 — LLM ⇏ 결정·집행 (spec §5.3.1 · 절대 규칙 #2)
+#
+# §5.3.1 이 허용한 것은 "LLM 이 낸 가격을 표시·기록·채점하는 것" 이고, 금지한 것은
+# **그 값이 주문이 되는 경로** 다. 계약 1의 계층 순서로도 이미 막히지만, 이 금지는
+# 스펙이 명시한 안전 규칙이라 **이름 붙은 계약**으로 따로 둔다 — 계층을 손보는 사람이
+# 무엇을 깨뜨리는지 알게 하려는 것이다 (계약 2 와 같은 논거).
+#
+# ⛔ 이 계약을 완화하려면 docs/architecture_boundaries.md 에 근거를 먼저 남긴다.
+# ------------------------------------------------------------
+[importlinter:contract:llm-not-decision]
+name = LLM 은 결정·집행을 import 하지 않는다 (AI 제안이 주문이 되는 경로 차단 · §5.3.1)
+type = forbidden
+source_modules =
+    updown.llm
+forbidden_modules =
+    updown.decision
+    updown.execution

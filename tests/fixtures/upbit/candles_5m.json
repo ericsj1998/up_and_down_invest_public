@@ -1,0 +1,54 @@
+[
+  {
+    "market": "KRW-BTC",
+    "candle_date_time_utc": "2026-08-03T10:45:00",
+    "candle_date_time_kst": "2026-08-03T19:45:00",
+    "opening_price": 89435000.0,
+    "high_price": 89440000.0,
+    "low_price": 89431000.0,
+    "trade_price": 89438000.0,
+    "timestamp": 1785754097054,
+    "candle_acc_trade_price": 55991323.29387,
+    "candle_acc_trade_volume": 0.62605506,
+    "unit": 5
+  },
+  {
+    "market": "KRW-BTC",
+    "candle_date_time_utc": "2026-08-03T10:40:00",
+    "candle_date_time_kst": "2026-08-03T19:40:00",
+    "opening_price": 89441000.0,
+    "high_price": 89446000.0,
+    "low_price": 89431000.0,
+    "trade_price": 89435000.0,
+    "timestamp": 1785753897483,
+    "candle_acc_trade_price": 125357276.48403,
+    "candle_acc_trade_volume": 1.40164377,
+    "unit": 5
+  },
+  {
+    "market": "KRW-BTC",
+    "candle_date_time_utc": "2026-08-03T10:35:00",
+    "candle_date_time_kst": "2026-08-03T19:35:00",
+    "opening_price": 89468000.0,
+    "high_price": 89468000.0,
+    "low_price": 89440000.0,
+    "trade_price": 89440000.0,
+    "timestamp": 1785753593421,
+    "candle_acc_trade_price": 115468049.86038,
+    "candle_acc_trade_volume": 1.29084387,
+    "unit": 5
+  },
+  {
+    "market": "KRW-BTC",
+    "candle_date_time_utc": "2026-08-03T10:30:00",
+    "candle_date_time_kst": "2026-08-03T19:30:00",
+    "opening_price": 89547000.0,
+    "high_price": 89548000.0,
+    "low_price": 89455000.0,
+    "trade_price": 89469000.0,
+    "timestamp": 1785753297845,
+    "candle_acc_trade_price": 262510113.42442,
+    "candle_acc_trade_volume": 2.933434,
+    "unit": 5
+  }
+]
