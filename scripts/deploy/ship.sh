@@ -46,6 +46,16 @@ fi
 # ⛔ Docker Desktop 연동이 끊기면 WSL 의 `docker` 는 안내문만 찍고 **0 을 돌려준다** — 빌드가 된 척
 #    스크립트가 조용히 끝난다 (2026-09-05 실측). 데몬에 실제로 붙는지 먼저 본다.
 docker info >/dev/null 2>&1 || { echo "ERROR: docker 데몬에 붙을 수 없다 — Docker Desktop 이 꺼져 있거나 WSL 연동이 끊겼다"; exit 1; }
+
+# 🔴 두 엔진의 갭 관문 (T233 · 2026-09-09). 세션 저장소 vs 연구 저장소(E1) 부호가 다르거나 크기 승수가 죽어 있으면(🔴) 배포하지 않는다 —
+#    채택 매매법이 실계좌 엔진에서 반대 부호로 도는 것을 화면에 얹은 채 내보낸 사고(T232)의 재발 방지. 저장소가 없으면 도구가 건너뛴다.
+if [ "${SKIP_GAP_CHECK:-0}" != "1" ]; then
+  # 파이프 뒤의 종료 코드는 grep 의 것이라 변수에 받아서 본다.
+  if ! GAP_OUT=$(uv run python scripts/build/engine_gap.py --strict 2>&1); then
+    echo "$GAP_OUT" | grep -v registry; echo "ERROR: 엔진 갭 🔴 — T232/T233 을 보고 원인을 적은 뒤 SKIP_GAP_CHECK=1 로만 넘긴다"; exit 1
+  fi
+  echo "$GAP_OUT" | grep -v registry
+fi
 echo "=== 1) 빌드 (app · web — web 은 라벨 탭 없음)"
 docker build -q -t "$IMG/app:$TAG" . >/dev/null
 docker build -q -t "$IMG/web:$TAG" web >/dev/null
