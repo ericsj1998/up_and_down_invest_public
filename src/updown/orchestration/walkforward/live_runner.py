@@ -4608,11 +4608,13 @@ class LiveRunner:
             #    안 세면 마감 때 `pnl_drift` 가 난다 (NEAR 29→26 · BTC 3→1 실측). 체결 평단이
             #    응답에 있으면 (평단 - 진입) x 방향 x 계약 x 승수 를 매매에 누적한다.
             adjust = Decimal(0)
-            if not grow and done.average_price is not None and done.filled_quantity > 0:
+            avg_fill = getattr(done, "average_price", None)
+            filled = Decimal(str(getattr(done, "filled_quantity", 0) or 0))
+            if not grow and avg_fill is not None and filled > 0:
                 adjust = (
-                    (done.average_price - held.entry)
+                    (Decimal(str(avg_fill)) - held.entry)
                     * held.direction.sign
-                    * done.filled_quantity
+                    * filled
                     * multiplier
                 )
                 self._session.apply_realized_adjust(adjust)
