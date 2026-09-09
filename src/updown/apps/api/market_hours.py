@@ -26,7 +26,7 @@ def market_status_payload(
     Returns:
         `market` · `always_open` · `state`(open/closed/unknown) · `why` · `session` · `next_open` ·
         `next_close` (ISO · 24시간 장이면 None).
-        (ISO · 24시간 장이면 None). 유효 구간 밖(`unknown`)은 열렸다고 말하지 않는다 (규칙 #8).
+        유효 구간 밖(`unknown`)은 열렸다고 말하지 않는다 (규칙 #8).
     """
     hours = calendar.hours_for(market)
     if hours.always_open:
