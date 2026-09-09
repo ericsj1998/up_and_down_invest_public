@@ -202,7 +202,7 @@ def paper_adapter(quotes: object) -> BrokerAdapter:
     """
     from updown.execution.binance_paper import BinancePaperAdapter
     from updown.execution.gate_paper import GatePaperAdapter
-    from updown.execution.stock_paper import StockPaperAdapter
+    from updown.execution.stock_paper import StockPaperAdapter, current_state_store
     from updown.marketdata.binance.adapter import BinanceAdapter
     from updown.marketdata.binance.trade_client import BinanceTradeClient
     from updown.marketdata.gate.adapter import GateAdapter
@@ -212,7 +212,14 @@ def paper_adapter(quotes: object) -> BrokerAdapter:
     if isinstance(quotes, TossAdapter):
         # T240 — 주식 페이퍼. 토스에는 테스트넷이 없어 체결을 이 프로세스가 모의한다.
         #   자격증명을 읽지 않는다 — 시세는 조회 어댑터가 이미 갖고 있고 주문은 안 나간다.
-        return StockPaperAdapter(quotes)
+        #   계좌 상태는 API 가 기동 때 붙인 DB 저장소에 산다. 없으면 만들지 않는다 (규칙 #8).
+        store = current_state_store()
+        if store is None:
+            raise PaperAdapterUnavailableError(
+                "주식 페이퍼 계좌 저장소가 붙어 있지 않다 — API 기동 훅이 "
+                "`attach_state_store(DbStateStore(factory))` 로 붙인다. 파일로 떨어지지 않는다"
+            )
+        return StockPaperAdapter(quotes, store=store)
 
     if isinstance(quotes, BinanceAdapter):
         # T62 — 바이낸스 testnet. Gate 와 같은 3중 잠금: 기본 base 가 testnet 인

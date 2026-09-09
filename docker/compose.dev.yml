@@ -123,7 +123,8 @@ services:
       UPDOWN_LABELS: "1"
       APP_ENV: dev
       # base 는 GATE 다(서버 데모). 로컬 데모는 BINANCE 테스트넷 — 위 머리말.
-      UPDOWN_MARKETS: BINANCE
+      # + 미국 주식(T240 · 2026-09-09): 토스 시세 + 페이퍼 계좌(demo DB stock_paper_accounts). 실주문 없음.
+      UPDOWN_MARKETS: BINANCE,NASDAQ,NYSE
     volumes:
       - ../src:/app/src:ro
       - ../config:/app/config:ro

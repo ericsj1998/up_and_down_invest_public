@@ -27,7 +27,12 @@ from updown.common.domain.market import (
     Quote,
 )
 from updown.common.domain.order import OrderKind, OrderRequest, OrderStatus, OrderType
-from updown.execution.stock_paper import BROKER_NAME, StockPaperAdapter, StockPaperRejectedError
+from updown.execution.stock_paper import (
+    BROKER_NAME,
+    FileStateStore,
+    StockPaperAdapter,
+    StockPaperRejectedError,
+)
 
 AAPL = Instrument(Market.NASDAQ, "AAPL", "애플", AssetType.STOCK, Currency.USD)
 SEED = {Market.NASDAQ: Decimal(10_000)}
@@ -100,7 +105,7 @@ def _order(
 
 
 def _adapter(tmp_path: Path, quotes: FakeQuotes) -> StockPaperAdapter:
-    return StockPaperAdapter(quotes, state_root=tmp_path, seed_cash=SEED)
+    return StockPaperAdapter(quotes, store=FileStateStore(tmp_path), seed_cash=SEED)
 
 
 class TestCapabilitiesAreEnforced:

@@ -3,13 +3,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
+
 import httpx
 import pytest
 from pydantic import SecretStr
 
 from updown.execution import gateway
-from updown.execution.gateway import LiveOrderBlockedError, order_adapter
-from updown.execution.stock_paper import StockPaperAdapter
+from updown.execution.gateway import (
+    LiveOrderBlockedError,
+    PaperAdapterUnavailableError,
+    order_adapter,
+)
+from updown.execution.stock_paper import FileStateStore, StockPaperAdapter, attach_state_store
 from updown.marketdata.toss.adapter import TossAdapter
 from updown.marketdata.toss.client import TossClient
 
@@ -25,13 +32,15 @@ def _toss() -> TossAdapter:
 
 
 @pytest.fixture
-def env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[pytest.MonkeyPatch]:
+    attach_state_store(FileStateStore(tmp_path))
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@localhost:5432/x")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     for key in ("LIVE_ORDERS", "STOCK_LIVE_ORDERS", "GATE_API_KEY", "GATE_API_SECRET"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(gateway, "_ORDER_ADAPTERS", {})
-    return monkeypatch
+    yield monkeypatch
+    attach_state_store(None)
 
 
 def test_dev_gives_stock_paper(env: pytest.MonkeyPatch) -> None:
@@ -59,3 +68,11 @@ def test_stock_switch_on_is_loud_not_paper(env: pytest.MonkeyPatch) -> None:
 def test_same_process_reuses_one_paper_account(env: pytest.MonkeyPatch) -> None:
     env.setenv("APP_ENV", "dev")
     assert order_adapter(_toss(), user_id="a") is order_adapter(_toss(), user_id="b")
+
+
+def test_without_a_state_store_the_gate_refuses(env: pytest.MonkeyPatch) -> None:
+    """저장소가 안 붙었으면 파일로 떨어지지 않고 예외 (규칙 #8)."""
+    env.setenv("APP_ENV", "dev")
+    attach_state_store(None)
+    with pytest.raises(PaperAdapterUnavailableError, match="저장소"):
+        order_adapter(_toss(), user_id="t")

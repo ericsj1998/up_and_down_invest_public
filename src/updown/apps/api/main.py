@@ -190,10 +190,13 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         #
         # ⛔ `AUTO_LIVE=0` 으로 끈다. 실패해도 기동을 막지 않는다.
         from updown.apps.api.walkforward import attach_store
+        from updown.execution.stock_paper import DbStateStore, attach_state_store
 
         # 🔴 **판 저장소를 먼저 붙인다** (T16 ②). 없으면 라이브가 저장 없이 돌고,
         #    다음 리로드에 원장이 통째로 사라진 채 거래소 포지션만 남는다.
         attach_store(resolved_state.session_factory)
+        # ⭐ 주식 페이퍼 계좌(T240) — 판 저장소와 같은 풀. 없으면 게이트가 주식 어댑터를 안 준다.
+        attach_state_store(DbStateStore(resolved_state.session_factory))
         # 🔴 계정 저장소 — 미들웨어가 **매 요청** 등급을 여기서 읽는다. 안 붙으면
         #    아무도 로그인할 수 없다 (조용히 통과시키지 않는다 · 규칙 #8).
         # ⭐ `ACCOUNTS_DATABASE_URL` 이 있으면 계정·문의·관리자 설정만 **그 DB** 에서 연다
@@ -271,6 +274,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
                 with contextlib.suppress(Exception):
                     await leader.shutdown()
             attach_store(None)
+            attach_state_store(None)
             attach_accounts(None)
             if accounts_engine is not None:
                 with contextlib.suppress(Exception):

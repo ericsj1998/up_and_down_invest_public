@@ -35,6 +35,28 @@ class AppSetting(Base):
     )
 
 
+class StockPaperAccount(Base):
+    """주식 페이퍼 계좌 — 시장 하나에 문서 하나 (T240 · 2026-09-09).
+
+    Note:
+        토스에는 테스트넷이 없어 체결·잔고를 우리가 모의한다(`execution/stock_paper.py`).
+        토스 실주문이 당분간 범위 밖이라 이 계좌가 곧 주식 운영 계좌다 — 프로세스 메모리나
+        파일에 두면 재시작·볼륨 정리에 사라지고, 사라지면 감사가 원장과 안 맞는다며 판을 멈춘다.
+
+        ⚠️ 값은 통째 JSON 이다(현금·포지션·대기 주문·조건부·마감·장부). 열로 펼치면 어댑터의
+        모양이 바뀔 때마다 마이그레이션이 필요한데, 이 모양은 실브로커 응답을 흉내내는 것이라
+        브로커 쪽 사정으로 바뀐다.
+    """
+
+    __tablename__ = "stock_paper_accounts"
+
+    market: Mapped[str] = mapped_column(primary_key=True)
+    state: Mapped[JsonDict]
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=sa.func.now(), onupdate=sa.func.now()
+    )
+
+
 class EventLog(Base):
     """감사 이벤트 로그 (spec §9 `event_logs`, §4.14) — **append-only**.
 

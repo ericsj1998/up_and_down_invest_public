@@ -15,7 +15,13 @@ from updown.common.db.models.accounts import (
 from updown.common.db.models.analysis import AnalysisReport, Structure
 from updown.common.db.models.market import Candle, CandleQualityIssue
 from updown.common.db.models.master import BrokerCredential, Instrument, User
-from updown.common.db.models.ops import AppSetting, BacktestRun, EventLog, Notification
+from updown.common.db.models.ops import (
+    AppSetting,
+    BacktestRun,
+    EventLog,
+    Notification,
+    StockPaperAccount,
+)
 from updown.common.db.models.portfolio import (
     AccountBalance,
     AllocationLedgerEntry,
@@ -59,6 +65,7 @@ __all__ = [
     "RiskPlanRevision",
     "RiskPolicy",
     "RoleCollection",
+    "StockPaperAccount",
     "Structure",
     "TradeProposal",
     "Transition",

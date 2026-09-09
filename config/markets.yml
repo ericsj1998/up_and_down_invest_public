@@ -51,8 +51,8 @@ markets:
   BINANCE: *usdt_perp
 
 # 주식 페이퍼 계좌의 시작 현금 (T240 · `execution/stock_paper.py`). 시장 통화 단위.
-# 코인은 거래소 테스트넷이 잔고를 주므로 여기 없다. 상태 파일(`logs/stock_paper/<시장>.json`)이
-# 이미 있으면 그 값이 이어지고, 이 숫자는 **처음 열 때만** 쓴다.
+# 코인은 거래소 테스트넷이 잔고를 주므로 여기 없다. DB 행(`stock_paper_accounts`)이 이미 있으면
+# 그 값이 이어지고, 이 숫자는 **처음 열 때만** 쓴다.
 paper_seed_cash:
   KRX: 10000000
   NASDAQ: 10000

@@ -20,10 +20,12 @@
 - 수수료·거래세는 비용표(`fee_pct` · `tax_pct_sell`)로 뗀다. 결제 T+n 은 **모형화하지 않는다**
   (T240 결정 · 체결 즉시 현금 · 실주문 전에 넣는다).
 
-## 상태는 파일에 산다
+## 상태는 DB 에 산다
 
 프로세스가 죽어도 포지션이 사라지면 안 된다 — 사라지면 감사가 "원장에는 있는데 계좌에는
-없다" 로 판정해 판이 멈춘다. `logs/stock_paper/<시장>.json` 에 매 변경마다 통째로 쓴다.
+없다" 로 판정해 판이 멈춘다. 시장마다 한 행(`stock_paper_accounts.state` JSONB)에 매 변경마다
+통째로 쓴다. 토스 실주문은 당분간 범위 밖이라(사용자 2026-09-09) 이 계좌가 곧 주식 운영 계좌다 —
+임시 파일이 아니라 백업이 도는 DB 에 둔다. 저장소는 `StateStore` 뒤에 있어 시험은 파일로 돈다.
 """
 
 from __future__ import annotations
@@ -34,9 +36,13 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert
 
 from updown.common.costs import MarketCosts, load_cost_table
+from updown.common.db.models.ops import StockPaperAccount
 from updown.common.domain.candle import Candle
 from updown.common.domain.capabilities import Lot, MarketCapabilities, capabilities_of
 from updown.common.domain.instrument import Currency, Instrument, Market, Side, Timeframe
@@ -45,11 +51,14 @@ from updown.common.domain.order import OrderRequest, OrderResult, OrderStatus
 from updown.common.logging.setup import get_logger
 from updown.marketdata.adapter import Capability
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 _logger = get_logger("execution.stock_paper")
 
 BROKER_NAME = "toss-paper"
 STATE_ROOT = Path("logs/stock_paper")
-"""페이퍼 계좌 상태 파일 — `logs/walkforward` 저널과 같은 자리."""
+"""`FileStateStore` 의 기본 자리 — 시험·DB 없는 스크립트용. API 는 DB 에 둔다."""
 QUOTE_TTL_SECONDS = 1.0
 """같은 초 안의 연속 조회는 한 번만 브로커에 묻는다 (감사·러너·콘솔이 같은 값을 본다)."""
 REDUCE_ONLY_KINDS = frozenset({"take_profit", "stop_loss", "close"})
@@ -190,10 +199,7 @@ def _text(value: Decimal) -> str:
     return format(value.normalize(), "f") if value else "0"
 
 
-def _load_book(path: Path) -> _Book | None:
-    if not path.exists():
-        return None
-    raw = cast("dict[str, Any]", json.loads(path.read_text(encoding="utf-8")))
+def _book_from(raw: dict[str, Any]) -> _Book:
     book = _Book(
         market=str(raw["market"]),
         currency=str(raw["currency"]),
@@ -211,9 +217,8 @@ def _load_book(path: Path) -> _Book | None:
     return book
 
 
-def _save_book(path: Path, book: _Book) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+def _book_payload(book: _Book) -> dict[str, Any]:
+    return {
         "market": book.market,
         "currency": book.currency,
         "cash": book.cash,
@@ -224,9 +229,139 @@ def _save_book(path: Path, book: _Book) -> None:
         "closes": book.closes[-200:],
         "ledger": book.ledger[-400:],
     }
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(path)
+
+
+class StateStore(Protocol):
+    """페이퍼 계좌 상태의 저장소 — 시장 하나에 문서 하나."""
+
+    async def load(self, market: Market) -> dict[str, Any] | None:
+        """저장된 상태.
+
+        Args:
+            market: 시장.
+
+        Returns:
+            없으면 None.
+        """
+        ...
+
+    async def save(self, market: Market, payload: dict[str, Any]) -> None:
+        """상태를 통째로 쓴다.
+
+        Args:
+            market: 시장.
+            payload: 직렬화된 계좌.
+        """
+        ...
+
+
+class FileStateStore:
+    """파일 저장소 — 시험과 DB 없는 스크립트용. `<root>/<시장>.json`."""
+
+    def __init__(self, root: Path | None = None) -> None:
+        """저장소를 만든다.
+
+        Args:
+            root: 디렉토리. None 이면 `logs/stock_paper`.
+        """
+        self._root = root or STATE_ROOT
+
+    async def load(self, market: Market) -> dict[str, Any] | None:
+        """파일이 있으면 읽는다.
+
+        Args:
+            market: 시장.
+
+        Returns:
+            없으면 None.
+        """
+        path = self._root / f"{market.value}.json"
+        if not path.exists():
+            return None
+        return cast("dict[str, Any]", json.loads(path.read_text(encoding="utf-8")))
+
+    async def save(self, market: Market, payload: dict[str, Any]) -> None:
+        """임시 파일에 쓰고 바꿔치기한다 (중간에 죽어도 반쪽 파일이 안 남는다).
+
+        Args:
+            market: 시장.
+            payload: 직렬화된 계좌.
+        """
+        path = self._root / f"{market.value}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(path)
+
+
+class DbStateStore:
+    """DB 저장소 — `stock_paper_accounts` 한 행(JSONB). API 가 기동 때 붙인다."""
+
+    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+        """저장소를 만든다.
+
+        Args:
+            factory: DB 세션 팩토리 — 판 저장소와 같은 풀을 쓴다.
+        """
+        self._factory = factory
+
+    async def load(self, market: Market) -> dict[str, Any] | None:
+        """행이 있으면 읽는다.
+
+        Args:
+            market: 시장.
+
+        Returns:
+            없으면 None.
+        """
+        async with self._factory() as session:
+            found = (
+                await session.execute(
+                    sa.select(StockPaperAccount.state).where(
+                        StockPaperAccount.market == market.value
+                    )
+                )
+            ).scalar_one_or_none()
+        return None if found is None else found
+
+    async def save(self, market: Market, payload: dict[str, Any]) -> None:
+        """넣거나 덮는다.
+
+        Args:
+            market: 시장.
+            payload: 직렬화된 계좌.
+        """
+        async with self._factory() as session:
+            statement = insert(StockPaperAccount).values(market=market.value, state=payload)
+            await session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[StockPaperAccount.market],
+                    set_={"state": payload, "updated_at": sa.func.now()},
+                )
+            )
+            await session.commit()
+
+
+_state_store: StateStore | None = None
+
+
+def attach_state_store(store: StateStore | None) -> None:
+    """프로세스의 페이퍼 상태 저장소를 정한다 — API 기동 훅이 DB 로 붙인다.
+
+    Args:
+        store: 저장소. None 이면 뗀다 (종료 · 시험).
+    """
+    global _state_store
+    _state_store = store
+
+
+def current_state_store() -> StateStore | None:
+    """붙어 있는 저장소.
+
+    Returns:
+        없으면 None — 게이트가 어댑터를 만들지 않는다 (조용히 파일로 떨어지지 않는다 · 규칙 #8).
+    """
+    return _state_store
 
 
 class StockPaperAdapter:
@@ -241,18 +376,18 @@ class StockPaperAdapter:
         self,
         quotes: StockQuotes,
         *,
-        state_root: Path | None = None,
+        store: StateStore,
         seed_cash: dict[Market, Decimal] | None = None,
     ) -> None:
         """어댑터를 만든다.
 
         Args:
             quotes: 조회 어댑터. 시세·호가·캔들·장 상태를 위임한다.
-            state_root: 상태 파일 디렉토리. None 이면 `logs/stock_paper`.
+            store: 계좌 상태 저장소 (API 는 DB · 시험은 파일).
             seed_cash: 시장별 시작 현금. None 이면 `config/markets.yml` 의 `paper_seed_cash`.
         """
         self._quotes = quotes
-        self._root = state_root or STATE_ROOT
+        self._store = store
         self._seed = seed_cash
         self._books: dict[Market, _Book] = {}
         self._quote_cache: dict[str, tuple[float, Quote]] = {}
@@ -391,7 +526,7 @@ class StockPaperAdapter:
             러너는 판을 띄울 때 `get_balance().cash` 를 예산 상한으로 읽는다. 시장을
             아직 하나도 안 만졌으면 능력표에 있는 첫 토스 시장(KRX)의 시작 현금이다.
         """
-        book = self._current_book()
+        book = await self._current_book()
         await self._settle_all(book)
         locked, reserved = self._locked(book), self._reserved(book)
         return Balance(
@@ -409,7 +544,7 @@ class StockPaperAdapter:
         Returns:
             네 값을 문자열로.
         """
-        book = self._current_book()
+        book = await self._current_book()
         await self._settle_all(book)
         locked, reserved = self._locked(book), self._reserved(book)
         cash = Decimal(book.cash)
@@ -426,7 +561,7 @@ class StockPaperAdapter:
         Returns:
             열린 포지션 매입 원가의 합.
         """
-        book = self._current_book()
+        book = await self._current_book()
         return self._locked(book)
 
     async def open_positions(self) -> list[dict[str, str]]:
@@ -454,7 +589,7 @@ class StockPaperAdapter:
         Returns:
             없으면 `{}`. 있으면 수량·평단·표시가·미실현·배율(1)·증거금(매입 원가)을 문자열로.
         """
-        book = self._book(instrument.market)
+        book = await self._book(instrument.market)
         await self._settle(book, instrument)
         held = book.positions.get(instrument.symbol)
         if held is None or held.size == 0:
@@ -481,7 +616,7 @@ class StockPaperAdapter:
         Returns:
             `type`/`change`/`time`/`text`/`contract` 행들.
         """
-        book = self._current_book()
+        book = await self._current_book()
         return list(reversed(book.ledger))[:limit]
 
     async def position_closes(
@@ -496,7 +631,7 @@ class StockPaperAdapter:
         Returns:
             Gate `position_closes` 와 같은 열쇠(`pnl`·`pnl_pnl`·`pnl_fee`·`pnl_fund`…)의 행들.
         """
-        book = self._book(instrument.market)
+        book = await self._book(instrument.market)
         rows = [row for row in book.closes if row.get("contract") == instrument.symbol]
         return list(reversed(rows))[:limit]
 
@@ -534,7 +669,7 @@ class StockPaperAdapter:
             StockPaperRejectedError: 소수 주 · 숏 · 현금 부족 · 시장 폐장.
         """
         instrument = order.instrument
-        book = self._book(instrument.market)
+        book = await self._book(instrument.market)
         await self._settle(book, instrument)
         caps = self._capabilities(instrument.market)
         if caps.lot is Lot.INTEGER and order.quantity != order.quantity.to_integral_value():
@@ -595,7 +730,7 @@ class StockPaperAdapter:
             crossed = mark <= limit if order.side is Side.BUY else mark >= limit
             if crossed:
                 self._fill(book, made, limit)
-        self._persist(book)
+        await self._persist(book)
         self._log_order(made)
         return self._result(made)
 
@@ -619,7 +754,7 @@ class StockPaperAdapter:
                 found.status = "finished"
                 found.finish_as = "cancelled"
                 found.finish_time = _now()
-                self._persist(book)
+                await self._persist(book)
             return self._result(found)
         raise StockPaperRejectedError(f"모르는 주문이다 — {broker_order_id}")
 
@@ -650,7 +785,7 @@ class StockPaperAdapter:
         Returns:
             Gate `open_orders` 와 같은 열쇠의 행들.
         """
-        book = self._book(instrument.market)
+        book = await self._book(instrument.market)
         await self._settle(book, instrument)
         return [
             self._order_row(row)
@@ -667,7 +802,7 @@ class StockPaperAdapter:
         Returns:
             `finish_as`·`fill_price` 를 채운 행들 (최대 40).
         """
-        book = self._book(instrument.market)
+        book = await self._book(instrument.market)
         await self._settle(book, instrument)
         rows = [
             row
@@ -690,7 +825,7 @@ class StockPaperAdapter:
         Raises:
             StockPaperRejectedError: 닫을 포지션이 없다.
         """
-        book = self._book(instrument.market)
+        book = await self._book(instrument.market)
         await self._settle(book, instrument)
         held = book.positions.get(instrument.symbol)
         if held is None or held.size == 0:
@@ -716,7 +851,7 @@ class StockPaperAdapter:
         book.orders[made.id] = made
         mark = (await self._mark(instrument)).last_price
         self._fill(book, made, self._slipped(instrument.market, mark, buy=False))
-        self._persist(book)
+        await self._persist(book)
         self._log_order(made)
         return self._result(made)
 
@@ -737,7 +872,7 @@ class StockPaperAdapter:
         Returns:
             새로 건 조건부 id. 이미 맞게 걸려 있었으면 None.
         """
-        book = self._book(instrument.market)
+        book = await self._book(instrument.market)
         await self._settle(book, instrument)
         held = book.positions.get(instrument.symbol)
         size = held.size if held else 0
@@ -757,7 +892,7 @@ class StockPaperAdapter:
             create_time=_now(),
         )
         book.stops[made.id] = made
-        self._persist(book)
+        await self._persist(book)
         return made.id
 
     async def open_stops(self, instrument: Instrument) -> list[dict[str, str]]:
@@ -769,7 +904,7 @@ class StockPaperAdapter:
         Returns:
             Gate `open_stops` 와 같은 열쇠(`id`·`trigger_price`·`size`·`text`…)의 행들.
         """
-        book = self._book(instrument.market)
+        book = await self._book(instrument.market)
         await self._settle(book, instrument)
         return [
             {
@@ -794,25 +929,25 @@ class StockPaperAdapter:
         for book in self._books.values():
             if stop_id in book.stops:
                 del book.stops[stop_id]
-                self._persist(book)
+                await self._persist(book)
                 return
 
     # ------------------------------------------------------------------
     # 내부 — 계좌
     # ------------------------------------------------------------------
 
-    def _book(self, market: Market) -> _Book:
+    async def _book(self, market: Market) -> _Book:
         found = self._books.get(market)
         if found is not None:
             return found
-        path = self._root / f"{market.value}.json"
-        loaded = _load_book(path)
+        raw = await self._store.load(market)
+        loaded = None if raw is None else _book_from(raw)
         if loaded is None:
             currency = Currency.KRW if market is Market.KRX else Currency.USD
             loaded = _Book(
                 market=market.value, currency=currency.value, cash=_text(self._seed_for(market))
             )
-            _save_book(path, loaded)
+            await self._store.save(market, _book_payload(loaded))
             _logger.info(
                 "stock_paper_account_opened",
                 payload={"market": market.value, "cash": loaded.cash, "currency": currency.value},
@@ -823,10 +958,10 @@ class StockPaperAdapter:
 
     _last_market: Market | None = None
 
-    def _current_book(self) -> _Book:
+    async def _current_book(self) -> _Book:
         if self._last_market is not None:
-            return self._book(self._last_market)
-        return self._book(next(iter(self._seed)) if self._seed else Market.NASDAQ)
+            return await self._book(self._last_market)
+        return await self._book(next(iter(self._seed)) if self._seed else Market.NASDAQ)
 
     def _seed_for(self, market: Market) -> Decimal:
         if self._seed is not None:
@@ -850,8 +985,8 @@ class StockPaperAdapter:
             found = self._costs[market] = load_cost_table().for_market(market)
         return found
 
-    def _persist(self, book: _Book) -> None:
-        _save_book(self._root / f"{book.market}.json", book)
+    async def _persist(self, book: _Book) -> None:
+        await self._store.save(Market(book.market), _book_payload(book))
 
     @staticmethod
     def _locked(book: _Book) -> Decimal:
@@ -965,7 +1100,7 @@ class StockPaperAdapter:
             self._fill(book, made, self._slipped(instrument.market, fill_at, buy=not stop.long))
             self._log_order(made)
         if changed:
-            self._persist(book)
+            await self._persist(book)
 
     def _fill(self, book: _Book, order: _Order, price: Decimal) -> None:
         market = Market(book.market)
@@ -1103,4 +1238,14 @@ class StockPaperAdapter:
         )
 
 
-__all__ = ["BROKER_NAME", "StockPaperAdapter", "StockPaperRejectedError", "StockQuotes"]
+__all__ = [
+    "BROKER_NAME",
+    "DbStateStore",
+    "FileStateStore",
+    "StateStore",
+    "StockPaperAdapter",
+    "StockPaperRejectedError",
+    "StockQuotes",
+    "attach_state_store",
+    "current_state_store",
+]
