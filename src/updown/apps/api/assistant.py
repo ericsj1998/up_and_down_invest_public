@@ -174,6 +174,9 @@ async def save_draft(
                 )
             )
         await session.flush()
+        # ⚠️ 새 행의 `updated_at` 은 서버 기본값이라 flush 뒤에도 파이썬 객체엔 None 이다 —
+        #    그대로 직렬화하면 500 (2026-09-10 사용자 신고 · 자본 단계). refresh 로 읽어 온다.
+        await session.refresh(row)
         body = _draft_json(row)
     return {"persisted": True, "draft": body}
 

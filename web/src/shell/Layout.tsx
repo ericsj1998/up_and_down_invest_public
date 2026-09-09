@@ -24,7 +24,7 @@ export function Layout({
   children: ReactNode;
 }) {
   const [drawer, setDrawer] = useState(false);
-  // ⭐ AI 채팅 패널(T248) — 라우트 밖이라 화면을 옮겨도 대화가 안 끊긴다. 열림은 브라우저가 기억한다.
+  // ⭐ AI 채팅 패널(T248) — 라우트 밖이라 화면을 옮겨도 대화가 안 끊긴다. 우측 아래 동그란 단추 · 열림은 브라우저가 기억한다 (2026-09-10 사용자 요구).
   const [chat, setChat] = useState(() => {
     try {
       return localStorage.getItem(OPEN_SLOT) === "1";
@@ -51,9 +51,9 @@ export function Layout({
           onClick={() => setDrawer(false)}
         />
       ) : null}
-      <ChatPanel who={who} open={chat} onClose={() => setChat(false)} />
+      <ChatPanel who={who} open={chat} onToggle={() => setChat((was) => !was)} />
       <div className="p-4 xl:ml-80">
-        <Navbar who={who} onOut={onOut} onMenu={() => setDrawer(true)} onChat={() => setChat((was) => !was)} />
+        <Navbar who={who} onOut={onOut} onMenu={() => setDrawer(true)} />
         {/* ⚠️ min-w-0 + overflow-x-clip: 넓은 표·pre 는 자기 상자(.table-wrap) 안에서 스크롤한다 — 화면 전체가
             가로로 밀리면 안 된다 (모바일 실측 2026-09-05: 옛 카드가 화면 밖으로 넘쳤다). */}
         <main className="mt-4 min-w-0 overflow-x-clip">{children}</main>

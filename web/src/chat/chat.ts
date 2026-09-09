@@ -19,22 +19,21 @@ export function visibleMessages(messages: readonly ChatMessageView[]): ChatMessa
   return messages.filter((m) => m.role === "user" || (m.role === "assistant" && !(m.tool_calls && m.tool_calls.length) && m.content));
 }
 
-export type Dock = "right" | "left" | "bottom" | "float";
-export const DOCK_SLOT = "chat-dock";
 export const OPEN_SLOT = "chat-open";
+export const THREAD_SLOT = "chat-thread";
 
-export function readDock(): Dock {
+/** 마지막에 보던 대화 id — 세션은 서버에 있고 브라우저는 어느 것이었는지만 기억한다. */
+export function readThread(): string | null {
   try {
-    const raw = localStorage.getItem(DOCK_SLOT);
-    return raw === "left" || raw === "bottom" || raw === "float" ? raw : "right";
+    return localStorage.getItem(THREAD_SLOT);
   } catch {
-    return "right";
+    return null;
   }
 }
 
-export function writeDock(dock: Dock): void {
+export function writeThread(id: string): void {
   try {
-    localStorage.setItem(DOCK_SLOT, dock);
+    localStorage.setItem(THREAD_SLOT, id);
   } catch {
     // 기억만 못 한다.
   }
