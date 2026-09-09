@@ -82,7 +82,9 @@ class TestOrderPathIsClosed:
         from updown.marketdata.adapter import Capability
 
         assert Capability.SHORT in caps
-        assert Capability.WS not in caps  # 스트림은 P2 검증 뒤에 알린다
+        # 2026-09-09 (T240): 캔들 스트림은 T62 뒤 로컬 데모 6판이 매일 쓴다 — 이제 선언한다.
+        #   빠져 있으면 조립부가 폴링 브로커로 보고 봉 캐시를 끼운다(그래서 부활이 막혔다 · T251).
+        assert Capability.WS in caps
         assert Capability.CONDITIONAL_ORDERS not in caps
 
 
