@@ -11,6 +11,7 @@ import pytest
 
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import AssetType, Currency, Instrument, Market, Timeframe
+from updown.common.domain.market import MarketSession, MarketStatus
 from updown.marketdata.ingest.repository import InstrumentNotFoundError
 from updown.marketdata.ingest.timeframes import floor_to_interval
 from updown.orchestration.walkforward.stored_candles import StoredCandles, needed_frames
@@ -65,6 +66,17 @@ class FakeQuotes:
 
     def __init__(self) -> None:
         self.calls: list[tuple[datetime, datetime]] = []
+        self.open_market = True
+
+    async def get_market_status(self, instrument: Instrument) -> MarketStatus:
+        return MarketStatus(
+            instrument=instrument,
+            session=MarketSession.REGULAR if self.open_market else MarketSession.CLOSED,
+            is_order_allowed=self.open_market,
+            as_of=datetime.now(UTC),
+            next_open=None,
+            next_close=None,
+        )
 
     async def get_candles(
         self, instrument: Instrument, timeframe: Timeframe, start: datetime, end: datetime
@@ -134,6 +146,24 @@ async def test_instrument_is_resolved_once() -> None:
     await cache.get_candles(AAPL, Timeframe.H1, now - HOUR * 3, now)
     await cache.get_candles(AAPL, Timeframe.H1, now - HOUR * 3, now)
     assert repo.resolved == 1
+
+
+@pytest.mark.asyncio
+async def test_closed_market_asks_for_the_tail_only_once_per_interval() -> None:
+    cache, _, quotes = _cache()
+    now = datetime.now(UTC)
+    start = floor_to_interval(now, Timeframe.H1) - HOUR * 10
+    await cache.get_candles(AAPL, Timeframe.H1, start, now)
+    quotes.open_market = False
+    quotes.calls.clear()
+    await cache.get_candles(AAPL, Timeframe.H1, start, now)
+    await cache.get_candles(AAPL, Timeframe.H1, start, now)
+    assert len(quotes.calls) == 1, "닫힌 장에서는 간격 안에 한 번만 묻는다"
+    quotes.open_market = True
+    quotes.calls.clear()
+    await cache.get_candles(AAPL, Timeframe.H1, start, now)
+    await cache.get_candles(AAPL, Timeframe.H1, start, now)
+    assert len(quotes.calls) == 2, "열린 장에서는 매번 묻는다"
 
 
 def test_needed_frames_is_step_entry_daily() -> None:

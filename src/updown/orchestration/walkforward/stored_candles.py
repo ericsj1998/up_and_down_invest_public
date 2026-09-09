@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -39,6 +40,9 @@ _logger = get_logger("walkforward.stored_candles")
 
 HEAD_TOLERANCE = timedelta(days=4)
 """저장된 첫 봉이 요청 시작보다 이만큼 늦어야 머리를 받는다 — 주말+휴일 연휴가 이 안에 든다."""
+CLOSED_TAIL_INTERVAL = 900.0
+"""장이 닫혀 있을 때 꼬리를 다시 묻는 간격(초) — 러너의 축 갱신(5m 축은 30초마다)이 밤새 빈 요청을
+내던 것을 막는다(실측 2026-09-09: 폐장 10분에 16회). 열려 있으면 매번 묻는다."""
 
 
 class _StatusQuotes(Protocol):
@@ -74,6 +78,7 @@ class StoredCandles:
         self._repo = repo
         self._ids: dict[str, int] = {}
         self._head_tried: dict[tuple[str, Timeframe], datetime] = {}
+        self._tail_checked: dict[tuple[str, Timeframe], float] = {}
         self.fetched = 0
         """브로커에서 받은 봉 수 누계 — 프로브·시험이 읽는다."""
         self.served = 0
@@ -87,7 +92,8 @@ class StoredCandles:
     @property
     def capabilities(self) -> frozenset[Capability]:
         """안쪽 어댑터의 능력."""
-        found: object = getattr(self._quotes, "capabilities", frozenset())
+        default: frozenset[Capability] = frozenset()
+        found: object = getattr(self._quotes, "capabilities", default)
         return cast("frozenset[Capability]", found)
 
     async def get_candles(
@@ -117,7 +123,7 @@ class StoredCandles:
             if stored[0].ts - start > HEAD_TOLERANCE and (tried is None or start < tried):
                 self._head_tried[key] = start
                 ranges.append((start, stored[0].ts))
-            if end - stored[-1].ts > span:
+            if end - stored[-1].ts > span and await self._tail_due(instrument, key):
                 ranges.append((stored[-1].ts, end))
         merged: dict[datetime, Candle] = {c.ts: c for c in stored}
         now = datetime.now(UTC)
@@ -226,6 +232,21 @@ class StoredCandles:
         """
         return self._quotes.candle_stream(instruments, timeframe, multiplier)
 
+    async def _tail_due(self, instrument: Instrument, key: tuple[str, Timeframe]) -> bool:
+        """꼬리를 브로커에 물을 차례인가 — 열려 있으면 늘, 닫혀 있으면 간격마다."""
+        try:
+            status = await self._status_quotes().get_market_status(instrument)
+        except Exception:
+            return True
+        if status.is_order_allowed:
+            return True
+        now = time.monotonic()
+        last = self._tail_checked.get(key)
+        if last is not None and now - last < CLOSED_TAIL_INTERVAL:
+            return False
+        self._tail_checked[key] = now
+        return True
+
     def _status_quotes(self) -> _StatusQuotes:
         return self._quotes  # type: ignore[return-value]
 
@@ -260,4 +281,4 @@ def needed_frames(entry: Timeframe, step: Timeframe) -> tuple[Timeframe, ...]:
     return tuple(sorted(wanted, key=lambda f: interval(f)))
 
 
-__all__ = ["HEAD_TOLERANCE", "StoredCandles", "needed_frames"]
+__all__ = ["CLOSED_TAIL_INTERVAL", "HEAD_TOLERANCE", "StoredCandles", "needed_frames"]
