@@ -20,6 +20,7 @@ import {
   useParams,
 } from "react-router-dom";
 import { Accounts } from "./Accounts";
+import { AiReport } from "./AiReport";
 import { assistantDraft, type Who } from "./api";
 import { Assistant } from "./Assistant";
 import { readLocal } from "./assistant";
@@ -131,6 +132,7 @@ function Shell() {
             <Route path="/paper/:run" element={<PaperPage />} />
             <Route path="/paper" element={<Navigate to="/console" replace />} />
             <Route path="/accounts" element={<Accounts who={who} />} />
+            <Route path="/ai-report" element={<AiReport who={who} />} />
             <Route path="/label" element={<LabelPage />} />
             <Route path="*" element={<Missing />} />
           </Routes>

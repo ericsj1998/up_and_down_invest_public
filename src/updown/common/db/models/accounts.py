@@ -210,6 +210,27 @@ class ChatThread(Base):
     )
 
 
+class AiParticipant(Base):
+    """AI 토너먼트 참가자 — 모델 x 프롬프트 버전 x 프롬프트 해시 x 스냅샷 (T249 · 0123).
+
+    Note:
+        **얼린 뒤엔 안 바뀐다.** 프롬프트 본문이 바뀌면 해시가 달라져 새 행이 생기고 표본은
+        0 부터다 —
+        옛 성과가 새 프롬프트의 것으로 읽히는 일이 없다. 키 규칙은 `orchestration/ai_chat/report.py
+        participant_key`.
+    """
+
+    __tablename__ = "ai_participants"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    model: Mapped[str]
+    prompt_version: Mapped[str]
+    prompt_hash: Mapped[str]
+    snapshot: Mapped[JsonDict] = mapped_column(default=dict, server_default=sa.text("'{}'::jsonb"))
+    note: Mapped[str] = mapped_column(default="", server_default="")
+    frozen_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())
+
+
 class AccountContact(Base):
     """보류·대기 중인 사람이 보낸 관리자 문의 한 건 (사용자 2026-09-07).
 

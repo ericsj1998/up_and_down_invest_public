@@ -557,6 +557,65 @@ class RunStore:
             for row in rows
         ]
 
+    async def runs_with_trades(
+        self, *, ai: bool
+    ) -> list[tuple[dict[str, Any], tuple[TradeRecord, ...]]]:
+        """판과 그 매매 — 퍼포먼스 리포트(T249)의 원료.
+
+        Args:
+            ai: 참이면 AI 가 낸 판(메타 `ai`)만, 거짓이면 그 밖의 **라이브** 판(기준선).
+
+        Returns:
+            `({key, market, symbol, live, opened_at, closed_at, meta}, 매매들)` 목록. 닫힌 판도
+            낸다 —
+            표본은 판이 아니라 매매다.
+
+        Raises:
+            RunStoreError: DB 에 닿을 수 없는 경우.
+        """
+        try:
+            async with self._factory() as session:
+                rows = (
+                    (
+                        await session.execute(
+                            sa.select(WalkforwardRun)
+                            .where(
+                                WalkforwardRun.meta_json.has_key("ai")
+                                if ai
+                                else sa.and_(
+                                    WalkforwardRun.live.is_(True),
+                                    sa.not_(WalkforwardRun.meta_json.has_key("ai")),
+                                )
+                            )
+                            .order_by(WalkforwardRun.opened_at)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                out: list[tuple[dict[str, Any], tuple[TradeRecord, ...]]] = []
+                for row in rows:
+                    records = await self._records(session, row.id)
+                    out.append(
+                        (
+                            {
+                                "key": row.key,
+                                "market": row.market,
+                                "symbol": row.symbol,
+                                "live": row.live,
+                                "opened_at": row.opened_at.isoformat(),
+                                "closed_at": None
+                                if row.closed_at is None
+                                else row.closed_at.isoformat(),
+                                "meta": dict(row.meta_json or {}),
+                            },
+                            records,
+                        )
+                    )
+        except Exception as exc:
+            raise RunStoreError(f"AI 판을 못 읽었다: {exc}") from exc
+        return out
+
     async def save(self, run_id: uuid.UUID, records: Sequence[TradeRecord]) -> None:
         """원장을 통째로 다시 쓴다.
 

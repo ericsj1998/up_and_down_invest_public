@@ -1837,6 +1837,8 @@ export type ChatThreadView = {
 export function chatSettings(): Promise<{
   models: { id: string; rank: number; note: string }[];
   default: string;
+  /** T249 관문 — 실험이 켜졌고 n≥30 · 기준선 위 참가자가 있으면 그 모델. */
+  gate?: { model: string | null; why: string };
   prompt_version: string;
   auto: {
     enabled: boolean;
@@ -1887,6 +1889,45 @@ export function chatPlaceOrder(body: {
   model?: string;
 }): Promise<{ session_id: string; order_id: string; confirm?: { moved: boolean; stop: string } }> {
   return request("/ai/chat/orders", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) }, 180_000);
+}
+
+export type AiParticipantView = {
+  participant: string;
+  n: number;
+  wins: number;
+  hit_rate: string | null;
+  avg_r: string | null;
+  pnl_pct: string;
+  mdd_pct: string;
+  judged: boolean;
+  min_sample: number;
+  turns: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  failures: number;
+  last_closed_at: string | null;
+  curve: string[];
+};
+
+export type AiReportView = {
+  started: { at: string; by?: string | null; models?: string[]; participants?: string[] } | null;
+  prompt: { version: string; hash: string };
+  snapshot: { bars: number; ohlc: number; frames: string[] };
+  min_sample: number;
+  participants: AiParticipantView[];
+  baseline: AiParticipantView;
+  default_model: string | null;
+  generated_at: string;
+};
+
+/** AI 퍼포먼스 리포트 (T249). */
+export function aiReport(): Promise<AiReportView> {
+  return request("/ai/report");
+}
+
+/** 실험 시작 — 되돌릴 수 없다. 관리자만. `confirm` 은 사람이 친 "시작". */
+export function aiReportStart(body: { confirm: string; models?: string[] }): Promise<{ started: AiReportView["started"]; participants: string[] }> {
+  return request("/ai/report/start", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) });
 }
 
 export function marketStatus(market: string): Promise<MarketStatusView> {

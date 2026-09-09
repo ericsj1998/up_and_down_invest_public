@@ -9,6 +9,7 @@
 from updown.common.db.models.accounts import (
     Account,
     AccountContact,
+    AiParticipant,
     AssistantDraft,
     ChatThread,
     MarketGrantRow,
@@ -51,6 +52,7 @@ __all__ = [
     "Account",
     "AccountBalance",
     "AccountContact",
+    "AiParticipant",
     "AllocationLedgerEntry",
     "AnalysisReport",
     "AppSetting",

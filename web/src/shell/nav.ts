@@ -5,7 +5,7 @@
  *    이름만 바꾼다.
  */
 import type { ComponentType, SVGProps } from "react";
-import { BanknotesIcon, BeakerIcon, ChartBarIcon, SparklesIcon, TagIcon, UsersIcon } from "@heroicons/react/24/solid";
+import { BanknotesIcon, BeakerIcon, ChartBarIcon, CpuChipIcon, SparklesIcon, TagIcon, UsersIcon } from "@heroicons/react/24/solid";
 
 export type Icon = ComponentType<SVGProps<SVGSVGElement>>;
 
@@ -30,6 +30,8 @@ export const PAGES: readonly Page[] = [
   { to: "/report", name: "리포트", icon: ChartBarIcon },
   // 백테스트 리포트 (T222) — 어떤 데이터·전략·결과로 검증했나. 주소는 /evidence 그대로(링크 보존) · 이름만 바꿈 (사용자 2026-09-06).
   { to: "/evidence", name: "백테스트 리포트", icon: BeakerIcon },
+  // AI 퍼포먼스 리포트 (T249) — 참가자(모델 x 프롬프트 x 스냅샷)별 페이퍼 실측. n<30 은 회색.
+  { to: "/ai-report", name: "AI 리포트", icon: CpuChipIcon },
   { to: "/accounts", name: "관리", icon: UsersIcon, admin: true },
   { to: "/label", name: "라벨(임시)", icon: TagIcon, dev: true },
 ];

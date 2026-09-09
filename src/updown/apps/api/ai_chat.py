@@ -54,6 +54,7 @@ from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_chat.agent import PROMPT_VERSION, ChatResult, run_chat
 from updown.orchestration.ai_chat.aliases import load_aliases
 from updown.orchestration.ai_chat.auto import AutoState, auto_allowed
+from updown.orchestration.ai_chat.report import participant_key, prompt_fingerprint
 from updown.orchestration.ai_chat.tools import ToolContext
 from updown.orchestration.report import evidence_charts as ec
 
@@ -111,9 +112,18 @@ async def settings(request: Request) -> dict[str, Any]:
         pool = load_pool()
     except PoolConfigError as exc:
         raise HTTPException(503, str(exc)) from exc
+    # ⭐ T249 관문 — 실험이 켜졌고 n≥30 · 기준선 위인 참가자가 있으면 그 모델이 기본이다.
+    #    없으면 풀의 chat 기본값. (순환 import 을 피하려고 여기서 부른다 — 리포트가 이 모듈의
+    #    호출자 검사를 쓴다.)
+    from updown.apps.api import ai_report
+
+    gate = await ai_report.gated_default()
     return {
         "models": [{"id": m.id, "rank": m.rank, "note": m.note} for m in pool.models],
-        "default": pool.chat_model or (pool.models[0].id if pool.models else ""),
+        "default": gate.get("model")
+        or pool.chat_model
+        or (pool.models[0].id if pool.models else ""),
+        "gate": gate,
         "prompt_version": PROMPT_VERSION,
         "auto": await _auto_json(request),
     }
@@ -407,6 +417,7 @@ async def _persist(
                     "thread": thread_id,
                     "model": model,
                     "prompt_version": PROMPT_VERSION,
+                    "participant": participant_key(model),
                     "rounds": result.rounds,
                     "tokens": assistant["tokens"],
                     "tools": [e.as_json() for e in result.tool_events],
@@ -574,10 +585,11 @@ def _order_payload(
         "ai": {
             "order_id": order_id,
             "attribution": f"ai:{order_id}@1",
-            "participant": f"{model}@{PROMPT_VERSION}",
+            "participant": participant_key(model),
             "thread": thread_id,
             "reasons": reasons,
             "prompt_version": PROMPT_VERSION,
+            "prompt_hash": prompt_fingerprint(),
         },
     }
     if group == "coin":
@@ -591,8 +603,15 @@ def _order_payload(
 async def _record_order(
     email: str, thread_id: str, body: dict[str, Any], started: dict[str, Any], *, auto: bool
 ) -> None:
-    """`event_logs.ai_order_placed` — 일 건수·노출 상한이 이것을 센다."""
+    """`event_logs.ai_order_placed` — 일 건수·노출 상한이 이것을 센다.
+
+    Note:
+        참가자(모델 x 프롬프트 해시 x 스냅샷)는 여기서 얼린다 — 첫 주문이 곧 등록이다 (T249).
+    """
+    from updown.apps.api import ai_report  # 순환 import 회피 — settings() 와 같은 이유
+
     factory = auth._store()  # pyright: ignore[reportPrivateUsage]
+    await ai_report.ensure_participant(str(body["ai"]["participant"]))
     async with factory() as session, session.begin():
         session.add(
             EventLog(
