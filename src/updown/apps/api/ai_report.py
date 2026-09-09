@@ -21,15 +21,19 @@ from typing import Annotated, Any, cast
 import sqlalchemy as sa
 from fastapi import APIRouter, Body, HTTPException, Request
 
-from updown.apps.api import auth, walkforward
+from updown.apps.api import ai_chat, auth, walkforward
 from updown.apps.api.ai_chat import _who_or_403  # pyright: ignore[reportPrivateUsage]
+from updown.apps.api.jobs import Reporter, registry
 from updown.common.db.models.accounts import AiParticipant
 from updown.common.db.models.enums import LogLevel
 from updown.common.db.models.ops import EventLog
 from updown.common.logging.context import get_trace_id, new_trace_id
 from updown.common.security.roles import Role
+from updown.llm.nvidia import NvidiaClient
 from updown.llm.pool import PoolConfigError, load_pool
+from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_chat.agent import PROMPT_VERSION
+from updown.orchestration.ai_chat.evaluate import CASES, run_eval
 from updown.orchestration.ai_chat.report import (
     DEFAULT_SNAPSHOT,
     EXPERIMENT_EVENT,
@@ -47,11 +51,14 @@ from updown.orchestration.ai_chat.report import (
     trade_of,
     turn_stats,
 )
+from updown.orchestration.ai_chat.tools import TOOLS
 from updown.orchestration.walkforward.ledger import Actor
 
 router = APIRouter(prefix="/ai/report", tags=["ai-report"])
 
 TOURNAMENT_SIZE = 3
+EVAL_EVENT = "ai_chat_eval"
+"""채팅 시험 묶음 결과 — 추가만. 리포트는 마지막 것을 보여 준다."""
 """첫 토너먼트 참가 모델 수 — 규칙 #12(최대 3 후보 · 한 축씩)."""
 
 
@@ -164,6 +171,8 @@ async def _report() -> dict[str, Any]:
         "default_model": chosen,
         "journal": journal_rows(ai_trades),
         "reason_hits": reason_hits(ai_trades),
+        "eval": await _latest_eval(),
+        "tools": [t.spec.name for t in TOOLS],
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -188,6 +197,85 @@ async def gated_default() -> dict[str, Any]:
     if chosen:
         return {"model": chosen, "why": f"n≥{MIN_SAMPLE} · 기준선 위 참가자"}
     return {"model": None, "why": f"관문을 지난 참가자가 없다 (n≥{MIN_SAMPLE} · 기준선 위)"}
+
+
+async def _latest_eval() -> dict[str, Any] | None:
+    """마지막 채팅 시험 결과 (`event_logs.ai_chat_eval`)."""
+    factory = auth._store()  # pyright: ignore[reportPrivateUsage]
+    async with factory() as session:
+        row = await session.scalar(
+            sa.select(EventLog)
+            .where(EventLog.event_type == EVAL_EVENT)
+            .order_by(EventLog.ts.desc())
+            .limit(1)
+        )
+        if row is None:
+            return None
+        return {**dict(row.payload_json), "at": row.ts.isoformat(), "by": row.actor}
+
+
+@router.post("/eval")
+async def start_eval(request: Request) -> dict[str, Any]:
+    """채팅 시험 묶음을 **작업**으로 돌린다 — 도구마다 질문 하나 + 합성 (T258).
+
+    실제 모델을 부른다(토큰).
+
+    Args:
+        request: 요청 — 로그인한 사람만. 결과는 `event_logs.ai_chat_eval` 에 남고 리포트가
+            보여 준다.
+
+    Returns:
+        `{job_id, ...}` — 진행은 `GET /ai/jobs/{id}/events`.
+
+    Raises:
+        HTTPException: 503 모델 풀 설정 없음.
+    """
+    who = await _who_or_403(request)
+    try:
+        pool = load_pool()
+    except PoolConfigError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    model = pool.chat_model or (pool.models[0].id if pool.models else "")
+    if not model:
+        raise HTTPException(503, "쓸 모델이 없다 — config/llm_pool.yml")
+    email = who.email
+
+    async def _work(report: Reporter) -> dict[str, Any]:
+        client = NvidiaClient(endpoint=pool.endpoint or NvidiaClient.endpoint)
+        async with MarketDataProvider() as provider:
+
+            def _ctx() -> Any:
+                # 사례마다 새 컨텍스트 — 도구 결과(turn_results)가 섞이지 않게. 진행 줄은 조용히.
+                return ai_chat._context(who, lambda _: None, provider)  # pyright: ignore[reportPrivateUsage]
+
+            made = await run_eval(
+                CASES,
+                client=client,
+                model=model,
+                ctx_factory=_ctx,
+                prompt_version=PROMPT_VERSION,
+                timeout_seconds=pool.chat_timeout_seconds,
+                fallbacks=[m.id for m in pool.models if m.id != model],
+                report=report,
+            )
+        payload = made.as_json([t.spec.name for t in TOOLS])
+        factory = auth._store()  # pyright: ignore[reportPrivateUsage]
+        async with factory() as session, session.begin():
+            session.add(
+                EventLog(
+                    trace_id=get_trace_id() or new_trace_id(),
+                    actor=email,
+                    module="apps.api.ai_report",
+                    level=LogLevel.INFO,
+                    event_type=EVAL_EVENT,
+                    payload_json=payload,
+                )
+            )
+            await session.flush()
+        return payload
+
+    job = registry.start("ai-eval", f"채팅 시험 {len(CASES)}사례 · {model}", _work)
+    return {"job_id": job.job_id, **job.snapshot()}
 
 
 @router.get("")

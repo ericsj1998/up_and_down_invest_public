@@ -1965,6 +1965,9 @@ export type AiReportView = {
   baseline: AiParticipantView;
   default_model: string | null;
   journal: AiJournalRow[];
+  /** 마지막 채팅 시험 묶음 (T258) — 없으면 null. */
+  eval?: AiEvalView | null;
+  tools?: string[];
   reason_hits: { reason: string; n: number; wins: number; hit_rate: string | null }[];
   generated_at: string;
 };
@@ -1987,6 +1990,42 @@ export function aiReport(): Promise<AiReportView> {
 }
 
 /** 실험 시작 — 되돌릴 수 없다. 관리자만. `confirm` 은 사람이 친 "시작". */
+export type AiEvalCase = {
+  name: string;
+  question: string;
+  expect_tools: string[];
+  called: string[];
+  hit: boolean;
+  tools_ok: boolean;
+  answered: boolean;
+  dashboard: boolean;
+  dashboard_missing: number;
+  passed: boolean;
+  ms: number;
+  rounds: number;
+  tokens: number;
+  failure: string | null;
+  excerpt: string;
+};
+
+export type AiEvalView = {
+  model: string;
+  prompt_version: string;
+  started_at: string;
+  at?: string;
+  by?: string | null;
+  ms: number;
+  n: number;
+  passed: number;
+  coverage: Record<string, "passed" | "called" | "missed" | "untested">;
+  cases: AiEvalCase[];
+};
+
+/** 채팅 시험 묶음 실행 (작업) — 실제 모델을 부른다. */
+export function aiReportEval(): Promise<{ job_id: string }> {
+  return request("/ai/report/eval", { method: "POST" }, 60_000);
+}
+
 export function aiReportStart(body: { confirm: string; models?: string[] }): Promise<{ started: AiReportView["started"]; participants: string[] }> {
   return request("/ai/report/start", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) });
 }

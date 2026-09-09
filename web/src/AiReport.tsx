@@ -10,7 +10,8 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { aiReport, aiReportStart, type AiReportView, type Who } from "./api";
+import { aiReport, aiReportEval, aiReportStart, type AiReportView, type Who } from "./api";
+import { useJobEvents } from "./chat/useJobEvents";
 import { ErrorCard, num, when } from "./ui";
 
 /** 참가자 키 `모델@버전#해시/스냅샷` 을 세 칸으로. */
@@ -53,6 +54,8 @@ export function AiReport({ who }: { who: Who | null }) {
   const [arming, setArming] = useState(false);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
+  const [evalJob, setEvalJob] = useState<string | null>(null);
+  const job = useJobEvents(evalJob);
 
   const load = useCallback(() => {
     aiReport()
@@ -63,6 +66,13 @@ export function AiReport({ who }: { who: Who | null }) {
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
   useEffect(load, [load]);
+  // 시험 작업이 끝나면 리포트를 다시 읽는다(마지막 시험 결과가 붙는다).
+  useEffect(() => {
+    if (job.done) {
+      setEvalJob(null);
+      load();
+    }
+  }, [job.done, load]);
 
   const start = async () => {
     setBusy(true);
@@ -188,6 +198,92 @@ export function AiReport({ who }: { who: Who | null }) {
               회색 줄은 표본 {view.min_sample} 미만 — 판정 보류. 손익은 매매별 수익률(비용 차감)의 합, MDD 는 그 누적 곡선의 최대 낙폭.
               페이퍼 실측이며 예상이 아니다.
             </p>
+          </section>
+
+          <section>
+            <h2>도구 시험</h2>
+            <p className="faint">
+              도구마다 질문 하나(+ 합성 하나)를 실제 모델에 넣어 <b>기대한 도구가 불렸나 · 성공했나 · 답이 있나 · 대시보드를 냈나</b>만 잰다. 답의 질은 사람 눈으로 채점하지 않는다(규칙 #11).
+              실행은 토큰이 든다.
+            </p>
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={Boolean(evalJob)}
+                onClick={() => {
+                  aiReportEval()
+                    .then((got) => setEvalJob(got.job_id))
+                    .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+                }}
+              >
+                {evalJob ? "시험 중…" : "도구 시험 실행"}
+              </button>
+              {view.eval ? (
+                <span className="faint text-xs">
+                  마지막: {when(view.eval.at ?? view.eval.started_at)} · {view.eval.model} · {view.eval.prompt_version} · {view.eval.passed}/{view.eval.n} 통과 · {Math.round(view.eval.ms / 1000)}초
+                </span>
+              ) : (
+                <span className="faint text-xs">아직 돌린 적 없다.</span>
+              )}
+            </div>
+            {evalJob ? (
+              <ol className="faint mt-2 list-decimal pl-5 text-xs">
+                {job.lines.slice(-8).map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+              </ol>
+            ) : null}
+            {view.eval ? (
+              <>
+                <div className="chips mt-2">
+                  {(view.tools ?? Object.keys(view.eval.coverage)).map((t) => {
+                    const s = view.eval?.coverage[t] ?? "untested";
+                    return (
+                      <span key={t} className={`chip ${s === "passed" ? "gain" : s === "missed" ? "loss" : "faint"}`} title={s}>
+                        {t} · {s === "passed" ? "통과" : s === "called" ? "불림" : s === "missed" ? "안 불림" : "사례 없음"}
+                      </span>
+                    );
+                  })}
+                </div>
+                <div className="table-wrap" style={{ maxHeight: "24rem", overflowY: "auto" }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>사례</th>
+                        <th>질문</th>
+                        <th>기대 도구</th>
+                        <th>불린 도구</th>
+                        <th>통과</th>
+                        <th className="num">ms</th>
+                        <th className="num">왕복</th>
+                        <th className="num">토큰</th>
+                        <th className="num">대시보드 빈 칸</th>
+                        <th>답 발췌</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {view.eval.cases.map((c) => (
+                        <tr key={c.name} className={c.passed ? "" : "faint"}>
+                          <td>{c.name}</td>
+                          <td>{c.question}</td>
+                          <td>{c.expect_tools.join(", ")}</td>
+                          <td>{c.called.join(", ") || "—"}</td>
+                          <td className={c.passed ? "gain" : "loss"}>
+                            {c.passed ? "통과" : [!c.hit && "도구 안 불림", !c.tools_ok && "도구 실패", !c.answered && "답 없음", c.dashboard === false && "대시보드 없음"].filter(Boolean).join(" · ")}
+                          </td>
+                          <td className="num">{c.ms}</td>
+                          <td className="num">{c.rounds}</td>
+                          <td className="num">{c.tokens}</td>
+                          <td className="num">{c.dashboard ? c.dashboard_missing : "—"}</td>
+                          <td className="faint" title={c.failure ?? ""}>{c.failure ? `실패: ${c.failure}` : c.excerpt}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : null}
           </section>
 
           <section>

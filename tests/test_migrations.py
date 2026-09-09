@@ -254,3 +254,21 @@ def test_downgrade_base_then_upgrade_head_round_trip(
     command.upgrade(cfg, "head")
     with migrated_engine.connect() as conn:
         assert len(_base_tables(conn)) == EXPECTED_TABLE_COUNT
+
+
+def test_market_column_fits_every_market_value(migrated_engine: Engine) -> None:
+    """T251 — `instruments.market` 폭이 `Market` 의 가장 긴 값 이상이다.
+
+    BINANCE(7자)가 VARCHAR(6) 에 안 들어가던 사고.
+    """
+    from updown.common.domain.instrument import Market
+
+    with migrated_engine.connect() as conn:
+        width = conn.execute(
+            sa.text(
+                "SELECT character_maximum_length FROM information_schema.columns "
+                "WHERE table_name = 'instruments' AND column_name = 'market'"
+            )
+        ).scalar_one()
+    longest = max(len(m.value) for m in Market)
+    assert width is not None and width >= longest, f"폭 {width} < 가장 긴 시장 이름 {longest}"
