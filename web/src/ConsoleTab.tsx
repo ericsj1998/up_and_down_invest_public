@@ -32,6 +32,7 @@ import { Faucet } from "./Faucet";
 import { Leftovers } from "./Leftovers";
 import { Ranking } from "./Ranking";
 import { ValueRanking } from "./ValueRanking";
+import { StockOrder } from "./StockOrder";
 import { FundPanel } from "./FundPanel";
 import { Runs } from "./Runs";
 import { Sound } from "./Sound";
@@ -948,6 +949,8 @@ export function ConsoleTab({ openRun }: Props) {
       {group === "coin" ? <Ranking /> : null}
       {/* ⭐ 주식은 순위 대신 **저평가 후보** (T244) — 재무 대비 싼 순. 시장은 묶음의 첫 시장. */}
       {group === "stock" && allMarkets[0] ? <ValueRanking market={allMarkets[0].name} /> : null}
+      {/* ⭐ 주식 주문 창(T250) — 카드의 "주문" 단추가 여기로 종목을 채운다. 팝업 없음. */}
+      {group === "stock" && allMarkets.length ? <StockOrder markets={allMarkets} who={me.who ?? null} /> : null}
 
       {/* 🔴 **판은 여기서 연다.** 판 화면을 홈으로 두면 판이 없을 때 빈 화면이 뜨고,
           여럿일 때 화면이 임의로 하나를 고른다. */}

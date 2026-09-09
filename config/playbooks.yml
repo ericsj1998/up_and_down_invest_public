@@ -16,7 +16,8 @@ playbooks:
     listed: false
     recommended: false
     label: "차트 주문 — 사람이 주체인 판 (자동 판단 없음)"
-    market_groups: [코인]
+    # T250 — 주식 주문 창도 이 판을 띄운다. 시장 차이(정수 주 · 배율 없음 · 숏 없음 · 장중만)는 능력표가 댄다.
+    market_groups: [코인, 국내주식, 해외주식]
     # ⚠️ 판정 축이 없다는 뜻이 아니라, **차트가 보던 축**을 그대로 쓴다는 뜻이다.
     timeframe: 4h
     regimes: [RANGE, UPTREND, DOWNTREND]

@@ -2024,6 +2024,8 @@ export function orderCustom(payload: {
   symbol: string;
   market: string;
   margin: number;
+  /** 주식(정수 수량 시장)만 — 주수. 서버가 예산 = 주수 x 진입가로 바꾼다 (T250). */
+  shares?: number;
   leverage: number;
   short: boolean;
   entry: number;

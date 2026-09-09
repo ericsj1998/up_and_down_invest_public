@@ -1038,9 +1038,8 @@ class StockPaperAdapter:
     def _tick(self, market: Market, price: Decimal) -> Decimal:
         from updown.common.costs import resolve_tick
 
-        if market is Market.KRX:
-            return resolve_tick(self._cost(market), "", price, krw=True)
-        return Decimal("0.01")
+        # T250 — 눈금의 단일 출처는 config/costs.yml(`price_tick` · NASDAQ 0.01).
+        return resolve_tick(self._cost(market), "", price, krw=market is Market.KRX)
 
     async def _settle_all(self, book: _Book) -> None:
         symbols = {o.symbol for o in book.orders.values() if o.status == "open"}

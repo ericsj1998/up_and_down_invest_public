@@ -54,6 +54,7 @@ from updown.analysis.structures.box_range import SPAN_COVER
 from updown.apps.api.admin import instrument_of, rules_config
 from updown.apps.api.analysis import as_json
 from updown.apps.api.auth import require_market_trade, require_playbook_trade
+from updown.apps.api.stock_order import StockOrderRejectedError, hours_of, stock_order_terms
 from updown.common.costs import (
     DEFAULT_CONFIG_PATH,
     TICK_RATIO,
@@ -5520,12 +5521,16 @@ CUSTOM_BOOK = "custom"
 
 
 @router.post("/live/custom")
-async def live_custom(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def live_custom(
+    request: Request, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
     """차트에서 손으로 그은 계획으로 **판을 띄우고 그 자리에서 산다** (2026-08-30).
 
     Args:
+        request: 요청 — 매매법·시장 권한을 본다 (T230 · T242). T250 전에는 빠져 있어 관문이
+            안 걸렸다.
         payload: `{symbol, market, margin, leverage, short, entry, stop, first,
-            target, flags, price_frame}`.
+            target, flags, price_frame}` + 주식은 `shares`(정수 주 · 예산 대신).
 
     Returns:
         판 상태 + `confirm` (확정 내역). `session_id` 로 기존 RUN 화면이 그대로 열린다.
@@ -5564,6 +5569,24 @@ async def live_custom(payload: Annotated[dict[str, Any], Body()]) -> dict[str, A
         raise HTTPException(400, f"계획 값을 못 읽었다: {exc}") from exc
     market = Market(str(payload.get("market", Market.BINANCE.value)))
     short = bool(payload.get("short"))
+    # ⭐ T250 — 주식 능력표: 배율 1 · 숏 없음 · 정수 주(예산 = 주수 x 진입가) · 장중만.
+    #    코인은 그대로 지나간다.
+    caps = capabilities_of(market)
+    hours = None if caps.always_open else hours_of(load_calendar(), market, datetime.now(UTC))
+    try:
+        terms = stock_order_terms(
+            caps,
+            leverage=leverage,
+            short=short,
+            shares=payload.get("shares"),
+            entry=entry,
+            hours=hours,
+        )
+    except StockOrderRejectedError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    leverage = terms.leverage
+    if terms.margin is not None:
+        payload = {**payload, "margin": str(terms.margin), "leverage": str(terms.leverage)}
 
     # ① **돈이 걸리기 전에** 확정한다. 판을 먼저 띄우고 나서 막으면 아무것도 안 하는
     #    빈 판이 남고, 그 판은 화면에서 진짜 판과 구별되지 않는다.
@@ -5595,7 +5618,8 @@ async def live_custom(payload: Annotated[dict[str, Any], Body()]) -> dict[str, A
             },
             "playbook": CUSTOM_BOOK,
             "market": market.value,
-        }
+        },
+        request=request,
     )
     key = str(started["session_id"])
 
@@ -5630,6 +5654,7 @@ async def live_custom(payload: Annotated[dict[str, Any], Body()]) -> dict[str, A
             "first": str(first),
             "target": str(target),
             "leverage": str(leverage),
+            "shares": terms.shares,
             "flags": flags,
             "rr": f"{got.rr:.2f}",
             "need_pct": f"{got.need_pct:.1f}",

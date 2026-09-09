@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { fundamentals, valueRanking, type FundamentalsView, type ValueRow } from "./api";
 import { BrokerMark } from "./shell/BrokerMark";
 import { DISCLAIMER_TEXT } from "./shell/disclaimer";
+import { requestStockOrder } from "./StockOrder";
 import { ErrorCard, Fold, num, pct } from "./ui";
 
 /** 줄에 싣는 지표 — 서버 `SHOWN_METRICS` 와 같은 순서. */
@@ -190,6 +191,7 @@ export function ValueRanking({ market }: { market: string }) {
               <th>부채 깃발</th>
               <th>최근 공시</th>
               <th>왜 이 자리</th>
+              <th>주문</th>
             </tr>
           </thead>
           <tbody>
@@ -296,10 +298,25 @@ function RowPair({
           )}
         </td>
         <td className="faint">{row.why}</td>
+        <td>
+          {/* 카드 → 주문 창 (T250). 행 클릭은 근거 펼침이라 단추는 전파를 막는다. */}
+          <button
+            type="button"
+            className="btn small"
+            disabled={!row.price}
+            title={row.price ? "주식 주문 창에 이 종목을 채운다" : "시세가 없다"}
+            onClick={(e) => {
+              e.stopPropagation();
+              requestStockOrder(row.symbol, market);
+            }}
+          >
+            주문
+          </button>
+        </td>
       </tr>
       {shown ? (
         <tr className="why-row">
-          <td colSpan={10}>
+          <td colSpan={11}>
             <Detail symbol={row.symbol} market={market} />
           </td>
         </tr>

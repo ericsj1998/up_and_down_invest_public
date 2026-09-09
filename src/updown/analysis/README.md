@@ -20,6 +20,7 @@ Signal Aggregator, Trend Service. 산출물은 `TradeSetup` / `TradeProposal` �
 | `detectors/` | 셋업 탐지 플러그인 계약 (`SetupDetector`·`MarketContext`) | spec §4.3.1 |
 | `structures/` | **공용** 구조물 — 스윙·추세선·채널·박스·합류·영속화 | [docs/rules/structure_rules.md](../../../docs/rules/structure_rules.md) |
 | `indicators/` | **자체 구현** 지표 — SMA/EMA·ATR·RSI·거래량 배수·크로스 | [docs/rules/indicator_rules.md](../../../docs/rules/indicator_rules.md) |
+| `fundamentals/` | **재무 지표** (T243) — 시점 정합(`known_facts`) · 분기 복원(Q4 = FY − 3분기) · TTM · PER/PBR/EV·EBITDA/FCF·부채·ROE·성장 · 자기 5년 백분위 · 저평가 점수. 입력은 `FinancialFact` 와 종가, IO 없음 | [docs/planning/tasks/T243_fundamentals_edgar.md](../../../docs/planning/tasks/T243_fundamentals_edgar.md) |
 
 **지표는 라이브러리에 위임하지 않는다** (절대 규칙 #9). pandas-ta 는 정답지 대조용
 **dev 의존성**이며, 런타임 코드가 pandas·numpy 를 import 하지 않는지 테스트가 강제한다.
