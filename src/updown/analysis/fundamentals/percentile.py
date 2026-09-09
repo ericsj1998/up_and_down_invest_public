@@ -46,6 +46,9 @@ def percentile_rank(history: Sequence[Decimal], current: Decimal) -> Decimal:
 
     Returns:
         `current` 이하인 과거 값의 비율 x 100. 동률은 절반만 센다 (중앙 순위).
+
+    Raises:
+        ValueError: 표본이 비었다.
     """
     if not history:
         raise ValueError("백분위는 표본 없이 정의되지 않는다")
