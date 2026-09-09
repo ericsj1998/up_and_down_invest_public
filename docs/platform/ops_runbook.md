@@ -103,6 +103,19 @@ cd ~/updown && docker compose --env-file .env.live -f docker/compose.base.yml -f
 - 선물 계좌 **단방향(single) 포지션 모드** — 양방향이면 포지션·레버리지 응답이 list 로 와서 다 깨진다 (deploy.md §2-2)
 - 테스트넷 키(`GATE_TESTNET_*`)도 서버 env 에 있다 — `LIVE_ORDERS=0` 으로 내릴 때 쓴다. 그 키의 화이트리스트에도 서버 IP 가 있어야 한다
 
+## 5-1. 주식 판 운영 — 페이퍼 (T240~T250 · 2026-09-09)
+
+| 항목 | 값 |
+|---|---|
+| 계좌 | **페이퍼뿐**이다 — `StockPaperAdapter` · 상태는 DB `stock_paper_accounts`(시장당 한 행 · 시드 `config/markets.yml paper_seed_cash` · NASDAQ 10,000 USD). 토스 실주문 어댑터는 없고 `STOCK_LIVE_ORDERS=1` 은 예외로 멈춘다 |
+| 토스 자격 | 조회 전용 키(`TOSS_MARKETDATA_CLIENT_ID/SECRET`)만 — 봉·시세(1m/1d 원봉 · 정규장만 · REST 폴링). **토큰은 client 당 하나**라 같은 키를 두 프로세스가 쓰면 서로 무효화한다(백필·API 동시 실행 금지) |
+| 장 시간 | `config/market_sessions.yml` — 뉴욕 현지시각 + tz DB · 2026 휴장 10 · 조기마감(11/27 · 12/24) · `holiday_coverage` 밖은 UNKNOWN(열렸다고 말하지 않는다). 2027 휴장일은 아직 없다 — 연말 전에 넣는다 |
+| 스트림 | 장 밖에는 잠들고(폴링 0) 개장에 깬다. 첫 판 시작은 봉 캐시(`StoredCandles` · DB 먼저)로 3초·4 요청 수준 |
+| 결제 | T+1 은 **표시만**(능력표 `settlement_days`). 원장 모형화는 하지 않았다 |
+| 주문 창 | T250 — 콘솔 주식 묶음 "주식 주문": 정수 주 · 배율 1 · 매수만 · 장 밖 409(다음 개장 표기 · 예약 없음). 권한은 T242(`markets.foreign.trade`) |
+| 재무 | `EDGAR_USER_AGENT="이름 이메일"`(SEC 요구 · 사람이 넣는다) → `scripts/runtime/fundamentals_cli.py --symbols …`. 비면 새로고침이 503 |
+| 점검 | `scripts/ops/probe_stock_paper.py`(계좌·포지션·조건부) · `GET /exchange/market-status?market=NASDAQ` · `GET /fundamentals/ranking?market=NASDAQ` |
+
 ## 6. 로컬 개발 서버와의 관계
 
 dev 스택(`updown-*-1` · `make up`)은 별개다. 배포 이미지는 dev 컨테이너와 무관하게 로컬에서 새로 빌드한다.
