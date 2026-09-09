@@ -1,0 +1,263 @@
+"""봉 캐시 — DB 에 있는 만큼은 DB 에서, 없는 머리·꼬리만 브로커에서 (T240 · 2026-09-09).
+
+## 왜 있나
+
+토스는 웹소켓이 없고 분봉(1m)·일봉만 준다. 라이브 급전의 시드(축마다 800봉)를 매번 브로커에서
+받으면 1h 800봉 = 1분봉 수만 개 = 수백 요청이다 — 첫 실측(2026-09-09 17:30 KST)에서 AAPL 판 하나가
+**15분에 890 요청**을 냈고 판은 뜨지도 못했다(요청 시간 초과). 재시작·되살리기마다 같은 값을 다시
+받는 것은 낭비이고 요율 사고다.
+
+## 규칙
+
+- 요청 구간을 먼저 DB(`candles`)에서 읽는다.
+- DB 가 비었으면 전부 브로커에서. 있으면 **꼬리**(마지막 저장 봉 ~ 지금)만, 머리는 저장된 첫 봉이
+  요청 시작보다 `HEAD_TOLERANCE` 이상 늦을 때 한 번만 받는다.
+  주말·휴장은 빈 것이 정상이라 그 안은 안 받는다.
+- 받은 봉 중 **마감된 것만** 저장한다 — 진행 중인 봉을 적으면 다음 조회가 옛 값을 사실로 읽는다.
+  돌려줄 때는 진행 중인 봉도 같이 준다(러너 `refresh` 가 마지막 봉을 미마감으로 다룬다).
+- 코인(웹소켓 브로커)에는 끼우지 않는다 — 조립부가 `Capability.WS` 로 가른다.
+  시장 이름으로는 안 가른다.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Any, Protocol, cast
+
+from updown.common.domain.candle import Candle
+from updown.common.domain.instrument import Instrument, Timeframe
+from updown.common.domain.market import MarketStatus, Quote
+from updown.common.logging.setup import get_logger
+from updown.marketdata.adapter import Capability, QuoteAdapter
+from updown.marketdata.ingest.repository import CandleRepository, InstrumentNotFoundError
+from updown.marketdata.ingest.timeframes import interval
+from updown.marketdata.stream import CandleStream
+
+_logger = get_logger("walkforward.stored_candles")
+
+HEAD_TOLERANCE = timedelta(days=4)
+"""저장된 첫 봉이 요청 시작보다 이만큼 늦어야 머리를 받는다 — 주말+휴일 연휴가 이 안에 든다."""
+
+
+class _StatusQuotes(Protocol):
+    async def get_market_status(self, instrument: Instrument) -> MarketStatus:
+        """장 상태.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            세션과 주문 가능 여부.
+        """
+        ...
+
+
+class StoredCandles:
+    """조회 어댑터 앞에 서는 봉 캐시 — `QuoteAdapter` 계약을 그대로 지킨다.
+
+    Note:
+        캔들만 가로채고 나머지(시세·명세·펀딩·스트림·장 상태)는 안쪽 어댑터에 넘긴다.
+        주문 어댑터를 얻는 `order_adapter` 에는 **안쪽 어댑터를** 넘겨야 한다 — 게이트가
+        구체 조회 어댑터 종류로 짝을 맞춘다.
+    """
+
+    def __init__(self, quotes: QuoteAdapter, repo: CandleRepository) -> None:
+        """캐시를 만든다.
+
+        Args:
+            quotes: 브로커 조회 어댑터.
+            repo: 봉 저장소 (판 저장소와 같은 DB).
+        """
+        self._quotes = quotes
+        self._repo = repo
+        self._ids: dict[str, int] = {}
+        self._head_tried: dict[tuple[str, Timeframe], datetime] = {}
+        self.fetched = 0
+        """브로커에서 받은 봉 수 누계 — 프로브·시험이 읽는다."""
+        self.served = 0
+        """DB 에서 읽은 봉 수 누계."""
+
+    @property
+    def inner(self) -> QuoteAdapter:
+        """안쪽 어댑터 — 게이트에 넘길 때 쓴다."""
+        return self._quotes
+
+    @property
+    def capabilities(self) -> frozenset[Capability]:
+        """안쪽 어댑터의 능력."""
+        found: object = getattr(self._quotes, "capabilities", frozenset())
+        return cast("frozenset[Capability]", found)
+
+    async def get_candles(
+        self, instrument: Instrument, timeframe: Timeframe, start: datetime, end: datetime
+    ) -> list[Candle]:
+        """기간 내 캔들 — DB 우선, 빈 곳만 브로커.
+
+        Args:
+            instrument: 종목.
+            timeframe: 봉 간격.
+            start: 구간 시작 (UTC).
+            end: 구간 끝 (UTC).
+
+        Returns:
+            `ts` 오름차순. 마지막은 진행 중인 봉일 수 있다.
+        """
+        iid = await self._instrument_id(instrument)
+        stored = await self._repo.fetch_candles(instrument, iid, timeframe, start, end)
+        self.served += len(stored)
+        span = interval(timeframe)
+        ranges: list[tuple[datetime, datetime]] = []
+        key = (instrument.symbol, timeframe)
+        if not stored:
+            ranges.append((start, end))
+        else:
+            tried = self._head_tried.get(key)
+            if stored[0].ts - start > HEAD_TOLERANCE and (tried is None or start < tried):
+                self._head_tried[key] = start
+                ranges.append((start, stored[0].ts))
+            if end - stored[-1].ts > span:
+                ranges.append((stored[-1].ts, end))
+        merged: dict[datetime, Candle] = {c.ts: c for c in stored}
+        now = datetime.now(UTC)
+        for a, b in ranges:
+            fresh = await self._quotes.get_candles(instrument, timeframe, a, b)
+            self.fetched += len(fresh)
+            if not fresh:
+                continue
+            closed = [c for c in fresh if c.ts + span <= now]
+            if closed:
+                await self._repo.upsert_candles(iid, closed)
+            for c in fresh:
+                merged[c.ts] = c
+            _logger.info(
+                "stored_candles_filled",
+                payload={
+                    "symbol": instrument.symbol,
+                    "frame": timeframe.value,
+                    "from": a.isoformat(),
+                    "to": b.isoformat(),
+                    "fetched": len(fresh),
+                    "stored": len(closed),
+                    "had": len(stored),
+                },
+            )
+        return [merged[ts] for ts in sorted(merged) if start <= ts <= end]
+
+    async def get_quote(self, instrument: Instrument) -> Quote:
+        """안쪽 어댑터에 위임한다.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            시세.
+        """
+        return await self._quotes.get_quote(instrument)
+
+    async def contract_spec(self, instrument: Instrument) -> dict[str, Any]:
+        """안쪽 어댑터에 위임한다.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            계약 명세.
+        """
+        return await self._quotes.contract_spec(instrument)
+
+    async def funding_rate(self, instrument: Instrument) -> Decimal | None:
+        """안쪽 어댑터에 위임한다.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            펀딩률 (없으면 None).
+        """
+        return await self._quotes.funding_rate(instrument)
+
+    async def get_market_status(self, instrument: Instrument) -> MarketStatus:
+        """안쪽 어댑터에 위임한다.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            장 상태.
+        """
+        return await self._status_quotes().get_market_status(instrument)
+
+    def interval_seconds(self, timeframe: Timeframe) -> int:
+        """안쪽 어댑터에 위임한다.
+
+        Args:
+            timeframe: 시간축.
+
+        Returns:
+            초.
+        """
+        return self._quotes.interval_seconds(timeframe)
+
+    def supported_frames(self, frames: Sequence[Timeframe]) -> tuple[Timeframe, ...]:
+        """안쪽 어댑터에 위임한다.
+
+        Args:
+            frames: 원하는 시간축들.
+
+        Returns:
+            브로커가 주는 것만.
+        """
+        return self._quotes.supported_frames(frames)
+
+    def candle_stream(
+        self, instruments: Sequence[Instrument], timeframe: Timeframe, multiplier: Decimal
+    ) -> CandleStream:
+        """안쪽 어댑터의 스트림 — 스트림은 작은 창만 물으므로 캐시를 안 거친다.
+
+        Args:
+            instruments: 종목들.
+            timeframe: 축.
+            multiplier: 계약 승수.
+
+        Returns:
+            브로커 스트림.
+        """
+        return self._quotes.candle_stream(instruments, timeframe, multiplier)
+
+    def _status_quotes(self) -> _StatusQuotes:
+        return self._quotes  # type: ignore[return-value]
+
+    async def _instrument_id(self, instrument: Instrument) -> int:
+        key = f"{instrument.market.value}:{instrument.symbol}"
+        found = self._ids.get(key)
+        if found is not None:
+            return found
+        try:
+            iid, _ = await self._repo.resolve_instrument(instrument.market, instrument.symbol)
+        except InstrumentNotFoundError:
+            iid = await self._repo.upsert_instrument(instrument)
+        self._ids[key] = iid
+        return iid
+
+
+def needed_frames(entry: Timeframe, step: Timeframe) -> tuple[Timeframe, ...]:
+    """폴링 브로커에 요구할 축 — 걸음 축 · 진입 축 · 일봉뿐.
+
+    Args:
+        entry: 매매법 진입 축.
+        step: 세션 걸음 축 (`STEP_FRAME`).
+
+    Returns:
+        중복 없이, 짧은 축부터.
+
+    Note:
+        웹소켓 브로커는 9개 축을 다 시드하지만 폴링 브로커에서 그것은 축마다 분봉 수만 개다.
+        주식 저장소 생성기(T239)도 [진입 축 · 1d] 만 쓴다 — 같은 눈으로 본다.
+    """
+    wanted = {step, entry, Timeframe.D1}
+    return tuple(sorted(wanted, key=lambda f: interval(f)))
+
+
+__all__ = ["HEAD_TOLERANCE", "StoredCandles", "needed_frames"]

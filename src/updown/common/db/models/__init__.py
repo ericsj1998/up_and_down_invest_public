@@ -101,6 +101,13 @@ ACCOUNTS_TABLE_COUNT = 4
 #:
 #: 🔴 표를 더하면 **여기도 더한다** — 2026-09-04 까지 두 표(`wf_calibration` · `accounts`)가 빠진 채
 #: 24 로 남아 `make ci` 가 빨간 상태였다. 이 합이 곧 "모델 = 마이그레이션 = DB" 의 대조표다.
+#: `stock_paper_accounts`(T240 · 0118 · 주식 페이퍼 계좌 — 시장당 JSONB 한 행).
+STOCK_PAPER_TABLE_COUNT = 1
+
 EXPECTED_TABLE_COUNT = (
-    SPEC_9_TABLE_COUNT + WALKFORWARD_TABLE_COUNT + SETTINGS_TABLE_COUNT + ACCOUNTS_TABLE_COUNT
+    SPEC_9_TABLE_COUNT
+    + WALKFORWARD_TABLE_COUNT
+    + SETTINGS_TABLE_COUNT
+    + ACCOUNTS_TABLE_COUNT
+    + STOCK_PAPER_TABLE_COUNT
 )

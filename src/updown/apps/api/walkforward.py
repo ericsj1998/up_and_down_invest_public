@@ -80,7 +80,8 @@ from updown.execution.gateway import (
     OrderGatewayError,
     order_adapter,
 )
-from updown.marketdata.adapter import QuoteAdapter
+from updown.marketdata.adapter import Capability, QuoteAdapter
+from updown.marketdata.ingest.repository import CandleRepository
 from updown.marketdata.ingest.timeframes import interval, interval_seconds
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.inspection import setups as setup_layers
@@ -127,6 +128,7 @@ from updown.orchestration.walkforward.live_runner import (
 from updown.orchestration.walkforward.order_mapping import run_tag
 from updown.orchestration.walkforward.sealed import SealBreachError
 from updown.orchestration.walkforward.sealed_filler import SealedFiller
+from updown.orchestration.walkforward.session import STEP_FRAME
 from updown.orchestration.walkforward.store import (
     REFILL_CAP_KEY,
     RunStore,
@@ -134,6 +136,7 @@ from updown.orchestration.walkforward.store import (
     SettingsStore,
     anchor_of,
 )
+from updown.orchestration.walkforward.stored_candles import StoredCandles, needed_frames
 
 _logger = get_logger("api.walkforward")
 
@@ -419,6 +422,8 @@ LIVE_RUNNERS: dict[str, LiveRunner] = {}
 _store: RunStore | None = None
 
 _settings: SettingsStore | None = None
+_candles: CandleRepository | None = None
+"""봉 캐시의 저장소 (T240) — 폴링 브로커(토스)의 급전 시드가 여기서 먼저 읽힌다."""
 """앱 전체가 공유하는 설정 (T21 ⑦) — 재충전 상한이 여기 산다."""
 """판 저장소 (T16 ②). `main.py` 기동 훅이 넣는다.
 
@@ -462,8 +467,9 @@ def attach_store(factory: async_sessionmaker[AsyncSession] | None) -> None:
         ⚠️ **엔진을 여기서 만들지 않는다.** 만들면 API 가 이미 든 커넥션 풀과 별도 풀이
         생기고, 종료할 때 아무도 안 닫는다.
     """
-    global _store, _settings
+    global _store, _settings, _candles
     _store = None if factory is None else RunStore(factory)
+    _candles = None if factory is None else CandleRepository(factory)
     # ⭐ 금고 한도는 판 저장소와 **같은 팩토리**를 쓴다 — 풀을 하나로 유지한다.
     _settings = None if factory is None else SettingsStore(factory)
 
@@ -803,7 +809,17 @@ async def _live_start(
         raise HTTPException(400, f"{market.value} 는 라이브 페이퍼를 지원하지 않는다")
     # ⭐ 어느 축을 주는지는 거래소가 선언한다 (T63 ② — supported_frames). 바이낸스
     #   10s·30s 부재(T62 P2b) 같은 사실을 조립부가 isinstance 로 알던 배선을 어댑터로 내렸다.
-    frames = list(quotes.supported_frames(FRAMES))
+    # ⭐ T240 — 웹소켓이 없는 브로커(토스)는 봉을 REST 로 합성해 준다. 9개 축을 다 시드하면 축마다
+    #    분봉 수만 개(첫 실측: 15분에 890 요청 · 판은 뜨지도 못함). 그래서 ① 축을 걸음·진입·일봉으로
+    #    줄이고 ② DB 봉 캐시(`StoredCandles`)를 앞에 세운다 — 재시작·되살리기는 DB 에서 시드한다.
+    #    시장 이름이 아니라 **능력**(WS 없음)으로 가른다.
+    if Capability.WS not in quotes.capabilities:
+        if _candles is None:
+            raise HTTPException(503, "봉 저장소가 없다 — 폴링 브로커는 DB 캐시 없이 띄우지 않는다")
+        quotes = StoredCandles(quotes, _candles)
+        frames = list(quotes.supported_frames(needed_frames(book.timeframe, STEP_FRAME)))
+    else:
+        frames = list(quotes.supported_frames(FRAMES))
     feed = await build_live_feed(quotes, instrument, frames, book.timeframe)
     account = await orders.get_balance()
 
