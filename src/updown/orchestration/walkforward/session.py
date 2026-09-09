@@ -705,6 +705,14 @@ class Session:
     """
     stop_cap_ratio: Decimal | None = None
     stop_protect_ratio: Decimal | None = None
+    pending_ttl_bars: int | None = None
+    """대기 지정가를 **판정 봉 몇 개까지** 두나 (T234 · 측정 스위치). None = 계획이 살아 있는 동안.
+
+    연구 엔진 `TrendLab` 은 `ttl_judge=1` — 한 판정 봉이 지나면 취소한다. 세션은 신호가 살아 있는 한
+    표를 두어 며칠 뒤 되돌림에 채워지기도 한다(T233 ④ BTC 실측). 두 엔진을 맞대는 실험용.
+    """
+    _pending_bars: int = 0
+    """지금 대기 표가 본 판정 봉 수 — `pending_ttl_bars` 와 견준다."""
     """보호 손절 비율 — `stop_mode: close` 매매법의 라이브가 거래소에 거는 자리 (T233 ②)."""
     """β — 손절을 **청산거리의 이 비율 안쪽**으로 당긴다 (T120~T146). None 이면 끔.
 
@@ -2478,6 +2486,7 @@ class Session:
             tickets.append(ticket)
         self._waiting = record
         self._tickets = tuple(tickets)
+        self._pending_bars = 0
         # ⭐ T43 — 리테스트 다리는 계획이 사라져도 이 시각까지 둔다 (돌파는 한 봉짜리 사건).
         self._waiting_until = (
             None
@@ -2682,6 +2691,11 @@ class Session:
             )
         # ⭐ T43 — 수명이 적힌 표(리테스트 다리)는 계획이 사라져도 그 시각까지 산다.
         patient = self._waiting_until is not None and bar.ts < self._waiting_until
+        # ⭐ T234 — 만료 봉 수가 있으면 그 뒤로는 계획이 살아 있어도 표를 거둔다 (연구 `ttl_judge`).
+        self._pending_bars += 1
+        if self.pending_ttl_bars is not None and self._pending_bars > self.pending_ttl_bars:
+            alive = False
+            patient = False
         # 🔴 표가 사는 동안 **가장 가까이 온 거리**를 갱신한다 (T165 보정용).
         #    음수 = 관통. 관통했는데 안 채워지면 그것이 모형과 현실의 차이다.
         self._track_touch(waiting, bar)
