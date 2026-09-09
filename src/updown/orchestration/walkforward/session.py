@@ -51,11 +51,13 @@ from updown.analysis.trend.service import evaluate as trend_evaluate
 from updown.common.costs import DEFAULT_CONFIG_PATH, MarketCosts, load_cost_table
 from updown.common.domain.instrument import Instrument, Timeframe
 from updown.common.domain.reports import TrendDirection
+from updown.common.domain.session import MarketCalendar
 from updown.common.domain.setup import TradeSetup
 from updown.common.domain.trade_tick import BarDelta
 from updown.common.logging.setup import get_logger
 from updown.decision.sizing import DEFAULT_LEVERAGE_CAP, capped_stop, protect_stop, size_for
 from updown.marketdata.ingest.delta_store import load_bar_deltas
+from updown.marketdata.ingest.timeframes import interval
 from updown.orchestration.playbook_run import Proposal, major_trend, propose
 from updown.orchestration.walkforward.feed_protocol import Feed
 from updown.orchestration.walkforward.fill_protocol import Filler
@@ -718,6 +720,10 @@ class Session:
     연구 엔진 `TrendLab` 은 `ttl_judge=1` — 한 판정 봉이 지나면 취소한다. 세션은 신호가 살아 있는 한
     표를 두어 며칠 뒤 되돌림에 채워지기도 한다(T233 ④ BTC 실측). 두 엔진을 맞대는 실험용.
     """
+    flat_at_close: bool = False
+    """그날 정규장 마지막 봉에서 전량 나간다 (T241 · 매매법 `flat_at_close`). 달력이 있어야 돈다."""
+    calendar: MarketCalendar | None = None
+    """세션 달력 — 마감이 있는 시장에서 `apply_playbook_knobs` 가 준다. None 이면 24시간 장."""
     _pending_bars: int = 0
     """지금 대기 표가 본 판정 봉 수 — `pending_ttl_bars` 와 견준다."""
     """보호 손절 비율 — `stop_mode: close` 매매법의 라이브가 거래소에 거는 자리 (T233 ②)."""
@@ -1425,6 +1431,23 @@ class Session:
         self.journal()
         return record
 
+    def _closes_day(self, bar: Candle) -> bool:
+        """이 봉이 그날 정규장의 **마지막** 봉인가 — 달력이 없으면(24시간 장) 거짓.
+
+        Args:
+            bar: 방금 닫힌 가격 축 봉.
+
+        Returns:
+            봉의 끝이 오늘 정규장 마감에 닿으면 참.
+        """
+        if self.calendar is None:
+            return False
+        _, closes = self.calendar.next_events(self.instrument.market, bar.ts)
+        if closes is None:
+            return False
+        frame = self.price_frame or self.step_frame
+        return bar.ts + interval(frame) >= closes
+
     def _turning(self, *, against: bool) -> bool:
         """보유 방향에 **거스르는** 전환이 확인됐는가.
 
@@ -1630,6 +1653,18 @@ class Session:
                 cost_pct=self._exit_cost(held, Outcome.LEVEL_EXIT),
             )
         else:
+            # ⭐ T241 — 일중 매매법은 마감 봉에서 전량 나간다 (`flat_at_close`). 손절·목표가 먼저다.
+            if self.flat_at_close and self._closes_day(bar):
+                done = held.closed(
+                    at=bar.ts,
+                    price=bar.close,
+                    outcome=Outcome.TIME_EXIT,
+                    cost_pct=self._exit_cost(held, Outcome.TIME_EXIT),
+                )
+                self.ledger.replace(done)
+                self._open = None
+                self.journal()
+                return (done,)
             # 🔴 **국면이 반대로 뒤집혔으면 손절을 본절로 조인다** (T26 B · 사용자 확정
             #    2026-08-22). 신규 차단(`Proposal.blocked`)은 새 진입만 다루고, 이미
             #    든 것이 정확히 그 리스크다 — *"추세 전환 때 리스크를 최대한 줄인다."*

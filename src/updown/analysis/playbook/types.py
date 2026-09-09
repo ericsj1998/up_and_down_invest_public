@@ -467,6 +467,12 @@ class Playbook:
 
     ⛔ 기본값 거짓 — 청산이 바뀌므로 새 플레이북 버전이다.
     """
+    flat_at_close: bool = False
+    """**그날 정규장 마지막 봉에서 전량 나간다** (T241 · 시초가 매매법).
+
+    손절·목표가 먼저 보고, 남은 것이 마감 봉에서 `TIME_EXIT` 로 닫힌다. 야간 갭을 안 진다는 뜻이다.
+    24시간 장에는 마감이 없어 선언하면 판을 띄울 때 거절된다 (`apply_playbook_knobs`).
+    """
     long_gate: str = "none"
     """롱의 문 (T52 ⑨b). none · structure(진입 TF 구조가 DOWN 이면 롱 보류 — 1h 롱 보류 대체).
 

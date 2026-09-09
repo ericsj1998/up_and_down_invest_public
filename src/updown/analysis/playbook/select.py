@@ -290,6 +290,7 @@ def _load_file(target: Path) -> list[Playbook]:
                     flip_on_turn=bool(body.get("flip_on_turn", False)),
                     full_ride=bool(body.get("full_ride", False)),
                     hold_through_turn=bool(body.get("hold_through_turn", False)),
+                    flat_at_close=bool(body.get("flat_at_close", False)),
                     stop_mode=_stop_mode(body.get("stop_mode", "close"), name),
                     long_gate=_short_gate(body.get("long_gate", "none"), name),
                     short_gate=_short_gate(body.get("short_gate", "none"), name),

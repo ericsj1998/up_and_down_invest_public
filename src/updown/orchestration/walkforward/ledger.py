@@ -127,6 +127,7 @@ class Outcome(StrEnum):
     SIGNAL_EXIT = "전환 익절"
     HALF_BREAKEVEN = "반익반본"
     LEVEL_EXIT = "레벨 이탈"
+    TIME_EXIT = "마감 청산"
     """뚫린 레벨(새 지지/저항)을 몸통이 다시 잃어 나온 청산 (T44).
 
     전환 익절과 **따로** 적는 이유: 같은 라벨이면 "캔들 색에 끊긴 것"과 "구조가 깨져
@@ -993,6 +994,8 @@ class Ledger:
                 #    45건이 잔고에서 사라지고 -8% 판이 +2% 로 보였다 — 위 경고가 적힌 그대로
                 #    재발했다. `tests/test_session_level_exit.py` 가 잠근다.
                 Outcome.LEVEL_EXIT,
+                # ⭐ 마감 청산도 확정이다 (T241) — 일중 매매법의 대부분이 이 라벨로 닫힌다.
+                Outcome.TIME_EXIT,
                 Outcome.CONFIRM_FAIL,
                 Outcome.HALF_BREAKEVEN,
                 Outcome.STOP_LOSS,
