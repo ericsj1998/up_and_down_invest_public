@@ -31,6 +31,7 @@ import json
 import time
 import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Protocol, cast, runtime_checkable
@@ -527,6 +528,36 @@ def trade_of_text(text: str) -> str:
         # 새 형식: t-<run 6>-<trade 8>-tp1
         return parts[2]
     return parts[1]
+
+
+def fee_from_close(row: dict[str, object], multiplier: Decimal) -> tuple[Decimal, Decimal] | None:
+    """거래소 청산 행(`position_close`)에서 **실제 수수료와 그 비율**을 읽는다 (T236).
+
+    Args:
+        row: Gate `position_close` 한 줄 — `pnl_fee`(음수 = 냈다) · `max_size` ·
+            `long_price`/`short_price` · `side`.
+        multiplier: 계약 승수(`quanto_multiplier`).
+
+    Returns:
+        `(수수료 USDT · 양수, 진입 명목 대비 비율)`. 필드가 없거나 명목이 0 이면 None —
+        지어내지 않는다.
+
+    Note:
+        비율의 분모는 **최대 보유 계약 x 평균 진입가 x 승수** — 원장 `cost_pct` 가 "명목 대비
+        왕복 비용" 이라 같은 잣대다. 반익 뒤 남은 절반은 원장이 `filled_ratio` 로 이미 줄여
+        세므로 여기서 다시 나누지 않는다.
+    """
+    try:
+        fee = abs(Decimal(str(row.get("pnl_fee"))))
+        size = abs(Decimal(str(row.get("max_size"))))
+        side = str(row.get("side") or "")
+        price = Decimal(str(row.get("short_price" if side == "short" else "long_price")))
+    except Exception:
+        return None
+    notional = size * price * multiplier
+    if notional <= 0:
+        return None
+    return fee, fee / notional
 
 
 def attribute_closes(
@@ -1990,6 +2021,7 @@ class LiveRunner:
         self._fired("reconcile", f"거래소가 먼저 닫았다 — {outcome.value} @ {fill}")
         self._session.ledger.replace(done)
         self._session.release()
+        await self._align_fee(done.trade_id)
         self._log.info(
             "live_reconciled",
             payload={
@@ -2082,6 +2114,73 @@ class LiveRunner:
         except Exception:
             return None
 
+    async def _align_fee(self, trade_id: str) -> None:
+        """닫힌 매매의 비용을 **거래소가 실제로 뗀 수수료**로 맞춘다 (T236 · 2026-09-09).
+
+        Args:
+            trade_id: 원장의 매매 id.
+
+        Note:
+            원장은 모형 왕복 비용(`cost_pct` · costs.yml 테이커 0.15%)을 빼고 거래소는 계정
+            요율(메이커 0.02% · 테이커 0.05% 등)로 뗀다. 작은 매매에서 그 차이가 부호를
+            뒤집었다(데모 DOGE 원장 -0.40 vs 거래소 +0.25 · `pnl_sign_split`). 청산 이력에서 이
+            매매 창 안의 `position_close` 행을 찾아 `pnl_fee` 를 붙이고 `cost_pct` 를 실제
+            비율로 바꾼다 — 원장 산식은 그대로다.
+
+            ⛔ 못 찾으면 안 바꾼다(모형값 유지 · 규칙 #4·#8). 한 번 맞추면 `fee_actual` 이 남아
+            다시 안 한다.
+        """
+        record = next(
+            (item for item in self._session.ledger.records if item.trade_id == trade_id), None
+        )
+        if record is None or record.closed_at is None or record.opened_at is None:
+            return
+        if record.fee_actual is not None or not hasattr(self._orders, "position_closes"):
+            return
+        try:
+            rows = cast(
+                "list[dict[str, object]]",
+                await self._orders.position_closes(self.instrument),  # type: ignore[attr-defined]
+            )
+            spec = await self._contract_spec()
+            multiplier = Decimal(str(spec["quanto_multiplier"]))
+        except Exception as exc:
+            self._log.warning(
+                "live_fee_align_unreadable", payload={"trade_id": trade_id, "error": str(exc)[:140]}
+            )
+            return
+        lo = record.opened_at.timestamp() - 60
+        hi = record.closed_at.timestamp() + 900
+        picked: dict[str, object] | None = None
+        for row in rows:
+            try:
+                ts = float(str(row.get("time") or "nan"))
+            except ValueError:
+                continue
+            if lo <= ts <= hi:
+                picked = row  # 최신순이라 첫 번째가 가장 늦은 청산
+                break
+        if picked is None:
+            return
+        found = fee_from_close(picked, multiplier)
+        if found is None:
+            return
+        fee, ratio = found
+        before = record.cost_pct
+        aligned = dc_replace(record, cost_pct=ratio, fee_actual=fee)
+        self._session.ledger.replace(aligned)
+        self._log.info(
+            "live_fee_aligned",
+            payload={
+                "trade_id": trade_id,
+                "fee": str(fee),
+                "cost_pct_model": str(before),
+                "cost_pct_actual": str(ratio),
+                "note": "모형 비용 → 거래소 실제 수수료 비율 (원장 실현 = 거래소 실현 · T236)",
+            },
+        )
+        await self._persist()
+
     async def _correct_exit_to_fill(self, trade_id: str) -> None:
         """청산된 매매의 원장 청산가를 **거래소 실측 체결가로 교정한다** (자동 재구성 · 벽돌 1).
 
@@ -2118,6 +2217,7 @@ class LiveRunner:
                 "note": "신호가 → 실제 체결가 (거래소가 진실 · 자동 재구성)",
             },
         )
+        await self._align_fee(trade_id)
 
     async def _loop(self) -> None:
         """스트림을 먹으며 끝나지 않는다 — 끊기면 다시 붙는다."""
@@ -3133,6 +3233,16 @@ class LiveRunner:
             ⚠️ 이상이 **사라진 것**도 남긴다. 고쳐졌는지 사람이 알아야 하고, 목록만
             비우면 *"봤는데 없어졌다"* 와 *"아직 안 봤다"* 가 같아진다.
         """
+        # ⭐ T236 — 아직 실제 수수료를 못 붙인 닫힌 매매를 감사 주기마다 셋씩 따라잡는다
+        #    (닫힐 때 거래소 이력이 늦게 도착한 경우 · 옛 행). 실패해도 감사는 돈다.
+        pending = [
+            item.trade_id
+            for item in self._session.ledger.records
+            if item.closed_at is not None and item.fee_actual is None
+        ][-3:]
+        for trade_id in pending:
+            with contextlib.suppress(Exception):
+                await self._align_fee(trade_id)
         try:
             found = await self.audit()
         except Exception as exc:

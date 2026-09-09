@@ -607,6 +607,7 @@ class RunStore:
                 # 정산 열쇠가 안 실리면 재시작마다 같은 정산이 다시 붙는다 (T226 · 0114).
                 "funding_keys_json": {"keys": list(item.funding_keys)},
                 "realized_adjust": item.realized_adjust,
+                "fee_actual": item.fee_actual,
                 "leverage": item.leverage,
                 "note": item.note,
                 "evidence_json": evidence_rows(item.evidence),
@@ -1148,6 +1149,7 @@ def _to_record(row: WalkforwardTrade) -> TradeRecord:
         funding_pct=row.funding_pct if row.funding_pct is not None else Decimal(0),
         funding_keys=tuple(str(key) for key in (row.funding_keys_json or {}).get("keys", [])),
         realized_adjust=row.realized_adjust if row.realized_adjust is not None else Decimal(0),
+        fee_actual=row.fee_actual,
         planned_stop=row.planned_stop,
         planned_first=row.planned_first,
         planned_target=row.planned_target,
