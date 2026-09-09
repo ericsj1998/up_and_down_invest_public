@@ -220,6 +220,7 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
       first: draft.first,
       target: draft.target,
       flags,
+      timeframe: frame,
       price_frame: FAST.includes(frame) ? frame : "1m",
     })
       .then((got) => setPlaced({ key: got.session_id, moved: got.confirm.moved, stop: got.confirm.stop }))

@@ -2105,6 +2105,8 @@ export function orderCustom(payload: {
   margin: number;
   /** 주식(정수 수량 시장)만 — 주수. 서버가 예산 = 주수 x 진입가로 바꾼다 (T250). */
   shares?: number;
+  /** 판정 축 — 차트가 보던 축. 셋업 없는 판(custom)만 받는다 (T250). */
+  timeframe?: string;
   leverage: number;
   short: boolean;
   entry: number;

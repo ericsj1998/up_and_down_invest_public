@@ -94,3 +94,10 @@ class TestWiring:
         assert endpoint.index("stock_order_terms(") < endpoint.index("_live_start("), (
             "문은 판을 띄우기 전에"
         )
+
+    def test_chart_frame_is_the_judge_frame_only_for_setupless_boards(self) -> None:
+        source = (
+            Path(__file__).resolve().parent.parent / "src/updown/apps/api/walkforward.py"
+        ).read_text(encoding="utf-8")
+        assert 'if not book.setups and payload.get("timeframe")' in source
+        assert source.count('payload.get("timeframe")') == 1, "셋업 있는 판의 축은 밖에서 못 바꾼다"

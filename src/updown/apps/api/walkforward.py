@@ -27,7 +27,7 @@ import time
 from bisect import bisect_right
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import cache
@@ -775,6 +775,18 @@ async def _live_start(
     if request is not None:
         require_playbook_trade(request, (item.playbook_id for item in books))
     book = books[0]
+    # ⭐ T250 — 셋업 없는 판(`custom`)은 **차트가 보던 축**을 판정 축으로 쓴다 (선언의 4h 는
+    #    코인 기본값일 뿐). 토스는 1m/1d 원봉뿐이라 4h 를 1분봉 합성으로 만드는데, 600봉
+    #    워밍업이 100일치 1분봉(수백 요청)이 됐다 (2026-09-09 실측 2분 454요청 → 재시작).
+    #    셋업이 있는 판에는 이 통로가 없다 — 룰이 정한 축을 밖에서 바꾸면 화면과 매매가 갈린다.
+    #    남은 비용(합성 축 워밍업 자체)은 T253.
+    if not book.setups and payload.get("timeframe"):
+        try:
+            chart_frame = Timeframe(str(payload["timeframe"]))
+        except ValueError as exc:
+            raise HTTPException(400, f"모르는 판정 축이다: {payload['timeframe']}") from exc
+        book = replace(book, timeframe=chart_frame)
+        books = (book, *books[1:])
     set_id = "+".join(item.playbook_id for item in books)
     set_attribution = "+".join(item.attribution for item in books)
     # ⚠️ **문보다 먼저 읽는다** — 예산 검사가 사다리 모양(다리 비중)을 알아야 한다.

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 
@@ -216,7 +217,7 @@ def _candidates(who: Caller | None, group: str) -> list[dict[str, Any]]:
                 windows: dict[str, Any] = {}
                 for key, days in WINDOWS.items():
                     got = window_stats(ts, values, trades, days=days)
-                    windows[key] = None if got is None else got.__dict__
+                    windows[key] = None if got is None else asdict(got)
                 summary: dict[str, Any] = {
                     "years": head.get("years"),
                     "total_pct": head.get("total_pct"),
