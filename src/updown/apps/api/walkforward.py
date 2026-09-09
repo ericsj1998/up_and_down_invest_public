@@ -55,6 +55,7 @@ from updown.apps.api.admin import instrument_of, rules_config
 from updown.apps.api.analysis import as_json
 from updown.apps.api.auth import require_market_trade, require_playbook_trade
 from updown.apps.api.stock_order import StockOrderRejectedError, hours_of, stock_order_terms
+from updown.common.config import load_settings as load_app_settings
 from updown.common.costs import (
     DEFAULT_CONFIG_PATH,
     TICK_RATIO,
@@ -82,7 +83,7 @@ from updown.execution.gateway import (
     OrderGatewayError,
     order_adapter,
 )
-from updown.marketdata.adapter import Capability, QuoteAdapter
+from updown.marketdata.adapter import Capability, QuoteAdapter, RequestBudgetExceededError
 from updown.marketdata.ingest.repository import CandleRepository
 from updown.marketdata.ingest.timeframes import interval, interval_seconds
 from updown.marketdata.provider import MarketDataProvider
@@ -124,8 +125,8 @@ from updown.orchestration.walkforward.live_runner import (
     LiveRunner,
     MarginAware,
     attach,
-    build_live_feed,
     run_of_text,
+    seed_within_budget,
 )
 from updown.orchestration.walkforward.order_mapping import run_tag
 from updown.orchestration.walkforward.sealed import SealBreachError
@@ -848,7 +849,20 @@ async def _live_start(
         )
     else:
         frames = list(quotes.supported_frames(FRAMES))
-    feed = await build_live_feed(quotes, instrument, frames, book.timeframe)
+    # ⭐ T253 — 판 시작의 브로커 요청 수를 세고 상한(`RUN_START_REQUEST_CAP`)을 건다. 세는
+    #    것은 캐시 **안쪽** 어댑터(폴링 브로커)뿐이고 웹소켓 거래소는 None 으로 남는다.
+    counter = quotes.inner if isinstance(quotes, StoredCandles) else quotes
+    try:
+        feed, _used = await seed_within_budget(
+            quotes,
+            instrument,
+            frames,
+            book.timeframe,
+            cap=load_app_settings().run_start_request_cap,
+            counter=counter,
+        )
+    except RequestBudgetExceededError as exc:
+        raise HTTPException(503, str(exc)) from exc
     account = await orders.get_balance()
 
     default = _drawn_flags(books)

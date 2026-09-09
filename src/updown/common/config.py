@@ -223,6 +223,14 @@ class Settings(BaseSettings):
     페이퍼로 떨어지지 않고 **예외**다 (`execution/gateway.live_adapter`).
     """
 
+    run_start_request_cap: int = 300
+    """판 시작 한 번의 브로커 요청 상한 (`RUN_START_REQUEST_CAP` · T253). 0 이면 무제한.
+
+    폴링 브로커(토스)는 봉을 1분봉에서 합성하므로 워밍업 600봉이 축에 따라 요청 수백 개다
+    (실측 4h 판 454요청 → 데모 API 재시작). 넘으면 판을 띄우지 않고 503 으로 사람에게
+    말한다(규칙 #8).
+    """
+
     # ── 이메일 리포트 (T35) — 값은 .env 에만 (절대 규칙 #1) ──
     smtp_host: str | None = None
     smtp_port: int = 587

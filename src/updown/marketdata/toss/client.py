@@ -29,7 +29,9 @@ rate limit 관리·재시도·인증은 **어댑터 레이어의 책임**이다.
 """
 
 import asyncio
+import contextlib
 import random
+from collections.abc import Iterator
 from types import TracebackType
 from typing import Self, cast
 
@@ -37,6 +39,7 @@ import httpx
 from pydantic import SecretStr
 
 from updown.common.logging.setup import get_logger
+from updown.marketdata.adapter import RequestBudgetExceededError
 from updown.marketdata.throttle import Throttle
 
 BASE_URL = "https://openapi.tossinvest.com"
@@ -170,6 +173,10 @@ class TossClient:
         self._token: str | None = None
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()
+        self.requests = 0
+        """보낸 HTTP 요청 수 누계(토큰 발급 포함) — 판 시작 비용의 눈금이다 (T253)."""
+        self._cap = 0
+        self._cap_base = 0
 
     async def __aenter__(self) -> Self:
         """컨텍스트 진입."""
@@ -187,6 +194,34 @@ class TossClient:
     async def aclose(self) -> None:
         """HTTP 연결 풀을 닫는다."""
         await self._client.aclose()
+
+    @contextlib.contextmanager
+    def budget(self, cap: int) -> Iterator[None]:
+        """블록 안의 요청 수에 상한을 건다 (T253 · `RequestCounting`).
+
+        Args:
+            cap: 허용 요청 수. 0 이하면 무제한.
+
+        Note:
+            클라이언트는 프로세스에 하나라(`MarketDataProvider._shared_toss`) 동시에 두 판이
+            뜨면 둘의 요청이 같이 세어진다 — 상한이 지키는 것은 **토큰 하나의 요율**이므로
+            그것이 맞다. 중첩은 안쪽이 이기고, 나가면 바깥 값으로 돌아간다.
+        """
+        was = (self._cap, self._cap_base)
+        self._cap, self._cap_base = cap, self.requests
+        try:
+            yield
+        finally:
+            self._cap, self._cap_base = was
+
+    def _count(self, path: str) -> None:
+        """요청 하나를 센다 — 상한을 넘으면 보내기 **전에** 던진다."""
+        self.requests += 1
+        if self._cap > 0 and self.requests - self._cap_base > self._cap:
+            raise RequestBudgetExceededError(
+                f"브로커 요청이 상한 {self._cap} 을 넘었다 ({path}) — 판 시작 워밍업이 "
+                "너무 비싸다. 축을 줄이거나 봉을 미리 적재한다 (T253)"
+            )
 
     # ------------------------------------------------------------------
     # 인증
@@ -213,6 +248,7 @@ class TossClient:
                 return self._token
 
             await self._throttle("AUTH").acquire()
+            self._count("/oauth2/token")
             try:
                 response = await self._client.post(
                     "/oauth2/token",
@@ -300,6 +336,7 @@ class TossClient:
         for attempt in range(self._max_retries + 1):
             token = await self._access_token(force=refreshed and attempt == 0)
             await self._throttle(group).acquire()
+            self._count(path)
             try:
                 response = await self._client.get(
                     path, params=params, headers={"Authorization": f"Bearer {token}"}

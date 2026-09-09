@@ -45,7 +45,7 @@ from updown.common.domain.order import OrderKind, OrderStatus
 from updown.common.logging.setup import get_logger
 from updown.decision.risk.policy import funding_shortfall
 from updown.decision.risk.policy import load_settings as load_risk_settings
-from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter
+from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter, RequestCounting
 from updown.marketdata.ingest.timeframes import interval_seconds
 from updown.marketdata.stream import CandleStream
 from updown.orchestration.leftovers import held_size, sweep
@@ -5743,6 +5743,58 @@ async def build_live_feed(
         # ⛔ 마지막 봉을 버린다 — 진행 중일 수 있고, 미마감 값이 확정으로 남으면 안 된다.
         seed[frame] = rows[:-1] if rows else rows
     return LiveFeed(cast("dict[Timeframe, Sequence[object]]", seed), entry)  # type: ignore[arg-type]
+
+
+async def seed_within_budget(
+    quotes: QuoteAdapter,
+    instrument: Instrument,
+    frames: Sequence[Timeframe],
+    entry: Timeframe,
+    *,
+    cap: int,
+    counter: object | None = None,
+    bars: int = SEED_BARS,
+) -> tuple[LiveFeed, int | None]:
+    """시드를 받되 **브로커 요청 수를 세고 상한을 건다** (T253).
+
+    Args:
+        quotes: 조회 어댑터 (DB 캐시가 감싼 것이어도 된다).
+        instrument: 대상 종목.
+        frames: 필요한 시간축들.
+        entry: 진입 시간축.
+        cap: 판 시작 한 번의 요청 상한. 0 이면 무제한.
+        counter: 요청을 세는 쪽 — 캐시가 감싸고 있으면 그 **안쪽** 어댑터. None 이면 `quotes`.
+        bars: 시간축마다 받을 봉 수.
+
+    Returns:
+        (급전, 쓴 요청 수). 세지 못하는 어댑터(웹소켓 거래소)면 요청 수는 None.
+
+    Raises:
+        RequestBudgetExceededError: 상한을 넘었다 — 잡는 쪽이 사람에게 말한다(규칙 #8).
+
+    Note:
+        실측(2026-09-09): 선언 4h 주식 판 하나가 2분에 454요청 → 데모 API 재시작. 그 뒤로
+        `custom` 은 차트 축(1h · 58요청)을 쓰지만 셋업 있는 매매법은 선언 축 그대로라,
+        이 눈금과 상한이 없으면 같은 사고가 다시 난다. 요청 수는 로그 한 줄
+        (`run_start_requests`)로 남는다 — T253 DoD.
+    """
+    meter = counter if counter is not None else quotes
+    counting = meter if isinstance(meter, RequestCounting) else None
+    before = counting.requests if counting is not None else 0
+    guard = counting.budget(cap) if counting is not None and cap > 0 else contextlib.nullcontext()
+    with guard:
+        feed = await build_live_feed(quotes, instrument, frames, entry, bars=bars)
+    used = counting.requests - before if counting is not None else None
+    _logger.info(
+        "run_start_requests",
+        payload={
+            "symbol": instrument.symbol,
+            "frames": [f.value for f in frames],
+            "requests": used,
+            "cap": cap,
+        },
+    )
+    return feed, used
 
 
 def attach(session: Session, feed: LiveFeed) -> None:

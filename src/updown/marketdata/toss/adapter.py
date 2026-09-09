@@ -21,6 +21,7 @@
 """
 
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
@@ -160,6 +161,22 @@ class TossAdapter:
             `CONDITIONAL_ORDERS` 를 뺀 이유는 모듈 docstring 에 있다.
         """
         return frozenset({Capability.SPOT, Capability.ORDERBOOK})
+
+    @property
+    def requests(self) -> int:
+        """보낸 HTTP 요청 수 누계 (`RequestCounting` · T253)."""
+        return self._client.requests
+
+    def budget(self, cap: int) -> AbstractContextManager[None]:
+        """요청 상한 블록 — 클라이언트에 그대로 넘긴다 (`RequestCounting` · T253).
+
+        Args:
+            cap: 허용 요청 수. 0 이하면 무제한.
+
+        Returns:
+            컨텍스트 매니저.
+        """
+        return self._client.budget(cap)
 
     # ------------------------------------------------------------------
     # 조회

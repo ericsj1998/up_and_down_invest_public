@@ -10,6 +10,7 @@
 """
 
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -387,5 +388,35 @@ class DerivativesAdapter(BrokerAdapter, Protocol):
 
         Returns:
             다음 정산의 펀딩비율. 비용 모델(spec §12.7)에 포함해야 한다.
+        """
+        ...
+
+
+class RequestBudgetExceededError(RuntimeError):
+    """한 작업의 브로커 요청 수가 예산을 넘었다 (T253).
+
+    `RequestCounting.budget` 블록 안에서 난다. 잡는 쪽은 사람에게 말한다(규칙 #8) —
+    조용히 계속 부르면 요율 한도(토큰 하나)를 다른 판까지 잃는다.
+    """
+
+
+@runtime_checkable
+class RequestCounting(Protocol):
+    """브로커 요청을 세고 예산을 걸 수 있는 어댑터 (T253).
+
+    폴링 브로커(토스)처럼 봉 하나가 요청 수십 개인 경로가 대상이다. 웹소켓 거래소는
+    구현하지 않아도 된다 — 조립부가 `isinstance` 로 가려 없으면 재지 않는다.
+    """
+
+    @property
+    def requests(self) -> int:
+        """지금까지 보낸 HTTP 요청 수 (프로세스 누계)."""
+        ...
+
+    def budget(self, cap: int) -> AbstractContextManager[None]:
+        """블록 안에서 `cap` 개를 넘는 요청은 `RequestBudgetExceededError`.
+
+        Args:
+            cap: 허용 요청 수. 0 이하면 무제한.
         """
         ...

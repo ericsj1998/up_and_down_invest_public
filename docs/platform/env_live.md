@@ -12,6 +12,7 @@
 | `APP_ENV` | Settings · compose | `live` 고정 | ✅ |
 | `LIVE_ORDERS` | Settings → `OrderGateway` | `1` 실계좌 · `0` 이면 같은 코드가 테스트넷 | ✅ |
 | `STOCK_LIVE_ORDERS` | Settings(`stock_live_orders`) → 주식 주문 경로 | **줄 없음 = 0**(페이퍼). `1` 로 켜면 실주문 어댑터가 없어 **즉시 예외**(T240 관문) — 토스 실주문 어댑터가 생기기 전엔 켜지 않는다 | ✅ 줄 없음 |
+| `RUN_START_REQUEST_CAP` | Settings(`run_start_request_cap`) → 판 시작 워밍업(`seed_within_budget`) | **줄 없음 = 300**. 폴링 브로커(토스)만 센다 · 넘으면 판을 안 띄우고 503(T253) · 0 = 무제한 | ✅ 줄 없음 |
 | `EDGAR_USER_AGENT` | Settings(`edgar_user_agent`) → `EdgarAdapter` | `앱이름 이메일`(ASCII 만 — 한글은 헤더 인코딩에서 500). 실제 UA 는 `Mozilla/5.0` 이고 이메일은 `From` 헤더로 간다(Akamai 가 선언 UA 를 403 · T243 실측 2026-09-10). 없으면 재무 갱신이 즉시 실패하고 조회는 빈 표 | ⬜ 서버에 없음 — **사용자가 넣는다**(이메일이라 스크립트가 만들지 않는다 · T243) |
 | `UPDOWN_MARKETS` | `provider.live_markets` | `GATE` (배포는 Gate 만 · Binance 경고 폭주 차단) | ✅ |
 | `GATE_API_KEY` · `GATE_API_SECRET` | Settings → `GateLiveAdapter` | **live 전용** 실키 (선물 R/W · Account Read · 출금 OFF · IP 화이트리스트) | ✅ |
