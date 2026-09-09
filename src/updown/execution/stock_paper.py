@@ -68,23 +68,61 @@ class StockQuotes(Protocol):
     async def get_candles(
         self, instrument: Instrument, timeframe: Timeframe, start: datetime, end: datetime
     ) -> list[Candle]:
-        """기간 내 캔들."""
+        """기간 내 캔들.
+
+        Args:
+            instrument: 종목.
+            timeframe: 봉 간격.
+            start: 구간 시작 (UTC).
+            end: 구간 끝 (UTC).
+
+        Returns:
+            `ts` 오름차순 봉.
+        """
         ...
 
     async def get_quote(self, instrument: Instrument) -> Quote:
-        """현재가."""
+        """현재가.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            시세 스냅샷.
+        """
         ...
 
     async def get_orderbook(self, instrument: Instrument) -> OrderBook:
-        """호가창."""
+        """호가창.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            호가 단계들.
+        """
         ...
 
     async def get_market_status(self, instrument: Instrument) -> MarketStatus:
-        """장 상태 — 캘린더가 답한다."""
+        """장 상태 — 캘린더가 답한다.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            세션과 주문 가능 여부.
+        """
         ...
 
     async def contract_spec(self, instrument: Instrument) -> dict[str, Any]:
-        """계약 명세 (승수 · 최소 수량 · 호가단위)."""
+        """계약 명세 (승수 · 최소 수량 · 호가단위).
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            Gate 명세와 같은 열쇠의 매핑.
+        """
         ...
 
 
@@ -241,7 +279,11 @@ class StockPaperAdapter:
         return BROKER_NAME
 
     async def identity(self) -> dict[str, str]:
-        """콘솔의 계정 칸 — 페이퍼라는 사실이 모든 칸에 있다."""
+        """콘솔의 계정 칸 — 페이퍼라는 사실이 모든 칸에 있다.
+
+        Returns:
+            user_id·tier·margin_mode·testnet 문자열들.
+        """
         return {
             "user_id": "paper",
             "tier": "paper",
@@ -257,23 +299,61 @@ class StockPaperAdapter:
     async def get_candles(
         self, instrument: Instrument, timeframe: Timeframe, start: datetime, end: datetime
     ) -> list[Candle]:
-        """조회 어댑터에 위임한다."""
+        """조회 어댑터에 위임한다.
+
+        Args:
+            instrument: 종목.
+            timeframe: 봉 간격.
+            start: 구간 시작 (UTC).
+            end: 구간 끝 (UTC).
+
+        Returns:
+            `ts` 오름차순 봉.
+        """
         return await self._quotes.get_candles(instrument, timeframe, start, end)
 
     async def get_quote(self, instrument: Instrument) -> Quote:
-        """조회 어댑터에 위임한다 (1초 캐시)."""
+        """조회 어댑터에 위임한다 (1초 캐시).
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            시세 스냅샷 — 같은 초 안이면 같은 값.
+        """
         return await self._mark(instrument)
 
     async def get_orderbook(self, instrument: Instrument) -> OrderBook:
-        """조회 어댑터에 위임한다."""
+        """조회 어댑터에 위임한다.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            호가 단계들.
+        """
         return await self._quotes.get_orderbook(instrument)
 
     async def get_market_status(self, instrument: Instrument) -> MarketStatus:
-        """조회 어댑터(캘린더)에 위임한다."""
+        """조회 어댑터(캘린더)에 위임한다.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            세션과 주문 가능 여부.
+        """
         return await self._quotes.get_market_status(instrument)
 
     async def contract_spec(self, instrument: Instrument) -> dict[str, Any]:
-        """계약 명세 — 승수 1 · 정수 주 · 지금 시세."""
+        """계약 명세 — 승수 1 · 정수 주 · 지금 시세.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            조회 어댑터의 명세에 `mark_price`/`last_price` 를 지금 값으로 덮은 매핑.
+        """
         spec = dict(await self._quotes.contract_spec(instrument))
         quote = await self._mark(instrument)
         spec["mark_price"] = str(quote.last_price)
@@ -281,7 +361,15 @@ class StockPaperAdapter:
         return spec
 
     async def book_here(self, instrument: Instrument, limit: int = 20) -> dict[str, Any]:
-        """호가창을 유동성 판정(`orchestration.liquidity.read_book`)의 모양으로."""
+        """호가창을 유동성 판정(`orchestration.liquidity.read_book`)의 모양으로.
+
+        Args:
+            instrument: 종목.
+            limit: 단계 수.
+
+        Returns:
+            `{"bids": [{"p", "s"}…], "asks": […]}`.
+        """
         book = await self._quotes.get_orderbook(instrument)
         levels = book.levels[:limit]
         return {
@@ -295,6 +383,9 @@ class StockPaperAdapter:
 
     async def get_balance(self) -> Balance:
         """페이퍼 잔고 — 시장이 여럿이면 **마지막으로 만진 시장**의 통화로 답한다.
+
+        Returns:
+            `broker="toss-paper"` 인 잔고 — 가용 현금과 포지션 매입 원가.
 
         Note:
             러너는 판을 띄울 때 `get_balance().cash` 를 예산 상한으로 읽는다. 시장을
@@ -313,7 +404,11 @@ class StockPaperAdapter:
         )
 
     async def margins(self) -> dict[str, str]:
-        """콘솔 계정 칸 — total/available/position_margin/order_margin."""
+        """콘솔 계정 칸 — total/available/position_margin/order_margin.
+
+        Returns:
+            네 값을 문자열로.
+        """
         book = self._current_book()
         await self._settle_all(book)
         locked, reserved = self._locked(book), self._reserved(book)
@@ -326,12 +421,20 @@ class StockPaperAdapter:
         }
 
     async def account_margin(self) -> Decimal:
-        """포지션에 묶인 돈 — 주식은 매입 원가 그대로다 (배율 1)."""
+        """포지션에 묶인 돈 — 주식은 매입 원가 그대로다 (배율 1).
+
+        Returns:
+            열린 포지션 매입 원가의 합.
+        """
         book = self._current_book()
         return self._locked(book)
 
     async def open_positions(self) -> list[dict[str, str]]:
-        """모든 시장의 열린 포지션."""
+        """모든 시장의 열린 포지션.
+
+        Returns:
+            `symbol`/`contract` 를 채운 스냅샷 행들.
+        """
         out: list[dict[str, str]] = []
         for market in list(self._books):
             book = self._books[market]
@@ -343,7 +446,14 @@ class StockPaperAdapter:
         return out
 
     async def position_snapshot(self, instrument: Instrument) -> dict[str, str]:
-        """**계좌가 말하는** 포지션 — 원장이 아니다. 없으면 `{}`."""
+        """**계좌가 말하는** 포지션 — 원장이 아니다.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            없으면 `{}`. 있으면 수량·평단·표시가·미실현·배율(1)·증거금(매입 원가)을 문자열로.
+        """
         book = self._book(instrument.market)
         await self._settle(book, instrument)
         held = book.positions.get(instrument.symbol)
@@ -363,20 +473,39 @@ class StockPaperAdapter:
         }
 
     async def account_book(self, limit: int = 30) -> list[dict[str, str]]:
-        """계정 장부 — 수수료·실현손익 행. 펀딩(`fund`)은 주식에 없다."""
+        """계정 장부 — 수수료·실현손익 행. 펀딩(`fund`)은 주식에 없다.
+
+        Args:
+            limit: 최신순 최대 행 수.
+
+        Returns:
+            `type`/`change`/`time`/`text`/`contract` 행들.
+        """
         book = self._current_book()
         return list(reversed(book.ledger))[:limit]
 
     async def position_closes(
         self, instrument: Instrument, limit: int = 30
     ) -> list[dict[str, str]]:
-        """이 종목의 마감 손익 행 — 최신순."""
+        """이 종목의 마감 손익 행 — 최신순.
+
+        Args:
+            instrument: 종목.
+            limit: 최대 행 수.
+
+        Returns:
+            Gate `position_closes` 와 같은 열쇠(`pnl`·`pnl_pnl`·`pnl_fee`·`pnl_fund`…)의 행들.
+        """
         book = self._book(instrument.market)
         rows = [row for row in book.closes if row.get("contract") == instrument.symbol]
         return list(reversed(rows))[:limit]
 
     async def set_leverage(self, instrument: Instrument, leverage: Decimal) -> None:
         """주식은 배율 1 뿐이다 — 다른 값은 거절 (능력표 `leverage_allowed=false`).
+
+        Args:
+            instrument: 종목.
+            leverage: 원하는 배율.
 
         Raises:
             StockPaperRejectedError: 1 이 아닌 배율.
@@ -393,7 +522,13 @@ class StockPaperAdapter:
     # ------------------------------------------------------------------
 
     async def submit_order(self, order: OrderRequest) -> OrderResult:
-        """주문을 받는다 — 시장가는 즉시, 지정가는 대기.
+        """주문을 받는다 — 시장가는 즉시, 지정가는 대기(이미 지났으면 즉시).
+
+        Args:
+            order: 주문 요청 — 수량은 정수 주.
+
+        Returns:
+            체결이면 FILLED, 대기면 SUBMITTED.
 
         Raises:
             StockPaperRejectedError: 소수 주 · 숏 · 현금 부족 · 시장 폐장.
@@ -465,7 +600,17 @@ class StockPaperAdapter:
         return self._result(made)
 
     async def cancel_order(self, broker_order_id: str) -> OrderResult:
-        """대기 주문을 지운다. 이미 끝난 주문이면 그 상태 그대로 답한다."""
+        """대기 주문을 지운다. 이미 끝난 주문이면 그 상태 그대로 답한다.
+
+        Args:
+            broker_order_id: 주문 id.
+
+        Returns:
+            취소 뒤 상태.
+
+        Raises:
+            StockPaperRejectedError: 모르는 주문.
+        """
         for book in self._books.values():
             found = book.orders.get(broker_order_id)
             if found is None:
@@ -479,7 +624,17 @@ class StockPaperAdapter:
         raise StockPaperRejectedError(f"모르는 주문이다 — {broker_order_id}")
 
     async def get_order_status(self, broker_order_id: str) -> OrderStatus:
-        """주문 상태."""
+        """주문 상태.
+
+        Args:
+            broker_order_id: 주문 id.
+
+        Returns:
+            상태.
+
+        Raises:
+            StockPaperRejectedError: 모르는 주문.
+        """
         for book in self._books.values():
             found = book.orders.get(broker_order_id)
             if found is not None:
@@ -487,7 +642,14 @@ class StockPaperAdapter:
         raise StockPaperRejectedError(f"모르는 주문이다 — {broker_order_id}")
 
     async def open_orders(self, instrument: Instrument) -> list[dict[str, str]]:
-        """대기 중인 지정가."""
+        """대기 중인 지정가.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            Gate `open_orders` 와 같은 열쇠의 행들.
+        """
         book = self._book(instrument.market)
         await self._settle(book, instrument)
         return [
@@ -497,7 +659,14 @@ class StockPaperAdapter:
         ]
 
     async def recent_orders(self, instrument: Instrument) -> list[dict[str, str]]:
-        """끝난 주문 최신순 — 체결·취소."""
+        """끝난 주문 최신순 — 체결·취소.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            `finish_as`·`fill_price` 를 채운 행들 (최대 40).
+        """
         book = self._book(instrument.market)
         await self._settle(book, instrument)
         rows = [
@@ -509,7 +678,18 @@ class StockPaperAdapter:
         return [{**self._order_row(row), "fill_price": row.fill_price or ""} for row in rows[:40]]
 
     async def close_position(self, instrument: Instrument, idempotency_key: str) -> OrderResult:
-        """전량 시장가 청산."""
+        """전량 시장가 청산.
+
+        Args:
+            instrument: 종목.
+            idempotency_key: 멱등키 — 주문 `text` 로 남는다.
+
+        Returns:
+            체결 결과.
+
+        Raises:
+            StockPaperRejectedError: 닫을 포지션이 없다.
+        """
         book = self._book(instrument.market)
         await self._settle(book, instrument)
         held = book.positions.get(instrument.symbol)
@@ -549,6 +729,11 @@ class StockPaperAdapter:
     ) -> str | None:
         """손절이 **그 가격으로** 걸려 있게 만든다 — 없으면 걸고, 다르면 다시 건다.
 
+        Args:
+            instrument: 종목.
+            trigger: 원장이 정한 손절가.
+            long: 보유가 롱인가.
+
         Returns:
             새로 건 조건부 id. 이미 맞게 걸려 있었으면 None.
         """
@@ -576,7 +761,14 @@ class StockPaperAdapter:
         return made.id
 
     async def open_stops(self, instrument: Instrument) -> list[dict[str, str]]:
-        """걸려 있는 조건부."""
+        """걸려 있는 조건부.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            Gate `open_stops` 와 같은 열쇠(`id`·`trigger_price`·`size`·`text`…)의 행들.
+        """
         book = self._book(instrument.market)
         await self._settle(book, instrument)
         return [
@@ -594,7 +786,11 @@ class StockPaperAdapter:
         ]
 
     async def cancel_stop(self, stop_id: str) -> None:
-        """조건부를 지운다 — 없으면 조용히 (이미 발동했거나 지워졌다)."""
+        """조건부를 지운다 — 없으면 조용히 (이미 발동했거나 지워졌다).
+
+        Args:
+            stop_id: 조건부 id.
+        """
         for book in self._books.values():
             if stop_id in book.stops:
                 del book.stops[stop_id]
