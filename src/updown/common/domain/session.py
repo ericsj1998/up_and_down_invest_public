@@ -677,12 +677,50 @@ def parse_calendar(raw: Mapping[str, object]) -> MarketCalendar:
             out[Market(key)] = _dates(value, f"{field}.{key}")
         return out
 
+    holidays = _per_market(raw.get("holidays"), "holidays")
+    coverage = _coverage(raw.get("holiday_coverage"))
+    for market in holidays:
+        if holidays[market] and market not in coverage:
+            raise SessionConfigError(
+                f"holidays.{market} 는 있는데 holiday_coverage.{market} 가 없다 — 유효 구간을"
+                " 같이 적어야 그 밖의 날짜를 UNKNOWN 으로 답할 수 있다 (T238)"
+            )
     return MarketCalendar(
         hours=hours,
-        holidays=_per_market(raw.get("holidays"), "holidays"),
+        holidays=holidays,
         early_closes=_per_market(raw.get("early_close_days"), "early_close_days"),
-        known_range={},
+        known_range=coverage,
     )
+
+
+def _coverage(node: object) -> dict[Market, tuple[date, date]]:
+    """`holiday_coverage` — 시장별 `{from, to}` 를 `known_range` 로 (T238).
+
+    Args:
+        node: 파싱된 YAML 의 `holiday_coverage` 값. None 이면 빈 매핑.
+
+    Returns:
+        시장 → (첫 날, 마지막 날).
+
+    Raises:
+        SessionConfigError: 형식이 틀리거나 `from > to` 인 경우.
+    """
+    if node is None:
+        return {}
+    if not isinstance(node, dict):
+        raise SessionConfigError("`holiday_coverage` 는 시장별 매핑이어야 한다")
+    out: dict[Market, tuple[date, date]] = {}
+    for key, value in cast(Mapping[str, object], node).items():
+        if not isinstance(value, dict):
+            raise SessionConfigError(f"holiday_coverage.{key} 는 {{from, to}} 매핑이어야 한다")
+        block = cast(Mapping[str, object], value)
+        first = _dates([block.get("from")], f"holiday_coverage.{key}.from")
+        last = _dates([block.get("to")], f"holiday_coverage.{key}.to")
+        lo, hi = next(iter(first)), next(iter(last))
+        if lo > hi:
+            raise SessionConfigError(f"holiday_coverage.{key}: from({lo}) 이 to({hi}) 보다 늦다")
+        out[Market(key)] = (lo, hi)
+    return out
 
 
 def load_calendar(path: Path | None = None) -> MarketCalendar:

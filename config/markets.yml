@@ -1,0 +1,51 @@
+# 시장 능력표 (T238 · 2026-09-09) — "이 시장에서 무엇이 되고 무엇이 안 되나" 의 단일 출처.
+#
+# 🔴 엔진·원장·러너·화면은 시장 이름으로 분기하지 않고 **이 표를 읽는다** (T237 결정 ②). 주식이 코인과 다른 것은
+#    엔진이 아니라 시장의 성질이다 — 배율·숏·수량 단위·결제·펀딩. 매매법은 `market_groups` 로 자기가 도는 시장을 고른다.
+#
+# 항목
+#   leverage_allowed  배율을 쓸 수 있나. 거짓이면 원장 배율 1 고정 (현물).
+#   short_allowed     숏(매도 진입)이 되나. 거짓이면 숏 제안은 즉시 거절 (현물 어댑터 규칙과 같다).
+#   lot               수량 단위 — integer(정수 주) / fractional(소수 · 코인·계약).
+#   settlement_days   결제 지연(T+n). 0 = 즉시. 원장 모형화 여부는 T240 결정(1단계 표시만).
+#   funding           펀딩 정산이 있나 (무기한 선물). 있으면 costs.yml 의 `funding_per_8h` 를 쓴다.
+#   always_open       24시간 장인가 (캘린더 `always_open` 과 같은 값 · 여기서는 표시용).
+#   tick              호가단위 규칙 — fixed(계약 명세 `order_price_round`) / tiered(가격대별 표 · KRX) / broker(브로커 응답).
+#
+# ⚠️ 토스 Open API 는 신용·공매도·레버리지 주문이 없다 — 스펙 확인 (docs/planning/tasks/T240 · 2026-09-09). 여기 적힌 값이 사실이다.
+version: "1.0"
+markets:
+  KRX:
+    leverage_allowed: false
+    short_allowed: false
+    lot: integer
+    settlement_days: 2
+    funding: false
+    always_open: false
+    tick: tiered
+  NASDAQ: &us_equity
+    leverage_allowed: false
+    short_allowed: false
+    lot: integer          # 소수점 수량은 토스 US 시장가 매도에만 — 진입은 정수로 둔다 (T240)
+    settlement_days: 1    # 미국 주식 T+1 (2024-05 이후)
+    funding: false
+    always_open: false
+    tick: broker
+  NYSE: *us_equity
+  UPBIT:
+    leverage_allowed: false
+    short_allowed: false
+    lot: fractional
+    settlement_days: 0
+    funding: false
+    always_open: true
+    tick: tiered
+  GATE: &usdt_perp
+    leverage_allowed: true
+    short_allowed: true
+    lot: fractional       # 계약 수(정수)지만 승수가 있어 명목은 연속 — 사이징은 계약 명세가 정한다
+    settlement_days: 0
+    funding: true
+    always_open: true
+    tick: fixed
+  BINANCE: *usdt_perp

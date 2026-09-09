@@ -160,7 +160,8 @@ class TestTradability:
         `CLOSED` 로 접지 않는 이유는 대응이 다르기 때문이다 — `CLOSED` 는 기다리는
         것이고 `UNKNOWN` 은 확인하고 움직이는 것이다.
         """
-        verdict, why = calendar.tradability(Market.KRX, _utc("2026-08-06T00:30:00Z"))
+        # 2025 는 휴장일 유효 구간(2026) 밖 — 목록이 있어도 그 밖은 UNKNOWN (T238)
+        verdict, why = calendar.tradability(Market.KRX, _utc("2025-08-06T00:30:00Z"))
         assert verdict is Tradability.UNKNOWN
         assert "휴장일" in why
 
