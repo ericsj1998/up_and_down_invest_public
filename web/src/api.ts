@@ -1865,6 +1865,11 @@ export function chatThread(id: string): Promise<ChatThreadView> {
 export function chatCreateThread(body: { title?: string; model?: string }): Promise<ChatThreadView> {
   return request("/ai/chat/threads", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) });
 }
+/** 대화 삭제 (T257) — 내 것만. */
+export function chatDeleteThread(id: string): Promise<{ deleted: string }> {
+  return request(`/ai/chat/threads/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export function chatAsk(id: string, body: { text: string; model?: string }): Promise<{ job_id: string; thread_id: string }> {
   return request(`/ai/chat/threads/${encodeURIComponent(id)}/messages`, {
     method: "POST",

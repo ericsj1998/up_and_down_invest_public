@@ -183,6 +183,30 @@ async def create_thread(
     return made
 
 
+@router.delete("/threads/{thread_id}")
+async def delete_thread(request: Request, thread_id: str) -> dict[str, Any]:
+    """대화를 지운다 — 내 것만. 도구 호출 감사 기록(`event_logs.ai_chat_turn`)은 남는다(추가만).
+
+    Args:
+        request: 요청.
+        thread_id: 대화 id.
+
+    Returns:
+        `{deleted: id}`.
+
+    Raises:
+        HTTPException: 404 내 대화가 아니거나 없음.
+    """
+    who = await _who_or_403(request)
+    factory = auth._store()  # pyright: ignore[reportPrivateUsage]
+    async with factory() as session, session.begin():
+        row = await session.get(ChatThread, thread_id)
+        if row is None or row.email != who.email:
+            raise HTTPException(404, "대화가 없다")
+        await session.delete(row)
+    return {"deleted": thread_id}
+
+
 @router.get("/threads/{thread_id}")
 async def read_thread(request: Request, thread_id: str) -> dict[str, Any]:
     """대화 하나.

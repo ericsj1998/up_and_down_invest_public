@@ -31,8 +31,10 @@ _logger = get_logger("orchestration.ai_chat.agent")
 
 PROMPT_VERSION = "chat-1.1"
 MAX_ROUNDS = 6
-EVIDENCE_CHARS = 2_000
-"""근거 세미 창에 저장하는 도구 결과 원문 길이 — 대화 표(JSONB)에 남는다."""
+EVIDENCE_CHARS = 6_000
+"""근거 세미 창에 저장하는 도구 결과 길이 상한 — 대화 표(JSONB)에 남는다.
+
+잘라도 JSON 은 늘 유효하다."""
 SUGGEST_PROMPT = (
     "방금의 질문과 답을 보고, 사용자가 다음에 물어볼 만한 짧은 한국어 질문 3개를 "
     "JSON 배열(문자열만)로만 "
@@ -152,7 +154,7 @@ async def _run_tool(
             True,
             ms,
             _digest(result),
-            result=result_text(result)[:EVIDENCE_CHARS],
+            result=compact_json(result, EVIDENCE_CHARS),
         ), result
     except Exception as exc:  # 도구 하나의 실패가 답 전체를 죽이지 않는다 — 모델에게 사실로 넘긴다
         ms = int((time.perf_counter() - started) * 1000)
@@ -298,6 +300,43 @@ async def _suggest(
     return parse_suggestions(reply.text)
 
 
+def _compact(value: Any, list_cap: int, text_cap: int) -> Any:
+    if isinstance(value, dict):
+        items = cast("dict[str, Any]", value)
+        return {str(k): _compact(v, list_cap, text_cap) for k, v in items.items()}
+    if isinstance(value, list):
+        rows = cast("list[Any]", value)
+        out = [_compact(v, list_cap, text_cap) for v in rows[:list_cap]]
+        if len(rows) > list_cap:
+            out.append(f"… 외 {len(rows) - list_cap}개")
+        return out
+    if isinstance(value, str) and len(value) > text_cap:
+        return value[:text_cap] + "…"
+    return value
+
+
+def compact_json(result: dict[str, Any], limit: int) -> str:
+    """도구 결과를 근거 창용 JSON 으로 (T257 F2).
+
+    길면 목록·문자열을 줄여서 **유효한 JSON** 을 지킨다.
+
+    Args:
+        result: 도구 결과.
+        limit: 글자 상한.
+
+    Returns:
+        JSON 문자열. 목록은 앞 몇 개 + "… 외 n개", 긴 문자열은 잘라 "…" 를 붙인다.
+    """
+    for list_cap, text_cap in ((20, 400), (10, 200), (5, 120), (3, 80), (1, 40)):
+        slim = _compact(result, list_cap, text_cap)
+        text = json.dumps(slim, ensure_ascii=False, default=str)
+        if len(text) <= limit:
+            return text
+    return json.dumps(
+        {"note": "결과가 커서 요약만 남긴다", "keys": list(result)[:30]}, ensure_ascii=False
+    )
+
+
 def parse_suggestions(text: str) -> list[str]:
     """모델 답에서 JSON 배열을 찾아 문자열 3개까지.
 
@@ -331,6 +370,7 @@ __all__ = [
     "SYSTEM_PROMPT",
     "ChatResult",
     "ToolEvent",
+    "compact_json",
     "parse_suggestions",
     "run_chat",
 ]

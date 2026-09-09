@@ -10,11 +10,12 @@
  * 🔴 AI 는 **제안**만 한다. 제안 카드의 단추는 주식 주문 창에 값을 채울 뿐이고, 판은 사람이 그 창에서 띄운다 (§5.3.1).
  */
 
-import { PaperAirplaneIcon, PlusIcon, SparklesIcon } from "@heroicons/react/24/solid";
+import { PaperAirplaneIcon, PlusIcon, SparklesIcon, TrashIcon } from "@heroicons/react/24/solid";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   chatAsk,
   chatCreateThread,
+  chatDeleteThread,
   chatPlaceOrder,
   chatSetAuto,
   chatSettings,
@@ -27,6 +28,7 @@ import { requestStockOrder } from "../StockOrder";
 import { AUTO_ORDER_CONSENT_TEXT, AUTO_ORDER_CONSENT_VERSION } from "../shell/disclaimer";
 import { ErrorCard, when } from "../ui";
 import { proposalLine, readThread, THREAD_SLOT, visibleMessages, writeThread, type ChatEvidence, type ChatMessageView } from "./chat";
+import { EvidenceView } from "./evidence";
 import { Markdown } from "./markdown";
 import { useJobEvents } from "./useJobEvents";
 
@@ -59,6 +61,7 @@ export function ChatPanel({
   const [jobId, setJobId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [evidence, setEvidence] = useState<ChatEvidence | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const job = useJobEvents(jobId);
   const bottom = useRef<HTMLDivElement | null>(null);
 
@@ -131,6 +134,16 @@ export function ChatPanel({
     }
   };
 
+  const remove = (id: string) => {
+    chatDeleteThread(id)
+      .then(() => {
+        setConfirmDelete(null);
+        if (thread?.id === id) fresh();
+        loadThreads();
+      })
+      .catch((exc: unknown) => setError(String(exc)));
+  };
+
   const send = (asked: string) => {
     const question = asked.trim();
     if (!question || jobId) return;
@@ -175,23 +188,38 @@ export function ChatPanel({
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 text-sm">
         {threads.length === 0 ? <p className="faint px-3 py-2 text-xs">아직 대화가 없다.</p> : null}
         {threads.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-blue-gray-50 dark:hover:bg-gray-800 ${
-              thread?.id === t.id ? "bg-blue-gray-100 dark:bg-gray-800" : ""
-            }`}
-            onClick={() => openThread(t.id)}
-            title={`${t.count}턴 · ${when(t.updated_at)}`}
-          >
-            <span className="min-w-0 flex-1 truncate">{t.title || "새 대화"}</span>
-          </button>
+          <div key={t.id} className={`group flex items-center gap-1 rounded-lg pr-1 hover:bg-blue-gray-50 dark:hover:bg-gray-800 ${thread?.id === t.id ? "bg-blue-gray-100 dark:bg-gray-800" : ""}`}>
+            <button type="button" className="min-w-0 flex-1 truncate px-3 py-2 text-left" onClick={() => openThread(t.id)} title={`${t.count}턴 · ${when(t.updated_at)}`}>
+              {t.title || "새 대화"}
+            </button>
+            {/* 삭제 — 팝업 없이 행 안에서 확인한다. */}
+            {confirmDelete === t.id ? (
+              <span className="flex shrink-0 items-center gap-1 text-xs">
+                <button type="button" className="btn small" onClick={() => remove(t.id)}>
+                  삭제
+                </button>
+                <button type="button" className="btn small" onClick={() => setConfirmDelete(null)}>
+                  취소
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="grid h-7 w-7 shrink-0 place-items-center rounded text-blue-gray-400 opacity-0 hover:text-loss group-hover:opacity-100"
+                title="이 대화를 지운다"
+                aria-label="대화 삭제"
+                onClick={() => setConfirmDelete(t.id)}
+              >
+                <TrashIcon className="h-4 w-4" />
+              </button>
+            )}
+          </div>
         ))}
       </div>
     </div>
   );
 
-  const column = wide ? "mx-auto w-full max-w-3xl px-4" : "px-3";
+  const column = wide ? "mx-auto w-full max-w-3xl px-4" : "px-4";
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -212,7 +240,7 @@ export function ChatPanel({
           <button type="button" className={`btn small ${auto?.enabled ? "primary" : ""}`} onClick={() => setAutoOpen((was) => !was)} title="자동 실행 모드">
             {auto?.enabled ? "자동 ON" : "자동 OFF"}
           </button>
-          <select className="min-w-0 max-w-xs flex-1" value={model} onChange={(e) => setModel(e.target.value)} title="모델 — 성능은 T249 가 잰다">
+          <select className="min-w-0 max-w-[12rem] flex-1 truncate" value={model} onChange={(e) => setModel(e.target.value)} title="모델 — 성능은 T249 가 잰다">
             {models.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.rank}. {m.id}
@@ -224,7 +252,7 @@ export function ChatPanel({
         {listOpen && !wide ? (
           threadList
         ) : (
-          <div className="flex min-h-0 flex-1">
+          <div className="relative flex min-h-0 flex-1">
             <div className="flex min-h-0 flex-1 flex-col">
               {autoOpen ? (
                 <div className={`border-b border-blue-gray-100 py-2 text-xs dark:border-gray-800 ${column}`}>
@@ -360,8 +388,8 @@ export function ChatPanel({
                               ))
                             : null}
                           {/* ⭐ 모든 답의 맨 아래 — 근거 목록. 누르면 세미 창에 도구 입력·출력. 근거가 없는 답도 그렇다고 적는다. */}
-                          <p className="faint mt-2 text-xs">
-                            근거{m.evidence && m.evidence.length ? ` ${m.evidence.length}:` : ": 도구를 쓰지 않은 답"}{" "}
+                          <p className="faint mt-2 flex flex-wrap items-center gap-1 text-xs">
+                            <span>근거{m.evidence && m.evidence.length ? ` ${m.evidence.length}:` : ": 도구를 쓰지 않은 답"}</span>
                             {(m.evidence ?? []).map((e, i) => (
                               <button
                                 key={i}
@@ -373,7 +401,7 @@ export function ChatPanel({
                                 {e.name} {e.ms}ms
                               </button>
                             ))}
-                            {m.model ? ` · ${m.model}` : ""}
+                            {m.model ? <span className="truncate">· {m.model}</span> : null}
                           </p>
                         </div>
                       </div>
@@ -411,16 +439,8 @@ export function ChatPanel({
                     ))}
                   </div>
                 ) : null}
-                {/* ⭐ 추천 질문 — 대화 중에도 늘 떠 있다(가로 스크롤). */}
-                {starters.length && messages.length ? (
-                  <div className="chat-starters mb-2 flex gap-1 overflow-x-auto text-xs">
-                    {starters.map((s) => (
-                      <button key={s} type="button" className="chip shrink-0" onClick={() => send(s)} disabled={Boolean(jobId)}>
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
+                {/* 추천 질문은 두 종류다 — 빈 화면의 안내(도구마다 고정 한 문장) · 답 뒤의 다음 질문(모델이 문맥으로 만든 것).
+                    대화 중엔 후자만 보인다 (사용자 2026-09-10). */}
                 <div className="flex items-end gap-2 rounded-2xl border border-blue-gray-200 bg-white p-2 shadow-sm dark:border-gray-700 dark:bg-gray-900">
                   <textarea
                     className="max-h-40 min-h-[2.5rem] flex-1 resize-none border-0 bg-transparent px-2 py-1.5 text-sm outline-none"
@@ -451,28 +471,20 @@ export function ChatPanel({
 
             {/* ⭐ 근거 세미 창 — 도구 이름 · 인자 · 결과 원문(잘라서) · 지연. */}
             {evidence ? (
-              <aside className={`chat-evidence flex shrink-0 flex-col border-l border-blue-gray-100 text-xs dark:border-gray-800 ${wide ? "w-80" : "w-64"}`}>
-                <div className="flex items-center gap-1 border-b border-blue-gray-100 px-2 py-1 dark:border-gray-800">
+              <aside
+                className={`chat-evidence flex flex-col border-l border-blue-gray-100 bg-white text-xs dark:border-gray-800 dark:bg-gray-900 ${
+                  wide ? "w-96 shrink-0" : "absolute inset-y-0 right-0 z-10 w-[88%] shadow-2xl"
+                }`}
+              >
+                <div className="flex items-center gap-1 border-b border-blue-gray-100 px-3 py-2 dark:border-gray-800">
                   <b className="min-w-0 flex-1 truncate">근거 · {evidence.name}</b>
                   <span className="faint">{evidence.ms}ms</span>
                   <button type="button" className="btn small" onClick={() => setEvidence(null)} title="닫는다">
                     ✕
                   </button>
                 </div>
-                <div className="min-h-0 flex-1 overflow-y-auto p-2">
-                  <div className="faint">입력</div>
-                  <pre className="mono whitespace-pre-wrap break-all">{JSON.stringify(evidence.arguments, null, 1)}</pre>
-                  {evidence.ok ? (
-                    <>
-                      <div className="faint mt-2">출력 (요약)</div>
-                      <pre className="mono whitespace-pre-wrap break-all">{evidence.result || evidence.digest}</pre>
-                    </>
-                  ) : (
-                    <>
-                      <div className="loss mt-2">실패</div>
-                      <pre className="mono whitespace-pre-wrap break-all">{evidence.error}</pre>
-                    </>
-                  )}
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  <EvidenceView evidence={evidence} />
                 </div>
               </aside>
             ) : null}

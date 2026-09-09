@@ -11,7 +11,7 @@ from updown.common.domain.instrument import Market
 from updown.decision.risk.policy import load_settings as load_risk_settings
 from updown.llm.port import ChatMessage, ChatOutcome, ChatReply, ToolCall, ToolSpec
 from updown.marketdata.provider import MarketDataProvider
-from updown.orchestration.ai_chat.agent import parse_suggestions, run_chat
+from updown.orchestration.ai_chat.agent import compact_json, parse_suggestions, run_chat
 from updown.orchestration.ai_chat.aliases import load_aliases
 from updown.orchestration.ai_chat.tools import TOOLS, ToolContext, starters
 
@@ -31,6 +31,18 @@ class TestStarters:
     def test_every_tool_has_a_starter_question(self) -> None:
         got = starters()
         assert len(got) == len(TOOLS) and all(q.endswith(("?", "줘")) for q in got)
+
+
+class TestCompactJson:
+    def test_stays_valid_json_and_caps_lists(self) -> None:
+        import json
+
+        big = {"rows": [{"i": i, "text": "x" * 500} for i in range(200)], "note": "n"}
+        text = compact_json(big, 3_000)
+        got = json.loads(text)
+        assert len(text) <= 3_000 and got["note"] == "n"
+        assert isinstance(got["rows"], list) and str(got["rows"][-1]).startswith("… 외 ")
+        assert compact_json({"a": 1}, 100) == '{"a": 1}'
 
 
 class TestSuggestions:
