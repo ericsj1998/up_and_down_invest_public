@@ -9,6 +9,8 @@ import { useLocation } from "react-router-dom";
 import { noRealAccount, type Who } from "../api";
 import { AuthTimer, WhoBar } from "../Gate";
 import { Typography } from "../mt";
+import { GroupIcon } from "./BrokerMark";
+import { GROUP_LABEL, useMarketGroup } from "./marketGroup";
 import { pageTitle } from "./nav";
 import { useOpenRuns } from "./openRuns";
 import { useTheme } from "./theme";
@@ -25,6 +27,7 @@ export function Navbar({
   const { pathname } = useLocation();
   const runs = useOpenRuns();
   const [theme, toggleTheme] = useTheme();
+  const [group] = useMarketGroup();
 
   const parts = pathname.split("/").filter(Boolean);
   const run = parts[0] === "paper" ? parts[1] : undefined;
@@ -46,20 +49,29 @@ export function Navbar({
             {/* ⭐ 첫 줄은 **어느 돈이 도는가** — 콘솔의 전제다 (UX 점검 2026-09-05). 서버(/auth/me)가 말한 값이다. */}
             <Typography
               variant="small"
-              className={`font-medium ${who?.real_money ? "text-loss" : "text-blue-gray-500 dark:text-blue-gray-300"}`}
+              className={`flex items-center gap-1.5 font-medium ${who?.real_money ? "text-loss" : "text-blue-gray-500 dark:text-blue-gray-300"}`}
             >
-              {who?.real_money === undefined
-                ? run
-                  ? "판"
-                  : "화면"
-                : noRealAccount(who)
-                  ? "실계좌 모드 · 이 환경(로컬)에는 실계좌가 없다"
-                  : who.real_money
-                  ? "실계좌 · 진짜 돈"
-                  : who.guest
-                    ? "Demo Trading · 테스트넷 · 게스트(읽기만)"
-                    : "Demo Trading · 테스트넷 · 페이크머니"}
-              {run ? " · 판" : ""}
+              {/* T245 — 어느 시장을 보는지가 어디서나 보인다. 주식은 "테스트넷" 이 아니다 — 토스에 테스트넷이 없어
+                  체결을 우리가 모의한다(페이퍼). 그 사실이 첫 줄에 적혀야 페이퍼 성적을 실적으로 안 읽는다. */}
+              <GroupIcon group={group} className="h-3.5 w-3.5" />
+              <span>
+                {GROUP_LABEL[group]}
+                {" · "}
+                {who?.real_money === undefined
+                  ? run
+                    ? "판"
+                    : "화면"
+                  : group === "stock"
+                    ? `주식 페이퍼 · 토스 시세 · 가상 체결 · 실주문 없음${who.guest ? " · 게스트(읽기만)" : ""}`
+                    : noRealAccount(who)
+                      ? "실계좌 모드 · 이 환경(로컬)에는 실계좌가 없다"
+                      : who.real_money
+                        ? "실계좌 · 진짜 돈"
+                        : who.guest
+                          ? "Demo Trading · 테스트넷 · 게스트(읽기만)"
+                          : "Demo Trading · 테스트넷 · 페이크머니"}
+                {run ? " · 판" : ""}
+              </span>
             </Typography>
             <Typography variant="h6" color="blue-gray" className={run ? "font-mono dark:text-white" : "dark:text-white"}>
               {title}

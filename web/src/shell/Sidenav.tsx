@@ -9,6 +9,8 @@
 import { PresentationChartLineIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { modeCookie, noRealAccount, switchMode, type Who } from "../api";
+import { GroupIcon } from "./BrokerMark";
+import { GROUP_LABEL, useMarketGroup, type MarketGroup } from "./marketGroup";
 
 /**
  * Demo Trading 스위치 (T221) — 거래소 사이트의 "Demo Trading" 처럼 한 번에 전환한다.
@@ -56,6 +58,45 @@ function DemoSwitch({ who }: { who: Who | null }) {
         </span>
       )}
     </button>
+  );
+}
+
+/**
+ * 시장 스위치 (T245) — 코인 | 주식. Demo 스위치 바로 아래, 같은 결. 새로고침 없이 바뀐다 — 같은 서버의 화면을
+ * 다른 기준으로 거를 뿐이다. 어느 시장이 코인/주식인지는 서버가 말하고(`/exchange/markets`), 여기는 고르기만 한다.
+ */
+function MarketSwitch() {
+  const [group, setGroup] = useMarketGroup();
+  const seg = (which: MarketGroup) => {
+    const on = group === which;
+    return (
+      <button
+        key={which}
+        type="button"
+        role="radio"
+        aria-checked={on}
+        title={which === "coin" ? "코인 시장 — Gate·Binance 선물" : "주식 시장 — 토스 시세 · 페이퍼(가상 체결)"}
+        onClick={() => setGroup(which)}
+        className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold transition-colors ${
+          on
+            ? "bg-white text-blue-gray-900 shadow-sm dark:bg-gray-700 dark:text-white"
+            : "text-blue-gray-500 hover:text-blue-gray-800 dark:text-blue-gray-300 dark:hover:text-white"
+        }`}
+      >
+        <GroupIcon group={which} className="h-4 w-4" />
+        {GROUP_LABEL[which]}
+      </button>
+    );
+  };
+  return (
+    <div
+      role="radiogroup"
+      aria-label="시장 전환"
+      className="mt-2 flex rounded-lg border border-blue-gray-200 bg-blue-gray-50 p-1 dark:border-gray-700 dark:bg-gray-800"
+    >
+      {seg("coin")}
+      {seg("stock")}
+    </div>
   );
 }
 import { Typography } from "../mt";
@@ -132,6 +173,8 @@ export function Sidenav({
         {/* T221 Demo Trading — 로고 바로 아래, 늘 보이는 자리. 어느 돈을 보고 있는지가 이 화면의 전제다. */}
         <div className="px-6 pb-4">
           <DemoSwitch who={who} />
+          {/* T245 시장 전환 — 어느 시장을 보는지가 어느 돈을 보는지 다음의 전제다. */}
+          <MarketSwitch />
         </div>
         <button
           type="button"

@@ -9,7 +9,9 @@
  * 통째로 사라지면 *"내가 띄웠던 판이 어디 갔나"* 에 답할 수 없다 (절대 규칙 #8).
  */
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { exchangeMarkets, type MarketInfo } from "./api";
+import { groupOfName, useMarketGroup } from "./shell/marketGroup";
 import {
   dropSession,
   health as fetchHealth,
@@ -215,6 +217,21 @@ export function Runs({ rows, open, refresh, available }: Props) {
   const [market, setMarket] = useState("GATE");
   // ⭐ 거래소 목록은 서버 파생 (T63 §2c) — 새 거래소는 어댑터가 계약을 지키면 자동으로 뜬다.
   const [markets, setMarkets] = useState<string[]>([]);
+  // ⭐ T245 — 새 판의 시장 후보는 고른 묶음(코인/주식)의 것만. 묶음은 서버가 말한다.
+  const [group] = useMarketGroup();
+  const [infos, setInfos] = useState<MarketInfo[]>([]);
+  useEffect(() => {
+    exchangeMarkets()
+      .then((r) => setInfos(r.all ?? []))
+      .catch(() => setInfos([]));
+  }, []);
+  const groupMarkets = useMemo(
+    () => markets.filter((m) => groupOfName(infos, m) === group),
+    [markets, infos, group],
+  );
+  useEffect(() => {
+    if (groupMarkets.length && !groupMarkets.includes(market)) setMarket(groupMarkets[0] ?? market);
+  }, [groupMarkets, market]);
   const [symbol, setSymbol] = useState("");
   const [margin, setMargin] = useState("300");
   const [leverage, setLeverage] = useState("3");
@@ -682,7 +699,7 @@ export function Runs({ rows, open, refresh, available }: Props) {
               label="거래소"
               value={market}
               onChange={setMarket}
-              options={markets.map((m) => ({ value: m }))}
+              options={groupMarkets.map((m) => ({ value: m }))}
             />
             <label className="field">
               종목

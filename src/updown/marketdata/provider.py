@@ -123,6 +123,19 @@ class MarketDataProvider:
                 found.append(market.value)
         return tuple(found)
 
+    def broker_of(self, market: Market) -> str:
+        """이 시장의 봉·시세를 대는 브로커 이름 — 화면의 브로커 마크가 읽는다 (T245).
+
+        Args:
+            market: 시장.
+
+        Returns:
+            `toss` · `upbit` · `gate` · `binance`.
+        """
+        if market in _TOSS_MARKETS:
+            return "toss"
+        return market.value.lower()
+
     def adapter_for(self, market: Market) -> BrokerAdapter:
         """시장에 맞는 조회 어댑터를 준다.
 

@@ -49,6 +49,8 @@ import {
 } from "./ui";
 import { positionsSummary } from "./consoleSummary";
 import { connection } from "./api";
+import { BrokerMark } from "./shell/BrokerMark";
+import { brokerOfName, pickMarkets, useMarketGroup } from "./shell/marketGroup";
 
 /** ⚠️ 거래소를 두드리는 일이라 느긋하게. 정리하려고 여는 화면이지 초를 보는 곳이 아니다. */
 // 2026-09-05: 4초는 1 GB 서버에서 CPU 를 다 먹었다(요청마다 거래소 왕복). 10초면 충분하다.
@@ -204,7 +206,10 @@ export function ConsoleTab({ openRun }: Props) {
       alive = false;
     };
   }, []);
-  const allMarkets = markets ?? [];
+  // ⭐ T245 — 고른 시장 묶음(코인/주식)의 것만 본다. 칩·폴링·카드 전부 여기서 갈린다. 묶음이 무엇인지는 서버가 말한다.
+  const [group] = useMarketGroup();
+  const allMarkets = useMemo(() => pickMarkets(markets ?? [], group), [markets, group]);
+  useEffect(() => setMkt("전체"), [group]);
   const marketKey = allMarkets
     .filter((m) => m.ready && m.scoped)
     .map((m) => m.name)
@@ -711,13 +716,23 @@ export function ConsoleTab({ openRun }: Props) {
                 title={ready ? undefined : `${name} — ${keyWord} 설정이 필요하다. 눌러서 무엇이 필요한지 본다`}
                 onClick={() => setMkt(name)}
               >
-                {name}
-                {ready ? "" : " · 연결 필요"}
+                <span className="inline-flex items-center gap-1.5">
+                  {name}
+                  {name === "전체" ? null : <BrokerMark broker={brokerOfName(allMarkets, name)} />}
+                  {ready ? "" : " · 연결 필요"}
+                </span>
               </button>
             );
           })}
         </div>
       )}
+      {/* T245 — 고른 시장의 머리: 시장 이름 + 브로커 마크(토스 로고 · GATE · BINANCE). "이 돈이 어느 계좌에 있나". */}
+      {effMkt !== "전체" ? (
+        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-blue-gray-700 dark:text-blue-gray-200">
+          <span>{effMkt}</span>
+          <BrokerMark broker={brokerOfName(allMarkets, effMkt)} size="md" />
+        </div>
+      ) : null}
       <div className="cards">
         {effMkt !== "전체" && (keyless[effMkt] || !isReady(effMkt)) ? (
           <Card

@@ -34,7 +34,7 @@ from typing import Annotated, Any, cast
 from fastapi import APIRouter, Body, HTTPException
 
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
-from updown.common.domain.instrument import Instrument, Market, Timeframe
+from updown.common.domain.instrument import Instrument, Market, MarketGroup, Timeframe
 from updown.common.domain.order import OrderKind, OrderRequest, OrderType, Side
 from updown.common.logging.setup import get_logger
 from updown.execution.gateway import OrderGatewayError, order_adapter
@@ -107,7 +107,16 @@ async def markets() -> dict[str, Any]:
             ready = True
         except Exception:
             ready = False
-        known.append({"name": market.value, "ready": ready, "scoped": market.value in scoped})
+        # ⭐ T245 — 시장 묶음(코인/주식)과 브로커는 **서버가 말한다**. 화면은 이름으로 안 가른다.
+        known.append(
+            {
+                "name": market.value,
+                "ready": ready,
+                "scoped": market.value in scoped,
+                "group": "coin" if MarketGroup.of(market) is MarketGroup.COIN else "stock",
+                "broker": provider.broker_of(market),
+            }
+        )
     # `markets` = 이 API 가 실제로 붙어 있는 거래소(범위 안 · 키 있음) — 폴링·대조가 도는 곳.
     # `all` = 아는 거래소 전부 + 연결 여부 — 콘솔 칩은 이걸 그려 사람이 고른다 (사용자 2026-09-06:
     # "기능은 있되, 선택권을 사람이 가지는 거지"). 연결 안 된 것을 고르면 "API 키 설정이

@@ -1609,7 +1609,14 @@ export type FundStatus = {
 
 /** 거래소별 잔액 — 콘솔 상단 카드 (T63 §2c 파생 · 사용자 요구 2026-08-26). */
 /** 이 API 가 붙어 있는 거래소 — 콘솔은 이 목록만 묻는다. 빈 목록 = 연결 없음 (2026-09-06). */
-export type MarketInfo = { name: string; ready: boolean; scoped: boolean };
+/** 시장 한 줄 — `group`/`broker` 는 T245(2026-09-09)부터 서버가 준다. 없으면 옛 서버(전부 코인으로 본다). */
+export type MarketInfo = {
+  name: string;
+  ready: boolean;
+  scoped: boolean;
+  group?: "coin" | "stock";
+  broker?: string;
+};
 export function exchangeMarkets(): Promise<{
   markets: string[];
   all: MarketInfo[];
