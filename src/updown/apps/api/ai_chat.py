@@ -26,6 +26,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from updown.apps.api import analysis as analysis_api
+from updown.apps.api import assistant as assistant_api
 from updown.apps.api import auth, rebalancer, walkforward
 from updown.apps.api import evidence as ev
 from updown.apps.api import exchange as exchange_api
@@ -37,6 +38,7 @@ from updown.common.db.models.accounts import ChatThread
 from updown.common.db.models.enums import LogLevel
 from updown.common.db.models.ops import EventLog
 from updown.common.domain.instrument import Market
+from updown.common.domain.session import load_calendar
 from updown.common.logging.context import get_trace_id, new_trace_id
 from updown.common.logging.setup import get_logger
 from updown.common.security.consent import (
@@ -268,6 +270,8 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
         return await exchange_api._state_fresh(symbol or exchange_api.DEFAULT_SYMBOL, market)  # pyright: ignore[reportPrivateUsage]
 
     async def _evidence(playbook: str) -> dict[str, Any]:
+        if playbook not in ev.BACKTESTS and playbook.split("@", 1)[0] in ev.BACKTESTS:
+            playbook = playbook.split("@", 1)[0]  # 판의 매매법 id 는 버전이 붙는다 (T248 3차)
         if playbook not in ev.BACKTESTS:
             return {"note": f"{playbook} 의 저장소가 없다", "known": sorted(ev.BACKTESTS)[:20]}
         summary = ec.bt_summary(ev._backtest_store(playbook))  # pyright: ignore[reportPrivateUsage]
@@ -278,6 +282,21 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
     async def _funds() -> list[dict[str, Any]]:
         body = await rebalancer.listing()
         return cast("list[dict[str, Any]]", body.get("funds") or [])
+
+    async def _candidates(group: str, tier: str) -> dict[str, Any]:
+        return assistant_api.preview_for(who, group, tier)
+
+    async def _ranking(market: str) -> dict[str, Any]:
+        return await fundamentals_api.ranking(market)
+
+    async def _open_runs() -> list[dict[str, Any]]:
+        store = walkforward.ledger_store()
+        return [] if store is None else await store.open_runs(live=True)
+
+    async def _journal() -> dict[str, Any]:
+        from updown.apps.api import ai_report  # 순환 import 회피 — settings() 와 같은 이유
+
+        return await ai_report.journal()
 
     return ToolContext(
         provider=provider,
@@ -290,6 +309,12 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
         exchange_state=_exchange_state,
         evidence=_evidence,
         funds=_funds,
+        candidates=_candidates,
+        ranking=_ranking,
+        open_runs=_open_runs,
+        journal=_journal,
+        candle_repo=walkforward._candles,  # pyright: ignore[reportPrivateUsage]
+        calendar=load_calendar(),
         report=report,
     )
 

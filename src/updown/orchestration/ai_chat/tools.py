@@ -26,14 +26,19 @@ from updown.common.domain.instrument import (
     MarketGroup,
     Timeframe,
 )
+from updown.common.domain.session import MarketCalendar
 from updown.common.logging.setup import get_logger
+from updown.common.security.markets import group_of
 from updown.decision.risk.manual import confirm
 from updown.decision.risk.policy import RiskSettings
 from updown.llm.port import ToolSpec
+from updown.marketdata.adapter import QuoteAdapter
+from updown.marketdata.ingest.repository import CandleRepository
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_chat.aliases import AliasBook
 from updown.orchestration.ai_chat.snapshot import extremes_of, summarize_frame
+from updown.orchestration.walkforward.stored_candles import StoredCandles
 
 _logger = get_logger("orchestration.ai_chat.tools")
 
@@ -59,6 +64,12 @@ class ToolContext:
         exchange_state: `(symbol, market)` → 거래소 상태(잔고·포지션·조건부).
         evidence: `(playbook_id)` → 저장소 요약.
         funds: `()` → 펀드 목록.
+        candidates: `(group, tier)` → `/assistant/preview` 모양(후보·창·성향 선택).
+        ranking: `(market)` → 저평가 순위(T244).
+        open_runs: `()` → 살아 있는 라이브 판 목록(예산·매매법·메타).
+        journal: `()` → AI 매매일지(끝난 AI 매매 · 근거별 적중).
+        candle_repo: 있으면 봉을 DB 캐시(`StoredCandles`)로 읽는다 — 40초가 수 초로.
+        calendar: 캐시가 정규장 봉만 돌려주게 하는 캘린더.
         report: 진행 문장 콜백.
     """
 
@@ -72,7 +83,14 @@ class ToolContext:
     exchange_state: Fetch | None = None
     evidence: Fetch | None = None
     funds: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None
+    candidates: Fetch | None = None
+    ranking: Fetch | None = None
+    open_runs: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None
+    journal: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    candle_repo: CandleRepository | None = None
+    calendar: MarketCalendar | None = None
     report: Callable[[str], None] = field(default=lambda _: None)
+    _stores: dict[str, StoredCandles] = field(default_factory=lambda: {})
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,12 +237,30 @@ async def _symbol_resolve(args: dict[str, Any], ctx: ToolContext) -> dict[str, A
 async def _candles(
     ctx: ToolContext, instrument: Instrument, frame: Timeframe, bars: int
 ) -> list[Candle]:
-    adapter = ctx.provider.adapter_for(instrument.market)
+    adapter = _quotes(ctx, instrument.market)
     now = datetime.now(UTC)
     rows = await adapter.get_candles(
         instrument, frame, now - interval(frame) * (bars + WARMUP_BARS), now
     )
     return list(rows[:-1]) if rows else []
+
+
+def _quotes(ctx: ToolContext, market: Market) -> Any:
+    """조회 어댑터 — 봉 저장소가 있으면 `StoredCandles` 로 감싼다.
+
+    시장마다 하나를 만들고 대화 안에서 재사용한다.
+
+    2026-09-09 실측: `market_view` 한 번이 40초였다 — 축마다 320봉을 브로커에서 받았기 때문이다.
+    판이 쓰는 같은 캐시를 쓰면 DB 에 있는 봉은 안 받는다 (T248 3차).
+    """
+    adapter = ctx.provider.adapter_for(market)
+    if ctx.candle_repo is None:
+        return adapter
+    found = ctx._stores.get(market.value)  # pyright: ignore[reportPrivateUsage]
+    if found is None:
+        found = StoredCandles(cast("QuoteAdapter", adapter), ctx.candle_repo, calendar=ctx.calendar)
+        ctx._stores[market.value] = found  # pyright: ignore[reportPrivateUsage]
+    return found
 
 
 async def _market_view(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -307,6 +343,178 @@ async def _playbook_expectation(args: dict[str, Any], ctx: ToolContext) -> dict[
     playbook = str(args.get("playbook") or "")
     ctx.report(f"매매법 실측: {playbook}")
     return await ctx.evidence(playbook)
+
+
+EXPOSURE_WARN_PCT = Decimal(50)
+"""한 갈래(코인·국내·해외)에 총자본의 이 비율을 넘게 잡혀 있으면 경고."""
+AGGRESSIVE_WARN_PCT = Decimal(30)
+"""공격적 등급 매매법에 잡힌 예산이 총자본의 이 비율을 넘으면 반대 성향 매매법을 권한다."""
+MIN_COIN_MARGIN = Decimal(50)
+"""코인 한 판의 최소 예산(USDT) — 자동 모드 기본 예산과 같다."""
+
+
+def _group_default(ctx: ToolContext) -> str:
+    live = tuple(m.upper() for m in ctx.live_markets)
+    if any(m in live for m in ("NASDAQ", "NYSE")):
+        return "foreign"
+    if "KRX" in live:
+        return "domestic"
+    return "coin"
+
+
+async def _recommend_by_budget(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    if ctx.candidates is None:
+        return {"note": "매매법 저장소가 이 서버에 없다"}
+    budget = _decimal(args.get("budget"))
+    if budget is None or budget <= 0:
+        raise ValueError("budget 이 없다 — 얼마로 투자할지 숫자로")
+    currency = str(args.get("currency") or "KRW").upper()
+    group = str(args.get("group") or _group_default(ctx))
+    tier = str(args.get("tier") or "balanced")
+    ctx.report(f"예산 추천: {budget} {currency} · {group} · {tier}")
+    preview = await ctx.candidates(group, tier)
+    rows = cast("list[dict[str, Any]]", preview.get("candidates") or [])
+    chosen_id = preview.get("chosen")
+    chosen = next((r for r in rows if r.get("id") == chosen_id), None)
+    alternatives: list[dict[str, Any]] = []
+    for r in rows:
+        if r.get("id") == chosen_id:
+            continue
+        store = cast("dict[str, Any]", r.get("store") or {})
+        alternatives.append(
+            {
+                "id": r.get("id"),
+                "label": r.get("label"),
+                "risk_tier": store.get("risk_tier_label"),
+                "recommended": r.get("recommended"),
+            }
+        )
+    out: dict[str, Any] = {
+        "budget": str(budget),
+        "currency": currency,
+        "group": group,
+        "tier": tier,
+        "tier_label": preview.get("tier_label"),
+        "market": preview.get("market"),
+        "chosen": chosen,
+        "alternatives": alternatives[:5],
+        "min_unit": (
+            f"코인은 한 판 최소 {MIN_COIN_MARGIN} USDT"
+            if group == "coin"
+            else (
+                "주식은 정수 주 — 한 주 가격보다 예산이 작으면 못 산다 "
+                "(market_view 의 last 로 확인)"
+            )
+        ),
+        "note": (
+            "숫자는 세션 엔진 저장소의 과거 창 실측(λ=선언 배율 · MDD 병기)이며 예상이 아니다. "
+            '"추천" 이라는 말은 recommended 가 참인 매매법에만 쓴다.'
+        ),
+    }
+    if group != "coin" and ctx.ranking is not None and preview.get("market"):
+        try:
+            ranked = await ctx.ranking(str(preview["market"]))
+            top = cast("list[dict[str, Any]]", ranked.get("rows") or [])[:3]
+            out["value_candidates"] = [
+                {k: r.get(k) for k in ("symbol", "score", "per", "pbr", "flags")} for r in top
+            ]
+            out["value_note"] = ranked.get("note")
+        except Exception as exc:
+            out["value_error"] = str(exc)[:200]
+    return out
+
+
+async def _portfolio_exposure(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    del args
+    if ctx.open_runs is None or ctx.exchange_state is None:
+        return {"note": "판 원장·거래소 연결이 이 서버에 없다"}
+    ctx.report("비중 분석: 살아 있는 판 · 총자본")
+    runs = await ctx.open_runs()
+    totals: dict[str, Decimal] = {}
+    for market_name in ctx.live_markets:
+        try:
+            state = await ctx.exchange_state("", market_name)
+            balance = cast("dict[str, Any]", state.get("balance") or {})
+            totals[market_name] = Decimal(str(balance.get("total") or 0))
+        except Exception:
+            totals[market_name] = Decimal(0)
+    total = sum(totals.values(), Decimal(0))
+    by_group: dict[str, Decimal] = {}
+    by_tier: dict[str, Decimal] = {}
+    tiers: dict[str, str] = {}
+    ai_margin = Decimal(0)
+    for run in runs:
+        margin = _decimal(run.get("margin")) or Decimal(0)
+        market_name = str(run.get("market") or "")
+        try:
+            group = group_of(Market(market_name))
+        except ValueError:
+            group = market_name
+        by_group[group] = by_group.get(group, Decimal(0)) + margin
+        playbook = str(run.get("playbook_id") or "")
+        if playbook and playbook not in tiers and ctx.evidence is not None:
+            try:
+                found_ev = await ctx.evidence(playbook)
+                label = found_ev.get("risk_tier_label") or found_ev.get("risk_tier")
+                tiers[playbook] = str(label or "?")
+            except Exception:
+                tiers[playbook] = "?"
+        tier = tiers.get(playbook, "?")
+        by_tier[tier] = by_tier.get(tier, Decimal(0)) + margin
+        meta = cast("dict[str, Any]", run.get("meta") or {})
+        if isinstance(meta.get("ai"), dict):
+            ai_margin += margin
+
+    def _share(value: Decimal) -> str | None:
+        return None if total <= 0 else f"{value / total * 100:.1f}"
+
+    warnings: list[str] = []
+    for group, value in by_group.items():
+        share = Decimal(0) if total <= 0 else value / total * 100
+        if share > EXPOSURE_WARN_PCT:
+            warnings.append(f"{group} 갈래에 총자본의 {share:.0f}% 가 잡혀 있다")
+    aggressive = sum(
+        (v for k, v in by_tier.items() if "aggressive" in k or "공격" in k),
+        Decimal(0),
+    )
+    opposite: dict[str, Any] | None = None
+    if total > 0 and aggressive / total * 100 > AGGRESSIVE_WARN_PCT:
+        warnings.append(
+            f"공격적 등급 매매법에 {aggressive / total * 100:.0f}% — 반대 성향을 섞는다"
+        )
+        if ctx.candidates is not None:
+            try:
+                safe = await ctx.candidates(_group_default(ctx), "safe")
+                opposite = {"tier": "safe", "chosen": safe.get("chosen")}
+            except Exception:
+                opposite = None
+    return {
+        "total": str(total),
+        "totals_by_market": {k: str(v) for k, v in totals.items()},
+        "runs": len(runs),
+        "by_group": {k: {"margin": str(v), "share_pct": _share(v)} for k, v in by_group.items()},
+        "by_tier": {k: {"margin": str(v), "share_pct": _share(v)} for k, v in by_tier.items()},
+        "ai_margin": str(ai_margin),
+        "ai_share_pct": _share(ai_margin),
+        "warnings": warnings,
+        "opposite_tier_pick": opposite,
+        "note": "상관계수는 아직 재지 않는다 — 갈래·등급 비중만. 예산은 판에 잡힌 증거금 기준.",
+    }
+
+
+async def _trade_journal(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    if ctx.journal is None:
+        return {"note": "매매일지가 이 서버에 없다"}
+    limit = int(args.get("limit") or 10)
+    ctx.report("매매일지: 끝난 AI 매매")
+    got = await ctx.journal()
+    rows = cast("list[dict[str, Any]]", got.get("rows") or [])
+    return {
+        "rows": rows[-limit:],
+        "reason_hits": got.get("reason_hits"),
+        "n": got.get("n"),
+        "note": "AI 판(actor=AI)의 끝난 매매만. 근거별 적중은 그 근거가 붙은 매매의 승패 수다.",
+    }
 
 
 async def _propose_order(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -484,6 +692,42 @@ TOOLS: tuple[Tool, ...] = (
             ),
         ),
         _propose_order,
+    ),
+    Tool(
+        ToolSpec(
+            "recommend_by_budget",
+            "예산으로 시작할 때 — 성향(안전·균형·공격)에 맞는 매매법과 과거 창 실측, 최소 단위, "
+            "저평가 후보 3. 예상이 아니라 과거다. "
+            "유사어: 얼마로 시작, 200만원, 투자해 보려, 어디에 투자, 뭐 사, 추천해 줘, 처음.",
+            _obj(
+                {
+                    "budget": {"type": "number", "description": "예산 숫자"},
+                    "currency": {"type": "string", "description": "KRW · USD · USDT (기본 KRW)"},
+                    "group": {"type": "string", "description": "coin · domestic · foreign"},
+                    "tier": {"type": "string", "description": "safe · balanced · aggressive"},
+                },
+                ["budget"],
+            ),
+        ),
+        _recommend_by_budget,
+    ),
+    Tool(
+        ToolSpec(
+            "portfolio_exposure",
+            "내 비중 — 갈래(코인·국내·해외)·매매법 등급별 예산 비중, AI 판 비중, 쏠림 경고와 반대 "
+            "성향 매매법. 유사어: 비중, 분산, 쏠림, 헷지, 리스크 분석, 포트폴리오, 너무 많이.",
+            _obj({}),
+        ),
+        _portfolio_exposure,
+    ),
+    Tool(
+        ToolSpec(
+            "trade_journal",
+            "AI 매매일지 — 끝난 AI 매매의 결과·손익·R·근거와 근거별 적중 수. "
+            "유사어: 매매일지, 일지, 복기, 어떤 근거가 맞았, AI 성적, 지난 매매.",
+            _obj({"limit": {"type": "integer", "description": "최근 몇 건 (기본 10)"}}),
+        ),
+        _trade_journal,
     ),
 )
 

@@ -29,7 +29,7 @@ from updown.orchestration.walkforward.ledger import (
     TradeRecord,
 )
 
-PROMPT_LOCK = {"chat-1.0": "0838d7c4"}
+PROMPT_LOCK = {"chat-1.0": "0838d7c4", "chat-1.1": "7275b230"}
 """🔴 프롬프트 잠금 — `SYSTEM_PROMPT` 나 도구 목록을 바꾸면 해시가 달라져 이 시험이 깨진다.
 
 그때 할 일은 **버전을 올리고**(`PROMPT_VERSION`) 여기에 새 짝을 **추가**하는 것이다. 값을 고쳐

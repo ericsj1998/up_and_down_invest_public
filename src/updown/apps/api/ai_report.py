@@ -38,8 +38,10 @@ from updown.orchestration.ai_chat.report import (
     Baseline,
     TurnStats,
     default_model,
+    journal_rows,
     participant_key,
     prompt_fingerprint,
+    reason_hits,
     scorecard,
     tabulate,
     trade_of,
@@ -126,10 +128,17 @@ async def _trades(*, ai: bool) -> list[AiTrade]:
         ai_meta = cast("dict[str, Any]", meta.get("ai") or {})
         key = str(ai_meta.get("participant") or "?") if ai else "baseline"
         symbol = str(run.get("symbol") or "")
+        reasons = [str(r) for r in cast("list[object]", ai_meta.get("reasons") or [])]
         for record in records:
             if ai and record.actor is not Actor.AI:
                 continue  # 같은 종목 판에 사람이 붙인 매매는 AI 것이 아니다
-            found = trade_of(record, participant=key, symbol=symbol)
+            found = trade_of(
+                record,
+                participant=key,
+                symbol=symbol,
+                reasons=reasons,
+                run_key=str(run.get("key") or ""),
+            )
             if found is not None:
                 out.append(found)
     return out
@@ -153,12 +162,18 @@ async def _report() -> dict[str, Any]:
         "participants": [c.as_json() for c in cards],
         "baseline": base_card.as_json(),
         "default_model": chosen,
+        "journal": journal_rows(ai_trades),
+        "reason_hits": reason_hits(ai_trades),
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
 
 async def gated_default() -> dict[str, Any]:
-    """채팅 설정이 부르는 관문 결과 — `{model, why}`. 실험이 안 켜졌거나 못 읽으면 model 은 None."""
+    """채팅 설정이 부르는 관문 결과.
+
+    Returns:
+        `{model, why}` — 실험이 안 켜졌거나 못 읽으면 model 은 None.
+    """
     try:
         started = await _started()
     except Exception as exc:
@@ -187,6 +202,30 @@ async def report(request: Request) -> dict[str, Any]:
     """
     await _who_or_403(request)
     return await _report()
+
+
+async def journal() -> dict[str, Any]:
+    """매매일지 — 끝난 AI 매매 전부와 근거별 적중 (채팅 도구 `trade_journal` 도 이것을 부른다).
+
+    Returns:
+        `{n, rows, reason_hits}`.
+    """
+    trades = await _trades(ai=True)
+    return {"n": len(trades), "rows": journal_rows(trades), "reason_hits": reason_hits(trades)}
+
+
+@router.get("/journal")
+async def read_journal(request: Request) -> dict[str, Any]:
+    """매매일지 (T248 3차) — 결과 · 손익 · R · 근거 · 근거별 적중.
+
+    Args:
+        request: 요청 — 로그인한 사람만.
+
+    Returns:
+        `{n, rows, reason_hits}`.
+    """
+    await _who_or_403(request)
+    return await journal()
 
 
 @router.post("/start")
@@ -249,4 +288,4 @@ async def start(request: Request, payload: Annotated[dict[str, Any], Body()]) ->
     return {"started": await _started(), "participants": keys}
 
 
-__all__ = ["ensure_participant", "gated_default", "router"]
+__all__ = ["ensure_participant", "gated_default", "journal", "router"]

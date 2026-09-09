@@ -1917,7 +1917,21 @@ export type AiReportView = {
   participants: AiParticipantView[];
   baseline: AiParticipantView;
   default_model: string | null;
+  journal: AiJournalRow[];
+  reason_hits: { reason: string; n: number; wins: number; hit_rate: string | null }[];
   generated_at: string;
+};
+
+export type AiJournalRow = {
+  closed_at: string;
+  symbol: string;
+  participant: string;
+  outcome: string;
+  gain_pct: string;
+  realized_rr: string | null;
+  won: boolean;
+  reasons: string[];
+  run_key: string;
 };
 
 /** AI 퍼포먼스 리포트 (T249). */

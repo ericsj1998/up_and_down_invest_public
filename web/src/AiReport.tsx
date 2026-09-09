@@ -189,6 +189,72 @@ export function AiReport({ who }: { who: Who | null }) {
               페이퍼 실측이며 예상이 아니다.
             </p>
           </section>
+
+          <section>
+            <h2>매매일지</h2>
+            {view.journal.length === 0 ? (
+              <p className="faint">끝난 AI 매매가 아직 없다. 판이 끝나면 결과·손익·R·근거가 여기 쌓인다.</p>
+            ) : (
+              <>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>청산</th>
+                        <th>종목</th>
+                        <th>모델</th>
+                        <th>결과</th>
+                        <th className="num">손익</th>
+                        <th className="num">R</th>
+                        <th>근거</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...view.journal].reverse().slice(0, 30).map((row) => {
+                        const gain = Number(row.gain_pct);
+                        return (
+                          <tr key={`${row.run_key}-${row.closed_at}`}>
+                            <td>{when(row.closed_at)}</td>
+                            <td>{row.symbol}</td>
+                            <td>{splitParticipant(row.participant).model}</td>
+                            <td>{row.outcome}</td>
+                            <td className={`num ${gain > 0 ? "gain" : gain < 0 ? "loss" : ""}`}>{num(gain, 2)}%</td>
+                            <td className="num">{row.realized_rr === null ? "—" : num(Number(row.realized_rr), 2)}</td>
+                            <td className="faint">{row.reasons.join(" · ") || "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {view.reason_hits.length > 0 && (
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>근거</th>
+                          <th className="num">n</th>
+                          <th className="num">적중</th>
+                          <th className="num">적중률</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {view.reason_hits.slice(0, 20).map((r) => (
+                          <tr key={r.reason} className={rowTone(r.n >= view.min_sample)}>
+                            <td>{r.reason}</td>
+                            <td className="num">{r.n}</td>
+                            <td className="num">{r.wins}</td>
+                            <td className="num">{r.hit_rate === null ? "—" : `${num(Number(r.hit_rate), 1)}%`}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p className="faint">근거별 적중은 그 문장이 붙은 매매의 승패 수다. 표본 {view.min_sample} 미만은 회색 — 근거의 가치를 말하지 않는다.</p>
+              </>
+            )}
+          </section>
         </>
       )}
     </div>

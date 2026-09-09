@@ -55,7 +55,14 @@ def prompt_fingerprint(prompt: str = SYSTEM_PROMPT, tool_names: Sequence[str] | 
 
 
 def snapshot_key(config: dict[str, Any] | None = None) -> str:
-    """스냅샷 설정의 짧은 키 (`b60-o12-1d.1h`)."""
+    """스냅샷 설정의 짧은 키.
+
+    Args:
+        config: 스냅샷 설정. None 이면 기본.
+
+    Returns:
+        `b60-o12-1d.1h` 꼴.
+    """
     found = config or DEFAULT_SNAPSHOT
     frames = ".".join(str(f) for f in found.get("frames", []))
     return f"b{found.get('bars')}-o{found.get('ohlc')}-{frames}"
@@ -95,6 +102,8 @@ class AiTrade:
         won: 방향이 맞았나 (수익률 > 0).
         outcome: 결과 문자열.
         symbol: 종목.
+        reasons: 제안 때 붙인 근거 문장들 (판 메타 `ai.reasons`).
+        run_key: 판 키.
     """
 
     participant: str
@@ -104,10 +113,30 @@ class AiTrade:
     won: bool
     outcome: str
     symbol: str
+    reasons: tuple[str, ...] = ()
+    run_key: str = ""
 
 
-def trade_of(record: TradeRecord, *, participant: str, symbol: str) -> AiTrade | None:
-    """원장 기록 → 채점 행. 안 끝났거나 취소면 None."""
+def trade_of(
+    record: TradeRecord,
+    *,
+    participant: str,
+    symbol: str,
+    reasons: Sequence[str] = (),
+    run_key: str = "",
+) -> AiTrade | None:
+    """원장 기록 → 채점 행. 안 끝났거나 취소면 None.
+
+    Args:
+        record: 원장 기록.
+        participant: 참가자 키.
+        symbol: 종목.
+        reasons: 판 메타의 근거 문장들.
+        run_key: 판 키.
+
+    Returns:
+        채점 행. 끝나지 않았거나 취소·확인 실패면 None.
+    """
     if record.closed_at is None or record.outcome in (Outcome.CANCELLED, Outcome.CONFIRM_FAIL):
         return None
     gain = record.gain_pct
@@ -121,6 +150,8 @@ def trade_of(record: TradeRecord, *, participant: str, symbol: str) -> AiTrade |
         won=gain > 0,
         outcome=str(record.outcome),
         symbol=symbol,
+        reasons=tuple(str(r) for r in reasons),
+        run_key=run_key,
     )
 
 
@@ -192,7 +223,14 @@ class Scorecard:
 
 
 def equity_curve(trades: Sequence[AiTrade]) -> list[Decimal]:
-    """청산 순서대로 누적 수익률(%) — 0 에서 시작."""
+    """청산 순서대로 누적 수익률(%).
+
+    Args:
+        trades: 끝난 매매들.
+
+    Returns:
+        0 에서 시작하는 누적 % 목록 (길이 = 매매 수 + 1).
+    """
     out = [Decimal(0)]
     for trade in sorted(trades, key=lambda t: t.closed_at):
         out.append(out[-1] + trade.gain_pct)
@@ -200,7 +238,14 @@ def equity_curve(trades: Sequence[AiTrade]) -> list[Decimal]:
 
 
 def max_drawdown(curve: Sequence[Decimal]) -> Decimal:
-    """누적 %곡선의 최대 낙폭(%) — 고점 대비 %포인트 차. 늘 0 이상."""
+    """누적 %곡선의 최대 낙폭(%).
+
+    Args:
+        curve: 누적 % 목록.
+
+    Returns:
+        고점 대비 %포인트 차의 최댓값. 늘 0 이상.
+    """
     peak = Decimal(0)
     worst = Decimal(0)
     for value in curve:
@@ -214,7 +259,16 @@ def _quant(value: Decimal) -> Decimal:
 
 
 def scorecard(participant: str, trades: Sequence[AiTrade], turns: TurnStats) -> Scorecard:
-    """매매 목록 → 성적표."""
+    """매매 목록 → 성적표.
+
+    Args:
+        participant: 참가자 키.
+        trades: 그 참가자의 끝난 매매들.
+        turns: 채팅 턴 합계.
+
+    Returns:
+        성적표. 표본이 30 미만이면 `judged` 가 거짓이다.
+    """
     ordered = tuple(sorted(trades, key=lambda t: t.closed_at))
     n = len(ordered)
     wins = sum(1 for t in ordered if t.won)
@@ -247,6 +301,9 @@ def tabulate(
         trades: 채점 행들.
         turns: 참가자 → 턴 합계.
         known: 등록됐지만 매매가 없는 참가자도 0 행으로 싣는다.
+
+    Returns:
+        성적표들.
     """
     by_key: dict[str, list[AiTrade]] = {key: [] for key in known}
     for trade in trades:
@@ -288,6 +345,58 @@ def turn_stats(events: Iterable[dict[str, Any]]) -> dict[str, TurnStats]:
             failures=found.failures + (1 if payload.get("failure") else 0),
         )
     return out
+
+
+def reason_hits(trades: Iterable[AiTrade]) -> list[dict[str, Any]]:
+    """근거 문장별 적중 수 — 매매일지의 "어느 근거가 맞았나" (T248 3차 · T249 원료).
+
+    Args:
+        trades: 끝난 AI 매매들.
+
+    Returns:
+        `[{reason, n, wins, hit_rate}]` — 표본 많은 순. 같은 근거가 여러 매매에 붙으면 그만큼 센다.
+    """
+    counts: dict[str, list[int]] = {}
+    for trade in trades:
+        for reason in trade.reasons:
+            found = counts.setdefault(reason, [0, 0])
+            found[0] += 1
+            found[1] += 1 if trade.won else 0
+    ordered = sorted(counts.items(), key=lambda item: (-item[1][0], item[0]))
+    return [
+        {
+            "reason": reason,
+            "n": n,
+            "wins": wins,
+            "hit_rate": str(_quant(Decimal(wins) / n * 100)) if n else None,
+        }
+        for reason, (n, wins) in ordered
+    ]
+
+
+def journal_rows(trades: Iterable[AiTrade]) -> list[dict[str, Any]]:
+    """매매일지 행 — 청산 순서 (오래된 것이 앞).
+
+    Args:
+        trades: 끝난 AI 매매들.
+
+    Returns:
+        `[{closed_at, symbol, participant, outcome, gain_pct, realized_rr, won, reasons, run_key}]`.
+    """
+    return [
+        {
+            "closed_at": t.closed_at.isoformat(),
+            "symbol": t.symbol,
+            "participant": t.participant,
+            "outcome": t.outcome,
+            "gain_pct": str(_quant(t.gain_pct)),
+            "realized_rr": None if t.realized_rr is None else str(_quant(t.realized_rr)),
+            "won": t.won,
+            "reasons": list(t.reasons),
+            "run_key": t.run_key,
+        }
+        for t in sorted(trades, key=lambda t: t.closed_at)
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,9 +443,11 @@ __all__ = [
     "TurnStats",
     "default_model",
     "equity_curve",
+    "journal_rows",
     "max_drawdown",
     "participant_key",
     "prompt_fingerprint",
+    "reason_hits",
     "scorecard",
     "snapshot_key",
     "tabulate",

@@ -37,7 +37,7 @@ from updown.common.security.markets import GROUP_LABELS, GROUPS
 from updown.common.security.redact import redact_pnl
 from updown.common.security.roles import Role
 from updown.orchestration.report import evidence_charts as ec
-from updown.orchestration.report.risk import TIER_LABELS
+from updown.orchestration.report.risk import TIER_LABELS, Tier
 
 _logger = get_logger("api.assistant")
 
@@ -257,14 +257,31 @@ async def preview(request: Request, group: str = "coin", tier: str = "balanced")
     Raises:
         HTTPException: 400 모르는 갈래/성향.
     """
+    return preview_for(await _who(request), group, tier)
+
+
+def preview_for(who: Caller | None, group: str, tier: str) -> dict[str, Any]:
+    """`preview` 의 몸통 — 채팅 도구(`recommend_by_budget`)가 요청 없이 부른다 (T248 3차).
+
+    Args:
+        who: 호출자. None 이면 게스트(권한 없는 매매법의 손익은 가려진다).
+        group: 갈래.
+        tier: 성향.
+
+    Returns:
+        `preview` 와 같은 모양.
+
+    Raises:
+        HTTPException: 400 모르는 갈래/성향.
+    """
     if group not in GROUPS:
         raise HTTPException(400, f"모르는 갈래: {group}")
     if tier not in TIER_LABELS:
         raise HTTPException(400, f"모르는 성향: {tier}")
-    who = await _who(request)
+    chosen_tier: Tier = tier
     rows = _candidates(who, group)
     picked = pick_default(
-        tier,
+        chosen_tier,
         [
             {
                 "id": r["id"],
@@ -282,7 +299,7 @@ async def preview(request: Request, group: str = "coin", tier: str = "balanced")
         "group": group,
         "group_label": GROUP_LABELS.get(group, group),
         "tier": tier,
-        "tier_label": TIER_LABELS[tier],
+        "tier_label": TIER_LABELS[chosen_tier],
         "market": None if market is None else market.value,
         "candidates": rows,
         "chosen": picked,

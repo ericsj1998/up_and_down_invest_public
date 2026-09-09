@@ -29,7 +29,7 @@ from updown.orchestration.ai_chat.tools import (
 
 _logger = get_logger("orchestration.ai_chat.agent")
 
-PROMPT_VERSION = "chat-1.0"
+PROMPT_VERSION = "chat-1.1"
 MAX_ROUNDS = 6
 FALLBACK_KINDS = frozenset({FailureKind.UNKNOWN_MODEL, FailureKind.TRANSPORT, FailureKind.TIMEOUT})
 """이 실패는 다음 모델로 넘어간다 — 스키마·계획 위반은 모델 탓이 아니라 답의 문제라 안 넘어간다.
