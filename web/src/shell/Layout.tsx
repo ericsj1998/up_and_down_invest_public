@@ -114,7 +114,7 @@ export function AuthFrame({ children }: { children: ReactNode }) {
           >
             위험을 <span className="text-loss">내리고</span>, 수익은 <span className="text-gain">올리는</span>
             <br />
-            자동 트레이딩 애플리케이션
+            자동 투자 관리 애플리케이션
           </h1>
           {/* 부제 한 줄 (사용자 문구 2026-09-05) — 약속 세 줄은 뺐다. */}
           <p className="m-0 text-base text-blue-gray-600 animate-fade-up md:text-lg" style={{ animationDelay: "200ms" }}>
