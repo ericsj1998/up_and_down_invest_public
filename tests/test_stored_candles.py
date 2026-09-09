@@ -166,6 +166,23 @@ async def test_closed_market_asks_for_the_tail_only_once_per_interval() -> None:
     assert len(quotes.calls) == 2, "열린 장에서는 매번 묻는다"
 
 
+class RegularOnlyCalendar:
+    """14~15시(UTC)만 정규장이라고 답한다."""
+
+    def is_regular(self, market: Market, moment: datetime) -> bool:
+        return 14 <= moment.hour < 16
+
+
+@pytest.mark.asyncio
+async def test_calendar_filters_returned_bars_but_everything_is_stored() -> None:
+    repo, quotes = FakeRepo(), FakeQuotes()
+    cache = StoredCandles(quotes, repo, calendar=RegularOnlyCalendar())  # type: ignore[arg-type]
+    day = datetime(2026, 7, 6, tzinfo=UTC)
+    rows = await cache.get_candles(AAPL, Timeframe.H1, day + HOUR * 10, day + HOUR * 20)
+    assert [c.ts.hour for c in rows] == [14, 15], "정규장 봉만 돌려준다"
+    assert len(repo.rows) == 11, "저장은 전부"
+
+
 def test_needed_frames_is_step_entry_daily() -> None:
     assert needed_frames(Timeframe.H1, Timeframe.M5) == (Timeframe.M5, Timeframe.H1, Timeframe.D1)
     assert needed_frames(Timeframe.D1, Timeframe.M5) == (Timeframe.M5, Timeframe.D1)

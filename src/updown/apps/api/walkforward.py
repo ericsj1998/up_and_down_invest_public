@@ -71,6 +71,7 @@ from updown.common.domain.instrument import (
     MarketGroup,
     Timeframe,
 )
+from updown.common.domain.session import load_calendar
 from updown.common.logging.setup import get_logger
 from updown.common.wire import candle_json
 from updown.decision.risk.manual import confirm
@@ -816,7 +817,7 @@ async def _live_start(
     if Capability.WS not in quotes.capabilities:
         if _candles is None:
             raise HTTPException(503, "봉 저장소가 없다 — 폴링 브로커는 DB 캐시 없이 띄우지 않는다")
-        quotes = StoredCandles(quotes, _candles)
+        quotes = StoredCandles(quotes, _candles, calendar=load_calendar())
         frames = list(quotes.supported_frames(needed_frames(book.timeframe, STEP_FRAME)))
     else:
         frames = list(quotes.supported_frames(FRAMES))

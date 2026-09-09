@@ -103,6 +103,8 @@ class BinanceAdapter:
         return frozenset(
             {
                 Capability.DERIVATIVES,
+                # 캔들 웹소켓 — 빠지면 봉 캐시가 코인 판을 감싼다 (T240·T251).
+                Capability.WS,
                 Capability.LEVERAGE,
                 Capability.SHORT,
                 Capability.FUNDING,

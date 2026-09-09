@@ -17,6 +17,9 @@
   돌려줄 때는 진행 중인 봉도 같이 준다(러너 `refresh` 가 마지막 봉을 미마감으로 다룬다).
 - 코인(웹소켓 브로커)에는 끼우지 않는다 — 조립부가 `Capability.WS` 로 가른다.
   시장 이름으로는 안 가른다.
+- 캘린더를 받으면 **정규장 봉만** 돌려준다(저장은 전부). 토스 분봉은 장전·장후를 포함하는데
+  스트림은 `regular_only` 로 거르므로 시드·갱신도 같은 눈이어야 한다.
+  실측(2026-09-09) 시드에 장전 5m 봉이 섞였다.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from typing import Any, Protocol, cast
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Timeframe
 from updown.common.domain.market import MarketStatus, Quote
+from updown.common.domain.session import MarketCalendar, regular_only
 from updown.common.logging.setup import get_logger
 from updown.marketdata.adapter import Capability, QuoteAdapter
 from updown.marketdata.ingest.repository import CandleRepository, InstrumentNotFoundError
@@ -40,6 +44,8 @@ _logger = get_logger("walkforward.stored_candles")
 
 HEAD_TOLERANCE = timedelta(days=4)
 """저장된 첫 봉이 요청 시작보다 이만큼 늦어야 머리를 받는다 — 주말+휴일 연휴가 이 안에 든다."""
+_DAILY_OR_LONGER = frozenset({Timeframe.D1})
+"""일봉은 거르지 않는다 — 토스 일봉 ts(04:00Z)는 정규장 밖이라 걸면 전부 사라진다."""
 CLOSED_TAIL_INTERVAL = 900.0
 """장이 닫혀 있을 때 꼬리를 다시 묻는 간격(초) — 러너의 축 갱신(5m 축은 30초마다)이 밤새 빈 요청을
 내던 것을 막는다(실측 2026-09-09: 폐장 10분에 16회). 열려 있으면 매번 묻는다."""
@@ -67,15 +73,23 @@ class StoredCandles:
         구체 조회 어댑터 종류로 짝을 맞춘다.
     """
 
-    def __init__(self, quotes: QuoteAdapter, repo: CandleRepository) -> None:
+    def __init__(
+        self,
+        quotes: QuoteAdapter,
+        repo: CandleRepository,
+        *,
+        calendar: MarketCalendar | None = None,
+    ) -> None:
         """캐시를 만든다.
 
         Args:
             quotes: 브로커 조회 어댑터.
             repo: 봉 저장소 (판 저장소와 같은 DB).
+            calendar: 있으면 돌려주는 봉을 정규장으로 거른다 (저장은 전부).
         """
         self._quotes = quotes
         self._repo = repo
+        self._calendar = calendar
         self._ids: dict[str, int] = {}
         self._head_tried: dict[tuple[str, Timeframe], datetime] = {}
         self._tail_checked: dict[tuple[str, Timeframe], float] = {}
@@ -149,7 +163,10 @@ class StoredCandles:
                     "had": len(stored),
                 },
             )
-        return [merged[ts] for ts in sorted(merged) if start <= ts <= end]
+        rows = [merged[ts] for ts in sorted(merged) if start <= ts <= end]
+        if self._calendar is None or timeframe in _DAILY_OR_LONGER:
+            return rows
+        return regular_only(rows, self._calendar)
 
     async def get_quote(self, instrument: Instrument) -> Quote:
         """안쪽 어댑터에 위임한다.
