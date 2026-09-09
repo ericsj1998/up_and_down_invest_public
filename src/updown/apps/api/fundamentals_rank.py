@@ -14,13 +14,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Any, cast
 
 from updown.analysis.fundamentals.snapshot import FundamentalSnapshot, Metric
+from updown.common.domain.candle import Candle
 from updown.common.domain.fundamentals import Filing
 
 RANK_WINDOW_DAYS = 60
@@ -150,6 +151,41 @@ def ranking_row(
         ),
         "why": why_line(made) if has_facts else "재무 없음 — 공시를 아직 안 받았다",
     }
+
+
+def ranking_symbols(
+    instruments: Iterable[str], with_facts: Iterable[str], universe: Iterable[str]
+) -> list[str]:
+    """순위에 올릴 종목 — `instruments` 표의 종목 + **이력을 받은 유니버스 종목** (T255 2차).
+
+    Args:
+        instruments: 그 시장의 `instruments` 표 종목.
+        with_facts: 재무 사실이 저장된 종목(출처 전체).
+        universe: 스크리닝 유니버스 — 사실이 있어도 여기 없는 종목은 다른 시장일 수 있어 뺀다.
+
+    Returns:
+        종목 오름차순(중복 없음).
+
+    Note:
+        🔴 "이력 받기"(`POST …/refresh`)는 사실만 저장하고 `instruments` 행을 만들지 않는다.
+        순위가 `instruments` 만 돌면 그 종목은 이력을 받아도 **영영 1단계 줄**이었다
+        (2026-09-10 사용자 신고 — 단추를 눌러도 아무것도 안 바뀐다).
+    """
+    allowed = set(universe)
+    picked = set(instruments) | {s for s in with_facts if s in allowed}
+    return sorted(picked)
+
+
+def closes_from_candles(candles: Sequence[Candle]) -> list[tuple[date, Decimal]]:
+    """브로커 일봉 → `(날짜, 종가)` — DB 에 봉이 없는 종목의 가격 역사 (T255 2차).
+
+    Args:
+        candles: 일봉(오름차순).
+
+    Returns:
+        저장소 `daily_closes` 와 같은 모양.
+    """
+    return [(c.ts.date(), c.close) for c in candles]
 
 
 def order_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:

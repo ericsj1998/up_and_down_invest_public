@@ -44,8 +44,10 @@ from updown.apps.api.fundamentals_rank import (
     RECOMMENDED,
     SORTS,
     ScreenQuery,
+    closes_from_candles,
     order_rows,
     ranking_row,
+    ranking_symbols,
     screen_rows,
 )
 from updown.common.config import ConfigurationError, Settings
@@ -174,10 +176,35 @@ async def _snapshot_of(
     facts = await repo.facts_for(symbol, filed_until=when)
     years = config.score.percentile_years + 1
     closes = await repo.daily_closes(market, symbol, when - timedelta(days=365 * years), when)
+    if not closes and facts:
+        # ⭐ T255 2차 — 유니버스 종목은 `instruments` 밖이라 DB 에 봉이 없다. 브로커 일봉으로
+        #    대신한다 — 없으면 가격 지표가 전부 비어 "점수 없음" 이 되고 이력을 받은 뜻이 없다.
+        closes = await _broker_closes(market, symbol, when - timedelta(days=365 * years), when)
     made = build_snapshot(
         facts, symbol=symbol, as_of=when, price_at=price_lookup(closes), config=config
     )
     return made, filings_of(facts), closes, bool(facts)
+
+
+async def _broker_closes(
+    market: Market, symbol: str, start: datetime, end: datetime
+) -> list[tuple[date, Decimal]]:
+    """브로커 일봉 종가 — DB 봉이 없는 종목의 가격 역사. 못 받으면 빈 목록(지어내지 않는다)."""
+    try:
+        quotes = MarketDataProvider().adapter_for(market)
+        instrument = Instrument(market, symbol, symbol, AssetType.STOCK, Currency.USD)
+        candles = await quotes.get_candles(instrument, Timeframe.D1, start, end)
+    except Exception as exc:
+        _logger.info("ranking_price_missing", payload={"symbol": symbol, "detail": str(exc)[:80]})
+        return []
+    return closes_from_candles(candles)
+
+
+def _forget_quick(symbol: str) -> None:
+    """1단계 캐시에서 그 종목을 뺀다 — 이력을 받았으니 다음 표부터 2단계 줄이다."""
+    for market, (at, rows) in list(_QUICK_CACHE.items()):
+        if symbol in rows:
+            _QUICK_CACHE[market] = (at, {k: v for k, v in rows.items() if k != symbol})
 
 
 @router.get("")
@@ -231,7 +258,13 @@ async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
         when = datetime.now(UTC)
         broker = MarketDataProvider().broker_of(found)
         rows: list[dict[str, Any]] = []
-        for symbol in await repo.instruments(found):
+        # ⭐ T255 2차 — 이력을 받은 유니버스 종목도 순위에 올린다(instruments 밖이어도).
+        symbols = ranking_symbols(
+            await repo.instruments(found),
+            [s for s, _ in await repo.symbols()],
+            universe_of(found),
+        )
+        for symbol in symbols:
             made, filings, closes, has_facts = await _snapshot_of(repo, config, found, symbol, when)
             rows.append(
                 ranking_row(
@@ -513,6 +546,7 @@ async def refresh(symbol: str, market: str = "NASDAQ") -> dict[str, Any]:
     count = await repo.upsert_facts(facts)
     filings = filings_of(facts)
     _RANKING_CACHE.clear()
+    _forget_quick(ticker)
     _logger.info(
         "fundamentals_refreshed",
         payload={"symbol": ticker, "facts": count, "filings": len(filings)},
