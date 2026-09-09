@@ -10,8 +10,9 @@ describe("parseBlocks", () => {
     const got = parseBlocks(["### 요약", "- 하나", "- 둘", "", "| a | b |", "|---|---|", "| 1 | 2 |", "> 주의", "```", "x = 1", "```", "끝 문단"].join("\n"));
     expect(got.map((b) => b.kind)).toEqual(["h", "ul", "table", "quote", "code", "p"]);
     const table = got[2];
-    expect(table.kind === "table" && table.head).toEqual(["a", "b"]);
-    expect(table.kind === "table" && table.rows).toEqual([["1", "2"]]);
+    if (table?.kind !== "table") throw new Error("표가 아니다");
+    expect(table.head).toEqual(["a", "b"]);
+    expect(table.rows).toEqual([["1", "2"]]);
   });
   it("모르는 문법은 문단 글자로 남는다 (사라지지 않는다)", () => {
     const got = parseBlocks("[[이상한]] 문법 {x}");
