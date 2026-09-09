@@ -39,6 +39,8 @@ from updown.apps.api.auth import router as auth_router
 from updown.apps.api.backtest import router as backtest_router
 from updown.apps.api.evidence import router as evidence_router
 from updown.apps.api.exchange import router as exchange_router
+from updown.apps.api.fundamentals import attach_fundamentals
+from updown.apps.api.fundamentals import router as fundamentals_router
 from updown.apps.api.gates import router as gates_router
 from updown.apps.api.health import (
     DependencyStatus,
@@ -197,6 +199,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         attach_store(resolved_state.session_factory)
         # ⭐ 주식 페이퍼 계좌(T240) — 판 저장소와 같은 풀. 없으면 게이트가 주식 어댑터를 안 준다.
         attach_state_store(DbStateStore(resolved_state.session_factory))
+        # ⭐ 재무 사실(T243) — 같은 풀. 설정은 EDGAR User-Agent 때문에 넘긴다.
+        attach_fundamentals(resolved_state.session_factory, resolved_state.settings)
         # 🔴 계정 저장소 — 미들웨어가 **매 요청** 등급을 여기서 읽는다. 안 붙으면
         #    아무도 로그인할 수 없다 (조용히 통과시키지 않는다 · 규칙 #8).
         # ⭐ `ACCOUNTS_DATABASE_URL` 이 있으면 계정·문의·관리자 설정만 **그 DB** 에서 연다
@@ -275,6 +279,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
                     await leader.shutdown()
             attach_store(None)
             attach_state_store(None)
+            attach_fundamentals(None)
             attach_accounts(None)
             if accounts_engine is not None:
                 with contextlib.suppress(Exception):
@@ -387,6 +392,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     # 🔴 거래소 콘솔 — **원장이 아니라 거래소가 말하는 것**을 보여 주고 앱에서 정리한다.
     #    RUN 이 목록에서 사라진 뒤 포지션이 남으면 손댈 방법이 없었다 (2026-08-18).
     app.include_router(exchange_router)
+    # ⭐ 재무 표(T243) — 읽기는 열람자도(`need_for` READ), 새로고침(POST)은 거래자부터.
+    app.include_router(fundamentals_router)
 
     @app.get("/health")
     async def health() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]

@@ -31,13 +31,17 @@ Phase 2 에서 주문이 열릴 때도 이 파일은 바뀌지 않는다 — 주
 from types import TracebackType
 from typing import ClassVar, Self
 
-from updown.common.config import Settings, load_settings
+from updown.common.config import ConfigurationError, Settings, load_settings
+from updown.common.domain.fundamentals import FundamentalsConfig
 from updown.common.domain.instrument import Market, MarketListing
 from updown.common.logging.setup import get_logger
 from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter
 from updown.marketdata.binance.adapter import BinanceAdapter
 from updown.marketdata.binance.client import BinanceClient
 from updown.marketdata.binance.venue import binance_base, binance_ws
+from updown.marketdata.fundamentals.adapter import FundamentalsAdapter
+from updown.marketdata.fundamentals.client import EdgarClient
+from updown.marketdata.fundamentals.edgar import EdgarAdapter
 from updown.marketdata.gate.adapter import GateAdapter
 from updown.marketdata.gate.client import GateClient
 from updown.marketdata.toss.adapter import TossAdapter
@@ -328,3 +332,24 @@ class MarketDataProvider:
                 failures.append(exc)
         if failures:
             raise BaseExceptionGroup("조회 클라이언트 종료 실패", failures)
+
+
+def fundamentals_adapter(settings: Settings, config: FundamentalsConfig) -> FundamentalsAdapter:
+    """재무 출처 어댑터 — **조회 경로의 유일한 획득 지점** (절대 규칙 #0 · T243).
+
+    Args:
+        settings: `edgar_user_agent` 를 읽는다.
+        config: 개념 매핑.
+
+    Returns:
+        EDGAR 어댑터. 국내(DART)는 아직 없다.
+
+    Raises:
+        ConfigurationError: `EDGAR_USER_AGENT` 가 비었다 — SEC 는 이름·이메일 없는 요청을
+            403 으로 막으므로 조용히 만들지 않는다 (규칙 #8).
+    """
+    if not settings.edgar_user_agent:
+        raise ConfigurationError(
+            "EDGAR_USER_AGENT 가 비었다 — SEC 는 이름·이메일 없는 요청을 403 으로 막는다"
+        )
+    return EdgarAdapter(EdgarClient(settings.edgar_user_agent), config)

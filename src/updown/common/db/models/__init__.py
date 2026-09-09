@@ -14,6 +14,7 @@ from updown.common.db.models.accounts import (
     RoleCollection,
 )
 from updown.common.db.models.analysis import AnalysisReport, Structure
+from updown.common.db.models.fundamentals import FinancialFactRow
 from updown.common.db.models.market import Candle, CandleQualityIssue
 from updown.common.db.models.master import BrokerCredential, Instrument, User
 from updown.common.db.models.ops import (
@@ -57,6 +58,7 @@ __all__ = [
     "Candle",
     "CandleQualityIssue",
     "EventLog",
+    "FinancialFactRow",
     "Instrument",
     "MarketGrantRow",
     "Notification",
@@ -107,10 +109,14 @@ ACCOUNTS_TABLE_COUNT = 5
 #: `stock_paper_accounts`(T240 · 0118 · 주식 페이퍼 계좌 — 시장당 JSONB 한 행).
 STOCK_PAPER_TABLE_COUNT = 1
 
+#: `financial_facts`(T243 · 0120 · 공시 사실 원자료 — 지표가 아니라 사실). §9 밖.
+FUNDAMENTALS_TABLE_COUNT = 1
+
 EXPECTED_TABLE_COUNT = (
     SPEC_9_TABLE_COUNT
     + WALKFORWARD_TABLE_COUNT
     + SETTINGS_TABLE_COUNT
     + ACCOUNTS_TABLE_COUNT
     + STOCK_PAPER_TABLE_COUNT
+    + FUNDAMENTALS_TABLE_COUNT
 )

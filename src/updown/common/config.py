@@ -88,6 +88,7 @@ _OPTIONAL_FIELDS: tuple[str, ...] = (
     "upbit_access_key",
     "upbit_secret_key",
     "dart_api_key",
+    "edgar_user_agent",
     # 이메일 리포트 (T35) — 자리만 잡힌 키는 없는 것으로 읽는다
     "smtp_host",
     "smtp_user",
@@ -156,6 +157,7 @@ class Settings(BaseSettings):
         toss_cert_path: mTLS 인증서 경로 — **live 전용**.
         toss_cert_key_path: mTLS 인증서 키 경로 — **live 전용**.
         dart_api_key: DART OpenAPI 키 (P3-1).
+        edgar_user_agent: SEC EDGAR 요청의 User-Agent — `이름 이메일` (T243).
 
     Note:
         시크릿은 전부 `SecretStr` 이다 — 로그·`repr` 에 평문이 새지 않는다 (spec §8).
@@ -194,6 +196,13 @@ class Settings(BaseSettings):
     toss_marketdata_client_secret: SecretStr | None = None
 
     dart_api_key: SecretStr | None = None
+
+    edgar_user_agent: str | None = None
+    """SEC EDGAR 가 요구하는 User-Agent(`이름 이메일`) — 없으면 403 (T243).
+
+    시크릿이 아니다(공개 헤더). 비면 재무 새로고침이 503 으로 멈춘다 — 조용한 403 반복보다 낫다
+    (규칙 #8).
+    """
 
     # ── Gate 실계좌 (T157 · 2026-09-04) — `.env.live` 에만 (절대 규칙 #1) ──
     gate_api_key: SecretStr | None = None

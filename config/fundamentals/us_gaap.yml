@@ -1,0 +1,136 @@
+# 재무 개념 매핑 + 저평가 점수 문턱 (T243 · 2026-09-09) — "이 회사가 싼가 · 빚이 위험한가 · 벌고 있나" 의 단일 출처.
+#
+# 🔴 코드는 여기 적힌 **우리 이름**(revenue · net_income …)만 안다. 회계 태그(us-gaap:Revenues)는 회사마다 · 연도마다
+#    다르므로 폴백 순서를 여기 선언한다 — 같은 기간이 여러 태그로 보고되면 **앞의 태그**를 쓴다.
+#
+# 항목
+#   kind   flow(기간 값 · 손익·현금흐름 · start~end) / instant(시점 값 · 재무상태표·주식수 · end 만)
+#   unit   EDGAR units 키 — USD · shares · USD/shares. 단위가 다른 행은 버린다 (환산하지 않는다).
+#   tags   taxonomy:Tag 폴백 순서. dei 는 표지 정보(주식수), us-gaap 은 본문.
+#
+# 값을 바꾸려면 출처(공시 태그 문서)와 이유를 함께 적는다. 문턱은 [결정 필요] 기본값이다 — 실제로 수익을 가르는지는
+# 규칙 #12(OOS · 표본 30)로 판정한 뒤에만 "추천" 에 쓴다 (docs/planning/tasks/T243_fundamentals_edgar.md).
+version: "1.0"
+
+concepts:
+  # ── 손익 (flow) ──
+  revenue:
+    kind: flow
+    unit: USD
+    tags:
+      - us-gaap:Revenues
+      - us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax
+      - us-gaap:SalesRevenueNet
+  operating_income:
+    kind: flow
+    unit: USD
+    tags: [us-gaap:OperatingIncomeLoss]
+  net_income:
+    kind: flow
+    unit: USD
+    tags: [us-gaap:NetIncomeLoss, us-gaap:ProfitLoss]
+  interest_expense:
+    kind: flow
+    unit: USD
+    tags:
+      - us-gaap:InterestExpense
+      - us-gaap:InterestExpenseNonoperating
+      - us-gaap:InterestExpenseDebt
+  depreciation_amortization:
+    kind: flow
+    unit: USD
+    tags:
+      - us-gaap:DepreciationDepletionAndAmortization
+      - us-gaap:DepreciationAndAmortization
+      - us-gaap:DepreciationAmortizationAndAccretionNet
+  # ── 현금흐름 (flow) ──
+  operating_cash_flow:
+    kind: flow
+    unit: USD
+    tags: [us-gaap:NetCashProvidedByUsedInOperatingActivities]
+  capex:
+    kind: flow
+    unit: USD
+    tags:
+      - us-gaap:PaymentsToAcquirePropertyPlantAndEquipment
+      - us-gaap:PaymentsToAcquireProductiveAssets
+  dividends_paid:
+    kind: flow
+    unit: USD
+    tags: [us-gaap:PaymentsOfDividendsCommonStock, us-gaap:PaymentsOfDividends]
+  share_repurchase:
+    kind: flow
+    unit: USD
+    tags: [us-gaap:PaymentsForRepurchaseOfCommonStock]
+  # ── 재무상태표 (instant) ──
+  total_assets:
+    kind: instant
+    unit: USD
+    tags: [us-gaap:Assets]
+  total_liabilities:
+    kind: instant
+    unit: USD
+    tags: [us-gaap:Liabilities]
+  equity:
+    kind: instant
+    unit: USD
+    tags:
+      - us-gaap:StockholdersEquity
+      - us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest
+  cash:
+    kind: instant
+    unit: USD
+    tags:
+      - us-gaap:CashAndCashEquivalentsAtCarryingValue
+      - us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents
+  short_term_investments:
+    kind: instant
+    unit: USD
+    tags:
+      - us-gaap:MarketableSecuritiesCurrent
+      - us-gaap:ShortTermInvestments
+      - us-gaap:AvailableForSaleSecuritiesDebtSecuritiesCurrent
+  current_assets:
+    kind: instant
+    unit: USD
+    tags: [us-gaap:AssetsCurrent]
+  current_liabilities:
+    kind: instant
+    unit: USD
+    tags: [us-gaap:LiabilitiesCurrent]
+  long_term_debt:
+    kind: instant
+    unit: USD
+    tags: [us-gaap:LongTermDebtNoncurrent, us-gaap:LongTermDebt]
+  short_term_debt:
+    kind: instant
+    unit: USD
+    tags: [us-gaap:LongTermDebtCurrent, us-gaap:DebtCurrent, us-gaap:ShortTermBorrowings]
+  commercial_paper:
+    kind: instant
+    unit: USD
+    tags: [us-gaap:CommercialPaper]
+  # ── 주식수 (instant) — 표지(dei)가 먼저, 없으면 본문 ──
+  shares_outstanding:
+    kind: instant
+    unit: shares
+    tags: [dei:EntityCommonStockSharesOutstanding, us-gaap:CommonStockSharesOutstanding]
+  treasury_shares:
+    kind: instant
+    unit: shares
+    tags: [us-gaap:TreasuryStockShares]
+
+# 저평가 점수 규칙 (글로 적은 것이 곧 규칙이다 — T243):
+#   저평가 점수 = 가격 지표(PER · PBR · PSR · EV/EBITDA · FCF 수익률 · 배당수익률)의 **자기 5년 백분위**를
+#   "쌀수록 100" 으로 뒤집어 평균 · 부채 위험 깃발 하나마다 `penalty_per_flag` 감점 · 0~100 으로 자른다.
+#   백분위가 있는 가격 지표가 `min_price_metrics` 개 미만이면 점수 없음("재무 없음" — 조용히 0 이 아니다).
+score:
+  percentile_years: 5           # 자기 역사 창 — 월말 표본 (5년 = 60점)
+  min_history_points: 12        # 백분위를 내려면 표본이 이만큼은 있어야 한다
+  min_price_metrics: 2
+  penalty_per_flag: 15
+  debt:                         # [결정 필요] 기본값 — 깃발 문턱
+    debt_to_equity_max: 2.0     # 총부채/자본
+    net_debt_to_ebitda_max: 3.0
+    interest_coverage_min: 3.0  # 영업이익/이자
+    current_ratio_min: 1.0
