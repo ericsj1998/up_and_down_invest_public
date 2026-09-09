@@ -1,10 +1,12 @@
-"""재무 표 API — `/fundamentals` (T243 · 2026-09-09).
+"""재무 표 API — `/fundamentals` (T243 · T244 · 2026-09-09).
 
     GET  /fundamentals                       사실이 있는 종목과 마지막 공시일
+    GET  /fundamentals/ranking?market=       저평가 후보 — 시장 종목 전부를 점수 순으로 (T244)
     GET  /fundamentals/{symbol}?market=&as_of=  지표 · 백분위 · 깃발 · 점수 · 공시 링크 (시점 정합)
     POST /fundamentals/{symbol}/refresh?market=  출처(EDGAR)에서 받아 저장
 
-라우터는 IO 와 검증만 한다 — 계산은 `analysis.fundamentals`, 모양은 `snapshot_payload`(순수).
+라우터는 IO 와 검증만 한다 — 계산은 `analysis.fundamentals`, 모양은 `snapshot_payload` ·
+`fundamentals_rank`(순수).
 `as_of` 를 주면 그 시점에 알 수 있던 공시와 그 시점 종가로 표를 만든다 — 백테스트가 재무 지표를
 쓸 때 미래 참조를 막는 문이다.
 
@@ -14,6 +16,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -22,6 +26,13 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from updown.analysis.fundamentals.snapshot import FundamentalSnapshot, build_snapshot, price_lookup
+from updown.apps.api.fundamentals_rank import (
+    CARD_LABEL,
+    RANK_WINDOW_DAYS,
+    RECOMMENDED,
+    order_rows,
+    ranking_row,
+)
 from updown.common.config import ConfigurationError, Settings
 from updown.common.domain.fundamentals import (
     Filing,
@@ -38,7 +49,7 @@ from updown.marketdata.fundamentals.adapter import (
 )
 from updown.marketdata.fundamentals.edgar import filings_of
 from updown.marketdata.fundamentals.repository import FundamentalsRepository
-from updown.marketdata.provider import fundamentals_adapter
+from updown.marketdata.provider import MarketDataProvider, fundamentals_adapter
 
 _logger = get_logger("api.fundamentals")
 
@@ -51,6 +62,13 @@ _adapter: FundamentalsAdapter | None = None
 
 RECENT_FILINGS = 12
 """응답에 싣는 최근 공시 수."""
+
+RANKING_TTL_S = 600.0
+"""저평가 후보 표를 들고 있는 시간. 공시는 분기마다, 종가는 하루에 한 번 바뀐다 — 화면 폴링
+(60초)마다 종목 수 x 60개월 표를 다시 만들 이유가 없다. 새로고침(POST)이 비운다."""
+
+_RANKING_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_RANKING_LOCK = asyncio.Lock()
 
 
 def attach_fundamentals(
@@ -70,6 +88,7 @@ def attach_fundamentals(
     _repo = None if factory is None else FundamentalsRepository(factory)
     _settings = settings
     _adapter = None
+    _RANKING_CACHE.clear()
 
 
 def _repo_or_503() -> FundamentalsRepository:
@@ -122,6 +141,23 @@ def _adapter_or_503() -> FundamentalsAdapter:
     return _adapter
 
 
+async def _snapshot_of(
+    repo: FundamentalsRepository,
+    config: FundamentalsConfig,
+    market: Market,
+    symbol: str,
+    when: datetime,
+) -> tuple[FundamentalSnapshot, list[Filing], list[Any], bool]:
+    """한 종목의 표 + 공시 + 종가 + 사실 유무 — 표와 순위가 같은 길로 만든다."""
+    facts = await repo.facts_for(symbol, filed_until=when)
+    years = config.score.percentile_years + 1
+    closes = await repo.daily_closes(market, symbol, when - timedelta(days=365 * years), when)
+    made = build_snapshot(
+        facts, symbol=symbol, as_of=when, price_at=price_lookup(closes), config=config
+    )
+    return made, filings_of(facts), closes, bool(facts)
+
+
 @router.get("")
 async def list_symbols() -> dict[str, Any]:
     """사실이 있는 종목 목록.
@@ -139,6 +175,60 @@ async def list_symbols() -> dict[str, Any]:
             {"symbol": symbol, "latest_filed_at": latest.isoformat()} for symbol, latest in rows
         ]
     }
+
+
+@router.get("/ranking")
+async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
+    """저평가 후보 — 시장의 종목(`instruments`) 전부를 점수 순으로 (T244).
+
+    Args:
+        market: 시장 (NASDAQ · NYSE).
+
+    Returns:
+        `{"rows": [...], "at", "market", "label", "recommended": false, "window_days", "note"}`.
+        재무 없는 종목은 점수 없이 **뒤에** 선다 (조용히 0점 아님).
+
+    Raises:
+        HTTPException: 400 시장 · 503 저장소/설정 없음.
+
+    Note:
+        표는 `RANKING_TTL_S` 동안 기억한다 — 종목마다 60개월 표를 다시 만드는 일이라 폴링마다
+        하면 API 가 그 일만 한다. `POST …/refresh` 가 비운다.
+    """
+    repo = _repo_or_503()
+    config = _config_or_503()
+    found = _market_or_400(market)
+    now = time.monotonic()
+    cached = _RANKING_CACHE.get(found.value)
+    if cached is not None and now - cached[0] < RANKING_TTL_S:
+        return cached[1]
+    async with _RANKING_LOCK:
+        cached = _RANKING_CACHE.get(found.value)
+        if cached is not None and time.monotonic() - cached[0] < RANKING_TTL_S:
+            return cached[1]
+        when = datetime.now(UTC)
+        broker = MarketDataProvider().broker_of(found)
+        rows: list[dict[str, Any]] = []
+        for symbol in await repo.instruments(found):
+            made, filings, closes, has_facts = await _snapshot_of(repo, config, found, symbol, when)
+            rows.append(
+                ranking_row(
+                    made, broker=broker, filings=filings, closes=closes, has_facts=has_facts
+                )
+            )
+        body: dict[str, Any] = {
+            "rows": order_rows(rows),
+            "at": when.isoformat(),
+            "market": found.value,
+            "label": CARD_LABEL,
+            "recommended": RECOMMENDED,
+            "window_days": RANK_WINDOW_DAYS,
+            "note": (
+                "점수는 정렬 기준이다 — 수익을 가르는지는 OOS 판정 뒤에만 '추천' 이 된다 (규칙 #12)"
+            ),
+        }
+        _RANKING_CACHE[found.value] = (time.monotonic(), body)
+        return body
 
 
 @router.get("/{symbol}")
@@ -161,18 +251,13 @@ async def snapshot(symbol: str, market: str = "NASDAQ", as_of: str | None = None
     found = _market_or_400(market)
     when = _as_of_or_400(as_of)
     ticker = symbol.upper()
-    facts = await repo.facts_for(ticker, filed_until=when)
-    if not facts:
+    made, filings, _, has_facts = await _snapshot_of(repo, config, found, ticker, when)
+    if not has_facts:
         raise HTTPException(
             status_code=404,
             detail=f"{ticker} 의 재무 사실이 없다 — POST /fundamentals/{ticker}/refresh 로 받는다",
         )
-    years = config.score.percentile_years + 1
-    closes = await repo.daily_closes(found, ticker, when - timedelta(days=365 * years), when)
-    made = build_snapshot(
-        facts, symbol=ticker, as_of=when, price_at=price_lookup(closes), config=config
-    )
-    return snapshot_payload(made, filings_of(facts))
+    return snapshot_payload(made, filings)
 
 
 @router.post("/{symbol}/refresh")
@@ -201,6 +286,7 @@ async def refresh(symbol: str, market: str = "NASDAQ") -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     count = await repo.upsert_facts(facts)
     filings = filings_of(facts)
+    _RANKING_CACHE.clear()
     _logger.info(
         "fundamentals_refreshed",
         payload={"symbol": ticker, "facts": count, "filings": len(filings)},

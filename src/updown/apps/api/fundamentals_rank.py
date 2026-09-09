@@ -1,0 +1,182 @@
+"""저평가 후보 줄 세우기 — 순수 (T244 · 2026-09-09).
+
+`GET /fundamentals/ranking` 이 종목마다 표(`FundamentalSnapshot`)를 만든 뒤 여기로 넘긴다:
+줄 하나의 모양(`ranking_row`) · 근거 한 줄(`why_line`) · 60일 모멘텀(코인 rank60 과 같은 잣대) ·
+정렬(`order_rows`).
+
+🔴 **"추천" 이라는 말을 쓰지 않는다.** 점수는 정렬 기준이고, 그 점수가 수익을 가르는지는
+규칙 #12(OOS · 표본 30)로 판정한 뒤 사용자가 켠다 — 그때까지 응답의 `recommended` 는 항상
+거짓이고 화면은 "저평가 후보" 로 시작한다.
+
+⛔ **재무 없는 종목은 0점이 아니라 뒤로 간다.** 0점을 주면 "가장 비싼 회사" 로 읽힌다
+(`Ranking.ordered` 와 같은 원칙).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from datetime import date
+from decimal import Decimal
+from typing import Any
+
+from updown.analysis.fundamentals.snapshot import FundamentalSnapshot, Metric
+from updown.common.domain.fundamentals import Filing
+
+RANK_WINDOW_DAYS = 60
+"""코인 펀드의 `rank60` 과 같은 창 — 일봉 종가 기준 60일 수익."""
+
+CARD_LABEL = "저평가 후보"
+"""카드 이름 — "추천" 은 OOS 판정 뒤 사용자 결정으로 켠다 (T244 ④)."""
+
+RECOMMENDED = False
+"""T243 점수의 OOS 판정 전. 화면은 이 값이 참일 때만 "추천" 을 쓴다."""
+
+SHOWN_METRICS = ("per", "pbr", "psr", "ev_ebitda", "fcf_yield", "dividend_yield", "debt_to_equity")
+"""줄에 싣는 지표 — 나머지는 펼침(`/fundamentals/{symbol}`)에서."""
+
+_WHY_PARTS = 2
+"""근거 한 줄에 넣는 가격 지표 수 — 가장 싼 쪽 둘."""
+
+
+def momentum(
+    closes: Sequence[tuple[date, Decimal]], *, window: int = RANK_WINDOW_DAYS
+) -> Decimal | None:
+    """일봉 종가의 N일 수익 (`close[-1] / close[-1-N] - 1`).
+
+    Args:
+        closes: `(날짜, 종가)` 오름차순.
+        window: 창(일봉 수).
+
+    Returns:
+        비율. 봉이 모자라면 None — 짧은 창으로 대신 재지 않는다 (`_rank_weights` 와 같은 규칙).
+    """
+    if len(closes) <= window:
+        return None
+    last = closes[-1][1]
+    base = closes[-1 - window][1]
+    if base <= 0:
+        return None
+    return last / base - 1
+
+
+def _cheap_phrase(metric: Metric) -> tuple[Decimal, str] | None:
+    """가격 지표 하나의 "얼마나 싼가" 와 말. 백분위 없으면 None."""
+    if metric.percentile is None or metric.spec.higher_is_cheaper is None:
+        return None
+    pct = metric.percentile
+    if metric.spec.higher_is_cheaper:
+        cheapness = pct
+        phrase = f"{metric.spec.label} 5년 상위 {100 - pct:.0f}%"
+    else:
+        cheapness = Decimal(100) - pct
+        phrase = f"{metric.spec.label} 5년 하위 {pct:.0f}%"
+    return cheapness, phrase
+
+
+def why_line(made: FundamentalSnapshot) -> str:
+    """근거 한 줄("왜 이 자리") — 가장 싼 가격 지표 둘 + 부채 깃발.
+
+    Args:
+        made: 표.
+
+    Returns:
+        예: `PER 5년 하위 12% · FCF 수익률 5년 상위 18% · 부채 깃발 없음`. 점수가 없으면 그 이유.
+    """
+    if made.score.score is None:
+        if made.notes:
+            return " · ".join(made.notes)
+        return made.score.note or "재무 없음"
+    phrases = sorted(
+        (p for p in (_cheap_phrase(m) for m in made.metrics if m.spec.group == "price") if p),
+        key=lambda p: p[0],
+        reverse=True,
+    )
+    parts = [phrase for _, phrase in phrases[:_WHY_PARTS]]
+    if made.flags:
+        parts.append("부채 깃발: " + ", ".join(f.label for f in made.flags))
+    else:
+        parts.append("부채 깃발 없음")
+    return " · ".join(parts)
+
+
+def _num(value: Decimal | None) -> float | None:
+    return None if value is None else float(value)
+
+
+def ranking_row(
+    made: FundamentalSnapshot,
+    *,
+    broker: str | None,
+    filings: Sequence[Filing],
+    closes: Sequence[tuple[date, Decimal]],
+    has_facts: bool,
+) -> dict[str, Any]:
+    """줄 하나.
+
+    Args:
+        made: 표.
+        broker: 브로커 이름 (화면 마크).
+        filings: 공시 목록 — 최근 것 하나를 싣는다.
+        closes: 일봉 종가 — 60일 모멘텀.
+        has_facts: 사실이 있었나. 없으면 "재무 없음" 으로 뒤에 선다.
+
+    Returns:
+        화면 모양 (가격·시총은 문자열 · 비율은 숫자).
+    """
+    latest = max(filings, key=lambda f: f.filed_at, default=None)
+    metrics = {
+        m.spec.key: {"value": _num(m.value), "percentile": _num(m.percentile)}
+        for m in made.metrics
+        if m.spec.key in SHOWN_METRICS
+    }
+    return {
+        "symbol": made.symbol,
+        "broker": broker,
+        "has_facts": has_facts,
+        "price": None if made.price is None else str(made.price),
+        "price_date": None if made.price_date is None else made.price_date.isoformat(),
+        "market_cap": None if made.market_cap is None else str(made.market_cap),
+        "score": _num(made.score.score),
+        "cheapness": _num(made.score.cheapness),
+        "flags": [f.label for f in made.flags],
+        "metrics": metrics,
+        "momentum_60d": _num(momentum(closes)),
+        "history_points": made.history_points,
+        "latest_filing": (
+            None
+            if latest is None
+            else {"form": latest.form, "filed_at": latest.filed_at.isoformat(), "url": latest.url}
+        ),
+        "why": why_line(made) if has_facts else "재무 없음 — 공시를 아직 안 받았다",
+    }
+
+
+def order_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """점수 내림차순 · 점수 없는 것은 그 뒤(사실은 있음 → 사실 없음) · 같으면 종목 순.
+
+    Args:
+        rows: `ranking_row` 결과들.
+
+    Returns:
+        정렬된 새 목록.
+    """
+
+    def _key(row: dict[str, Any]) -> tuple[int, float, str]:
+        score = row.get("score")
+        if score is not None:
+            return (0, -float(score), str(row["symbol"]))
+        return (1 if row.get("has_facts") else 2, 0.0, str(row["symbol"]))
+
+    return sorted(rows, key=_key)
+
+
+__all__ = [
+    "CARD_LABEL",
+    "RANK_WINDOW_DAYS",
+    "RECOMMENDED",
+    "SHOWN_METRICS",
+    "momentum",
+    "order_rows",
+    "ranking_row",
+    "why_line",
+]

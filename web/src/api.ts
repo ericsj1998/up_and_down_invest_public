@@ -1673,6 +1673,77 @@ export type MarketStatusView = {
   next_close: string | null;
 };
 
+/** 저평가 후보 줄 (T244 · `/fundamentals/ranking`). 가격·시총은 문자열, 비율·점수는 숫자. */
+export type ValueRow = {
+  symbol: string;
+  broker?: string | null;
+  /** 공시를 받았나. 거짓이면 점수 없이 뒤에 선다 — 0점이 아니다. */
+  has_facts: boolean;
+  price: string | null;
+  price_date: string | null;
+  market_cap: string | null;
+  /** 저평가 점수 0~100 (쌀수록 100). 없으면 null. */
+  score: number | null;
+  cheapness: number | null;
+  flags: string[];
+  metrics: Record<string, { value: number | null; percentile: number | null }>;
+  /** 60일 수익(비율 · 0.12 = 12%). 봉이 모자라면 null. */
+  momentum_60d: number | null;
+  history_points: number;
+  latest_filing: { form: string; filed_at: string; url: string | null } | null;
+  why: string;
+};
+
+export function valueRanking(market: string): Promise<{
+  rows: ValueRow[];
+  at: string;
+  market: string;
+  label: string;
+  recommended: boolean;
+  window_days: number;
+  note: string;
+}> {
+  return request(`/fundamentals/ranking?market=${encodeURIComponent(market)}`);
+}
+
+/** 한 종목의 재무 표 (T243 · `/fundamentals/{symbol}`). */
+export type FundamentalsView = {
+  symbol: string;
+  as_of: string;
+  price: string | null;
+  price_date: string | null;
+  market_cap: string | null;
+  latest_filed_at: string | null;
+  history_points: number;
+  notes: string[];
+  metrics: Array<{
+    key: string;
+    label: string;
+    group: "price" | "debt" | "earning" | "dilution";
+    unit: "x" | "%";
+    value: number | null;
+    percentile: number | null;
+    higher_is_cheaper: boolean | null;
+    sources: Array<{ accession: string; form: string | null; filed_at: string | null; url: string | null }>;
+    note: string;
+  }>;
+  flags: Array<{ key: string; label: string; value: number | null; threshold: number | null }>;
+  score: {
+    score: number | null;
+    cheapness: number | null;
+    used: string[];
+    flags: string[];
+    penalty: number | null;
+    note: string;
+  };
+  filings: Array<{ accession: string; form: string; filed_at: string; url: string | null }>;
+};
+
+export function fundamentals(symbol: string, market: string, asOf?: string): Promise<FundamentalsView> {
+  const tail = asOf ? `&as_of=${encodeURIComponent(asOf)}` : "";
+  return request(`/fundamentals/${encodeURIComponent(symbol)}?market=${encodeURIComponent(market)}${tail}`);
+}
+
 export function marketStatus(market: string): Promise<MarketStatusView> {
   return request(`/exchange/market-status?market=${encodeURIComponent(market)}`);
 }

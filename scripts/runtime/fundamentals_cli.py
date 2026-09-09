@@ -17,9 +17,6 @@ import argparse
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from updown.analysis.fundamentals.snapshot import build_snapshot, price_lookup
 from updown.common.config import load_settings
 from updown.common.db.session import create_engine, create_session_factory
@@ -40,13 +37,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--show", help="표를 출력할 티커")
     parser.add_argument("--as-of", help="표의 기준일 (YYYY-MM-DD · UTC 자정). 없으면 지금")
     return parser
-
-
-async def _symbols_of(factory: async_sessionmaker[AsyncSession], market: Market) -> list[str]:
-    statement = sa.text("SELECT symbol FROM instruments WHERE market = :market ORDER BY symbol")
-    async with factory() as session:
-        rows = (await session.execute(statement, {"market": market.value})).scalars().all()
-    return [str(r) for r in rows]
 
 
 async def main() -> None:
@@ -101,7 +91,7 @@ async def main() -> None:
         symbols = (
             [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
             if args.symbols
-            else await _symbols_of(factory, market)
+            else await repo.instruments(market)
         )
         adapter = fundamentals_adapter(settings, config)
         try:

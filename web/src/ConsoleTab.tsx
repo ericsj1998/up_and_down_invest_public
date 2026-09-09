@@ -31,6 +31,7 @@ import { History } from "./History";
 import { Faucet } from "./Faucet";
 import { Leftovers } from "./Leftovers";
 import { Ranking } from "./Ranking";
+import { ValueRanking } from "./ValueRanking";
 import { FundPanel } from "./FundPanel";
 import { Runs } from "./Runs";
 import { Sound } from "./Sound";
@@ -945,6 +946,8 @@ export function ConsoleTab({ openRun }: Props) {
           표가 있었는데, 거기는 *"이 판이 어떻게 하고 있나"* 를 보는 곳이라 자리가
           아니었다 — 판을 여럿 열면 같은 표가 화면마다 반복되고 왕복도 그만큼 늘었다. */}
       {group === "coin" ? <Ranking /> : null}
+      {/* ⭐ 주식은 순위 대신 **저평가 후보** (T244) — 재무 대비 싼 순. 시장은 묶음의 첫 시장. */}
+      {group === "stock" && allMarkets[0] ? <ValueRanking market={allMarkets[0].name} /> : null}
 
       {/* 🔴 **판은 여기서 연다.** 판 화면을 홈으로 두면 판이 없을 때 빈 화면이 뜨고,
           여럿일 때 화면이 임의로 하나를 고른다. */}

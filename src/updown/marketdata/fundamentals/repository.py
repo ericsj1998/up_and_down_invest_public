@@ -165,6 +165,20 @@ class FundamentalsRepository:
             rows = (await session.execute(sa.text(statement), params)).all()
         return [(row.symbol, row.latest) for row in rows]
 
+    async def instruments(self, market: Market) -> list[str]:
+        """그 시장의 종목 코드 — 저평가 후보의 유니버스 (T244 · T238 시장).
+
+        Args:
+            market: 시장.
+
+        Returns:
+            종목 코드 오름차순.
+        """
+        statement = sa.text("SELECT symbol FROM instruments WHERE market = :market ORDER BY symbol")
+        async with self._session_factory() as session:
+            rows = (await session.execute(statement, {"market": market.value})).scalars().all()
+        return [str(row) for row in rows]
+
     async def daily_closes(
         self, market: Market, symbol: str, start: datetime, end: datetime
     ) -> list[tuple[date, Decimal]]:
