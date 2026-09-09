@@ -30,7 +30,7 @@ import contextlib
 import json
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
@@ -679,6 +679,8 @@ class LiveRunner:
     """
 
     _revived_open: frozenset[str] = frozenset()
+    _unsent_open: frozenset[str] = frozenset()
+    """되살아난 보유 기록 중 거래소에 포지션도 체결 조각도 없던 것 (T254 ③) — 감사 `unsent_open`."""
     """클래스 기본값 —  로 조립하는 테스트 더블이 옛 경로를 그대로 타게 한다.
     실제 러너는 생성자가 원장을 보고 인스턴스 값으로 덮는다."""
 
@@ -3319,6 +3321,9 @@ class LiveRunner:
         """
         found: list[dict[str, str]] = []
         now = datetime.now(UTC)
+        # ⭐ T254 ③ — 주문이 나가기 전 재시작으로 원장만 보유중인 기록. 재전송하지 않으니
+        #    사람이 봐야 한다.
+        found.extend(unsent_open_findings(self._unsent_open))
 
         # ① 축이 흐르는가 — 판정 축과 진입 축은 **반드시**.
         #
@@ -4037,6 +4042,17 @@ class LiveRunner:
         }
         if filled <= 0:
             self.failures += 1
+            if not record.entry_fills and record.trade_id in self._revived_open:
+                # ⭐ T254 ③ — 되살아난 보유 기록인데 체결 조각도 포지션도 없다 = **주문이 나가기
+                #    전에** 재시작됐다. 재전송은 2026-08-25 사고(67→333계약)의 길이라 안 한다 —
+                #    감사 `unsent_open` 으로 사람에게 말하고, 원장을 닫거나 손으로 내는 것은 사람이.
+                self._unsent_open = self._unsent_open | {record.trade_id}
+                self.last_error = "보유 기록인데 주문이 나간 흔적이 없다 — 감사 unsent_open"[:200]
+                self._log.error(
+                    "unsent_open",
+                    payload={"trade_id": record.trade_id, "entry": str(record.entry)},
+                )
+                return
             self.last_error = "지정가는 채워졌다는데 거래소에 포지션이 없다"[:200]
             self._log.error(
                 "live_limit_position_missing",
@@ -5705,6 +5721,28 @@ class LiveRunner:
                     )
             if done:
                 self._ladder_pending.pop(trade_id, None)
+
+
+def unsent_open_findings(trade_ids: Iterable[str]) -> list[dict[str, str]]:
+    """감사 항목 `unsent_open` — 되살아난 보유 기록인데 거래소에 흔적이 없는 매매들 (T254 ③).
+
+    Args:
+        trade_ids: 그런 기록의 id 들.
+
+    Returns:
+        `{code, level, detail}` 목록 — 비어 있으면 빈 목록. 순서는 id 정렬.
+    """
+    return [
+        {
+            "code": "unsent_open",
+            "level": "error",
+            "detail": (
+                f"{trade_id[:8]} 원장은 보유중인데 거래소에 포지션도 체결 조각도 없다 — "
+                "주문이 나가기 전에 재시작된 기록이다. 재전송하지 않는다: 원장을 닫거나 손으로 낸다"
+            ),
+        }
+        for trade_id in sorted(trade_ids)
+    ]
 
 
 async def build_live_feed(

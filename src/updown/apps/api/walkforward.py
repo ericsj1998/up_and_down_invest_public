@@ -145,6 +145,28 @@ _logger = get_logger("api.walkforward")
 
 router = APIRouter(prefix="/walkforward", tags=["walkforward"])
 
+
+def seed_split(
+    leverage_allowed: bool, *, wallet: Decimal, margin: Decimal
+) -> tuple[Decimal, Decimal]:
+    """원장의 시드와 지갑 시작값 — 시장 능력에 따라 (T254 ②).
+
+    Args:
+        leverage_allowed: 능력표 `leverage_allowed`. 참이면 격리 마진 거래소(코인).
+        wallet: 계정 총액(쓸 수 있는 돈 + 잡힌 증거금).
+        margin: 이 판의 예산.
+
+    Returns:
+        `(seed_cash, wallet_start)`. 코인은 (계정 총액, 총액 - 예산) — 계좌가 진실이다(T14-1).
+        배율 없는 시장은 (예산, 0) — 페이퍼 계좌 하나를 여러 판이 나눠 쓰므로 판은 자기 예산만
+        자기 것으로 센다. 그래야 `wallet_drift`(원장 합 > 계정 총액만 외친다)가 오탐하지 않고
+        판의 손익률 분모가 판 예산이 된다(%의 분모는 그 줄이 책임지는 돈).
+    """
+    if leverage_allowed:
+        return wallet, max(wallet - margin, Decimal(0))
+    return margin, Decimal(0)
+
+
 LEVERAGE_MIN = Decimal(1)
 LEVERAGE_MAX = Decimal(125)
 """바꿀 수 있는 배율 범위.
@@ -1047,6 +1069,11 @@ async def _live_start(
                 },
             )
 
+    # ⭐ T254 ② — 배율 없는 시장(주식 페이퍼 계좌)은 여러 판이 **같은 계좌**를 나눠 쓴다. 시드를
+    #    지갑 전액으로 두면 판마다 계좌 전체를 자기 것으로 세어 `wallet_drift` 가 오탐한다.
+    seed_cash, wallet_start = seed_split(
+        capabilities_of(instrument.market).leverage_allowed, wallet=wallet, margin=margin
+    )
     session = Session(
         instrument=instrument,
         playbooks=books,
@@ -1063,10 +1090,10 @@ async def _live_start(
             # ⭐ **지갑은 증거금을 뺀 나머지다.** 격리 마진에는 '증거금 지갑' 이 따로
             #    없다 — RUN 생성은 검증만 하고 실제 증거금은 체결될 때 Gate 가 뗀다.
             #    그래서 `증거금 + 지갑 = 거래소 available` 이 성립한다.
-            wallet_start=max(wallet - margin, Decimal(0)),
+            wallet_start=wallet_start,
             # ⭐ **시드(지갑)는 거래소 잔고다.** 화면에서 받은 값을 쓰면 원장과 계좌가
             #   다른 돈을 세고, 그 차이가 손익률에 그대로 들어간다.
-            seed_cash=wallet,
+            seed_cash=seed_cash,
             # 🔴 굴리는 돈은 **따로** 든다 — 이것이 주문 크기를 정한다.
             margin_budget=margin,
             leverage=Decimal(str(payload.get("leverage", 1))),
@@ -1124,6 +1151,7 @@ async def _live_start(
     # ⭐ T239 — 시장 능력표: 현물은 숏 없음 · 배율 없음. 시장 이름으로 분기하지 않고 표를 읽는다.
     caps = capabilities_of(session.instrument.market)
     session.short_allowed = caps.short_allowed
+    session.has_liquidation = caps.leverage_allowed  # T254 ① — 청산 없는 시장은 계획 손절
     if not caps.leverage_allowed and session.ledger.leverage > 1:
         raise RiskConfigError(
             f"{session.instrument.market} 는 배율을 쓸 수 없는 시장인데 원장 배율이 "
@@ -3048,6 +3076,7 @@ def apply_playbook_knobs(session: Session, book: Playbook, catalog: dict[str, Ru
     # ⭐ T239 — 시장 능력표: 현물은 숏 없음 · 배율 없음. 시장 이름으로 분기하지 않고 표를 읽는다.
     caps = capabilities_of(session.instrument.market)
     session.short_allowed = caps.short_allowed
+    session.has_liquidation = caps.leverage_allowed  # T254 ① — 청산 없는 시장은 계획 손절
     if not caps.leverage_allowed and session.ledger.leverage > 1:
         raise RiskConfigError(
             f"{session.instrument.market} 는 배율을 쓸 수 없는 시장인데 원장 배율이 "

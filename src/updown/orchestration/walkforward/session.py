@@ -722,6 +722,13 @@ class Session:
     """
     short_blocked: int = 0
     """능력표 때문에 버린 숏 후보 수 (T239)."""
+    has_liquidation: bool = True
+    """청산이 있는 시장인가 — 능력표 `leverage_allowed` (T254 ① · `apply_playbook_knobs` 가 세팅).
+
+    거짓(주식 현물)이면 거래소 조건부 손절은 보호 손절이 아니라 **계획 손절**이다 — 청산이
+    없으니 청산 거리 안쪽의 보호 자리가 -70%(NVDA 실측 224 → 68.07)에 걸리고, 앱이 죽으면
+    손절이 없는 셈이 된다. Blue-Green 배포의 전제(손절은 거래소에)가 거기서 깨진다.
+    """
     pending_ttl_bars: int | None = None
     """대기 지정가를 **판정 봉 몇 개까지** 두나 (T234 · 측정 스위치). None = 계획이 살아 있는 동안.
 
@@ -2132,7 +2139,8 @@ class Session:
             record: 보유 중인 기록.
 
         Returns:
-            `touch` 면 계획 손절 그대로(1.5.0 까지의 동작). `close` 면 보호 손절(청산 거리의
+            `touch` 면 계획 손절 그대로(1.5.0 까지의 동작). 청산이 없는 시장(`has_liquidation`
+            거짓 · T254)도 계획 손절 그대로. `close` 면 보호 손절(청산 거리의
             `stop_protect_ratio`). 비율이 없으면 **계획 손절 그대로** — 무방비보다 터치 손절이
             낫다(규칙 #8-1). 설정 누락 자체는 `apply_playbook_knobs` 가 판을 띄울 때 막는다.
 
@@ -2142,6 +2150,9 @@ class Session:
             규칙이 라이브에서 도는 길.
         """
         if self.stop_mode_of(record) == "touch":
+            return record.planned_stop
+        # ⭐ T254 ① — 청산이 없는 시장은 보호 손절이 뜻이 없다. 계획 손절을 거래소에 건다.
+        if not self.has_liquidation:
             return record.planned_stop
         ratio = self.stop_protect_ratio
         if ratio is None:
