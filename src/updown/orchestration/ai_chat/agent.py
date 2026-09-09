@@ -31,6 +31,9 @@ _logger = get_logger("orchestration.ai_chat.agent")
 
 PROMPT_VERSION = "chat-1.0"
 MAX_ROUNDS = 6
+FALLBACK_KINDS = frozenset({FailureKind.UNKNOWN_MODEL, FailureKind.TRANSPORT, FailureKind.TIMEOUT})
+"""이 실패는 다음 모델로 넘어간다 — 스키마·계획 위반은 모델 탓이 아니라 답의 문제라 안 넘어간다.
+2026-09-09 실측: 풀 상위 5개 중 4개가 답을 못 했다(410 폐기 3 · 500 · 60초 타임아웃)."""
 """도구 왕복 상한 — 넘으면 지금까지의 근거로 답을 마감한다."""
 
 SYSTEM_PROMPT = """너는 '업 앤 다운' 의 AI 투자 어시스턴트다. 한국어로 답한다.
@@ -166,8 +169,8 @@ async def run_chat(
         timeout_seconds: 모델 호출 타임아웃.
         max_rounds: 도구 왕복 상한.
         report: 진행 문장 콜백.
-        fallbacks: 첫 모델이 **카탈로그에 없으면**(폐기 · 410) 차례로 시도할 모델들 — 다른 실패는
-            폴백하지 않는다(타임아웃을 모델 탓으로 돌리지 않는다).
+        fallbacks: 첫 모델이 폐기(410)·서버 오류·타임아웃이면 차례로 시도할 모델들
+            (`FALLBACK_KINDS`).
 
     Returns:
         결과. 모델이 실패하면 `failure` 가 차고 `text` 는 사람에게 보일 안내다.
@@ -188,11 +191,7 @@ async def run_chat(
         reply = await client.chat(
             model, messages, tools=specs, temperature=temperature, timeout_seconds=timeout_seconds
         )
-        while (
-            isinstance(reply, LlmFailure)
-            and reply.kind is FailureKind.UNKNOWN_MODEL
-            and len(queue) > 1
-        ):
+        while isinstance(reply, LlmFailure) and reply.kind in FALLBACK_KINDS and len(queue) > 1:
             # 🔴 폐기된 모델(410)은 그 모델의 문제지 질문의 문제가 아니다 — 풀의 다음 순위로.
             _logger.warning(
                 "ai_chat_model_fallback", payload={"from": model, "detail": reply.detail[:120]}

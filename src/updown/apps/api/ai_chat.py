@@ -103,7 +103,7 @@ async def settings() -> dict[str, Any]:
         raise HTTPException(503, str(exc)) from exc
     return {
         "models": [{"id": m.id, "rank": m.rank, "note": m.note} for m in pool.models],
-        "default": pool.models[0].id if pool.models else "",
+        "default": pool.chat_model or (pool.models[0].id if pool.models else ""),
         "prompt_version": PROMPT_VERSION,
         "auto": {
             "enabled": False,
@@ -308,7 +308,12 @@ async def ask(
         if row is None or row.email != who.email:
             raise HTTPException(404, "대화가 없다")
         history = _history_of(list(row.messages))
-        model = str(payload.get("model") or row.model or (pool.models[0].id if pool.models else ""))
+        model = str(
+            payload.get("model")
+            or row.model
+            or pool.chat_model
+            or (pool.models[0].id if pool.models else "")
+        )
     if not model:
         raise HTTPException(503, "쓸 모델이 없다 — config/llm_pool.yml")
     email = who.email
@@ -324,7 +329,7 @@ async def ask(
                 model=model,
                 ctx=ctx,
                 temperature=pool.temperature,
-                timeout_seconds=pool.timeout_seconds,
+                timeout_seconds=pool.chat_timeout_seconds,
                 report=report,
                 fallbacks=[m.id for m in pool.models if m.id != model],
             )

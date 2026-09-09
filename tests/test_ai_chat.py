@@ -245,3 +245,11 @@ class TestMessageJson:
         made: dict[str, Any] = message_json(ChatMessage("assistant", "", tool_calls=(call,)))
         assert made["tool_calls"][0]["function"]["name"] == "market_view"
         assert message_json(ChatMessage("tool", "{}", tool_call_id="c1"))["tool_call_id"] == "c1"
+
+
+class TestPool:
+    def test_pool_chat_block_is_read(self) -> None:
+        from updown.llm.pool import load_pool
+
+        pool = load_pool()
+        assert pool.chat_model and pool.chat_timeout_seconds > 0
