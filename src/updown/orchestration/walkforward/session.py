@@ -705,6 +705,13 @@ class Session:
     """
     stop_cap_ratio: Decimal | None = None
     stop_protect_ratio: Decimal | None = None
+    short_allowed: bool = True
+    """숏 진입이 되는 시장인가 — 능력표 `short_allowed` (T239 · `apply_playbook_knobs` 가 세팅).
+
+    거짓이면 숏 후보는 진입 후보에서 빠지고 `short_blocked` 로 센다. 현물(주식·업비트)은 거짓.
+    """
+    short_blocked: int = 0
+    """능력표 때문에 버린 숏 후보 수 (T239)."""
     pending_ttl_bars: int | None = None
     """대기 지정가를 **판정 봉 몇 개까지** 두나 (T234 · 측정 스위치). None = 계획이 살아 있는 동안.
 
@@ -1591,7 +1598,11 @@ class Session:
             outcome = Outcome.HALF_BREAKEVEN if held.half_at is not None else Outcome.STOP_LOSS
             done = held.closed(
                 at=bar.ts,
-                price=held.planned_stop if touched or confirm is None else confirm.close,
+                # ⭐ T239 — 갭으로 손절선을 건너뛰었으면 체결가는 **시가**다 (계획가는 낙관).
+                #    코인은 드물고 주식은 밤마다 있다. 몸통 확인(close) 경로는 종가 그대로.
+                price=(
+                    self._gap_stop_fill(held, bar) if touched or confirm is None else confirm.close
+                ),
                 outcome=outcome,
                 cost_pct=self._exit_cost(held, outcome),
             )
@@ -2035,6 +2046,26 @@ class Session:
         if floor is None or record.entry <= 0:
             return False
         return abs(record.entry - record.planned_stop) / record.entry < floor
+
+    def _gap_stop_fill(self, held: TradeRecord, bar: Candle) -> Decimal:
+        """터치 손절의 체결가 — 봉이 손절선 너머에서 열렸으면 시가, 아니면 손절선 (T239).
+
+        Args:
+            held: 보유 기록.
+            bar: 손절이 닿은 봉.
+
+        Returns:
+            체결가.
+        """
+        if held.direction is Direction.LONG:
+            return (
+                min(held.planned_stop, bar.open)
+                if bar.open < held.planned_stop
+                else held.planned_stop
+            )
+        return (
+            max(held.planned_stop, bar.open) if bar.open > held.planned_stop else held.planned_stop
+        )
 
     def stop_mode_of(self, record: TradeRecord) -> str:
         """이 매매를 낸 매매법의 손절 판정 방식 (T233 ②).
@@ -2947,6 +2978,11 @@ class Session:
         # 🔴 **막힌 후보로는 사지 않는다** (T26 ② · `Proposal.blocked`). 후보를 지우는
         #    것이 아니라 **진입에서만** 거른다 — 화면·반대 신호 청산은 계속 본다.
         open_to_entry = [item for item in shot.proposals if not item.blocked]
+        if not self.short_allowed:
+            # ⭐ T239 — 현물 시장: 숏 후보는 시장이 받지 않는다. 지우지 않고 센다 (§1-0s).
+            shorts = [item for item in open_to_entry if item.setup.stop_loss > item.setup.avg_entry]
+            self.short_blocked += len(shorts)
+            open_to_entry = [item for item in open_to_entry if item not in shorts]
         if not open_to_entry:
             return None
         bar = self._tick()

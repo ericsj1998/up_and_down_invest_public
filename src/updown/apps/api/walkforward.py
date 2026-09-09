@@ -62,6 +62,7 @@ from updown.common.costs import (
     resolve_tick,
 )
 from updown.common.domain.candle import Candle
+from updown.common.domain.capabilities import capabilities_of
 from updown.common.domain.instrument import (
     AssetType,
     Currency,
@@ -1061,6 +1062,14 @@ async def _live_start(
         raise RiskConfigError(
             "stop_mode: close 매매법인데 config/risk.yml 에 stop_protect_ratio 가 없다 — "
             "라이브가 거래소에 걸 보호 손절 자리가 없다"
+        )
+    # ⭐ T239 — 시장 능력표: 현물은 숏 없음 · 배율 없음. 시장 이름으로 분기하지 않고 표를 읽는다.
+    caps = capabilities_of(session.instrument.market)
+    session.short_allowed = caps.short_allowed
+    if not caps.leverage_allowed and session.ledger.leverage > 1:
+        raise RiskConfigError(
+            f"{session.instrument.market} 는 배율을 쓸 수 없는 시장인데 원장 배율이 "
+            f"{session.ledger.leverage} 다 — 매매법 선언의 leverage 를 지우거나 1 로 둔다"
         )
     session.span_cover = span_cover_of(catalog, book)
     # ✅ T42 ④ (사용자 확정 2026-08-22) — 라이브 원장도 체결 유형대로 센다. 일간 리포트의
@@ -2956,6 +2965,14 @@ def apply_playbook_knobs(session: Session, book: Playbook, catalog: dict[str, Ru
         raise RiskConfigError(
             "stop_mode: close 매매법인데 config/risk.yml 에 stop_protect_ratio 가 없다 — "
             "라이브가 거래소에 걸 보호 손절 자리가 없다"
+        )
+    # ⭐ T239 — 시장 능력표: 현물은 숏 없음 · 배율 없음. 시장 이름으로 분기하지 않고 표를 읽는다.
+    caps = capabilities_of(session.instrument.market)
+    session.short_allowed = caps.short_allowed
+    if not caps.leverage_allowed and session.ledger.leverage > 1:
+        raise RiskConfigError(
+            f"{session.instrument.market} 는 배율을 쓸 수 없는 시장인데 원장 배율이 "
+            f"{session.ledger.leverage} 다 — 매매법 선언의 leverage 를 지우거나 1 로 둔다"
         )
     session.span_cover = span_cover_of(catalog, book)
     # ✅ T42 ④ (사용자 확정 2026-08-22) — 라이브 원장도 체결 유형대로 센다. 일간 리포트의
