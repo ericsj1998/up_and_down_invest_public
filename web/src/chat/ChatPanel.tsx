@@ -28,6 +28,7 @@ import { requestStockOrder } from "../StockOrder";
 import { AUTO_ORDER_CONSENT_TEXT, AUTO_ORDER_CONSENT_VERSION } from "../shell/disclaimer";
 import { ErrorCard, when } from "../ui";
 import { proposalLine, readThread, THREAD_SLOT, visibleMessages, writeThread, type ChatEvidence, type ChatMessageView } from "./chat";
+import { Dashboard } from "./Dashboard";
 import { EvidenceView } from "./evidence";
 import { Markdown } from "./markdown";
 import { useJobEvents } from "./useJobEvents";
@@ -327,6 +328,7 @@ export function ChatPanel({
                         </div>
                         <div className="min-w-0 flex-1">
                           <Markdown text={m.content} />
+                          {m.dashboard && m.dashboard.blocks?.length ? <Dashboard spec={m.dashboard} missing={m.dashboard_missing ?? []} /> : null}
                           {m.failure ? <p className="loss text-xs">{m.failure}</p> : null}
                           {m.auto && typeof m.auto === "object" ? (
                             <p className="faint mt-1 text-xs">

@@ -29,7 +29,7 @@ from updown.orchestration.ai_chat.tools import (
 
 _logger = get_logger("orchestration.ai_chat.agent")
 
-PROMPT_VERSION = "chat-1.2"
+PROMPT_VERSION = "chat-1.3"
 MAX_ROUNDS = 6
 EVIDENCE_CHARS = 6_000
 """근거 세미 창에 저장하는 도구 결과 길이 상한 — 대화 표(JSONB)에 남는다.
@@ -57,6 +57,8 @@ SYSTEM_PROMPT = """너는 '업 앤 다운' 의 AI 투자 어시스턴트다. 한
 5. 매매법 성과는 과거 실측이고 "예상" 이 아니다. 수익률에는 항상 MDD 를 같이 말한다.
 6. 답의 끝에 어떤 도구를 봤는지 한 줄로 적는다(근거).
 7. 모르는 것은 모른다고 한다. 도구가 없다고 하면 그대로 전한다.
+8. 숫자가 여럿인 답(비교·순위·비중·지표)은 **마지막에** render_dashboard 로 카드·표 명세를 낸다.
+   값은 이번 턴 도구 결과의 참조({"from": "도구.키"})만 쓴다. 본문 글은 짧게, 표는 명세로.
 """
 
 
@@ -114,6 +116,8 @@ class ChatResult:
         failure: 모델 실패면 그 이유.
         messages: 이번 턴에 더해진 메시지들(assistant · tool) — 대화 저장용.
         suggestions: 다음에 물어볼 만한 질문들 (T257 F3 · 장식 · 못 만들면 빈 목록).
+        dashboard: `render_dashboard` 가 채운 명세 (T256). 없으면 None.
+        dashboard_missing: 그 명세에서 근거 없는 참조들 — 환각 후보 (T249 채점 원료).
     """
 
     text: str
@@ -126,6 +130,8 @@ class ChatResult:
     failure: str | None = None
     messages: list[ChatMessage] = field(default_factory=list[ChatMessage])
     suggestions: list[str] = field(default_factory=list[str])
+    dashboard: dict[str, Any] | None = None
+    dashboard_missing: list[str] = field(default_factory=list[str])
 
 
 def _quiet(_: str) -> None:
@@ -252,8 +258,17 @@ async def run_chat(
                 f"도구 {call.name} {'완료' if event.ok else '실패'} · {event.ms}ms · "
                 f"{(event.digest or event.error)[:80]}"
             )
+            if event.ok:
+                ctx.turn_results[call.name] = payload
             if call.name == "propose_order" and event.ok:
                 result.proposals.append(payload)
+            if call.name == "render_dashboard" and event.ok:
+                # ⭐ 채운 명세는 화면이 그린다 — 마지막 것이 이긴다. 모델에게도 결과(missing)를
+                #    돌려준다.
+                result.dashboard = cast("dict[str, Any]", payload.get("dashboard"))
+                result.dashboard_missing = [
+                    str(m) for m in cast("list[object]", payload.get("missing") or [])
+                ]
             tool_message = ChatMessage("tool", result_text(payload), tool_call_id=call.call_id)
             messages.append(tool_message)
             added.append(tool_message)

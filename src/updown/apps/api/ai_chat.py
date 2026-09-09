@@ -443,6 +443,8 @@ def _save_turn(result: ChatResult) -> dict[str, Any]:
         "evidence": [e.as_json() for e in result.tool_events],
         "proposals": result.proposals,
         "suggestions": result.suggestions,
+        "dashboard": result.dashboard,
+        "dashboard_missing": result.dashboard_missing,
         "failure": result.failure,
     }
 
@@ -492,6 +494,7 @@ async def _persist(
                     "tokens": assistant["tokens"],
                     "tools": [e.as_json() for e in result.tool_events],
                     "proposals": len(result.proposals),
+                    "dashboard_missing": len(result.dashboard_missing),
                     "failure": result.failure,
                 },
             )

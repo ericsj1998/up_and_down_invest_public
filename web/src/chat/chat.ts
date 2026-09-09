@@ -2,6 +2,15 @@
  * 채팅 패널의 순수 조각 (T248 · T257) — 저장된 메시지에서 화면에 보일 것만 고르기 · 제안 카드 판정 · 마지막 대화 기억.
  */
 
+export type DashboardBlock =
+  | { kind: "cards"; title: string; items: { label: string; value: unknown; unit: string }[] }
+  | { kind: "table"; title: string; columns: { key: string; label: string }[]; rows: unknown[][] }
+  | { kind: "chips"; title: string; items: string[] }
+  | { kind: "sparkline"; title: string; values: number[] }
+  | { kind: "text"; title: string; text: string };
+
+export type DashboardSpec = { title: string; blocks: DashboardBlock[] };
+
 export type ChatEvidence = {
   name: string;
   arguments: Record<string, unknown>;
@@ -22,6 +31,9 @@ export type ChatMessageView = {
   proposals?: Array<Record<string, unknown>>;
   /** 다음 질문 제안 (T257 F3). */
   suggestions?: string[];
+  /** 대시보드 명세 (T256) — 값은 도구 결과에서 채워져 온다. */
+  dashboard?: DashboardSpec | null;
+  dashboard_missing?: string[];
   failure?: string | null;
   auto?: unknown;
   tool_calls?: Array<{ call_id: string; name: string; arguments: Record<string, unknown> }>;

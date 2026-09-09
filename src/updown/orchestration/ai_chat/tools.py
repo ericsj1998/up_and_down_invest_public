@@ -37,6 +37,7 @@ from updown.marketdata.ingest.repository import CandleRepository
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_chat.aliases import AliasBook
+from updown.orchestration.ai_chat.dashboard import resolve as resolve_dashboard
 from updown.orchestration.ai_chat.snapshot import extremes_of, summarize_frame
 from updown.orchestration.walkforward.stored_candles import StoredCandles
 
@@ -94,6 +95,8 @@ class ToolContext:
     calendar: MarketCalendar | None = None
     report: Callable[[str], None] = field(default=lambda _: None)
     _stores: dict[str, StoredCandles] = field(default_factory=lambda: {})
+    turn_results: dict[str, Any] = field(default_factory=lambda: {})
+    """이번 턴의 도구 결과(이름 → 마지막 결과) — `render_dashboard` 가 참조를 여기서 푼다 (T256)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,7 +533,13 @@ async def _screen(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         limit,
     )
     rows = cast("list[dict[str, Any]]", got.get("rows") or [])
-    slim = [
+
+    def _metric(row: dict[str, Any], key: str) -> Any:
+        metrics = cast("dict[str, Any]", row.get("metrics") or {})
+        cell = cast("dict[str, Any]", metrics.get(key) or {})
+        return cell.get("value")
+
+    slim: list[dict[str, Any]] = [
         {
             "symbol": r.get("symbol"),
             "stage": r.get("stage"),
@@ -538,12 +547,10 @@ async def _screen(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             "price": r.get("price"),
             "market_cap": r.get("market_cap"),
             "flags": r.get("flags"),
-            "per": (cast("dict[str, Any]", r.get("metrics") or {}).get("per") or {}).get("value"),
-            "pbr": (cast("dict[str, Any]", r.get("metrics") or {}).get("pbr") or {}).get("value"),
-            "psr": (cast("dict[str, Any]", r.get("metrics") or {}).get("psr") or {}).get("value"),
-            "fcf_yield": (
-                cast("dict[str, Any]", r.get("metrics") or {}).get("fcf_yield") or {}
-            ).get("value"),
+            "per": _metric(r, "per"),
+            "pbr": _metric(r, "pbr"),
+            "psr": _metric(r, "psr"),
+            "fcf_yield": _metric(r, "fcf_yield"),
             "momentum_60d": r.get("momentum_60d"),
             "why": r.get("why"),
         }
@@ -559,6 +566,23 @@ async def _screen(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             "순위·점수는 서버가 저장된 공시·frames 로 계산한 것이다(예상 아님). "
             "stage=quick 은 지금 값만(백분위·점수 없음), "
             "history 는 5년 백분위 점수. 표 밖의 순위나 숫자를 만들지 않는다."
+        ),
+    }
+
+
+async def _render_dashboard(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    raw = args.get("spec")
+    if not isinstance(raw, dict):
+        raise ValueError("spec 이 없다 — {title, blocks: [...]} 객체를 준다")
+    ctx.report("대시보드 명세를 도구 결과로 채우는 중")
+    made = resolve_dashboard(cast("dict[str, Any]", raw), ctx.turn_results)
+    return {
+        "dashboard": made.spec,
+        "missing": made.missing,
+        "dropped": made.dropped,
+        "note": (
+            "채워진 명세는 화면이 그대로 그린다. missing 은 근거 없는 칸(비움) · "
+            "dropped 는 버린 블록."
         ),
     }
 
@@ -827,6 +851,28 @@ TOOLS: tuple[Tool, ...] = (
         ),
         _screen,
         starter="미국주식 저평가 순위 상위 10개 보여줘",
+    ),
+    Tool(
+        ToolSpec(
+            "render_dashboard",
+            "답을 카드·표·칩·스파크라인 대시보드로 보여준다. "
+            "숫자가 여럿(비교·순위·비중·지표)일 때 **마지막**에 부른다. "
+            '값은 이번 턴 도구 결과의 참조 {"from": "도구.키[0].키"} 만 — '
+            "숫자를 직접 쓰면 그 칸은 비운다. "
+            "부품: cards{items:[{label,value,unit}]} · "
+            "table{from:목록참조, columns:[{key,label}]} · "
+            "chips{from} · sparkline{from} · text{text}. 유사어: 한눈에, 대시보드, 표로, 정리해서.",
+            _obj(
+                {
+                    "spec": {
+                        "type": "object",
+                        "description": '{"title": "...", "blocks": [{"kind": "cards", ...}, ...]}',
+                    }
+                },
+                ["spec"],
+            ),
+        ),
+        _render_dashboard,
     ),
 )
 

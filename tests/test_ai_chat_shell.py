@@ -30,7 +30,9 @@ def _ctx() -> ToolContext:
 class TestStarters:
     def test_every_tool_has_a_starter_question(self) -> None:
         got = starters()
-        assert len(got) == len(TOOLS) and all(q.endswith(("?", "줘")) for q in got)
+        # render_dashboard 는 답 끝에 모델이 스스로 부르는 도구라 추천 질문이 없다 (T256).
+        expected = [t for t in TOOLS if t.spec.name != "render_dashboard"]
+        assert len(got) == len(expected) and all(q.endswith(("?", "줘")) for q in got)
 
 
 class TestCompactJson:
