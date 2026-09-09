@@ -1741,6 +1741,44 @@ export type FundamentalsView = {
   filings: Array<{ accession: string; form: string; filed_at: string; url: string | null }>;
 };
 
+export type ValueScreenView = {
+  rows: (ValueRow & { stage?: "history" | "quick" | "none"; periods?: Record<string, string> })[];
+  page: number;
+  pages: number;
+  size: number;
+  total: number;
+  sort: string;
+  order: string;
+  sorts: string[];
+  at: string;
+  market: string;
+  label: string;
+  recommended: boolean;
+  note: string;
+};
+
+/** 스크리닝 표 (T255) — 서버가 거르고 정렬해 쪽으로 준다. 창이 안 늘어난다. */
+export function valueScreen(
+  market: string,
+  p: { sort?: string; order?: string; min_score?: number | null; no_flags?: boolean; has_facts?: boolean; q?: string; page?: number; size?: number },
+): Promise<ValueScreenView> {
+  const qs = new URLSearchParams({ market });
+  if (p.sort) qs.set("sort", p.sort);
+  if (p.order) qs.set("order", p.order);
+  if (p.min_score !== null && p.min_score !== undefined) qs.set("min_score", String(p.min_score));
+  if (p.no_flags) qs.set("no_flags", "true");
+  if (p.has_facts) qs.set("has_facts", "true");
+  if (p.q) qs.set("q", p.q);
+  if (p.page) qs.set("page", String(p.page));
+  if (p.size) qs.set("size", String(p.size));
+  return request(`/fundamentals/screen?${qs.toString()}`, undefined, 120_000);
+}
+
+/** 2단계로 올리기 — companyfacts 이력을 받는다 (T255 "이력 받기"). */
+export function fundamentalsRefresh(symbol: string, market: string): Promise<Record<string, unknown>> {
+  return request(`/fundamentals/${encodeURIComponent(symbol)}/refresh?market=${encodeURIComponent(market)}`, { method: "POST" }, 300_000);
+}
+
 export function fundamentals(symbol: string, market: string, asOf?: string): Promise<FundamentalsView> {
   const tail = asOf ? `&as_of=${encodeURIComponent(asOf)}` : "";
   return request(`/fundamentals/${encodeURIComponent(symbol)}?market=${encodeURIComponent(market)}${tail}`);

@@ -19,19 +19,34 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from typing import Any, cast
 
+import yaml
 from fastapi import APIRouter, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from updown.analysis.fundamentals.quick import (
+    FLOW,
+    QUICK_CONCEPTS,
+    annual_periods,
+    instant_periods,
+    quick_metrics,
+    values_by_cik,
+)
 from updown.analysis.fundamentals.snapshot import FundamentalSnapshot, build_snapshot, price_lookup
 from updown.apps.api.fundamentals_rank import (
     CARD_LABEL,
+    DEFAULT_PAGE_SIZE,
     RANK_WINDOW_DAYS,
     RECOMMENDED,
+    SORTS,
+    ScreenQuery,
     order_rows,
     ranking_row,
+    screen_rows,
 )
 from updown.common.config import ConfigurationError, Settings
 from updown.common.domain.fundamentals import (
@@ -40,14 +55,21 @@ from updown.common.domain.fundamentals import (
     FundamentalsConfigError,
     load_fundamentals_config,
 )
-from updown.common.domain.instrument import Market, MarketGroup
+from updown.common.domain.instrument import (
+    AssetType,
+    Currency,
+    Instrument,
+    Market,
+    MarketGroup,
+    Timeframe,
+)
 from updown.common.logging.setup import get_logger
 from updown.marketdata.fundamentals.adapter import (
     FundamentalsAdapter,
     FundamentalsError,
     UnknownEntityError,
 )
-from updown.marketdata.fundamentals.edgar import filings_of
+from updown.marketdata.fundamentals.edgar import EdgarAdapter, filings_of
 from updown.marketdata.fundamentals.repository import FundamentalsRepository
 from updown.marketdata.provider import MarketDataProvider, fundamentals_adapter
 
@@ -229,6 +251,210 @@ async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
         }
         _RANKING_CACHE[found.value] = (time.monotonic(), body)
         return body
+
+
+UNIVERSE_CONFIG = Path(__file__).resolve().parents[4] / "config" / "fundamentals" / "universe.yml"
+QUICK_TTL_S = 6 * 3600
+"""frames 값은 공시 때만 바뀐다 — 6시간 기억."""
+_QUICK_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+_QUICK_LOCK = asyncio.Lock()
+
+
+def universe_of(market: Market) -> list[str]:
+    """스크리닝 유니버스 (`config/fundamentals/universe.yml`) — 없으면 빈 목록.
+
+    Args:
+        market: 시장.
+
+    Returns:
+        종목 코드들(대문자).
+    """
+    try:
+        raw: object = yaml.safe_load(UNIVERSE_CONFIG.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+    if not isinstance(raw, dict):
+        return []
+    rows = cast("dict[str, Any]", raw).get(market.value)
+    if not isinstance(rows, list):
+        return []
+    return [str(s).upper() for s in cast("list[object]", rows)]
+
+
+async def _quick_rows(market: Market, symbols: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """1단계 — 이력 없는 종목의 "지금 값" (frames 몇 번 + 종가).
+
+    실패한 종목은 빠진다(조용히 0 아님).
+    """
+    if not symbols:
+        return {}
+    now = time.monotonic()
+    cached = _QUICK_CACHE.get(market.value)
+    if cached is not None and now - cached[0] < QUICK_TTL_S and set(symbols) <= set(cached[1]):
+        return {s: cached[1][s] for s in symbols if s in cached[1]}
+    async with _QUICK_LOCK:
+        adapter = _adapter_or_503()
+        if not isinstance(adapter, EdgarAdapter):
+            return {}  # frames · efts 검색은 EDGAR 만 안다
+        client = adapter.client
+        today = datetime.now(UTC).date()
+        # CIK — efts 검색(캐시됨). 못 푸는 종목은 뺀다.
+        ciks: dict[str, str] = {}
+        for symbol in symbols:
+            try:
+                ciks[symbol] = await adapter.cik_of(symbol)
+            except Exception as exc:
+                _logger.info(
+                    "screen_cik_missing", payload={"symbol": symbol, "detail": str(exc)[:80]}
+                )
+        if not ciks:
+            return {}
+        # frames — 개념마다 폴백 태그 · 기간 순서대로, 빈 CIK 만 다음 것으로 채운다.
+        picked: dict[str, dict[str, Decimal]] = {}
+        used: dict[str, dict[str, str]] = {}
+        wanted = set(ciks.values())
+        for name, tags in QUICK_CONCEPTS.items():
+            periods = annual_periods(today) if name in FLOW else instant_periods(today)
+            got: dict[str, Decimal] = {}
+            for tag, unit in tags:
+                for period in periods:
+                    missing = wanted - set(got)
+                    if not missing:
+                        break
+                    try:
+                        frame = await client.frames(tag, unit, period)
+                    except Exception as exc:
+                        _logger.info(
+                            "screen_frame_failed",
+                            payload={"tag": tag, "period": period, "detail": str(exc)[:80]},
+                        )
+                        continue
+                    for cik, value in values_by_cik(frame).items():
+                        if cik in missing:
+                            got[cik] = value
+                            used.setdefault(cik, {})[name] = f"{tag}@{period}"
+            for cik, value in got.items():
+                picked.setdefault(cik, {})[name] = value
+        # 종가 — 봉이 없는 종목은 브로커 일봉 하나.
+        provider = MarketDataProvider()
+        broker = provider.broker_of(market)
+        quotes = provider.adapter_for(market)
+        out: dict[str, dict[str, Any]] = {}
+        for symbol, cik in ciks.items():
+            values = picked.get(cik, {})
+            price: Decimal | None = None
+            price_date: date | None = None
+            try:
+                instrument = Instrument(market, symbol, symbol, AssetType.STOCK, Currency.USD)
+                end = datetime.now(UTC)
+                candles = await quotes.get_candles(
+                    instrument, Timeframe.D1, end - timedelta(days=12), end
+                )
+                if candles:
+                    price = candles[-1].close
+                    price_date = candles[-1].ts.date()
+            except Exception as exc:
+                _logger.info(
+                    "screen_price_missing", payload={"symbol": symbol, "detail": str(exc)[:80]}
+                )
+            made = quick_metrics(
+                price=price,
+                shares=values.get("shares"),
+                revenue=values.get("revenue"),
+                net_income=values.get("net_income"),
+                equity=values.get("equity"),
+                periods=used.get(cik, {}),
+            )
+            payload = made.as_json()
+            out[symbol] = {
+                "symbol": symbol,
+                "broker": broker,
+                "has_facts": False,
+                "stage": "quick",
+                "price": payload["price"],
+                "price_date": None if price_date is None else price_date.isoformat(),
+                "market_cap": payload["market_cap"],
+                "score": None,
+                "cheapness": None,
+                "flags": [],
+                "metrics": payload["metrics"],
+                "momentum_60d": None,
+                "history_points": 0,
+                "latest_filing": None,
+                "why": "1단계(지금 값) — 이력을 받으면 5년 백분위·점수가 생긴다",
+                "periods": payload["periods"],
+            }
+        merged = {**(cached[1] if cached else {}), **out}
+        _QUICK_CACHE[market.value] = (time.monotonic(), merged)
+        return out
+
+
+@router.get("/screen")
+async def screen(
+    market: str = "NASDAQ",
+    sort: str = "score",
+    order: str = "desc",
+    min_score: float | None = None,
+    no_flags: bool = False,
+    has_facts: bool = False,
+    q: str = "",
+    page: int = 1,
+    size: int = DEFAULT_PAGE_SIZE,
+) -> dict[str, Any]:
+    """스크리닝 표 (T255).
+
+    2단계(이력 · 점수) 종목 + 1단계(frames · 지금 값) 유니버스를 **서버에서** 거르고 정렬해
+    쪽으로 낸다.
+
+    Args:
+        market: 시장.
+        sort: 정렬 키 (`SORTS`).
+        order: `desc` · `asc`.
+        min_score: 최소 점수.
+        no_flags: 부채 깃발 있는 줄 제외.
+        has_facts: 이력 있는 줄만.
+        q: 종목 코드 부분 일치.
+        page: 쪽 (1부터).
+        size: 쪽 크기 (≤ 50).
+
+    Returns:
+        `{rows, page, pages, size, total, sort, order, sorts, at, market, note}`.
+
+    Raises:
+        HTTPException: 400 시장 · 503 저장소/설정 없음.
+    """
+    ranked = await ranking(market)
+    found = _market_or_400(market)
+    rows = [
+        {**cast("dict[str, Any]", r), "stage": "history" if r.get("has_facts") else "none"}
+        for r in cast("list[Any]", ranked["rows"])
+    ]
+    have = {str(r["symbol"]) for r in rows}
+    extra = [s for s in universe_of(found) if s not in have]
+    quick = await _quick_rows(found, extra)
+    rows.extend(quick[s] for s in extra if s in quick)
+    body = screen_rows(
+        rows,
+        ScreenQuery(
+            sort=sort,
+            order=order,
+            min_score=min_score,
+            no_flags=no_flags,
+            has_facts=has_facts,
+            q=q,
+            page=page,
+            size=size,
+        ),
+    )
+    return {
+        **body,
+        "sorts": list(SORTS),
+        "at": ranked["at"],
+        "market": found.value,
+        "label": CARD_LABEL,
+        "recommended": RECOMMENDED,
+        "note": ranked["note"],
+    }
 
 
 @router.get("/{symbol}")

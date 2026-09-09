@@ -239,6 +239,28 @@ class EdgarClient:
                 return str(cik).zfill(CIK_WIDTH)
         raise UnknownEntityError(f"EDGAR 검색에 티커 {wanted} 를 가진 발행사가 없다")
 
+    async def frames(self, concept: str, unit: str, period: str) -> dict[str, Any]:
+        """`/api/xbrl/frames/{taxonomy}/{Tag}/{unit}/{period}.json`.
+
+        개념 하나 · 기간 하나 · **전 회사**가 한 파일이다.
+
+        Args:
+            concept: `us-gaap/Revenues` 꼴 (taxonomy/Tag).
+            unit: `USD` · `shares` · `USD-per-shares`.
+            period: `CY2025` · `CY2026Q2` · `CY2026Q2I`.
+
+        Returns:
+            응답 JSON 통째 — 해석은 `analysis.fundamentals.quick.values_by_cik`.
+
+        Raises:
+            EdgarApiError: 호출 실패 또는 모양이 다르다.
+        """
+        path = f"{self._base_url}/api/xbrl/frames/{concept}/{unit}/{period}.json"
+        body = await self.get_json(path)
+        if not isinstance(body, dict):
+            raise EdgarApiError(f"frames 의 최상위가 매핑이 아니다: {path}")
+        return cast("dict[str, Any]", body)
+
     async def company_facts(self, cik: str) -> dict[str, Any]:
         """`/api/xbrl/companyfacts/CIK##########.json`.
 

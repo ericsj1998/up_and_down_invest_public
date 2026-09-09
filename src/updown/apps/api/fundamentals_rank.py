@@ -15,9 +15,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from updown.analysis.fundamentals.snapshot import FundamentalSnapshot, Metric
 from updown.common.domain.fundamentals import Filing
@@ -170,13 +171,125 @@ def order_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(rows, key=_key)
 
 
+SORTS: tuple[str, ...] = (
+    "score",
+    "per",
+    "pbr",
+    "psr",
+    "fcf_yield",
+    "debt_to_equity",
+    "momentum_60d",
+    "market_cap",
+)
+"""정렬 키 — 선언된 것만 (T255 · 모델이 임의 수식을 넘기지 못한다)."""
+MAX_PAGE_SIZE = 50
+DEFAULT_PAGE_SIZE = 10
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenQuery:
+    """스크리닝 표의 필터·정렬·쪽 (T255).
+
+    Attributes:
+        sort: 정렬 키 (`SORTS`). 모르면 `score`.
+        order: `desc` · `asc`. 점수는 내림차순, 배수(PER 등)는 오름차순이 "싼 순" 이다.
+        min_score: 이 점수 미만은 뺀다. None 이면 안 거른다.
+        no_flags: 부채 깃발이 있으면 뺀다.
+        has_facts: 참이면 2단계(이력 있음)만.
+        q: 종목 코드 부분 일치.
+        page: 1부터.
+        size: 쪽 크기 (≤ `MAX_PAGE_SIZE`).
+    """
+
+    sort: str = "score"
+    order: str = "desc"
+    min_score: float | None = None
+    no_flags: bool = False
+    has_facts: bool = False
+    q: str = ""
+    page: int = 1
+    size: int = DEFAULT_PAGE_SIZE
+
+
+def _sort_value(row: dict[str, Any], key: str) -> float | None:
+    if key == "score":
+        found = row.get("score")
+    elif key in ("momentum_60d", "market_cap"):
+        found = row.get(key)
+    else:
+        metrics = cast("dict[str, Any]", row.get("metrics") or {})
+        cell = cast("dict[str, Any]", metrics.get(key) or {})
+        found = cell.get("value")
+    if found is None:
+        return None
+    try:
+        return float(found)
+    except (TypeError, ValueError):
+        return None
+
+
+def screen_rows(rows: Sequence[dict[str, Any]], query: ScreenQuery) -> dict[str, Any]:
+    """필터 → 정렬 → 쪽. 값이 없는 줄은 어느 정렬에서도 **뒤**에 선다.
+
+    Args:
+        rows: `ranking_row` 모양(+ `stage`).
+        query: 조건.
+
+    Returns:
+        `{rows, page, pages, size, total, sort, order}`.
+    """
+    sort = query.sort if query.sort in SORTS else "score"
+    order = "asc" if query.order == "asc" else "desc"
+    size = max(1, min(int(query.size or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
+    needle = query.q.strip().upper()
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        if query.has_facts and not row.get("has_facts"):
+            continue
+        if query.no_flags and row.get("flags"):
+            continue
+        if query.min_score is not None:
+            score = row.get("score")
+            if score is None or float(score) < query.min_score:
+                continue
+        if needle and needle not in str(row.get("symbol", "")).upper():
+            continue
+        kept.append(row)
+
+    def _key(row: dict[str, Any]) -> tuple[int, float, str]:
+        value = _sort_value(row, sort)
+        if value is None:
+            return (1, 0.0, str(row.get("symbol")))
+        return (0, -value if order == "desc" else value, str(row.get("symbol")))
+
+    kept.sort(key=_key)
+    total = len(kept)
+    pages = max(1, (total + size - 1) // size)
+    page = max(1, min(int(query.page or 1), pages))
+    start = (page - 1) * size
+    return {
+        "rows": kept[start : start + size],
+        "page": page,
+        "pages": pages,
+        "size": size,
+        "total": total,
+        "sort": sort,
+        "order": order,
+    }
+
+
 __all__ = [
     "CARD_LABEL",
+    "DEFAULT_PAGE_SIZE",
+    "MAX_PAGE_SIZE",
     "RANK_WINDOW_DAYS",
     "RECOMMENDED",
     "SHOWN_METRICS",
+    "SORTS",
+    "ScreenQuery",
     "momentum",
     "order_rows",
     "ranking_row",
+    "screen_rows",
     "why_line",
 ]

@@ -323,6 +323,23 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
 
         return await ai_report.journal()
 
+    async def _screen(
+        market: str,
+        sort: str,
+        order: str,
+        min_score: Decimal | None,
+        no_flags: bool,
+        limit: int,
+    ) -> dict[str, Any]:
+        return await fundamentals_api.screen(
+            market=market,
+            sort=sort,
+            order=order,
+            min_score=None if min_score is None else float(min_score),
+            no_flags=no_flags,
+            size=limit,
+        )
+
     return ToolContext(
         provider=provider,
         live_markets=provider.live_markets(),
@@ -338,6 +355,7 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
         ranking=_ranking,
         open_runs=_open_runs,
         journal=_journal,
+        screen=_screen,
         candle_repo=walkforward._candles,  # pyright: ignore[reportPrivateUsage]
         calendar=load_calendar(),
         report=report,

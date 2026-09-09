@@ -68,6 +68,8 @@ class ToolContext:
         ranking: `(market)` → 저평가 순위(T244).
         open_runs: `()` → 살아 있는 라이브 판 목록(예산·매매법·메타).
         journal: `()` → AI 매매일지(끝난 AI 매매 · 근거별 적중).
+        screen: `(market, sort, order, min_score, no_flags, limit)` → 스크리닝 표(T255 · 서버가
+            거르고 정렬).
         candle_repo: 있으면 봉을 DB 캐시(`StoredCandles`)로 읽는다 — 40초가 수 초로.
         calendar: 캐시가 정규장 봉만 돌려주게 하는 캘린더.
         report: 진행 문장 콜백.
@@ -87,6 +89,7 @@ class ToolContext:
     ranking: Fetch | None = None
     open_runs: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None
     journal: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    screen: Fetch | None = None
     candle_repo: CandleRepository | None = None
     calendar: MarketCalendar | None = None
     report: Callable[[str], None] = field(default=lambda _: None)
@@ -504,6 +507,62 @@ async def _portfolio_exposure(args: dict[str, Any], ctx: ToolContext) -> dict[st
     }
 
 
+SCREEN_LIMIT = 50
+"""스크리닝 표 한 번에 최대 행 — 모델 컨텍스트 예산."""
+
+
+async def _screen(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    if ctx.screen is None:
+        return {"note": "재무 스크리닝이 이 서버에 없다"}
+    market = _market(args, ctx)
+    sort = str(args.get("sort") or "score")
+    order = str(
+        args.get("order") or ("asc" if sort in ("per", "pbr", "psr", "debt_to_equity") else "desc")
+    )
+    limit = max(1, min(int(args.get("limit") or 10), SCREEN_LIMIT))
+    ctx.report(f"스크리닝: {market.value} · {sort} {order} · 상위 {limit}")
+    got = await ctx.screen(
+        market.value,
+        sort,
+        order,
+        _decimal(args.get("min_score")),
+        bool(args.get("no_flags")),
+        limit,
+    )
+    rows = cast("list[dict[str, Any]]", got.get("rows") or [])
+    slim = [
+        {
+            "symbol": r.get("symbol"),
+            "stage": r.get("stage"),
+            "score": r.get("score"),
+            "price": r.get("price"),
+            "market_cap": r.get("market_cap"),
+            "flags": r.get("flags"),
+            "per": (cast("dict[str, Any]", r.get("metrics") or {}).get("per") or {}).get("value"),
+            "pbr": (cast("dict[str, Any]", r.get("metrics") or {}).get("pbr") or {}).get("value"),
+            "psr": (cast("dict[str, Any]", r.get("metrics") or {}).get("psr") or {}).get("value"),
+            "fcf_yield": (
+                cast("dict[str, Any]", r.get("metrics") or {}).get("fcf_yield") or {}
+            ).get("value"),
+            "momentum_60d": r.get("momentum_60d"),
+            "why": r.get("why"),
+        }
+        for r in rows
+    ]
+    return {
+        "market": market.value,
+        "sort": got.get("sort"),
+        "order": got.get("order"),
+        "total": got.get("total"),
+        "rows": slim,
+        "note": (
+            "순위·점수는 서버가 저장된 공시·frames 로 계산한 것이다(예상 아님). "
+            "stage=quick 은 지금 값만(백분위·점수 없음), "
+            "history 는 5년 백분위 점수. 표 밖의 순위나 숫자를 만들지 않는다."
+        ),
+    }
+
+
 async def _trade_journal(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if ctx.journal is None:
         return {"note": "매매일지가 이 서버에 없다"}
@@ -740,6 +799,34 @@ TOOLS: tuple[Tool, ...] = (
         ),
         _trade_journal,
         starter="AI 매매일지 보여줘",
+    ),
+    Tool(
+        ToolSpec(
+            "screen",
+            "종목 순위·스크리닝 — 시장의 종목을 저평가 점수·PER·PBR·PSR·FCF 수익률·"
+            "60일 모멘텀·시총으로 "
+            "서버가 정렬해 상위 N(최대 50)을 준다. 순위는 코드가 매기고 모델은 읽기만 한다. "
+            "유사어: 순위, 랭킹, 스크리닝, 훑어, 골라 줘, 상위, 저평가 순, 싼 순, "
+            "후보 목록, 뭐가 싸.",
+            _obj(
+                {
+                    "market": {"type": "string", "description": "NASDAQ 등. 모르면 생략"},
+                    "sort": {
+                        "type": "string",
+                        "description": (
+                            "score · per · pbr · psr · fcf_yield · debt_to_equity · "
+                            "momentum_60d · market_cap"
+                        ),
+                    },
+                    "order": {"type": "string", "description": "asc · desc (배수는 asc 가 싼 순)"},
+                    "min_score": {"type": "number", "description": "최소 저평가 점수"},
+                    "no_flags": {"type": "boolean", "description": "부채 깃발 있는 종목 제외"},
+                    "limit": {"type": "integer", "description": "상위 몇 개 (기본 10 · 최대 50)"},
+                }
+            ),
+        ),
+        _screen,
+        starter="미국주식 저평가 순위 상위 10개 보여줘",
     ),
 )
 

@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { fundamentals, valueRanking, type FundamentalsView, type ValueRow } from "./api";
+import { fundamentals, fundamentalsRefresh, valueScreen, type FundamentalsView, type ValueRow, type ValueScreenView } from "./api";
 import { BrokerMark } from "./shell/BrokerMark";
 import { DISCLAIMER_TEXT } from "./shell/disclaimer";
 import { requestStockOrder } from "./StockOrder";
@@ -129,53 +129,128 @@ function Detail({ symbol, market }: { symbol: string; market: string }) {
   );
 }
 
+const SORT_LABEL: Record<string, string> = {
+  score: "저평가 점수",
+  per: "PER",
+  pbr: "PBR",
+  psr: "PSR",
+  fcf_yield: "FCF 수익률",
+  debt_to_equity: "부채비율",
+  momentum_60d: "60일 모멘텀",
+  market_cap: "시가총액",
+};
+
 export function ValueRanking({ market }: { market: string }) {
-  const [rows, setRows] = useState<ValueRow[]>([]);
-  const [label, setLabel] = useState("저평가 후보");
-  const [recommended, setRecommended] = useState(false);
-  const [note, setNote] = useState("");
+  const [view, setView] = useState<ValueScreenView | null>(null);
   const [error, setError] = useState("");
   const [open, setOpen] = useState<string | null>(null);
+  // ⭐ 필터·정렬·쪽은 서버가 처리한다(T255) — 창은 한 쪽 크기만큼만 자란다.
+  const [sort, setSort] = useState("score");
+  const [order, setOrder] = useState<"asc" | "desc">("desc");
+  const [minScore, setMinScore] = useState<string>("");
+  const [noFlags, setNoFlags] = useState(false);
+  const [hasFacts, setHasFacts] = useState(false);
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(10);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     let alive = true;
     const pull = () => {
-      valueRanking(market)
+      valueScreen(market, {
+        sort,
+        order,
+        min_score: minScore.trim() === "" ? null : Number(minScore),
+        no_flags: noFlags,
+        has_facts: hasFacts,
+        q,
+        page,
+        size,
+      })
         .then((body) => {
           if (!alive) return;
-          setRows(body.rows);
-          setLabel(body.label);
-          setRecommended(body.recommended);
-          setNote(body.note);
+          setView(body);
           setError("");
         })
         .catch((exc: unknown) => alive && setError(String(exc)));
     };
     pull();
-    // 공시는 분기마다, 종가는 하루 한 번 — 서버도 10분 캐시라 자주 물을 이유가 없다.
+    // 공시는 분기마다, 종가는 하루 한 번 — 서버도 캐시라 자주 물을 이유가 없다.
     const timer = setInterval(pull, 300_000);
     return () => {
       alive = false;
       clearInterval(timer);
     };
-  }, [market]);
+  }, [market, sort, order, minScore, noFlags, hasFacts, q, page, size, tick]);
 
+  const rows = view?.rows ?? [];
   const scored = rows.filter((r) => r.score !== null && r.score !== undefined).length;
   const summary = error
     ? "읽지 못했다"
-    : rows.length
-      ? `${rows.length}종목 · 점수 ${scored}개 · ${rows[0]?.symbol ?? ""} 부터`
+    : view
+      ? `${view.total}종목 · 이 쪽 ${rows.length} · 점수 ${scored}개`
       : "아직 안 읽었다";
-  const title = recommended ? "추천" : label;
+  const title = view?.recommended ? "추천" : (view?.label ?? "저평가 후보");
+  const pickSort = (key: string) => {
+    setSort(key);
+    // 배수(PER 등)는 낮을수록 싸다 — 기본 오름차순. 점수·수익률·모멘텀·시총은 내림차순.
+    setOrder(["per", "pbr", "psr", "debt_to_equity"].includes(key) ? "asc" : "desc");
+    setPage(1);
+  };
 
   return (
     <Fold name={title} summary={summary} keep="value-ranking" initialShut>
       <p className="card-hint">
         {market} 종목을 <b>재무제표 대비 싼 순</b>으로 — 자기 5년 백분위(쌀수록 100)의 평균에서 부채 깃발마다 감점.
-        {note ? ` ${note}` : ""}
+        {view?.note ? ` ${view.note}` : ""} 1단계(지금 값 · frames)는 점수 없이 값만 보이고, "이력 받기" 로 2단계(5년 백분위 · 점수)가 된다.
       </p>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <select value={sort} onChange={(e) => pickSort(e.target.value)} title="정렬 기준">
+          {(view?.sorts ?? Object.keys(SORT_LABEL)).map((k) => (
+            <option key={k} value={k}>
+              {SORT_LABEL[k] ?? k}
+            </option>
+          ))}
+        </select>
+        <button type="button" className="btn small" onClick={() => setOrder((was) => (was === "asc" ? "desc" : "asc"))} title="오름/내림">
+          {order === "asc" ? "오름차순" : "내림차순"}
+        </button>
+        <input
+          className="mono"
+          style={{ width: 80 }}
+          placeholder="최소 점수"
+          value={minScore}
+          onChange={(e) => {
+            setMinScore(e.target.value);
+            setPage(1);
+          }}
+        />
+        <label className="faint text-xs">
+          <input type="checkbox" checked={noFlags} onChange={(e) => { setNoFlags(e.target.checked); setPage(1); }} /> 부채 깃발 제외
+        </label>
+        <label className="faint text-xs">
+          <input type="checkbox" checked={hasFacts} onChange={(e) => { setHasFacts(e.target.checked); setPage(1); }} /> 이력 있음만
+        </label>
+        <input
+          style={{ width: 110 }}
+          placeholder="종목 검색"
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setPage(1);
+          }}
+        />
+        <select value={size} onChange={(e) => { setSize(Number(e.target.value)); setPage(1); }} title="쪽 크기">
+          {[10, 20, 50].map((n) => (
+            <option key={n} value={n}>
+              {n}줄
+            </option>
+          ))}
+        </select>
+      </div>
       {error ? <ErrorCard message={error} /> : null}
-      <div className="table-wrap">
+      <div className="table-wrap" style={{ maxHeight: "28rem", overflowY: "auto" }}>
         <table>
           <thead>
             <tr>
@@ -204,12 +279,33 @@ export function ValueRanking({ market }: { market: string }) {
                   market={market}
                   shown={shown}
                   onToggle={() => setOpen(shown ? null : row.symbol)}
+                  onPromoted={() => setTick((t) => t + 1)}
                 />
               );
             })}
+            {rows.length === 0 && view ? (
+              <tr>
+                <td colSpan={11} className="faint">
+                  조건에 맞는 종목이 없다.
+                </td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
       </div>
+      {view && view.pages > 1 ? (
+        <div className="row" style={{ gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
+          <button type="button" className="btn small" disabled={view.page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+            이전
+          </button>
+          <span className="faint text-xs">
+            {view.page} / {view.pages} 쪽 · {view.total}종목
+          </span>
+          <button type="button" className="btn small" disabled={view.page >= view.pages} onClick={() => setPage((p) => p + 1)}>
+            다음
+          </button>
+        </div>
+      ) : null}
       <p className="faint">{DISCLAIMER_TEXT}</p>
     </Fold>
   );
@@ -220,13 +316,27 @@ function RowPair({
   market,
   shown,
   onToggle,
+  onPromoted,
 }: {
-  row: ValueRow;
+  row: ValueRow & { stage?: string };
   market: string;
   shown: boolean;
   onToggle: () => void;
+  /** 1단계 줄의 "이력 받기" 가 끝나면 표를 다시 읽는다. */
+  onPromoted?: () => void;
 }) {
   const tone = scoreTone(row.score);
+  const [busy, setBusy] = useState(false);
+  const [promoteError, setPromoteError] = useState("");
+  const promote = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setBusy(true);
+    setPromoteError("");
+    fundamentalsRefresh(row.symbol, market)
+      .then(() => onPromoted?.())
+      .catch((exc: unknown) => setPromoteError(String(exc)))
+      .finally(() => setBusy(false));
+  };
   return (
     <>
       <tr
@@ -243,9 +353,21 @@ function RowPair({
         <td className="num">{num(row.price ?? null, 2)}</td>
         <td className="num">
           {row.score === null || row.score === undefined ? (
-            <span className="chip" title={row.why}>
-              {row.has_facts ? "점수 없음" : "재무 없음"}
-            </span>
+            row.stage === "quick" ? (
+              <span className="inline-flex items-center gap-1">
+                <span className="chip" title="1단계 — frames 지금 값 · 백분위·점수 없음">
+                  1단계
+                </span>
+                <button type="button" className="btn small" disabled={busy} onClick={promote} title="companyfacts 이력을 받아 2단계(5년 백분위 · 점수)로 올린다">
+                  {busy ? "받는 중…" : "이력 받기"}
+                </button>
+                {promoteError ? <span className="loss text-xs">{promoteError}</span> : null}
+              </span>
+            ) : (
+              <span className="chip" title={row.why}>
+                {row.has_facts ? "점수 없음" : "재무 없음"}
+              </span>
+            )
           ) : (
             <span className={`chip ${tone}`}>{num(row.score, 0)}</span>
           )}

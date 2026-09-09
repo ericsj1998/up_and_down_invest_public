@@ -1,0 +1,47 @@
+# 스크리닝 유니버스 (T255) — "시장 전체를 훑어 순위" 의 대상. 봉·재무 이력이 없는 종목도 여기 있으면
+# 1단계(EDGAR frames · 지금 값)로 표에 오르고, "이력 받기" 로 2단계(companyfacts · 5년 백분위 · 점수)로 올라간다.
+#
+# ⚠️ 이 목록은 "큰 회사 몇 십 개" 이지 지수 구성이 아니다. `www.sec.gov` 의 전체 티커 표가 이 회선에서 403 이라
+#    시장 전체를 자동으로 받지 못한다(T243 실측 2026-09-10). 종목을 더하려면 여기 한 줄.
+# 🔴 순위·점수는 "추천" 이 아니다 (규칙 #12 · OOS 판정 전).
+NASDAQ:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - META
+  - GOOGL
+  - TSLA
+  - AVGO
+  - COST
+  - NFLX
+  - AMD
+  - PEP
+  - ADBE
+  - CSCO
+  - TMUS
+  - INTC
+  - QCOM
+  - TXN
+  - AMGN
+  - INTU
+  - ISRG
+  - BKNG
+  - HON
+  - AMAT
+  - SBUX
+  - ADP
+  - MU
+  - LRCX
+  - PANW
+  - GILD
+  - ADI
+  - REGN
+  - VRTX
+  - KLAC
+  - MDLZ
+  - CRWD
+  - MAR
+  - CTAS
+  - ORLY
+  - PYPL

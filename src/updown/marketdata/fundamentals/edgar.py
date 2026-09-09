@@ -59,6 +59,11 @@ class EdgarAdapter:
         self._tickers_at = 0.0
         self._table_ok = False
 
+    @property
+    def client(self) -> EdgarClient:
+        """밑의 HTTP 클라이언트 — frames 같은 EDGAR 전용 호출을 API 층이 부를 때 (T255)."""
+        return self._client
+
     async def aclose(self) -> None:
         """HTTP 연결을 닫는다."""
         await self._client.aclose()
