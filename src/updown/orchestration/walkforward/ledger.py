@@ -912,6 +912,15 @@ class Ledger:
     채우므로, 그 숫자로 낸 주문이 거래소에서 거부된다.
     """
 
+    refill: bool = True
+    """`WALLET` 모형에서 손실 뒤 **지갑에서 목표치까지 채우는가** (T235 · 2026-09-09).
+
+    참(기본): 채우고, 못 채우면 `halted_at` — 단독 판(지갑 = 계좌 잔액)의 규칙 (T14-2).
+    거짓: **채우지 않고 몫 안에서 굴린다** — 펀드 멤버. 펀드 멤버는 `wallet_start=0` 으로 격리돼
+    있어 채울 돈이 구조적으로 없다. 참으로 두면 손실 한 번에 영구히 새 진입이 멈춘다
+    (실계좌 BTC 실측 2026-09-08~09). 거짓이면 증거금 = 몫 + 누적 실현으로 굴러가고,
+    멈춤은 증거금이 0 이하로 갈 때만이다.
+    """
     wallet_start: Decimal = Decimal(0)
     """`WALLET` 모형의 **지갑 시작 잔액** — 라이브는 RUN 을 열 때 거래소에서 읽는다.
 
@@ -1116,6 +1125,21 @@ class Ledger:
             stop = self.drawdown_stop_pct
             if tripped is None and stop is not None and drawdown >= stop:
                 tripped = item.trade_id
+            if not self.refill:
+                # ⭐ T235 — 펀드 멤버: 채우지 않는다. 몫이 다 없어졌을 때만 멈춘다.
+                if margin <= 0:
+                    return Purse(
+                        rolling=Decimal(0),
+                        reserved=reserved,
+                        topped_up=topped,
+                        wallet=wallet,
+                        earned=earned,
+                        halted_at=item.trade_id,
+                        drawdown_pct=drawdown,
+                        max_drawdown_pct=deepest,
+                        tripped_at=tripped,
+                    )
+                continue
             if margin >= target:
                 continue
             # ⚠️ 마이너스는 무시한다 — 격리 마진은 지갑에 있던 것까지만 잃고 빚이 되지 않는다.

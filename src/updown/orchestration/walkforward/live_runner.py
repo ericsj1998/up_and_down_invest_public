@@ -3360,7 +3360,9 @@ class LiveRunner:
                     "code": "margin_exhausted",
                     "level": "error",
                     "detail": (
-                        f"매매 {stopped[:6]} 뒤로 증거금을 목표치까지 못 채웠다 — "
+                        f"매매 {stopped[:6]} 뒤로 펀드 몫을 다 잃었다(증거금 0) — 그 뒤는 안 센다"
+                        if not book.refill
+                        else f"매매 {stopped[:6]} 뒤로 증거금을 목표치까지 못 채웠다 — "
                         "지갑이 모자란다. 그 뒤 매매는 성적에 안 센다"
                     ),
                 }

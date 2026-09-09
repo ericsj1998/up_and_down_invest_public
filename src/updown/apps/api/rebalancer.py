@@ -420,6 +420,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
         if handle is not None:  # autostart 가 되살린 세션 재사용 — 펀드 격리 재적용
             session = SESSIONS[handle].session
             session.ledger.wallet_start = Decimal(0)
+            session.ledger.refill = False  # T235 — 몫 안에서 굴린다 (채울 지갑이 없다)
             session.ledger.seed_cash = share
             # 🔴 예산도 몫으로 되돌린다 (2026-08-25). 안 되돌리면 판이 저장해 둔 **낡은
             #    예산**이 살아나고, WALLET 모형의 equity 가 그 값으로 수렴해 화면
@@ -509,6 +510,7 @@ async def _spawn_session(
     handle = str(result["session_id"])
     session = SESSIONS[handle].session
     session.ledger.wallet_start = Decimal(0)
+    session.ledger.refill = False  # T235 — 몫 안에서 굴린다 (채울 지갑이 없다)
     session.ledger.seed_cash = share
     session.ledger.margin_budget = share  # 예산=몫 — 다음 틱 전까지의 표시·사이징 기준
     return handle, SessionBridge(session)
