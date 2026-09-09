@@ -49,7 +49,15 @@ def add(*parts: Decimal | None, require_first: bool = True) -> Decimal | None:
 
 
 def market_cap(price: Decimal | None, shares: Decimal | None) -> Decimal | None:
-    """시가총액 = 가격 x 발행주식수."""
+    """시가총액 = 가격 x 발행주식수.
+
+    Args:
+        price: 종가.
+        shares: 발행주식수.
+
+    Returns:
+        시총. 어느 쪽이 없거나 주식수가 0 이하면 None.
+    """
     if price is None or shares is None or shares <= 0:
         return None
     return price * shares
