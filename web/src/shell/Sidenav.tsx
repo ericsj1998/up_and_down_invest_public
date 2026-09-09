@@ -142,11 +142,14 @@ export function Sidenav({
   who,
   open,
   onClose,
+  offsetLeft = 0,
 }: {
   who: Who | null;
   /** 모바일 드로어가 열려 있나 (xl 이상에서는 늘 보인다). */
   open: boolean;
   onClose: () => void;
+  /** 왼쪽에 붙은 채팅 창(T257)이 있으면 그 너비만큼 오른쪽으로 밀린다(px). */
+  offsetLeft?: number;
 }) {
   const runs = useOpenRuns();
   const { pathname } = useLocation();
@@ -172,6 +175,7 @@ export function Sidenav({
     <aside
       className={`${open ? "translate-x-0" : "-translate-x-80"} fixed inset-0 z-50 my-4 ml-4 h-[calc(100vh-32px)] w-72 overflow-y-auto rounded-xl border border-blue-gray-100 bg-white shadow-sm transition-transform duration-300 xl:translate-x-0 dark:border-gray-800 dark:bg-gray-900`}
       aria-label="화면 목록"
+      style={offsetLeft ? { left: offsetLeft } : undefined}
     >
       <div className="relative">
         <NavLink to="/console" className="flex items-center gap-3 px-6 pb-2 pt-6" onClick={onClose}>

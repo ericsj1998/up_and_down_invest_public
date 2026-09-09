@@ -151,7 +151,7 @@ export function ChatPanel({ who, onTitle }: { who: Who | null; onTitle?: (title:
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b border-sky-100 bg-sky-50/60 px-3 py-1 text-xs dark:border-sky-900 dark:bg-sky-950/30">
+      <div className="flex items-center gap-2 border-b border-light-blue-100 bg-light-blue-50/60 px-3 py-1 text-xs dark:border-blue-gray-700 dark:bg-blue-gray-900/40">
         <button type="button" className={`btn small ${listOpen ? "primary" : ""}`} onClick={() => setListOpen((was) => !was)} title="대화 목록">
           대화 {threads.length ? `(${threads.length})` : ""}
         </button>

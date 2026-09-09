@@ -1049,6 +1049,7 @@ textarea.input {
 .chat-ghost { position: fixed; z-index: 49; pointer-events: none; background: rgba(59, 130, 246, 0.18); border: 2px dashed rgba(59, 130, 246, 0.6); border-radius: 12px; }
 .chat-ghost-left { left: 8px; top: 8px; bottom: 8px; width: 380px; }
 .chat-ghost-right { right: 8px; top: 8px; bottom: 8px; width: 380px; }
+.chat-ghost-left-inner { left: 312px; top: 8px; bottom: 8px; width: 380px; }
 .chat-ghost-top { left: 8px; right: 8px; top: 8px; height: 340px; }
 .chat-ghost-bottom { left: 8px; right: 8px; bottom: 8px; height: 340px; }
 .chat-starters { scrollbar-width: thin; }

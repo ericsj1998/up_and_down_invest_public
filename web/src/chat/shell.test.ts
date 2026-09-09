@@ -25,11 +25,17 @@ describe("edgeAt", () => {
     expect(edgeAt(600, 790, 1200, 800)).toBe("bottom");
     expect(edgeAt(600, 400, 1200, 800)).toBeNull();
   });
+  it("xl 이면 사이드바 경계 근처는 left-inner · 아니면 아니다", () => {
+    expect(edgeAt(310, 400, 1600, 900)).toBe("left-inner");
+    expect(edgeAt(310, 400, 1200, 800)).toBeNull();
+    expect(edgeAt(20, 400, 1600, 900)).toBe("left");
+  });
 });
 
 describe("dockSizeAfterDrag", () => {
   it("왼쪽·위는 오른쪽/아래로 끌면 커지고, 오른쪽·아래는 반대다 · 최소·최대 사이", () => {
     expect(dockSizeAfterDrag("left", 400, 50, 1200)).toBe(450);
+    expect(dockSizeAfterDrag("left-inner", 400, 50, 1200)).toBe(450);
     expect(dockSizeAfterDrag("right", 400, 50, 1200)).toBe(350);
     expect(dockSizeAfterDrag("top", 360, -30, 800)).toBe(330);
     expect(dockSizeAfterDrag("bottom", 360, -30, 800)).toBe(390);

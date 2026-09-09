@@ -27,12 +27,14 @@ export function Layout({
   // ⭐ AI 채팅(T248 · T257) — 라우트 밖이라 화면을 옮겨도 대화가 안 끊긴다. 동그란 단추 · 뜬 창 · 가장자리 도킹은
   //    `shell.ts` 가 기억하고, 도킹이면 여기서 본문을 밀어낸다(좌우 = 가로 flex · 상하 = 세로 flex).
   const chat = useChatShell();
-  const dockRow = chat.mode === "left" || chat.mode === "right";
+  const dockRow = chat.mode === "right" || chat.mode === "left-inner";
   const dockCol = chat.mode === "top" || chat.mode === "bottom";
+  // ⭐ 왼쪽 도킹은 사이드바까지 밀어낸다 (사용자 2026-09-10 "사이드바의 왼쪽에도") — 채팅 너비 + 여백만큼 전부 오른쪽으로.
+  const leftPad = chat.mode === "left" ? chat.dock.left + 16 : 0;
 
   return (
     <div className="min-h-screen bg-blue-gray-50/50 dark:bg-gray-950">
-      <Sidenav who={who} open={drawer} onClose={() => setDrawer(false)} />
+      <Sidenav who={who} open={drawer} onClose={() => setDrawer(false)} offsetLeft={leftPad} />
       {drawer ? (
         <button
           type="button"
@@ -42,8 +44,12 @@ export function Layout({
         />
       ) : null}
       <ChatShell who={who} />
-      <div className={`p-4 xl:ml-80 ${dockRow ? "flex min-h-screen items-stretch gap-2" : ""} ${dockCol ? "flex min-h-screen flex-col gap-2" : ""}`}>
-        {chat.mode === "left" || chat.mode === "top" ? <DockedChat who={who} /> : null}
+      {chat.mode === "left" ? <DockedChat who={who} /> : null}
+      <div
+        className={`p-4 transition-[margin] duration-300 ml-[var(--chat-left)] xl:ml-[calc(20rem+var(--chat-left))] ${dockRow ? "flex min-h-screen items-stretch gap-2" : ""} ${dockCol ? "flex min-h-screen flex-col gap-2" : ""}`}
+        style={{ "--chat-left": `${leftPad}px` } as React.CSSProperties}
+      >
+        {chat.mode === "top" || chat.mode === "left-inner" ? <DockedChat who={who} /> : null}
         <div className="min-w-0 flex-1">
           <Navbar who={who} onOut={onOut} onMenu={() => setDrawer(true)} />
           {/* ⚠️ min-w-0 + overflow-x-clip: 넓은 표·pre 는 자기 상자(.table-wrap) 안에서 스크롤한다 — 화면 전체가
