@@ -470,8 +470,10 @@ async def _auto_state(email: str) -> AutoState:
 
 async def _auto_json(request: Request) -> dict[str, Any]:
     """설정 응답의 `auto` 칸."""
-    found = getattr(request.state, "caller", None)
-    who = found if isinstance(found, Caller) else await caller_of(request)
+    try:
+        who: Caller | None = await _who_or_403(request)
+    except HTTPException:
+        who = None
     base: dict[str, Any] = {
         "consent": {"version": AUTO_ORDER_CONSENT_VERSION, "text": AUTO_ORDER_CONSENT_TEXT},
         "defaults": {"max_per_day": 3, "max_exposure_pct": 30},

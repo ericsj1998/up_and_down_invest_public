@@ -300,10 +300,8 @@ class TestAuto:
         source = (Path(__file__).resolve().parent.parent / "web/src/shell/disclaimer.ts").read_text(
             encoding="utf-8"
         )
-        assert (
-            re.search(r'AUTO_ORDER_CONSENT_VERSION = "([^"]+)"', source).group(1)
-            == AUTO_ORDER_CONSENT_VERSION
-        )  # type: ignore[union-attr]
+        found = re.search(r'AUTO_ORDER_CONSENT_VERSION = "([^"]+)"', source)
+        assert found is not None and found.group(1) == AUTO_ORDER_CONSENT_VERSION
         assert AUTO_ORDER_CONSENT_TEXT in source.replace("\n", "")
 
     def test_actor_ai_exists_and_session_buy_takes_actor(self) -> None:
