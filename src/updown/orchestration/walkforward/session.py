@@ -54,7 +54,7 @@ from updown.common.domain.reports import TrendDirection
 from updown.common.domain.setup import TradeSetup
 from updown.common.domain.trade_tick import BarDelta
 from updown.common.logging.setup import get_logger
-from updown.decision.sizing import DEFAULT_LEVERAGE_CAP, capped_stop, size_for
+from updown.decision.sizing import DEFAULT_LEVERAGE_CAP, capped_stop, protect_stop, size_for
 from updown.marketdata.ingest.delta_store import load_bar_deltas
 from updown.orchestration.playbook_run import Proposal, major_trend, propose
 from updown.orchestration.walkforward.feed_protocol import Feed
@@ -704,6 +704,8 @@ class Session:
     뒤집고, 아니면 그 방향으로 추세 전환."* 손절 = 반전 캔들 반대 끝(가장 가깝다).
     """
     stop_cap_ratio: Decimal | None = None
+    stop_protect_ratio: Decimal | None = None
+    """보호 손절 비율 — `stop_mode: close` 매매법의 라이브가 거래소에 거는 자리 (T233 ②)."""
     """β — 손절을 **청산거리의 이 비율 안쪽**으로 당긴다 (T120~T146). None 이면 끔.
 
     ⛔ 세션이 정하지 않는다 — `config/risk.yml` 의 값을 러너가 넣어 준다.
@@ -1550,7 +1552,9 @@ class Session:
             body < held.planned_stop if long else body > held.planned_stop
         )
         # ⭐ T50 B — 닿으면 그 가격. 확인 봉을 기다리며 더 내려간 만큼(실측 +34%)을 안 낸다.
-        touched = self.stop_at_price and (
+        # ⭐ T233 ② — 매매법 선언 `stop_mode: touch` 도 같은 길이다 (측정 스위치 `stop_at_price` 는
+        #    그대로 둔다 · 라이브는 이 선언으로 보호 손절/미러를 가른다).
+        touched = (self.stop_at_price or self._book_of(held).stop_mode == "touch") and (
             bar.low <= held.planned_stop if long else bar.high >= held.planned_stop
         )
         if touched:
@@ -2023,6 +2027,46 @@ class Session:
         if floor is None or record.entry <= 0:
             return False
         return abs(record.entry - record.planned_stop) / record.entry < floor
+
+    def stop_mode_of(self, record: TradeRecord) -> str:
+        """이 매매를 낸 매매법의 손절 판정 방식 (T233 ②).
+
+        Args:
+            record: 보유 중이거나 끝난 기록.
+
+        Returns:
+            `close`(봉 마감 몸통 판정) 또는 `touch`(닿으면 그 가격).
+        """
+        return self._book_of(record).stop_mode
+
+    def guard_price(self, record: TradeRecord) -> Decimal:
+        """라이브가 거래소에 걸 조건부 손절 자리.
+
+        Args:
+            record: 보유 중인 기록.
+
+        Returns:
+            `touch` 면 계획 손절 그대로(1.5.0 까지의 동작). `close` 면 보호 손절(청산 거리의
+            `stop_protect_ratio`). 비율이 없으면 **계획 손절 그대로** — 무방비보다 터치 손절이
+            낫다(규칙 #8-1). 설정 누락 자체는 `apply_playbook_knobs` 가 판을 띄울 때 막는다.
+
+        Note:
+            🔴 close 매매법의 **정상 손절은 여기 없다.** 세션이 봉 마감 몸통으로 판정해
+            `STOP_LOSS` 로 닫으면 러너가 `_apply_exit` 로 시장가 청산한다 — 백테스트와 같은
+            규칙이 라이브에서 도는 길.
+        """
+        if self.stop_mode_of(record) == "touch":
+            return record.planned_stop
+        ratio = self.stop_protect_ratio
+        if ratio is None:
+            return record.planned_stop
+        return protect_stop(
+            entry=record.entry,
+            stop=record.planned_stop,
+            leverage=self.ledger.leverage,
+            ratio=ratio,
+            short=record.direction is Direction.SHORT,
+        )
 
     def _cap_to_liquidation(self, record: TradeRecord) -> TradeRecord:
         """β — 손절을 **청산거리 안쪽으로** 당긴다 (T120~T146 · 조이는 방향만).

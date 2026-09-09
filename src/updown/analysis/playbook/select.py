@@ -115,6 +115,26 @@ def _items(raw: object, label: str) -> Sequence[Any]:
     return cast(Sequence[Any], raw)
 
 
+def _stop_mode(raw: object, name: str) -> str:
+    """`stop_mode` 선언값 검증 — `close` 또는 `touch` 만 받는다 (T233 ②).
+
+    Args:
+        raw: 선언값.
+        name: 플레이북 id (오류 문구용).
+
+    Returns:
+        검증된 문자열.
+
+    Raises:
+        PlaybookConfigError: 둘 중 하나가 아닐 때. 조용한 기본값 폴백은 손절 규칙을 바꾸는 오타를
+            숨긴다.
+    """
+    value = str(raw).strip().lower()
+    if value not in ("close", "touch"):
+        raise PlaybookConfigError(f"{name}: stop_mode 는 close 또는 touch 다 — {raw!r} 는 모른다")
+    return value
+
+
 def _short_gate(raw: object, name: str) -> str:
     """숏의 문 선언을 읽는다 — `none` 또는 `structure` 만 (T52 ⑨)."""
     text = str(raw or "none")
@@ -270,6 +290,7 @@ def _load_file(target: Path) -> list[Playbook]:
                     flip_on_turn=bool(body.get("flip_on_turn", False)),
                     full_ride=bool(body.get("full_ride", False)),
                     hold_through_turn=bool(body.get("hold_through_turn", False)),
+                    stop_mode=_stop_mode(body.get("stop_mode", "close"), name),
                     long_gate=_short_gate(body.get("long_gate", "none"), name),
                     short_gate=_short_gate(body.get("short_gate", "none"), name),
                     listed=bool(body.get("listed", False)),

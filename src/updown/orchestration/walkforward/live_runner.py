@@ -4721,7 +4721,19 @@ class LiveRunner:
             (item for item in self._session.ledger.records if item.trade_id == before.trade_id),
             None,
         )
-        if now is None or now.outcome is not Outcome.SIGNAL_EXIT:
+        if now is None:
+            return
+        # ⭐ T233 ② — close 매매법은 손절도 세션이 마감 몸통으로 판정한다(거래소엔 보호 손절만
+        #    있다). 그 STOP_LOSS·HALF_BREAKEVEN 은 아무도 안 옮기면 원장만 닫히고 포지션이
+        #    남는다 → 여기서 시장가.
+        #    touch 매매법의 손절은 거래소 조건부가 먼저 나가므로 예전처럼 reconcile 소관이다.
+        mode_of = getattr(self._session, "stop_mode_of", None)
+        mode = "touch" if mode_of is None else str(mode_of(before))
+        stop_by_close = mode == "close" and now.outcome in (
+            Outcome.STOP_LOSS,
+            Outcome.HALF_BREAKEVEN,
+        )
+        if now.outcome is not Outcome.SIGNAL_EXIT and not stop_by_close:
             return
         if any(item.outcome is Outcome.OPEN for item in self._session.ledger.records):
             # 같은 걸음에 뒤집었다 — 반대 진입 주문이 그쪽 경로로 나간다.
@@ -4738,7 +4750,8 @@ class LiveRunner:
             #   기다리는 동안 거래소측 조건부 손절은 그대로다 (무방비 아님).
             #   만료는 `_expire_maker_exit` 가 시장가로 마무리한다 — **반드시** 돈다.
             bars = self._session.playbook.maker_exit_bars
-            limit = await self._maker_exit_price(now) if bars > 0 else None
+            # 손절은 손절이다 — 마감 판정 손절은 지정가로 기다리지 않는다.
+            limit = await self._maker_exit_price(now) if (bars > 0 and not stop_by_close) else None
             if limit is not None:
                 done = await self._orders.submit_order(
                     close_limit_order(
@@ -4751,7 +4764,11 @@ class LiveRunner:
                 done = await self._orders.submit_order(
                     close_order(now, self.instrument, abs(size), run=self._run_key, revision=0)
                 )
-                role, note = "신호청산", "시장가 전량"
+                role, note = (
+                    ("손절(마감판정)", "시장가 전량 — close 매매법의 손절은 세션이 판정한다")
+                    if stop_by_close
+                    else ("신호청산", "시장가 전량")
+                )
             self.orders += 1
             await self._note_order(
                 now.trade_id,
@@ -4760,7 +4777,11 @@ class LiveRunner:
                 order_id=str(done.broker_order_id or ""),
                 contracts=str(abs(size)),
             )
-            self._fired("signal_exit", f"신호 청산 — {abs(size)} 계약 ({note})")
+            kind = "마감 판정 손절" if stop_by_close else "신호 청산"
+            self._fired(
+                "stop_exit" if stop_by_close else "signal_exit",
+                f"{kind} — {abs(size)} 계약 ({note})",
+            )
             if limit is not None:
                 return  # 아직 안 닫혔다 — 고아 정리(sweep)는 체결·만료 뒤에 한다
             # ⭐ 닫기가 먼저, 거두기가 나중이다 (§1.2.1) — 익절 지정가·조건부 손절이
@@ -4851,6 +4872,9 @@ class LiveRunner:
         if not hasattr(self._orders, "stops_for"):
             # 조건부를 못 거는 어댑터다 — 능력표에 없으면 여기 오지 않는다.
             return
+        # ⭐ T233 ② — 어디에 걸지는 매매법의 `stop_mode` 가 정한다: touch 면 손절선,
+        #    close 면 보호 손절 (`_guard_price`).
+        guard = self._guard_price(held)
         failed = await self._arm_stop(held)
         # ⭐ **걸 기회를 가졌다** — 성공이든 실패든. 이 뒤의 "조건부 0건" 은 진짜 무방비다
         #    (사용자 신고 2026-08-20: 손절이 나가기 **전에** 경보가 먼저 울렸다).
@@ -4871,19 +4895,18 @@ class LiveRunner:
             #
             # ⇒ 기다리지 않는다. 손절이 발동한 것이므로 **그 자리에서 던진다.**
             self.stop_misses = 0
-            self._fired("stop_hit", f"손절선({held.planned_stop})을 이미 지났다 — 즉시 청산")
+            self._fired("stop_hit", f"손절선({guard})을 이미 지났다 — 즉시 청산")
             self._log.error(
                 "live_stop_already_through",
                 payload={
                     "trade_id": held.trade_id,
-                    "stop": str(held.planned_stop),
+                    "stop": str(guard),
+                    "planned_stop": str(held.planned_stop),
                     "error": str(failed)[:180],
                     "note": "발동가가 현재가 반대쪽이다 = 손절이 이미 발동했다 — 시장가로 던진다",
                 },
             )
-            await self._note_order(
-                held.trade_id, role="손절", status="through", price=held.planned_stop
-            )
+            await self._note_order(held.trade_id, role="손절", status="through", price=guard)
             await self._panic_close(held, "손절선을 이미 지났다 — 조건부를 걸 수 없다")
             return
         if failed is not None:
@@ -4892,7 +4915,8 @@ class LiveRunner:
                 "live_runner_stop_guard_failed",
                 payload={
                     "trade_id": held.trade_id,
-                    "stop": str(held.planned_stop),
+                    "stop": str(guard),
+                    "planned_stop": str(held.planned_stop),
                     "error": f"{type(exc).__name__}: {exc}",
                     "misses": self.stop_misses + (1 if escalate else 0),
                     "limit": STOP_GUARD_LIMIT,
@@ -4915,7 +4939,7 @@ class LiveRunner:
                 held.trade_id,
                 role="손절",
                 status="failed",
-                price=held.planned_stop,
+                price=guard,
                 error=str(exc)[:180],
             )
             if escalate and self.stop_misses >= STOP_GUARD_LIMIT:
@@ -4945,9 +4969,24 @@ class LiveRunner:
                 held.trade_id,
                 role="손절",
                 status="placed",
-                price=held.planned_stop,
+                price=guard,
                 order_id=self._stop_id,
             )
+
+    def _guard_price(self, held: TradeRecord) -> Decimal:
+        """거래소에 걸 조건부 손절 자리 — `Session.guard_price` (T233 ②).
+
+        Args:
+            held: 보유 중인 기록.
+
+        Returns:
+            touch 매매법은 손절선, close 매매법은 보호 손절. 세션에 그 메서드가 없으면(시험의 가짜)
+            손절선 그대로 — 1.5.0 까지의 동작.
+        """
+        guard_of = getattr(self._session, "guard_price", None)
+        if guard_of is None:
+            return held.planned_stop
+        return cast("Decimal", guard_of(held))
 
     async def _arm_stop(self, held: TradeRecord) -> Exception | None:
         """손절을 건다 — **본절이 문턱에 걸리면 1틱 띄워** 한 번 더 시도한다.
@@ -4983,7 +5022,9 @@ class LiveRunner:
         #
         # ⚠️ **느슨한 쪽으로 내린다.** 촘촘한 쪽으로 반올림하면 계획보다 이른 손절이 되고,
         #    그것은 원장이 정한 값을 집행이 바꾸는 일이다 (절대 규칙 #4).
-        wanted = _on_tick(held.planned_stop, tick, long=long)
+        # ⭐ T233 ② — touch 는 손절선, close 는 보호 손절 (`_guard_price`).
+        guard = self._guard_price(held)
+        wanted = _on_tick(guard, tick, long=long)
         try:
             # 🔴 **조건부 주문 id 를 붙잡는다** (사용자 신고 2026-08-20). 이것이 발동하면
             #    Gate 가 `ao-{id}` 라는 이름으로 주문을 만드는데, 그 이름에는 우리 매매

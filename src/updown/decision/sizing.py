@@ -85,6 +85,45 @@ def liquidation_distance(leverage: Decimal, maintenance: Decimal = MAINTENANCE_M
     return max(Decimal(1) / leverage - maintenance, Decimal(0))
 
 
+def protect_stop(
+    *,
+    entry: Decimal,
+    stop: Decimal,
+    leverage: Decimal,
+    ratio: Decimal,
+    short: bool,
+    maintenance: Decimal = MAINTENANCE_MARGIN,
+) -> Decimal:
+    """보호 손절 자리 — `stop_mode: close` 매매법의 라이브가 거래소에 거는 조건부 (T233 ②).
+
+    Args:
+        entry: 진입가.
+        stop: 원장의 계획 손절 (마감 몸통으로 판정하는 정상 손절).
+        leverage: 이 판의 배율.
+        ratio: 청산거리 대비 보호 자리 비율 (`stop_protect_ratio` · β 보다 커야 한다).
+        short: 숏인가.
+        maintenance: 유지증거금률.
+
+    Returns:
+        보호 손절가. 계획 손절이 이미 그보다 멀면 **계획 손절 그대로** — 조이는 쪽으로는 안 간다.
+
+    Raises:
+        ValueError: 진입가나 배율이 양수가 아닌 경우.
+
+    Note:
+        정상 손절은 세션이 봉 마감 몸통으로 판정해 시장가로 나간다(백테스트와 같은 규칙). 이 자리는
+        **봉이 마감되기 전에 청산가까지 밀리는 사고**만 막는다 — β 자리에 걸면 β 에 걸린 손절이
+        터치로 나가 close 가 아니게 되므로 정책이 `ratio > β` 를 강제한다.
+    """
+    if entry <= 0 or leverage <= 0:
+        raise ValueError(f"진입가·배율은 양수여야 한다 — entry={entry} leverage={leverage}")
+    room = liquidation_distance(leverage, maintenance)
+    if room <= 0:
+        return stop
+    limit = entry * (Decimal(1) + ratio * room) if short else entry * (Decimal(1) - ratio * room)
+    return max(stop, limit) if short else min(stop, limit)
+
+
 def capped_stop(
     *,
     entry: Decimal,

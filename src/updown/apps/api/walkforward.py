@@ -1051,6 +1051,17 @@ async def _live_start(
         # ⛔ 시작을 거부한다 — 시작해 두고 청산이 나는 것보다 낫다 (절대 규칙 #8).
         raise HTTPException(400, str(exc)) from exc
     # ⭐ T42 ⑤ — 국면 RANGE 판정이 탐지기와 같은 최소 폭을 쓴다 (백테스트와 같은 배선).
+    # ⭐ T233 ② — close 매매법의 라이브 보호 손절 자리. 백테스트는 안 쓰지만 같은 함수가 세팅해
+    #    "화면 숫자 = 라이브 설정" 을 지킨다. close 매매법이 있는데 비율이 없으면 라이브가
+    #    무방비라 막는다.
+    session.stop_protect_ratio = _risk.stop_protect_ratio
+    if _risk.stop_protect_ratio is None and any(
+        item.stop_mode == "close" for item in session.playbooks
+    ):
+        raise RiskConfigError(
+            "stop_mode: close 매매법인데 config/risk.yml 에 stop_protect_ratio 가 없다 — "
+            "라이브가 거래소에 걸 보호 손절 자리가 없다"
+        )
     session.span_cover = span_cover_of(catalog, book)
     # ✅ T42 ④ (사용자 확정 2026-08-22) — 라이브 원장도 체결 유형대로 센다. 일간 리포트의
     #    거래소 실제 수수료와 같은 자가 된다. 관문은 0.15% 그대로.
@@ -2935,6 +2946,17 @@ def apply_playbook_knobs(session: Session, book: Playbook, catalog: dict[str, Ru
     # 🔴 손절 하한 (T147~T150) — β 의 짝. 손절거리를 [하한, β x 청산거리] 로 가둔다.
     session.stop_min_pct = _risk.stop_min_pct
     # ⭐ T42 ⑤ — 국면 RANGE 판정이 탐지기와 같은 최소 폭을 쓴다 (백테스트와 같은 배선).
+    # ⭐ T233 ② — close 매매법의 라이브 보호 손절 자리. 백테스트는 안 쓰지만 같은 함수가 세팅해
+    #    "화면 숫자 = 라이브 설정" 을 지킨다. close 매매법이 있는데 비율이 없으면 라이브가
+    #    무방비라 막는다.
+    session.stop_protect_ratio = _risk.stop_protect_ratio
+    if _risk.stop_protect_ratio is None and any(
+        item.stop_mode == "close" for item in session.playbooks
+    ):
+        raise RiskConfigError(
+            "stop_mode: close 매매법인데 config/risk.yml 에 stop_protect_ratio 가 없다 — "
+            "라이브가 거래소에 걸 보호 손절 자리가 없다"
+        )
     session.span_cover = span_cover_of(catalog, book)
     # ✅ T42 ④ (사용자 확정 2026-08-22) — 라이브 원장도 체결 유형대로 센다. 일간 리포트의
     #    거래소 실제 수수료와 같은 자가 된다. 관문은 0.15% 그대로.

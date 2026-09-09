@@ -168,6 +168,18 @@ class RiskSettings:
 
     ⛔ 여기가 유일한 자리다 — 룰 설정에 두지 않는다 (셋업별이면 조작 통로다).
     """
+    stop_protect_ratio: Decimal | None = None
+    """보호 손절 — `stop_mode: close` 매매법의 라이브가 거래소에 거는 조건부 자리 (T233 ②).
+
+    청산 거리의 이 비율 자리에 건다. 정상 손절은 세션이 봉 마감 몸통으로 판정해 시장가로 나가고,
+    이 조건부는 **봉이 마감되기 전에 청산가까지 밀리는 사고**만 막는다. 그래서
+    β(`stop_liquidation_cap_ratio`)보다 **커야** 한다 — β 자리에 걸면 β 에 걸린 손절이 터치로
+    나가 close 가 아니다.
+
+    ⚠️ [결정 필요] 기본 0.70: 6x 면 청산 16.2% 의 70% = 11.3% (β 6.5% 와 청산의 중간보다
+    조금 안쪽).
+    None 이면 close 매매법을 라이브로 못 띄운다 (`apply_playbook_knobs` 가 막는다).
+    """
     leverage_needing_stop_cap: Decimal = Decimal(3)
     """이 배율을 **넘으면** β 없이 못 간다 — `require_stop_cap()` 이 강제한다.
 
@@ -202,6 +214,18 @@ class RiskSettings:
                 f"stop_liquidation_cap_ratio 가 {ratio} 다 — 0 초과 1 이하여야 한다. "
                 f"1 을 넘으면 손절이 청산 **밖**이라 상한이 아니라 구멍이다"
             )
+        protect = self.stop_protect_ratio
+        if protect is not None:
+            if not (Decimal(0) < protect <= Decimal(1)):
+                raise RiskConfigError(
+                    f"stop_protect_ratio 가 {protect} 다 — 0 초과 1 이하여야 한다 (청산거리 비율)"
+                )
+            if ratio is not None and protect <= ratio:
+                raise RiskConfigError(
+                    f"stop_protect_ratio {protect} 가 β {ratio} 이하다 — 보호 손절이 정상 손절보다 "
+                    f"안쪽이면 "
+                    f"close 판정이 터치로 바뀐다"
+                )
         for multiple in self.atr_stop_multiple_candidates:
             if not Decimal("1.5") <= multiple <= Decimal("3.0"):
                 raise RiskConfigError(
@@ -418,6 +442,11 @@ def parse_settings(raw: Mapping[str, object]) -> RiskSettings:
             None
             if raw.get("stop_min_pct") is None
             else _decimal(raw["stop_min_pct"], "stop_min_pct")
+        ),
+        stop_protect_ratio=(
+            None
+            if raw.get("stop_protect_ratio") is None
+            else _decimal(raw["stop_protect_ratio"], "stop_protect_ratio")
         ),
         leverage_needing_stop_cap=_decimal(
             raw.get("leverage_needing_stop_cap", "3"), "leverage_needing_stop_cap"
