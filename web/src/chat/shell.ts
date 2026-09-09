@@ -17,6 +17,8 @@ export type ShellState = {
   bubble: { x: number; y: number };
   float: { x: number; y: number; w: number; h: number };
   dock: Record<Edge, number>;
+  /** 끄는 동안 붙을 자리 미리보기 — 저장하지 않는다. */
+  ghost: Edge | null;
 };
 
 export const SHELL_SLOT = "chat-shell";
@@ -33,6 +35,7 @@ export const DEFAULT_SHELL: ShellState = {
   bubble: { x: -1, y: -1 },
   float: { x: -1, y: -1, w: 416, h: 640 },
   dock: { left: 400, right: 400, top: 360, bottom: 360 },
+  ghost: null,
 };
 
 export function isDock(mode: Mode): mode is Edge {
@@ -80,6 +83,7 @@ export function readShell(): ShellState {
       dock: { ...DEFAULT_SHELL.dock, ...(got.dock ?? {}) },
       float: { ...DEFAULT_SHELL.float, ...(got.float ?? {}) },
       bubble: { ...DEFAULT_SHELL.bubble, ...(got.bubble ?? {}) },
+      ghost: null,
     };
   } catch {
     return DEFAULT_SHELL;
@@ -103,16 +107,26 @@ export function getShell(): ShellState {
 }
 
 export function setShell(patch: Partial<ShellState> | ((was: ShellState) => Partial<ShellState>)): void {
+  setShellTransient(patch);
+  persistShell();
+}
+
+/** 끄는 동안의 갱신 — 화면은 따라오지만 저장하지 않는다. 놓을 때 `persistShell`. */
+export function setShellTransient(patch: Partial<ShellState> | ((was: ShellState) => Partial<ShellState>)): void {
   const was = ensure();
   const next = { ...was, ...(typeof patch === "function" ? patch(was) : patch) };
   if (next.mode !== "closed" && next.mode !== "popout") next.last = next.mode;
   current = next;
+  listeners.forEach((fn) => fn());
+}
+
+export function persistShell(): void {
   try {
-    localStorage.setItem(SHELL_SLOT, JSON.stringify(next));
+    const { ghost: _ghost, ...rest } = ensure();
+    localStorage.setItem(SHELL_SLOT, JSON.stringify(rest));
   } catch {
     // 기억만 못 한다.
   }
-  listeners.forEach((fn) => fn());
 }
 
 function subscribe(fn: () => void): () => void {
