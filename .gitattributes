@@ -6,3 +6,5 @@
 *.jpg binary
 *.parquet binary
 *.whl binary
+*.f32 binary
+*.i32 binary
