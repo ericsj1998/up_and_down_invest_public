@@ -10,9 +10,10 @@
 `LlmFailure` 를 값으로 두면 사유가 타입으로 남아 무효응답률 집계가 정확해진다.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class FailureKind(StrEnum):
@@ -76,6 +77,112 @@ class LlmFailure:
 
 
 type LlmOutcome = LlmSuccess | LlmFailure
+
+
+@dataclass(frozen=True, slots=True)
+class ToolSpec:
+    """모델에게 알리는 도구 하나 (T248).
+
+    Attributes:
+        name: 영어 스네이크 이름.
+        description: 한국어 한 문장 + 유사어 목록 — 의도 분류는 모델이 한다.
+        parameters: JSON 스키마(object).
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """모델이 부른 도구 호출 하나.
+
+    Attributes:
+        call_id: 응답과 짝을 맞추는 id.
+        name: 도구 이름.
+        arguments: 해석된 인자. JSON 이 깨졌으면 빈 dict + `raw`.
+    """
+
+    call_id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ChatMessage:
+    """대화 한 줄 — OpenAI 호환 역할 모델.
+
+    Attributes:
+        role: `system` · `user` · `assistant` · `tool`.
+        content: 본문. 도구 결과면 JSON 문자열.
+        tool_calls: assistant 가 부른 도구들.
+        tool_call_id: `tool` 역할일 때 짝 id.
+    """
+
+    role: str
+    content: str
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatReply:
+    """도구 호출 대화의 한 턴 응답.
+
+    Attributes:
+        model: 모델 id.
+        text: 본문 (도구만 불렀으면 빈 문자열).
+        tool_calls: 부른 도구들. 비면 최종 답이다.
+        latency_ms: 왕복.
+        prompt_tokens: 입력 토큰.
+        completion_tokens: 출력 토큰.
+    """
+
+    model: str
+    text: str
+    tool_calls: tuple[ToolCall, ...]
+    latency_ms: int
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
+type ChatOutcome = ChatReply | LlmFailure
+
+
+class ChatClient(Protocol):
+    """도구 호출 대화 포트 (T248) — `LlmClient` 와 별개. 값 반환 · 예외 없음.
+
+    Note:
+        ⛔ 도구의 **구현**은 여기 없다. 이 층은 외부 모델과 말하는 법만 알고, 도구가 무엇을
+        계산하는지는 `orchestration/ai_chat` 이 안다 — `decision`·`execution` 을 `llm` 이
+        import 하지 않는다는 계약(§5.3.1)이 그대로다.
+    """
+
+    async def chat(
+        self,
+        model: str,
+        messages: Sequence[ChatMessage],
+        *,
+        tools: Sequence[ToolSpec],
+        temperature: float,
+        timeout_seconds: float,
+    ) -> ChatOutcome:
+        """한 턴을 보낸다.
+
+        Args:
+            model: 모델 id.
+            messages: 지금까지의 대화 (system 포함).
+            tools: 부를 수 있는 도구.
+            temperature: 표집 온도.
+            timeout_seconds: 타임아웃.
+
+        Returns:
+            응답 또는 실패.
+        """
+        ...
+
+
 """호출 하나의 결과. 성공·실패 **둘 다 값**이다."""
 
 

@@ -1823,6 +1823,42 @@ export function assistantCreate(body: {
   return request("/assistant/create", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) }, 180_000);
 }
 
+/** AI 채팅 대화 (T248 · `/ai/chat/threads`). 메시지는 저장 모양 그대로 — `chat/chat.ts` 가 고른다. */
+export type ChatThreadView = {
+  id: string;
+  title: string;
+  model: string;
+  created_at: string;
+  updated_at: string;
+  count: number;
+  messages?: Array<Record<string, unknown> & { role: string; content: string }>;
+};
+
+export function chatSettings(): Promise<{
+  models: { id: string; rank: number; note: string }[];
+  default: string;
+  prompt_version: string;
+  auto: { enabled: boolean; note: string };
+}> {
+  return request("/ai/chat/settings");
+}
+export function chatThreads(): Promise<{ threads: ChatThreadView[] }> {
+  return request("/ai/chat/threads");
+}
+export function chatThread(id: string): Promise<ChatThreadView> {
+  return request(`/ai/chat/threads/${encodeURIComponent(id)}`);
+}
+export function chatCreateThread(body: { title?: string; model?: string }): Promise<ChatThreadView> {
+  return request("/ai/chat/threads", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) });
+}
+export function chatAsk(id: string, body: { text: string; model?: string }): Promise<{ job_id: string; thread_id: string }> {
+  return request(`/ai/chat/threads/${encodeURIComponent(id)}/messages`, {
+    method: "POST",
+    headers: JSON_POST,
+    body: JSON.stringify(body),
+  });
+}
+
 export function marketStatus(market: string): Promise<MarketStatusView> {
   return request(`/exchange/market-status?market=${encodeURIComponent(market)}`);
 }

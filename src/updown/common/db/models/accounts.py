@@ -23,7 +23,7 @@ from datetime import datetime
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
-from updown.common.db.base import Base, JsonDict, enum_column
+from updown.common.db.base import Base, JsonDict, JsonList, enum_column
 from updown.common.security.roles import Role
 
 
@@ -184,6 +184,27 @@ class AssistantDraft(Base):
     consent_version: Mapped[str | None] = mapped_column(default=None)
     consent_at: Mapped[datetime | None] = mapped_column(default=None)
     fund_id: Mapped[str | None] = mapped_column(default=None)
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=sa.func.now(), onupdate=sa.func.now()
+    )
+
+
+class ChatThread(Base):
+    """AI 채팅 대화 하나 — 사람마다 여럿 (T248 · 0122).
+
+    Note:
+        메시지는 JSONB 목록(역할 · 본문 · 도구 호출 · 근거 · 제안). 도구 호출 자체의 감사 기록은
+        `event_logs.ai_chat_turn` 에 따로 남는다(추가만). 게스트(공유 계정)는 행을 만들지 않는다.
+    """
+
+    __tablename__ = "chat_threads"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(index=True)
+    title: Mapped[str] = mapped_column(default="", server_default="")
+    model: Mapped[str] = mapped_column(default="", server_default="")
+    messages: Mapped[JsonList] = mapped_column(default=list, server_default=sa.text("'[]'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())
     updated_at: Mapped[datetime] = mapped_column(
         server_default=sa.func.now(), onupdate=sa.func.now()
     )

@@ -10,6 +10,7 @@ from updown.common.db.models.accounts import (
     Account,
     AccountContact,
     AssistantDraft,
+    ChatThread,
     MarketGrantRow,
     PlaybookGrantRow,
     RoleCollection,
@@ -59,6 +60,7 @@ __all__ = [
     "BrokerCredential",
     "Candle",
     "CandleQualityIssue",
+    "ChatThread",
     "EventLog",
     "FinancialFactRow",
     "Instrument",
@@ -103,7 +105,8 @@ SETTINGS_TABLE_COUNT = 1
 #: + `playbook_grants`(T230 · 0115 · 매매법별 권한 덮어쓰기).
 #: + `market_grants`(T242 · 0119 · 시장 갈래별 권한 덮어쓰기).
 #: + `assistant_drafts`(T247 · 0121 · 온보딩 위저드 초안 — 사람마다 한 행 · 계정 저장소와 같은 축).
-ACCOUNTS_TABLE_COUNT = 6
+#: + `chat_threads`(T248 · 0122 · AI 채팅 대화 — 사람마다 여럿).
+ACCOUNTS_TABLE_COUNT = 7
 
 #: `tests/test_migrations.py` 가 실제 DB 와 대조하는 총합.
 #:

@@ -1,0 +1,28 @@
+# 종목 별칭 사전 (T248 `symbol_resolve`) — 사람이 부르는 이름 → 시장·종목.
+#
+# 🔴 모델은 여기 없는 이름을 지어내지 않는다 — 못 푼 이름은 도구가 "모른다" 로 답하고 로그(`ai_symbol_unresolved`)에
+#    모아 사전을 키운다. 코인은 갈래만 적고 시장은 지금 열린 라이브 시장(GATE/BINANCE)에서 고른다 — 종목 표기가
+#    거래소마다 다르다(BTC_USDT · BTCUSDT).
+version: "1.0"
+stocks:
+  # 미국주식 (NASDAQ · 토스)
+  AAPL: [애플, 애플주식, apple]
+  NVDA: [엔비디아, 엔비디아주식, nvidia]
+  MSFT: [마이크로소프트, 마소, microsoft]
+  META: [메타, 페이스북, facebook]
+  TSLA: [테슬라, tesla]
+  AMZN: [아마존, amazon]
+  GOOGL: [구글, 알파벳, google, alphabet]
+domestic:
+  # 국내주식 (KRX)
+  "005930": [삼성전자, 삼전, samsung]
+  "000660": [SK하이닉스, 하이닉스, 하닉, hynix]
+coins:
+  # 코인 — 라이브 시장의 표기로 바꾼다 (GATE: BTC_USDT · BINANCE: BTCUSDT)
+  BTC: [비트코인, 비트, bitcoin, btc]
+  ETH: [이더리움, 이더, ethereum, eth]
+  SOL: [솔라나, solana, sol]
+  XRP: [리플, ripple, xrp]
+  DOGE: [도지, 도지코인, dogecoin, doge]
+  ADA: [에이다, 카르다노, cardano, ada]
+  NEAR: [니어, near]

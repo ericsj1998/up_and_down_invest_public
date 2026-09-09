@@ -4,7 +4,7 @@
  * 들이지 않은 것: 검색 칸 · 알림 데모 · 설정 톱니. 대신 우리 것이 들어간다 — 재인증 타이머(`AuthTimer`) ·
  * 누구로 로그인했나(`WhoBar`) · 밝기 전환. 제목은 `nav.ts` 표 또는 열린 판 이름에서 온다.
  */
-import { Bars3Icon, MoonIcon, SunIcon } from "@heroicons/react/24/solid";
+import { Bars3Icon, MoonIcon, SparklesIcon, SunIcon } from "@heroicons/react/24/solid";
 import { useLocation } from "react-router-dom";
 import { noRealAccount, type Who } from "../api";
 import { AuthTimer, WhoBar } from "../Gate";
@@ -19,10 +19,13 @@ export function Navbar({
   who,
   onOut,
   onMenu,
+  onChat,
 }: {
   who: Who | null;
   onOut: () => void;
   onMenu: () => void;
+  /** AI 채팅 패널 토글 (T248). 없으면 단추를 안 그린다. */
+  onChat?: () => void;
 }) {
   const { pathname } = useLocation();
   const runs = useOpenRuns();
@@ -45,6 +48,17 @@ export function Navbar({
           >
             <Bars3Icon className="h-6 w-6" />
           </button>
+          {onChat ? (
+            <button
+              type="button"
+              className="grid h-9 w-9 place-items-center rounded-lg text-blue-gray-500 hover:bg-blue-gray-50 dark:hover:bg-gray-800"
+              aria-label="AI 투자 어시스턴트"
+              title="AI 투자 어시스턴트 — 제안만 · 주문은 사람이"
+              onClick={onChat}
+            >
+              <SparklesIcon className="h-6 w-6" />
+            </button>
+          ) : null}
           <div>
             {/* ⭐ 첫 줄은 **어느 돈이 도는가** — 콘솔의 전제다 (UX 점검 2026-09-05). 서버(/auth/me)가 말한 값이다. */}
             <Typography

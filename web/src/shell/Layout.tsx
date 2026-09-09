@@ -3,9 +3,11 @@
  *
  * 사이드바(고정 · 모바일은 드로어) + 상단바 + 본문. Configurator 단추·Footer 는 들이지 않았다.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { Who } from "../api";
+import { ChatPanel } from "../chat/ChatPanel";
+import { OPEN_SLOT } from "../chat/chat";
 import { AnalysisCluster } from "./AnalysisCluster";
 import { ChartField } from "./ChartField";
 import { Navbar } from "./Navbar";
@@ -22,6 +24,21 @@ export function Layout({
   children: ReactNode;
 }) {
   const [drawer, setDrawer] = useState(false);
+  // ⭐ AI 채팅 패널(T248) — 라우트 밖이라 화면을 옮겨도 대화가 안 끊긴다. 열림은 브라우저가 기억한다.
+  const [chat, setChat] = useState(() => {
+    try {
+      return localStorage.getItem(OPEN_SLOT) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(OPEN_SLOT, chat ? "1" : "0");
+    } catch {
+      // 기억만 못 한다.
+    }
+  }, [chat]);
 
   return (
     <div className="min-h-screen bg-blue-gray-50/50 dark:bg-gray-950">
@@ -34,8 +51,9 @@ export function Layout({
           onClick={() => setDrawer(false)}
         />
       ) : null}
+      <ChatPanel who={who} open={chat} onClose={() => setChat(false)} />
       <div className="p-4 xl:ml-80">
-        <Navbar who={who} onOut={onOut} onMenu={() => setDrawer(true)} />
+        <Navbar who={who} onOut={onOut} onMenu={() => setDrawer(true)} onChat={() => setChat((was) => !was)} />
         {/* ⚠️ min-w-0 + overflow-x-clip: 넓은 표·pre 는 자기 상자(.table-wrap) 안에서 스크롤한다 — 화면 전체가
             가로로 밀리면 안 된다 (모바일 실측 2026-09-05: 옛 카드가 화면 밖으로 넘쳤다). */}
         <main className="mt-4 min-w-0 overflow-x-clip">{children}</main>

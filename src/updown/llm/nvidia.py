@@ -10,15 +10,27 @@
 브라우저로 내려간다.
 """
 
+import json
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
 from updown.common.logging.setup import get_logger
-from updown.llm.port import FailureKind, LlmFailure, LlmOutcome, LlmSuccess
+from updown.llm.port import (
+    ChatMessage,
+    ChatOutcome,
+    ChatReply,
+    FailureKind,
+    LlmFailure,
+    LlmOutcome,
+    LlmSuccess,
+    ToolCall,
+    ToolSpec,
+)
 
 _logger = get_logger("llm.nvidia")
 
@@ -169,3 +181,137 @@ class NvidiaClient:
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
         )
+
+    async def chat(
+        self,
+        model: str,
+        messages: Sequence[ChatMessage],
+        *,
+        tools: Sequence[ToolSpec],
+        temperature: float,
+        timeout_seconds: float,
+    ) -> ChatOutcome:
+        """도구 호출 대화 한 턴 (`ChatClient` 구현 · T248) — OpenAI 호환 `tools` 를 그대로 싣는다.
+
+        Args:
+            model: 모델 id.
+            messages: 대화.
+            tools: 도구 명세.
+            temperature: 표집 온도.
+            timeout_seconds: 타임아웃.
+
+        Returns:
+            응답(본문 + 도구 호출) 또는 실패.
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [message_json(m) for m in messages],
+            "temperature": temperature,
+        }
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    },
+                }
+                for t in tools
+            ]
+            payload["tool_choice"] = "auto"
+        started = time.perf_counter()
+
+        def _elapsed() -> int:
+            return int((time.perf_counter() - started) * MS)
+
+        owned = self.client is None
+        http = self.client or httpx.AsyncClient(timeout=timeout_seconds)
+        try:
+            response = await http.post(self.endpoint, json=payload, headers=self._headers())
+        except httpx.TimeoutException as exc:
+            return LlmFailure(model, FailureKind.TIMEOUT, str(exc), _elapsed())
+        except httpx.HTTPError as exc:
+            return LlmFailure(model, FailureKind.TRANSPORT, str(exc), _elapsed())
+        finally:
+            if owned:
+                await http.aclose()
+        if response.status_code in MODEL_MISSING_CODES:
+            return LlmFailure(
+                model,
+                FailureKind.UNKNOWN_MODEL,
+                f"{response.status_code} — 카탈로그에 없거나 폐기됨: {response.text[:200]}",
+                _elapsed(),
+            )
+        if response.status_code != HTTP_OK:
+            return LlmFailure(
+                model,
+                FailureKind.TRANSPORT,
+                f"{response.status_code} {response.text[:200]}",
+                _elapsed(),
+            )
+        try:
+            body: dict[str, Any] = response.json()
+            message: dict[str, Any] = body["choices"][0]["message"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            return LlmFailure(
+                model, FailureKind.TRANSPORT, f"응답 형식이 예상 밖이다: {exc}", _elapsed()
+            )
+        calls: list[ToolCall] = []
+        raw_calls = cast("list[dict[str, Any]]", message.get("tool_calls") or [])
+        for index, item in enumerate(raw_calls):
+            function: dict[str, Any] = item.get("function") or {}
+            raw_args = function.get("arguments") or "{}"
+            try:
+                parsed = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            except (ValueError, TypeError):
+                parsed = {"raw": str(raw_args)}
+            calls.append(
+                ToolCall(
+                    call_id=str(item.get("id") or f"call_{index}"),
+                    name=str(function.get("name") or ""),
+                    arguments=cast("dict[str, Any]", parsed) if isinstance(parsed, dict) else {},
+                )
+            )
+        usage: dict[str, Any] = body.get("usage") or {}
+        text_out = message.get("content")
+        _logger.info(
+            "llm_chat_turn",
+            payload={"model": model, "latency_ms": _elapsed(), "tool_calls": len(calls)},
+        )
+        return ChatReply(
+            model=model,
+            text="" if text_out is None else str(text_out),
+            tool_calls=tuple(calls),
+            latency_ms=_elapsed(),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+        )
+
+
+def message_json(message: ChatMessage) -> dict[str, Any]:
+    """`ChatMessage` → OpenAI 호환 메시지 dict.
+
+    Args:
+        message: 메시지.
+
+    Returns:
+        `{role, content, tool_calls?, tool_call_id?}`.
+    """
+    out: dict[str, Any] = {"role": message.role, "content": message.content}
+    if message.tool_calls:
+        out["tool_calls"] = [
+            {
+                "id": call.call_id,
+                "type": "function",
+                "function": {
+                    "name": call.name,
+                    "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                },
+            }
+            for call in message.tool_calls
+        ]
+    if message.tool_call_id is not None:
+        out["tool_call_id"] = message.tool_call_id
+    return out

@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from updown.apps.api.admin import router as admin_router
 from updown.apps.api.ai_analysis import router as ai_router
+from updown.apps.api.ai_chat import router as ai_chat_router
 from updown.apps.api.analysis import router as analysis_router
 from updown.apps.api.assistant import router as assistant_router
 from updown.apps.api.auth import attach_accounts
@@ -397,6 +398,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     app.include_router(fundamentals_router)
     # ⭐ 온보딩 위저드(T247) — 초안은 계정 저장소, 생성은 펀드 API 를 그대로 부른다.
     app.include_router(assistant_router)
+    # ⭐ AI 채팅(T248) — 작업 레지스트리 + `/ai/jobs/{id}/events` SSE 를 그대로 쓴다.
+    app.include_router(ai_chat_router)
 
     @app.get("/health")
     async def health() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]

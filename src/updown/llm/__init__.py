@@ -15,15 +15,32 @@ LLM 은 같은 입력에 같은 출력을 주지 않으므로 절대 규칙 #5 �
 재생성은 못 해도 재검증은 된다.
 """
 
-from updown.llm.port import LlmClient, LlmFailure, LlmOutcome, LlmSuccess
+from updown.llm.port import (
+    ChatClient,
+    ChatMessage,
+    ChatOutcome,
+    ChatReply,
+    LlmClient,
+    LlmFailure,
+    LlmOutcome,
+    LlmSuccess,
+    ToolCall,
+    ToolSpec,
+)
 from updown.llm.schema import ChartAnalysis, SchemaError, parse_analysis
 
 __all__ = [
     "ChartAnalysis",
+    "ChatClient",
+    "ChatMessage",
+    "ChatOutcome",
+    "ChatReply",
     "LlmClient",
     "LlmFailure",
     "LlmOutcome",
     "LlmSuccess",
     "SchemaError",
+    "ToolCall",
+    "ToolSpec",
     "parse_analysis",
 ]
