@@ -57,7 +57,7 @@ from updown.orchestration.ai_chat.agent import PROMPT_VERSION, ChatResult, run_c
 from updown.orchestration.ai_chat.aliases import load_aliases
 from updown.orchestration.ai_chat.auto import AutoState, auto_allowed
 from updown.orchestration.ai_chat.report import participant_key, prompt_fingerprint
-from updown.orchestration.ai_chat.tools import ToolContext
+from updown.orchestration.ai_chat.tools import ToolContext, starters
 from updown.orchestration.report import evidence_charts as ec
 
 _logger = get_logger("api.ai_chat")
@@ -126,6 +126,7 @@ async def settings(request: Request) -> dict[str, Any]:
         or pool.chat_model
         or (pool.models[0].id if pool.models else ""),
         "gate": gate,
+        "starters": starters(),
         "prompt_version": PROMPT_VERSION,
         "auto": await _auto_json(request),
     }
@@ -374,6 +375,7 @@ async def ask(
                 timeout_seconds=pool.chat_timeout_seconds,
                 report=report,
                 fallbacks=[m.id for m in pool.models if m.id != model],
+                suggest=True,
             )
         assistant = _save_turn(result)
         # ⭐ 자동 실행 모드(T248) — 문(동의 · 일 건수 · 노출)을 전부 지나야 하고, 지나도 값은
@@ -398,6 +400,7 @@ def _save_turn(result: ChatResult) -> dict[str, Any]:
         "tokens": {"prompt": result.prompt_tokens, "completion": result.completion_tokens},
         "evidence": [e.as_json() for e in result.tool_events],
         "proposals": result.proposals,
+        "suggestions": result.suggestions,
         "failure": result.failure,
     }
 

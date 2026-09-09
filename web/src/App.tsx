@@ -25,6 +25,7 @@ import { assistantDraft, type Who } from "./api";
 import { Assistant } from "./Assistant";
 import { readLocal } from "./assistant";
 import { Boundary } from "./Boundary";
+import { ChatPopout } from "./chat/ChatShell";
 import { ConsoleTab } from "./ConsoleTab";
 import { AuthTroubleNote, Gate, PendingNote, useMe } from "./Gate";
 import { PaperTab } from "./PaperTab";
@@ -143,6 +144,8 @@ function Shell() {
     </>
   );
 
+  // ⭐ 크롬 새 탭 채팅(T257 U4) — 레이아웃 없이 창만. 로그인은 같은 쿠키라 그대로다.
+  if (pathname === "/chat" && who?.signed_in) return <ChatPopout who={who} />;
   // 로그인 전에는 사이드바를 보여 줄 이유가 없다 — 문(Gate)만 가운데 카드로.
   return who?.signed_in ? (
     <Layout who={who} onOut={refresh}>

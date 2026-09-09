@@ -1839,6 +1839,8 @@ export function chatSettings(): Promise<{
   default: string;
   /** T249 관문 — 실험이 켜졌고 n≥30 · 기준선 위 참가자가 있으면 그 모델. */
   gate?: { model: string | null; why: string };
+  /** 추천 질문 — 도구마다 하나 (T257 F1). */
+  starters?: string[];
   prompt_version: string;
   auto: {
     enabled: boolean;

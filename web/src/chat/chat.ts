@@ -1,14 +1,27 @@
 /**
- * 채팅 패널의 순수 조각 (T248) — 저장된 메시지에서 화면에 보일 것만 고르기 · 제안 카드 판정 · 도킹 위치 기억.
+ * 채팅 패널의 순수 조각 (T248 · T257) — 저장된 메시지에서 화면에 보일 것만 고르기 · 제안 카드 판정 · 마지막 대화 기억.
  */
+
+export type ChatEvidence = {
+  name: string;
+  arguments: Record<string, unknown>;
+  ok: boolean;
+  ms: number;
+  digest: string;
+  error?: string;
+  /** 도구 결과 원문(잘라서) — 근거 세미 창 (T257). 옛 메시지엔 없다. */
+  result?: string;
+};
 
 export type ChatMessageView = {
   role: "user" | "assistant" | "tool" | string;
   content: string;
   at?: string;
   model?: string;
-  evidence?: Array<{ name: string; arguments: Record<string, unknown>; ok: boolean; ms: number; digest: string; error?: string }>;
+  evidence?: ChatEvidence[];
   proposals?: Array<Record<string, unknown>>;
+  /** 다음 질문 제안 (T257 F3). */
+  suggestions?: string[];
   failure?: string | null;
   auto?: unknown;
   tool_calls?: Array<{ call_id: string; name: string; arguments: Record<string, unknown> }>;

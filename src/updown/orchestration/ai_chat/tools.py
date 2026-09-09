@@ -100,10 +100,12 @@ class Tool:
     Attributes:
         spec: 모델에게 보이는 명세.
         run: 구현 — `(arguments, ctx)` → 결과 dict.
+        starter: 이 도구를 쓰게 되는 예시 질문 — 화면의 추천 질문 칩(T257 F1). 비면 칩이 없다.
     """
 
     spec: ToolSpec
     run: Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]
+    starter: str = ""
 
 
 def _obj(properties: dict[str, Any], required: Sequence[str] = ()) -> dict[str, Any]:
@@ -598,6 +600,7 @@ TOOLS: tuple[Tool, ...] = (
             ),
         ),
         _symbol_resolve,
+        starter="테슬라 종목 코드가 뭐야?",
     ),
     Tool(
         ToolSpec(
@@ -622,6 +625,7 @@ TOOLS: tuple[Tool, ...] = (
             ),
         ),
         _market_view,
+        starter="비트코인 지금 추세 어때?",
     ),
     Tool(
         ToolSpec(
@@ -632,6 +636,7 @@ TOOLS: tuple[Tool, ...] = (
             _obj({"symbol": {"type": "string"}, "market": {"type": "string"}}, ["symbol"]),
         ),
         _valuation,
+        starter="애플 지금 저렴해, 비싸?",
     ),
     Tool(
         ToolSpec(
@@ -641,6 +646,7 @@ TOOLS: tuple[Tool, ...] = (
             _obj({"symbol": {"type": "string"}, "market": {"type": "string"}}),
         ),
         _positions,
+        starter="내 포지션 몇 % 이득이야?",
     ),
     Tool(
         ToolSpec(
@@ -650,6 +656,7 @@ TOOLS: tuple[Tool, ...] = (
             _obj({"symbol": {"type": "string"}, "market": {"type": "string"}}, ["symbol"]),
         ),
         _extremes,
+        starter="엔비디아 고점 근처야?",
     ),
     Tool(
         ToolSpec(
@@ -662,6 +669,7 @@ TOOLS: tuple[Tool, ...] = (
             ),
         ),
         _playbook_expectation,
+        starter="private_strategy 매매법 과거 성과 알려줘",
     ),
     Tool(
         ToolSpec(
@@ -692,6 +700,7 @@ TOOLS: tuple[Tool, ...] = (
             ),
         ),
         _propose_order,
+        starter="NVDA 224 에 사고 217 손절, 234 목표로 제안해줘",
     ),
     Tool(
         ToolSpec(
@@ -710,6 +719,7 @@ TOOLS: tuple[Tool, ...] = (
             ),
         ),
         _recommend_by_budget,
+        starter="200만원으로 미국주식 시작하려는데 뭐가 좋아?",
     ),
     Tool(
         ToolSpec(
@@ -719,6 +729,7 @@ TOOLS: tuple[Tool, ...] = (
             _obj({}),
         ),
         _portfolio_exposure,
+        starter="내 비중에 쏠림 있어?",
     ),
     Tool(
         ToolSpec(
@@ -728,6 +739,7 @@ TOOLS: tuple[Tool, ...] = (
             _obj({"limit": {"type": "integer", "description": "최근 몇 건 (기본 10)"}}),
         ),
         _trade_journal,
+        starter="AI 매매일지 보여줘",
     ),
 )
 
@@ -742,6 +754,18 @@ def tool_specs(tools: Sequence[Tool] = TOOLS) -> tuple[ToolSpec, ...]:
         명세 튜플.
     """
     return tuple(t.spec for t in tools)
+
+
+def starters(tools: Sequence[Tool] = TOOLS) -> list[str]:
+    """추천 질문 — 도구마다 하나 (T257 F1). 사용자에게 무엇을 물을 수 있는지 안내한다.
+
+    Args:
+        tools: 도구들.
+
+    Returns:
+        예시 질문 목록 (등록 순).
+    """
+    return [t.starter for t in tools if t.starter]
 
 
 def find_tool(name: str, tools: Sequence[Tool] = TOOLS) -> Tool | None:
@@ -782,5 +806,6 @@ __all__ = [
     "instrument_of",
     "market_for",
     "result_text",
+    "starters",
     "tool_specs",
 ]

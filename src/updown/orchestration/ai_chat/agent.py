@@ -14,7 +14,7 @@ import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from updown.common.logging.setup import get_logger
 from updown.llm.port import ChatClient, ChatMessage, ChatReply, FailureKind, LlmFailure, ToolCall
@@ -31,6 +31,13 @@ _logger = get_logger("orchestration.ai_chat.agent")
 
 PROMPT_VERSION = "chat-1.1"
 MAX_ROUNDS = 6
+EVIDENCE_CHARS = 2_000
+"""근거 세미 창에 저장하는 도구 결과 원문 길이 — 대화 표(JSONB)에 남는다."""
+SUGGEST_PROMPT = (
+    "방금의 질문과 답을 보고, 사용자가 다음에 물어볼 만한 짧은 한국어 질문 3개를 "
+    "JSON 배열(문자열만)로만 "
+    '답한다. 설명 없이 배열만. 예: ["...", "...", "..."]'
+)
 FALLBACK_KINDS = frozenset({FailureKind.UNKNOWN_MODEL, FailureKind.TRANSPORT, FailureKind.TIMEOUT})
 """이 실패는 다음 모델로 넘어간다 — 스키마·계획 위반은 모델 탓이 아니라 답의 문제라 안 넘어간다.
 2026-09-09 실측: 풀 상위 5개 중 4개가 답을 못 했다(410 폐기 3 · 500 · 60초 타임아웃)."""
@@ -62,6 +69,7 @@ class ToolEvent:
         ms: 걸린 시간.
         digest: 결과 요약(짧게).
         error: 실패 이유.
+        result: 결과 원문(잘라서) — 근거 세미 창이 보여 준다 (T257 F2).
     """
 
     name: str
@@ -70,12 +78,13 @@ class ToolEvent:
     ms: int
     digest: str
     error: str = ""
+    result: str = ""
 
     def as_json(self) -> dict[str, Any]:
         """저장 모양.
 
         Returns:
-            `{name, arguments, ok, ms, digest, error}`.
+            `{name, arguments, ok, ms, digest, error, result}`.
         """
         return {
             "name": self.name,
@@ -84,6 +93,7 @@ class ToolEvent:
             "ms": self.ms,
             "digest": self.digest,
             "error": self.error,
+            "result": self.result,
         }
 
 
@@ -101,6 +111,7 @@ class ChatResult:
         completion_tokens: 출력 토큰 합.
         failure: 모델 실패면 그 이유.
         messages: 이번 턴에 더해진 메시지들(assistant · tool) — 대화 저장용.
+        suggestions: 다음에 물어볼 만한 질문들 (T257 F3 · 장식 · 못 만들면 빈 목록).
     """
 
     text: str
@@ -112,6 +123,7 @@ class ChatResult:
     completion_tokens: int = 0
     failure: str | None = None
     messages: list[ChatMessage] = field(default_factory=list[ChatMessage])
+    suggestions: list[str] = field(default_factory=list[str])
 
 
 def _quiet(_: str) -> None:
@@ -134,7 +146,14 @@ async def _run_tool(
     try:
         result = await tool.run(call.arguments, ctx)
         ms = int((time.perf_counter() - started) * 1000)
-        return ToolEvent(call.name, call.arguments, True, ms, _digest(result)), result
+        return ToolEvent(
+            call.name,
+            call.arguments,
+            True,
+            ms,
+            _digest(result),
+            result=result_text(result)[:EVIDENCE_CHARS],
+        ), result
     except Exception as exc:  # 도구 하나의 실패가 답 전체를 죽이지 않는다 — 모델에게 사실로 넘긴다
         ms = int((time.perf_counter() - started) * 1000)
         _logger.warning("ai_tool_failed", payload={"tool": call.name, "error": str(exc)[:200]})
@@ -155,6 +174,7 @@ async def run_chat(
     max_rounds: int = MAX_ROUNDS,
     report: Callable[[str], None] | None = None,
     fallbacks: Sequence[str] = (),
+    suggest: bool = False,
 ) -> ChatResult:
     """한 턴을 돈다.
 
@@ -171,6 +191,8 @@ async def run_chat(
         report: 진행 문장 콜백.
         fallbacks: 첫 모델이 폐기(410)·서버 오류·타임아웃이면 차례로 시도할 모델들
             (`FALLBACK_KINDS`).
+        suggest: 답 뒤에 후속 질문 3개를 한 번 더 물을 것인가 (모델 호출 하나 더 · 실패해도
+            답은 산다).
 
     Returns:
         결과. 모델이 실패하면 `failure` 가 차고 `text` 는 사람에게 보일 안내다.
@@ -185,9 +207,10 @@ async def run_chat(
     result = ChatResult(text="", model=model)
     specs = tool_specs(tools)
     queue = [model, *fallbacks]
+    say("질문을 읽고 계획을 세우는 중")
     for round_index in range(max_rounds + 1):
         result.rounds = round_index + 1
-        say(f"모델 호출 {round_index + 1}")
+        say(f"모델 호출 {round_index + 1}/{max_rounds + 1} — 다음 행동을 정하는 중")
         reply = await client.chat(
             model, messages, tools=specs, temperature=temperature, timeout_seconds=timeout_seconds
         )
@@ -217,18 +240,84 @@ async def run_chat(
         added.append(assistant)
         if not reply.tool_calls or round_index == max_rounds:
             result.text = reply.text or "(모델이 본문 없이 끝냈다)"
+            say("근거를 모아 답을 썼다")
             break
         for call in reply.tool_calls:
-            say(f"도구 {call.name} {json.dumps(call.arguments, ensure_ascii=False)[:80]}")
+            say(f"도구 {call.name} 호출 {json.dumps(call.arguments, ensure_ascii=False)[:80]}")
             event, payload = await _run_tool(call, ctx, tools)
             result.tool_events.append(event)
+            say(
+                f"도구 {call.name} {'완료' if event.ok else '실패'} · {event.ms}ms · "
+                f"{(event.digest or event.error)[:80]}"
+            )
             if call.name == "propose_order" and event.ok:
                 result.proposals.append(payload)
             tool_message = ChatMessage("tool", result_text(payload), tool_call_id=call.call_id)
             messages.append(tool_message)
             added.append(tool_message)
     result.messages = added
+    if suggest and result.failure is None:
+        say("다음 질문을 제안하는 중")
+        result.suggestions = await _suggest(
+            client,
+            model,
+            user_text,
+            result.text,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+        )
+        _ = result.suggestions and say(f"다음 질문 {len(result.suggestions)}개")
     return result
+
+
+async def _suggest(
+    client: ChatClient,
+    model: str,
+    question: str,
+    answer: str,
+    *,
+    temperature: float,
+    timeout_seconds: float,
+) -> list[str]:
+    """후속 질문 3개 — 모델 한 번 · 실패는 빈 목록 (장식이라 답을 막지 않는다)."""
+    try:
+        reply = await client.chat(
+            model,
+            [
+                ChatMessage("system", SUGGEST_PROMPT),
+                ChatMessage("user", f"질문: {question[:500]}\n\n답: {answer[:1500]}"),
+            ],
+            tools=(),
+            temperature=temperature,
+            timeout_seconds=min(timeout_seconds, 30.0),
+        )
+    except Exception:
+        return []
+    if isinstance(reply, LlmFailure):
+        return []
+    return parse_suggestions(reply.text)
+
+
+def parse_suggestions(text: str) -> list[str]:
+    """모델 답에서 JSON 배열을 찾아 문자열 3개까지.
+
+    Args:
+        text: 모델 답 — 배열 앞뒤에 말이 붙어 있어도 된다.
+
+    Returns:
+        질문들. 배열이 없거나 깨졌으면 빈 목록.
+    """
+    start, end = text.find("["), text.rfind("]")
+    if start < 0 or end <= start:
+        return []
+    try:
+        raw = json.loads(text[start : end + 1])
+    except ValueError:
+        return []
+    if not isinstance(raw, list):
+        return []
+    items = cast("list[object]", raw)
+    return [str(s).strip() for s in items if isinstance(s, str) and str(s).strip()][:3]
 
 
 def _accumulate(result: ChatResult, reply: ChatReply) -> None:
@@ -236,4 +325,12 @@ def _accumulate(result: ChatResult, reply: ChatReply) -> None:
     result.completion_tokens += reply.completion_tokens or 0
 
 
-__all__ = ["MAX_ROUNDS", "PROMPT_VERSION", "SYSTEM_PROMPT", "ChatResult", "ToolEvent", "run_chat"]
+__all__ = [
+    "MAX_ROUNDS",
+    "PROMPT_VERSION",
+    "SYSTEM_PROMPT",
+    "ChatResult",
+    "ToolEvent",
+    "parse_suggestions",
+    "run_chat",
+]
