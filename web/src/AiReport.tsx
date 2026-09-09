@@ -158,6 +158,7 @@ export function AiReport({ who }: { who: Who | null }) {
                       <th>곡선</th>
                       <th className="num">턴</th>
                       <th className="num">토큰(입/출)</th>
+                      <th className="num" title="대시보드에서 근거 없던 칸 수 — 환각 후보">환각</th>
                       <th>마지막 청산</th>
                     </tr>
                   </thead>
@@ -186,6 +187,7 @@ export function AiReport({ who }: { who: Who | null }) {
                           <td className="num">
                             {p.prompt_tokens.toLocaleString()}/{p.completion_tokens.toLocaleString()}
                           </td>
+                          <td className={`num ${(p.dashboard_missing ?? 0) > 0 ? "loss" : ""}`}>{p.dashboard_missing ?? 0}</td>
                           <td>{p.last_closed_at ? when(p.last_closed_at) : "—"}</td>
                         </tr>
                       );

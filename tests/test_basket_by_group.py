@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from updown.apps.api.rebalancer import (  # pyright: ignore[reportPrivateUsage]
-    _default_basket,
+from updown.apps.api.rebalancer import (
+    _default_basket,  # pyright: ignore[reportPrivateUsage]
     basket_block_of,
 )
 

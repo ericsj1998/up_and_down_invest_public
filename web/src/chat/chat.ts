@@ -64,6 +64,31 @@ export function writeThread(id: string): void {
   }
 }
 
+export const JOB_SLOT = "chat-job";
+
+/** 돌고 있는 작업 — 창을 붙이거나 큰 화면으로 옮겨 패널이 다시 태어나도 진행을 잃지 않는다 (T257 2차). */
+export type PendingJob = { thread: string; job: string };
+
+export function readJob(): PendingJob | null {
+  try {
+    const raw = localStorage.getItem(JOB_SLOT);
+    if (!raw) return null;
+    const got = JSON.parse(raw) as Partial<PendingJob>;
+    return typeof got.thread === "string" && typeof got.job === "string" ? { thread: got.thread, job: got.job } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeJob(pending: PendingJob | null): void {
+  try {
+    if (pending) localStorage.setItem(JOB_SLOT, JSON.stringify(pending));
+    else localStorage.removeItem(JOB_SLOT);
+  } catch {
+    // 기억만 못 한다.
+  }
+}
+
 /** 제안 카드의 한 줄 — 서버 `propose_order` 결과를 사람이 읽을 문장으로. */
 export function proposalLine(p: Record<string, unknown>): string {
   const symbol = String(p.symbol ?? "");

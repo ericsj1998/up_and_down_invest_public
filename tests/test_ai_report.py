@@ -131,11 +131,12 @@ class TestScoring:
             [
                 {"participant": "m@v#h/s", "tokens": {"prompt": 10, "completion": 2}},
                 {"participant": "m@v#h/s", "tokens": {"prompt": 5}, "failure": "TIMEOUT"},
+                {"participant": "m@v#h/s", "tokens": {}, "dashboard_missing": 2},
                 {"model": "m", "prompt_version": "v", "tokens": {}},
             ]
         )
         assert got["m@v#h/s"] == TurnStats(
-            turns=2, prompt_tokens=15, completion_tokens=2, failures=1
+            turns=3, prompt_tokens=15, completion_tokens=2, failures=1, dashboard_missing=2
         )
         assert got["m@v"].turns == 1
 

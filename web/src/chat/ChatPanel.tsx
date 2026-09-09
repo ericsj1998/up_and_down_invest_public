@@ -27,7 +27,17 @@ import {
 import { requestStockOrder } from "../StockOrder";
 import { AUTO_ORDER_CONSENT_TEXT, AUTO_ORDER_CONSENT_VERSION } from "../shell/disclaimer";
 import { ErrorCard, when } from "../ui";
-import { proposalLine, readThread, THREAD_SLOT, visibleMessages, writeThread, type ChatEvidence, type ChatMessageView } from "./chat";
+import {
+  proposalLine,
+  readJob,
+  readThread,
+  THREAD_SLOT,
+  visibleMessages,
+  writeJob,
+  writeThread,
+  type ChatEvidence,
+  type ChatMessageView,
+} from "./chat";
 import { Dashboard } from "./Dashboard";
 import { EvidenceView } from "./evidence";
 import { Markdown } from "./markdown";
@@ -104,6 +114,10 @@ export function ChatPanel({
     // ⭐ 마지막에 보던 대화로 돌아간다 — 세션은 서버에 있고 브라우저는 어느 것이었는지만 기억한다.
     const remembered = readThread();
     if (remembered) openThread(remembered);
+    // 돌던 작업도 이어 듣는다 — 서버가 진행 줄을 처음부터 재생하므로 잃는 줄이 없다.
+    const pending = readJob();
+    if (pending && remembered && pending.thread === remembered) setJobId(pending.job);
+    else if (pending) writeJob(null);
   }, [allowed, loadThreads, openThread]);
 
   // 답이 오면 대화를 다시 읽는다 — 저장된 근거·제안·다음 질문까지 같은 모양으로.
@@ -114,6 +128,7 @@ export function ChatPanel({
       .then((got) => {
         setThread(got);
         setJobId(null);
+        writeJob(null);
         loadThreads();
       })
       .catch((exc: unknown) => setError(String(exc)));
@@ -128,6 +143,8 @@ export function ChatPanel({
     setThread(null);
     setListOpen(false);
     setEvidence(null);
+    setJobId(null);
+    writeJob(null);
     try {
       localStorage.removeItem(THREAD_SLOT);
     } catch {
@@ -154,6 +171,7 @@ export function ChatPanel({
       chatAsk(id, { text: question, model })
         .then((got) => {
           setJobId(got.job_id);
+          writeJob({ thread: id, job: got.job_id });
           setText("");
           setThread((was) => (was ? { ...was, messages: [...(was.messages ?? []), { role: "user", content: question }] } : was));
         })

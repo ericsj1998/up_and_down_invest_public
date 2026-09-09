@@ -1952,6 +1952,8 @@ export type AiParticipantView = {
   prompt_tokens: number;
   completion_tokens: number;
   failures: number;
+  /** 대시보드에서 근거 없던 칸 수의 합 — 환각 후보 (T249 2차). */
+  dashboard_missing: number;
   last_closed_at: string | null;
   curve: string[];
 };

@@ -157,12 +157,22 @@ def trade_of(
 
 @dataclass(frozen=True, slots=True)
 class TurnStats:
-    """참가자의 채팅 턴 합계 — 토큰·건수 (원가 축)."""
+    """참가자의 채팅 턴 합계 — 토큰·건수 (원가 축) + 환각 칸 수 (T256 · 2차).
+
+    Attributes:
+        turns: 턴 수.
+        prompt_tokens: 입력 토큰 합.
+        completion_tokens: 출력 토큰 합.
+        failures: 모델 실패 턴 수.
+        dashboard_missing: 대시보드에서 근거 없던 칸 수의 합 — 참조가 안 풀린 칸이라
+            **환각 후보**다(값이 화면에 나가지는 않았다).
+    """
 
     turns: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     failures: int = 0
+    dashboard_missing: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +225,7 @@ class Scorecard:
             "prompt_tokens": self.turns.prompt_tokens,
             "completion_tokens": self.turns.completion_tokens,
             "failures": self.turns.failures,
+            "dashboard_missing": self.turns.dashboard_missing,
             "last_closed_at": None
             if self.last_closed_at is None
             else self.last_closed_at.isoformat(),
@@ -343,6 +354,7 @@ def turn_stats(events: Iterable[dict[str, Any]]) -> dict[str, TurnStats]:
             prompt_tokens=found.prompt_tokens + int(tokens_dict.get("prompt") or 0),
             completion_tokens=found.completion_tokens + int(tokens_dict.get("completion") or 0),
             failures=found.failures + (1 if payload.get("failure") else 0),
+            dashboard_missing=found.dashboard_missing + int(payload.get("dashboard_missing") or 0),
         )
     return out
 
