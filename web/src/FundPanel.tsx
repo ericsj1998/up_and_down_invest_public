@@ -345,11 +345,12 @@ export function FundPanel() {
         나눠 리밸런싱. 입금은 성과(TWR)가 아니라 잔고만 올린다.
       </p>
 
-      {funds.length === 0 && (
+      {/* ⭐ 펀드는 시장 하나에 속한다(`market`) — 지금 보는 묶음(코인/주식)의 펀드만 그린다 (사용자 2026-09-10). */}
+      {funds.filter((f) => !f.market || groupOfName(infos, f.market) === group).length === 0 && (
         <p className="empty">아직 펀드가 없다 — 아래에서 만든다</p>
       )}
 
-      {funds.map((f) => (
+      {funds.filter((f) => !f.market || groupOfName(infos, f.market) === group).map((f) => (
         <div key={f.fund_id} className="card" style={{ marginBottom: 8 }}>
           <div className="row" style={{ justifyContent: "space-between" }}>
             <strong>

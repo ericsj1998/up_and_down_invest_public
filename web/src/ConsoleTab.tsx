@@ -947,8 +947,18 @@ export function ConsoleTab({ openRun }: Props) {
           표가 있었는데, 거기는 *"이 판이 어떻게 하고 있나"* 를 보는 곳이라 자리가
           아니었다 — 판을 여럿 열면 같은 표가 화면마다 반복되고 왕복도 그만큼 늘었다. */}
       {group === "coin" ? <Ranking /> : null}
-      {/* ⭐ 주식은 순위 대신 **저평가 후보** (T244) — 재무 대비 싼 순. 시장은 묶음의 첫 시장. */}
-      {group === "stock" && allMarkets[0] ? <ValueRanking market={allMarkets[0].name} /> : null}
+      {/* ⭐ 주식은 순위 대신 **저평가 후보** (T244) — 재무 대비 싼 순. 시장은 **재무 출처가 있는** 첫 시장
+          (서버 `fundamentals` 깃발 · KRX 만 있으면 카드 대신 한 줄). */}
+      {group === "stock"
+        ? (() => {
+            const withFacts = allMarkets.find((m) => m.fundamentals);
+            return withFacts ? (
+              <ValueRanking market={withFacts.name} />
+            ) : (
+              <p className="faint text-xs">저평가 후보는 재무 출처가 있는 시장(미국주식 · EDGAR)에서만 뜬다 — 이 묶음엔 아직 없다.</p>
+            );
+          })()
+        : null}
       {/* ⭐ 주식 주문 창(T250) — 카드의 "주문" 단추가 여기로 종목을 채운다. 팝업 없음. */}
       {group === "stock" && allMarkets.length ? <StockOrder markets={allMarkets} who={me.who ?? null} /> : null}
 

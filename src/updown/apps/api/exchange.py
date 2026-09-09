@@ -129,6 +129,9 @@ async def markets() -> dict[str, Any]:
                 "scoped": market.value in scoped,
                 "group": "coin" if MarketGroup.of(market) is MarketGroup.COIN else "stock",
                 "broker": provider.broker_of(market),
+                # ⭐ 재무 출처가 있는 시장인가 (T243 = EDGAR = 해외주식). 저평가 카드는 이 값이 참인
+                #    시장만 부른다 — KRX 를 고르면 400 이 뜨던 것(사용자 신고 2026-09-10).
+                "fundamentals": MarketGroup.of(market) is MarketGroup.FOREIGN_STOCK,
                 **traits,
             }
         )

@@ -1660,6 +1660,8 @@ export type MarketInfo = {
   short?: boolean;
   funding?: boolean;
   always_open?: boolean;
+  /** 재무 출처(EDGAR)가 있는 시장인가 — 저평가 카드는 이 시장만 부른다 (T243·T244). */
+  fundamentals?: boolean;
 };
 
 /** 장 시간 배지 값 (T245 · `/exchange/market-status`). 시각은 ISO(UTC) — 화면이 사람 시간대로 보여 준다. */
