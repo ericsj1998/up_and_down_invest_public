@@ -53,11 +53,13 @@ from updown.analysis.playbook.select import load_playbooks
 from updown.common.db.models.accounts import (
     Account,
     AccountContact,
+    MarketGrantRow,
     PlaybookGrantRow,
     RoleCollection,
 )
 from updown.common.db.models.enums import LogLevel
 from updown.common.db.models.ops import AppSetting, EventLog
+from updown.common.domain.instrument import Market
 from updown.common.logging.context import actor_context, get_trace_id, new_trace_id
 from updown.common.logging.setup import get_logger
 from updown.common.security.caps import (
@@ -73,11 +75,19 @@ from updown.common.security.caps import (
     caps_for_role,
     dump_caps,
     effective_caps,
+    market_policy_of,
     may_assign,
     parse_caps,
     policy_of,
     required_cap,
     role_for,
+)
+from updown.common.security.markets import (
+    GROUPS,
+    MarketGrant,
+    MarketPolicy,
+    effective_market_grant,
+    group_of,
 )
 from updown.common.security.playbooks import PlaybookGrant, PlaybookPolicy, effective_grant
 from updown.common.security.roles import (
@@ -484,6 +494,8 @@ class Caller:
     policy: PlaybookPolicy | None = None
     """묶음의 매매법 정책 (T230). None 이면 등급의 내장값으로 본다."""
     playbook_rows: Mapping[str, PlaybookGrant] = field(default_factory=dict[str, PlaybookGrant])
+    market_policy: MarketPolicy | None = None
+    market_rows: Mapping[str, MarketGrant] = field(default_factory=dict[str, MarketGrant])
     """사람별 매매법 덮어쓰기 행들 (`playbook_grants`)."""
 
     @property
@@ -524,6 +536,24 @@ class Caller:
             audit=self.has(Cap.AUDIT),
         )
 
+    def market(self, group: str) -> MarketGrant:
+        """이 시장 갈래의 유효 권한 — 사람별 행 > 묶음 정책 · 감사는 보기·백테스트를 연다 (T242).
+
+        Args:
+            group: `coin` · `domestic` · `foreign`.
+
+        Returns:
+            `view` · `backtest` · `trade`.
+        """
+        policy = (
+            self.market_policy
+            if self.market_policy is not None
+            else market_policy_of(None, self.role)
+        )
+        return effective_market_grant(
+            group, policy=policy, row=self.market_rows.get(group), audit=self.has(Cap.AUDIT)
+        )
+
 
 COLLECTIONS_CACHE_S = 60.0
 _collections_cache: tuple[float, dict[str, Collection]] | None = None
@@ -553,6 +583,11 @@ async def collections() -> dict[str, Collection]:
                     policy=(
                         PlaybookPolicy.from_json(row.playbook_policy)
                         if row.playbook_policy is not None
+                        else None
+                    ),
+                    market_policy=(
+                        MarketPolicy.from_json(row.market_policy)
+                        if row.market_policy is not None
                         else None
                     ),
                 )
@@ -600,6 +635,51 @@ async def playbook_rows_of(email: str) -> dict[str, PlaybookGrant]:
             _logger.warning("playbook_grants_unreadable: %s", str(exc)[:160])
     _playbook_rows_cache[email] = (now, rows)
     return rows
+
+
+_market_rows_cache: dict[str, tuple[float, dict[str, MarketGrant]]] = {}
+
+
+async def market_rows_of(email: str) -> dict[str, MarketGrant]:
+    """한 사람의 시장 덮어쓰기 행들 — 60초 캐시 (T242 · `playbook_rows_of` 와 같은 결).
+
+    Args:
+        email: 소문자 이메일.
+
+    Returns:
+        갈래 → 행.
+    """
+    now = time.monotonic()
+    hit = _market_rows_cache.get(email)
+    if hit is not None and now - hit[0] < PLAYBOOK_ROWS_CACHE_S:
+        return hit[1]
+    rows: dict[str, MarketGrant] = {}
+    if _factory is not None:
+        try:
+            async with _store()() as session:
+                found = await session.scalars(
+                    sa.select(MarketGrantRow).where(MarketGrantRow.email == email)
+                )
+                for row in found:
+                    rows[row.market_group] = MarketGrant(
+                        row.market_group, row.view, row.backtest, row.trade
+                    )
+        except Exception as exc:
+            _logger.warning("market_grants_unreadable: %s", str(exc)[:160])
+    _market_rows_cache[email] = (now, rows)
+    return rows
+
+
+def invalidate_market_rows(email: str | None = None) -> None:
+    """시장 덮어쓰기 행을 고친 뒤 캐시를 비운다.
+
+    Args:
+        email: 한 사람만. None 이면 전부.
+    """
+    if email is None:
+        _market_rows_cache.clear()
+    else:
+        _market_rows_cache.pop(email, None)
 
 
 def invalidate_playbook_rows(email: str | None = None) -> None:
@@ -672,6 +752,32 @@ def require_playbook_trade(request: Request, playbook_ids: Iterable[str]) -> Non
             )
 
 
+def require_market_trade(request: Request, market: Market) -> None:
+    """이 시장 갈래에서 판·펀드를 열 권한(T242 `trade`)이 없으면 403.
+
+    Args:
+        request: 요청 (`state.caller`). 호출자가 없으면(시험 우회) 통과.
+        market: 띄우려는 시장.
+
+    Raises:
+        HTTPException: 403 `market_forbidden`.
+    """
+    who = getattr(request.state, "caller", None)
+    if who is None:
+        return
+    group = group_of(market)
+    if not who.market(group).trade:
+        raise HTTPException(
+            403,
+            {
+                "code": "market_forbidden",
+                "market": market.value,
+                "group": group,
+                "message": f"{market.value} 시장에서 거래할 권한이 없다 — 관리자가 준다",
+            },
+        )
+
+
 def _playbooks_json(
     item: Account, picked: Collection | None, grants: Mapping[str, PlaybookGrant], *, audit: bool
 ) -> list[dict[str, Any]]:
@@ -690,6 +796,22 @@ def _playbooks_json(
             }
         )
     return out
+
+
+def _markets_json(
+    item: Account, picked: Collection | None, grants: Mapping[str, MarketGrant], *, audit: bool
+) -> list[dict[str, Any]]:
+    """관리자 표 한 줄의 시장 칸 — 갈래 셋마다 유효 권한 + 덮어쓰기 여부 (T242)."""
+    policy = market_policy_of(picked, item.role)
+    return [
+        {
+            **effective_market_grant(
+                group, policy=policy, row=grants.get(group), audit=audit
+            ).as_json(),
+            "custom": group in grants,
+        }
+        for group in GROUPS
+    ]
 
 
 def _caps_of(account: Account, table: dict[str, Collection]) -> frozenset[Cap]:
@@ -744,6 +866,8 @@ async def caller_of(request: Request) -> Caller | None:
         collection=found.role_collection or "",
         policy=policy_of(table.get(found.role_collection or ""), found.role),
         playbook_rows=await playbook_rows_of(found.email),
+        market_policy=market_policy_of(table.get(found.role_collection or ""), found.role),
+        market_rows=await market_rows_of(found.email),
         standing=standing_of(
             role=found.role,
             blocked=found.blocked,
@@ -901,6 +1025,8 @@ async def me(request: Request) -> dict[str, Any]:
         "caps": sorted(cap.value for cap in who.granted),
         "collection": who.collection,
         "may_trade": who.has(Cap.LIVE_TRADE if on_real_money() else Cap.DEMO_TRADE),
+        # ⭐ T242 — 시장 갈래별 권한. 화면이 스위치·판 시작 칸을 잠그고, 판정은 서버가 다시 한다.
+        "markets": {group: who.market(group).as_json() for group in GROUPS},
         "may_admin": who.has(Cap.MANAGE_USERS),
         "may_roles": who.has(Cap.MANAGE_ROLES),
         # ⭐ 감사 권한 — 백테스트·합성 미래의 최종 손익·연차별 손익을 보나 (사용자 2026-09-06).
@@ -1070,6 +1196,11 @@ async def users() -> dict[str, Any]:
             grants_by_email.setdefault(grant.email, {})[grant.playbook_id] = PlaybookGrant(
                 grant.playbook_id, grant.view, grant.backtest, grant.trade
             )
+        markets_by_email: dict[str, dict[str, MarketGrant]] = {}
+        for mg in await session.scalars(sa.select(MarketGrantRow)):
+            markets_by_email.setdefault(mg.email, {})[mg.market_group] = MarketGrant(
+                mg.market_group, mg.view, mg.backtest, mg.trade
+            )
     now = datetime.now(UTC)
     span = await hold_after()
     table = await collections()
@@ -1083,6 +1214,7 @@ async def users() -> dict[str, Any]:
             hold_after=span,
             table=table,
             grants=grants_by_email.get(item.email),
+            market_grants=markets_by_email.get(item.email),
         )
         for item in found
     ]
@@ -1140,6 +1272,7 @@ def _account_row(
     hold_after: timedelta = HOLD_AFTER,
     table: dict[str, Collection] | None = None,
     grants: Mapping[str, PlaybookGrant] | None = None,
+    market_grants: Mapping[str, MarketGrant] | None = None,
 ) -> dict[str, Any]:
     """관리자 표의 한 줄 — 등급과 처지를 같이 낸다 (2026-09-07).
 
@@ -1150,6 +1283,7 @@ def _account_row(
         hold_after: 보류 유예 (관리자 설정).
         table: 권한 묶음 표 — 없으면 내장값.
         grants: 이 사람의 매매법 덮어쓰기 행들 (T230). 없으면 묶음 기본값만으로 그린다.
+        market_grants: 이 사람의 시장 덮어쓰기 행들 (T242). 없으면 묶음 기본값만으로 그린다.
 
     Returns:
         JSON 으로 나가는 행.
@@ -1184,6 +1318,7 @@ def _account_row(
         "demo_trade": Cap.DEMO_TRADE in caps,
         # ⭐ 매매법별 권한 (T230) — 선언된 매매법마다 보기·백테스트·사용 + 덮어쓰기 여부
         "playbooks": _playbooks_json(item, picked, grants or {}, audit=Cap.AUDIT in caps),
+        "markets": _markets_json(item, picked, market_grants or {}, audit=Cap.AUDIT in caps),
         "standing": standing.value,
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "approved_at": item.approved_at.isoformat() if item.approved_at else None,
@@ -1888,6 +2023,7 @@ async def set_playbook_grant(
             hold_after=await hold_after(),
             table=table,
             grants=await _grants_in(session, target),
+            market_grants=await _market_grants_in(session, target),
         )
 
 
@@ -1930,6 +2066,7 @@ async def clear_playbook_grant(request: Request, email: str, playbook_id: str) -
             hold_after=await hold_after(),
             table=table,
             grants=await _grants_in(session, target),
+            market_grants=await _market_grants_in(session, target),
         )
 
 
@@ -1963,6 +2100,129 @@ def _caps_in(payload: dict[str, Any], key: str) -> list[Cap]:
         except ValueError as exc:
             raise HTTPException(400, f"모르는 기능이다 — {item!r}") from exc
     return out
+
+
+async def _market_grants_in(session: AsyncSession, email: str) -> dict[str, MarketGrant]:
+    """열린 세션에서 한 사람의 시장 덮어쓰기 행들 (캐시 안 거침)."""
+    rows = await session.scalars(sa.select(MarketGrantRow).where(MarketGrantRow.email == email))
+    return {r.market_group: MarketGrant(r.market_group, r.view, r.backtest, r.trade) for r in rows}
+
+
+@router.put("/users/{email}/markets/{group}")
+async def set_market_grant(
+    request: Request, email: str, group: str, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
+    """한 사람의 시장 권한을 덮어쓴다 — `{view, backtest, trade}` (T242).
+
+    Args:
+        request: 요청 (관리자).
+        email: 대상.
+        group: `coin` · `domestic` · `foreign`.
+        payload: 칸 셋. 빠진 칸은 참.
+
+    Returns:
+        갱신된 계정 행.
+
+    Raises:
+        HTTPException: 400 모르는 갈래·보기 없는 백테스트/거래 · 404 계정 없음.
+    """
+    grant = MarketGrant(
+        group,
+        view=bool(payload.get("view", True)),
+        backtest=bool(payload.get("backtest", True)),
+        trade=bool(payload.get("trade", True)),
+    )
+    try:
+        grant.validate()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    actor = _actor_of(request)
+    by = actor.email if actor else "?"
+    target = email.strip().lower()
+    factory = _store()
+    async with factory() as session, session.begin():
+        found = await session.scalar(sa.select(Account).where(Account.email == target))
+        if found is None:
+            raise HTTPException(404, f"{target} 계정이 없다")
+        row = await session.get(MarketGrantRow, (target, group))
+        before = (
+            None if row is None else MarketGrant(group, row.view, row.backtest, row.trade).as_json()
+        )
+        if row is None:
+            session.add(
+                MarketGrantRow(
+                    email=target,
+                    market_group=group,
+                    view=grant.view,
+                    backtest=grant.backtest,
+                    trade=grant.trade,
+                    granted_by=by,
+                )
+            )
+        else:
+            row.view, row.backtest, row.trade, row.granted_by = (
+                grant.view,
+                grant.backtest,
+                grant.trade,
+                by,
+            )
+        _record_permission(
+            session, email=target, what="market", before=before, after=grant.as_json(), by=by
+        )
+        await session.flush()
+        invalidate_market_rows(target)
+        table = await collections()
+        return _account_row(
+            found,
+            now=datetime.now(UTC),
+            hold_after=await hold_after(),
+            table=table,
+            grants=await _grants_in(session, target),
+            market_grants=await _market_grants_in(session, target),
+        )
+
+
+@router.delete("/users/{email}/markets/{group}")
+async def clear_market_grant(request: Request, email: str, group: str) -> dict[str, Any]:
+    """시장 덮어쓰기를 지운다 — 그 갈래는 묶음 기본값으로 돌아간다 (T242).
+
+    Args:
+        request: 요청 (관리자).
+        email: 대상.
+        group: 갈래.
+
+    Returns:
+        갱신된 계정 행.
+
+    Raises:
+        HTTPException: 404 계정 없음.
+    """
+    actor = _actor_of(request)
+    by = actor.email if actor else "?"
+    target = email.strip().lower()
+    factory = _store()
+    async with factory() as session, session.begin():
+        found = await session.scalar(sa.select(Account).where(Account.email == target))
+        if found is None:
+            raise HTTPException(404, f"{target} 계정이 없다")
+        row = await session.get(MarketGrantRow, (target, group))
+        if row is not None:
+            before = MarketGrant(group, row.view, row.backtest, row.trade).as_json()
+            await session.delete(row)
+            _record_permission(
+                session, email=target, what="market", before=before, after=None, by=by
+            )
+            await session.flush()
+        invalidate_market_rows(target)
+        table = await collections()
+        return _account_row(
+            found,
+            now=datetime.now(UTC),
+            hold_after=await hold_after(),
+            table=table,
+            grants=await _grants_in(session, target),
+            market_grants=await _market_grants_in(session, target),
+        )
 
 
 @router.post("/users/{email}/collection")
@@ -2112,6 +2372,7 @@ async def list_roles() -> dict[str, Any]:
                 "builtin": item.builtin,
                 "in_use": counts.get(item.name, 0),
                 "playbook_policy": policy_of(item, None).to_json(),
+                "market_policy": market_policy_of(item, None).to_json(),
             }
             for item in sorted(table.values(), key=lambda one: (not one.builtin, one.name))
         ],
@@ -2154,6 +2415,9 @@ async def put_role(
         if "playbook_policy" in payload
         else None
     )
+    market_policy = (
+        MarketPolicy.from_json(payload.get("market_policy")) if "market_policy" in payload else None
+    )
     actor = _actor_of(request)
     by = actor.email if actor else "?"
     factory = _store()
@@ -2161,6 +2425,7 @@ async def put_role(
         found = await session.get(RoleCollection, key)
         before_caps = None if found is None else found.caps
         before_policy = None if found is None else found.playbook_policy
+        before_market = None if found is None else found.market_policy
         if found is None:
             found = RoleCollection(
                 name=key, label=label, caps=dump_caps(caps), builtin=key in BUILTIN_BY_NAME
@@ -2171,17 +2436,28 @@ async def put_role(
             found.caps = dump_caps(caps)
         if policy is not None:
             found.playbook_policy = policy.to_json()
+        if market_policy is not None:
+            found.market_policy = market_policy.to_json()
         found.updated_by = by
         _record_permission(
             session,
             email=f"@{key}",
             what="role_policy",
-            before={"caps": before_caps, "playbook_policy": before_policy},
-            after={"caps": dump_caps(caps), "playbook_policy": found.playbook_policy},
+            before={
+                "caps": before_caps,
+                "playbook_policy": before_policy,
+                "market_policy": before_market,
+            },
+            after={
+                "caps": dump_caps(caps),
+                "playbook_policy": found.playbook_policy,
+                "market_policy": found.market_policy,
+            },
             by=by,
         )
     invalidate_collections()
     invalidate_playbook_rows()
+    invalidate_market_rows()
     _logger.info(
         "role_collection_saved",
         payload={
@@ -2196,6 +2472,7 @@ async def put_role(
         "label": label,
         "caps": sorted(cap.value for cap in caps),
         "playbook_policy": policy_of(saved, None).to_json(),
+        "market_policy": market_policy_of(saved, None).to_json(),
     }
 
 

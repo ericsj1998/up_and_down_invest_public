@@ -9,7 +9,7 @@
  * 말한다. 여기 있는 것은 "고른 것" 과 "고른 것으로 거르기" 뿐이다.
  */
 import { useCallback, useSyncExternalStore } from "react";
-import type { MarketInfo } from "../api";
+import type { MarketInfo, Who } from "../api";
 
 export type MarketGroup = "coin" | "stock";
 
@@ -68,6 +68,25 @@ export function capsOfName(
 /** 매매법이 이 묶음에서 도나 — `groups` 가 없는 옛 서버 응답은 어디서나. */
 export function bookInGroup(book: { groups?: readonly string[] }, group: MarketGroup): boolean {
   return !book.groups || book.groups.includes(group);
+}
+
+const GROUP_KEYS: Record<MarketGroup, readonly string[]> = {
+  coin: ["coin"],
+  stock: ["domestic", "foreign"],
+};
+
+/** 이 묶음을 볼 권한 (T242) — 서버가 안 주면(옛 서버) 참. 주식은 국내·미국 중 하나라도. */
+export function marketViewAllowed(who: Who | null, group: MarketGroup): boolean {
+  const grants = who?.markets;
+  if (!grants) return true;
+  return GROUP_KEYS[group].some((key) => grants[key]?.view ?? false);
+}
+
+/** 이 묶음에서 거래할 권한 (T242) — 판·펀드 시작 칸이 잠긴다. 판정은 서버가 다시 한다. */
+export function marketTradeAllowed(who: Who | null, group: MarketGroup): boolean {
+  const grants = who?.markets;
+  if (!grants) return true;
+  return GROUP_KEYS[group].some((key) => grants[key]?.trade ?? false);
 }
 
 /** 시장 이름의 브로커 — 서버가 말한 값. 없으면 undefined (마크를 안 그린다 · 꾸미지 않는다). */

@@ -116,6 +116,11 @@ class RoleCollection(Base):
 
     NULL 이면 내장값(`security.playbooks.BUILTIN_POLICIES`).
     """
+    market_policy: Mapped[JsonDict | None] = mapped_column(default=None)
+    """시장 기본 정책 — 칸(view·backtest·trade)마다 `"*"` 또는 갈래 목록 (T242 · 0119).
+
+    NULL 이면 내장값(`security.markets.BUILTIN_MARKET_POLICIES`).
+    """
 
 
 class PlaybookGrantRow(Base):
@@ -130,6 +135,27 @@ class PlaybookGrantRow(Base):
 
     email: Mapped[str] = mapped_column(primary_key=True)
     playbook_id: Mapped[str] = mapped_column(primary_key=True)
+    view: Mapped[bool] = mapped_column(default=True, server_default=sa.true())
+    backtest: Mapped[bool] = mapped_column(default=True, server_default=sa.true())
+    trade: Mapped[bool] = mapped_column(default=True, server_default=sa.true())
+    granted_by: Mapped[str] = mapped_column(default="", server_default="")
+    granted_at: Mapped[datetime] = mapped_column(
+        server_default=sa.func.now(), onupdate=sa.func.now()
+    )
+    note: Mapped[str] = mapped_column(default="", server_default="")
+
+
+class MarketGrantRow(Base):
+    """사람별 시장 권한 덮어쓰기 — 행이 있으면 그 갈래는 이 행이 정한다 (T242 · 0119).
+
+    Note:
+        갈래는 `coin` · `domestic` · `foreign` 셋. 매매법 덮어쓰기(`PlaybookGrantRow`)와 같은 모양.
+    """
+
+    __tablename__ = "market_grants"
+
+    email: Mapped[str] = mapped_column(primary_key=True)
+    market_group: Mapped[str] = mapped_column(primary_key=True)
     view: Mapped[bool] = mapped_column(default=True, server_default=sa.true())
     backtest: Mapped[bool] = mapped_column(default=True, server_default=sa.true())
     trade: Mapped[bool] = mapped_column(default=True, server_default=sa.true())

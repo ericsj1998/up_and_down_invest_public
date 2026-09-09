@@ -37,7 +37,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 
 from updown.analysis.playbook.select import default_playbook, load_playbooks
 from updown.apps.api.admin import instrument_of
-from updown.apps.api.auth import require_playbook_trade
+from updown.apps.api.auth import require_market_trade, require_playbook_trade
 from updown.apps.api.walkforward import (
     LIVE_RUNNERS,
     SESSIONS,
@@ -833,6 +833,7 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
         raise HTTPException(400, f"시작 자본이 0 이하다: {total}")
     book = str(payload.get("playbook") or default_playbook())
     require_playbook_trade(request, (book,))  # T230 — 이 매매법으로 펀드를 열 권한
+    require_market_trade(request, Market(str(payload.get("market") or Market.GATE.value)))  # T242
     # 🔴 **배율을 안 주면 매매법이 선언한 값을 쓴다** (2026-08-30). 리터럴 `3` 이
     #    여기 박혀 있어서, 6x 에서 측정한 1.3.0 을 배율 없이 만들면 조용히 3x 로 떴다.
     #    ⛔ 선언이 없는 매매법에서만 3 으로 떨어진다 (옛 판들의 값 — 동작 불변).
@@ -1064,6 +1065,7 @@ async def change_playbook(
     if new_pb not in {p.playbook_id for p in load_playbooks()}:
         raise HTTPException(400, f"모르는 전략: {new_pb!r}")
     require_playbook_trade(request, (new_pb,))  # T230
+    require_market_trade(request, Market(fund.market))  # T242
     if new_pb == fund.playbook:
         return await _status(fund)
 

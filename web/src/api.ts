@@ -189,6 +189,8 @@ export type Who = {
   /** 답한 API 가 붙어 있는 거래소. **빈 목록 = 실계좌가 없는 로컬 API** (2026-09-06). */
   exchanges?: string[];
   may_trade?: boolean;
+  /** 시장 갈래별 권한 (T242) — 화면이 스위치·판 시작 칸을 잠근다. 옛 서버는 없다(잠그지 않는다). */
+  markets?: Record<string, { view: boolean; backtest: boolean; trade: boolean }>;
   /** 기능별 권한 (2026-09-07) — 묶음 ∪ 개별. 화면은 이것으로 단추를 켜고 끄고, 판정은 서버가 다시 한다. */
   caps?: string[];
   /** 권한 묶음 이름 (`guest` · `viewer` · `trader` · `admin` · `super_admin` · 관리자가 만든 것). */
@@ -314,6 +316,12 @@ export type PlaybookPolicy = {
   trade: "*" | string[];
 };
 
+/** 묶음의 시장 기본 정책 (T242) — 칸마다 "*"(전부) 또는 갈래(coin · domestic · foreign) 목록. */
+export type MarketPolicy = PlaybookPolicy;
+
+/** 한 사람의 한 시장 갈래 권한 (T242) — 매매법 칩과 같은 모양이라 같은 칩 컴포넌트로 그린다. */
+export type MarketGrantView = PlaybookGrantView;
+
 export type AccountRow = {
   id: string;
   email: string;
@@ -323,6 +331,8 @@ export type AccountRow = {
   blocked: boolean;
   /** 매매법별 권한 (T230) — 선언된 매매법마다 하나. */
   playbooks: PlaybookGrantView[];
+  /** 시장 갈래별 권한 (T242) — 코인 · 국내주식 · 미국주식. 옛 서버는 없다. */
+  markets?: MarketGrantView[];
   /** 감사 권한 — 등급과 별개로 관리자가 준다 (2026-09-06). */
   audit: boolean;
   /** 데모 거래 — 열람자에게 테스트넷 주문만 허용 (2026-09-07). 거래자·관리자에겐 표시용. */
@@ -491,6 +501,8 @@ export type RoleCollection = {
   builtin: boolean;
   /** 매매법 기본 정책 (T230). */
   playbook_policy: PlaybookPolicy;
+  /** 시장 기본 정책 (T242). 옛 서버는 없다. */
+  market_policy?: MarketPolicy;
   /** 이 묶음을 가진 계정 수 — 0 이어야 지울 수 있다. */
   in_use: number;
 };
@@ -509,18 +521,23 @@ export function saveRole(
   label: string,
   caps: string[],
   playbook_policy?: PlaybookPolicy,
+  market_policy?: MarketPolicy,
 ): Promise<{
   name: string;
   label: string;
   caps: string[];
   playbook_policy: PlaybookPolicy;
+  market_policy?: MarketPolicy;
 }> {
   return request(`/auth/roles/${encodeURIComponent(name)}`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(
-      playbook_policy ? { label, caps, playbook_policy } : { label, caps },
-    ),
+    body: JSON.stringify({
+      label,
+      caps,
+      ...(playbook_policy ? { playbook_policy } : {}),
+      ...(market_policy ? { market_policy } : {}),
+    }),
   });
 }
 
@@ -537,6 +554,26 @@ export function setAccountPlaybook(
       headers: { "content-type": "application/json" },
       body: JSON.stringify(grant),
     },
+  );
+}
+
+/** 한 사람의 시장 갈래 권한을 덮어쓴다 (T242). */
+export function setAccountMarket(
+  email: string,
+  group: string,
+  grant: { view: boolean; backtest: boolean; trade: boolean },
+): Promise<AccountRow> {
+  return request(
+    `/auth/users/${encodeURIComponent(email)}/markets/${encodeURIComponent(group)}`,
+    { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(grant) },
+  );
+}
+
+/** 시장 덮어쓰기를 지워 묶음 기본값으로 돌린다 (T242). */
+export function clearAccountMarket(email: string, group: string): Promise<AccountRow> {
+  return request(
+    `/auth/users/${encodeURIComponent(email)}/markets/${encodeURIComponent(group)}`,
+    { method: "DELETE" },
   );
 }
 

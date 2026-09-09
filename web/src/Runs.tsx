@@ -11,7 +11,14 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { exchangeMarkets, type MarketInfo } from "./api";
-import { bookInGroup, capsOfName, groupOfName, useMarketGroup } from "./shell/marketGroup";
+import { useMe } from "./Gate";
+import {
+  bookInGroup,
+  capsOfName,
+  groupOfName,
+  marketTradeAllowed,
+  useMarketGroup,
+} from "./shell/marketGroup";
 import {
   dropSession,
   health as fetchHealth,
@@ -232,6 +239,9 @@ export function Runs({ rows, open, refresh, available }: Props) {
   useEffect(() => {
     if (groupMarkets.length && !groupMarkets.includes(market)) setMarket(groupMarkets[0] ?? market);
   }, [groupMarkets, market]);
+  // ⭐ T242 — 이 묶음에서 거래할 권한. 없으면 시작 칸 위에 🔒 를 띄운다(서버가 403 으로 다시 막는다).
+  const me = useMe();
+  const mayTradeHere = marketTradeAllowed(me.who, group);
   // ⭐ 매매법 후보도 묶음 안의 것만 — 주식 묶음에서 코인 세트를 고르면 서버가 거절할 뿐이다.
   const groupBooks = useMemo(() => books.filter((b) => bookInGroup(b, group)), [books, group]);
   useEffect(() => {
@@ -672,6 +682,11 @@ export function Runs({ rows, open, refresh, available }: Props) {
         keep="console-start"
         initialShut={alive.length > 0}
       >
+        {mayTradeHere ? null : (
+          <p className="notice" role="status">
+            🔒 이 시장에서 거래할 권한이 없다 — 관리자가 시장 권한(거래)을 주면 판을 띄울 수 있다.
+          </p>
+        )}
         <div className="card wide">
           <div className="row">
             <label className="field">

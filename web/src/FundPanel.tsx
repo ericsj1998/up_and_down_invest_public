@@ -10,7 +10,8 @@ import { useEffect, useState } from "react";
 
 import * as api from "./api";
 import type { FundStatus, MarketInfo } from "./api";
-import { bookInGroup, groupOfName, useMarketGroup } from "./shell/marketGroup";
+import { useMe } from "./Gate";
+import { bookInGroup, groupOfName, marketTradeAllowed, useMarketGroup } from "./shell/marketGroup";
 import { ErrorCard, SelectField } from "./ui";
 
 // ⭐ 기본 바스켓·전략은 서버가 준다 (/rebalancer/defaults · SSoT = config/baskets.yml).
@@ -144,6 +145,9 @@ export function FundPanel() {
       .catch(() => setInfos([]));
   }, []);
   const groupMarkets = markets.filter((m) => groupOfName(infos, m) === group);
+  // ⭐ T242 — 이 묶음에서 거래할 권한이 없으면 만들기 단추를 잠근다(서버가 403 으로 다시 막는다).
+  const me = useMe();
+  const mayTradeHere = marketTradeAllowed(me.who, group);
   const groupBooks = books.filter((b) => bookInGroup(b, group));
   useEffect(() => {
     if (groupMarkets.length && !groupMarkets.includes(market)) setMarket(groupMarkets[0] ?? market);
@@ -793,9 +797,10 @@ export function FundPanel() {
         <button
           className="btn primary"
           onClick={create}
-          disabled={busy === "create"}
+          disabled={busy === "create" || !mayTradeHere}
+          title={mayTradeHere ? undefined : "이 시장에서 거래할 권한이 없다 — 관리자가 준다"}
         >
-          {busy === "create" ? "만드는 중…" : "펀드 만들기"}
+          {mayTradeHere ? (busy === "create" ? "만드는 중…" : "펀드 만들기") : "🔒 거래 권한 없음"}
         </button>
       </div>
       {/* 레버리지 입력칸을 없앤 대신 고르는 근거를 카드로 보여 준다 (사용자 2026-09-03).

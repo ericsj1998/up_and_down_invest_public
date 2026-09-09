@@ -35,6 +35,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from updown.common.security.markets import (
+    BUILTIN_MARKET_POLICIES,
+    DEFAULT_MARKET_POLICY,
+    MarketPolicy,
+)
 from updown.common.security.playbooks import BUILTIN_POLICIES, DEFAULT_POLICY, PlaybookPolicy
 from updown.common.security.roles import (
     ADMIN_PREFIXES,
@@ -133,6 +138,8 @@ class Collection:
     builtin: bool = False
     policy: PlaybookPolicy | None = None
     """매매법 기본 정책 (T230). None 이면 내장값(`playbooks.BUILTIN_POLICIES`) — `policy_of` 가 푼다."""
+    market_policy: MarketPolicy | None = None
+    """시장 기본 정책 (T242). None 이면 내장값(`markets.BUILTIN_MARKET_POLICIES`) — `market_policy_of` 가 푼다."""
 
 
 _DEMO_READ = frozenset({Cap.DEMO_ACCOUNT_READ, Cap.DEMO_RUNS_READ})
@@ -193,6 +200,24 @@ def policy_of(collection: Collection | None, role: Role | None) -> PlaybookPolic
         return BUILTIN_POLICIES.get(collection.name, DEFAULT_POLICY)
     name = LEGACY_COLLECTION.get(role) if role is not None else None
     return BUILTIN_POLICIES.get(name or "", DEFAULT_POLICY)
+
+
+def market_policy_of(collection: Collection | None, role: Role | None) -> MarketPolicy:
+    """묶음(또는 등급)의 시장 기본 정책 (T242) — `policy_of` 와 같은 규칙.
+
+    Args:
+        collection: 계정의 묶음. None 이면 등급으로 내장 묶음을 찾는다.
+        role: 옛 등급.
+
+    Returns:
+        정책. 모르면 `DEFAULT_MARKET_POLICY`(보기·백테스트만).
+    """
+    if collection is not None:
+        if collection.market_policy is not None:
+            return collection.market_policy
+        return BUILTIN_MARKET_POLICIES.get(collection.name, DEFAULT_MARKET_POLICY)
+    name = LEGACY_COLLECTION.get(role) if role is not None else None
+    return BUILTIN_MARKET_POLICIES.get(name or "", DEFAULT_MARKET_POLICY)
 
 
 def parse_caps(text: str | None) -> frozenset[Cap]:

@@ -46,6 +46,7 @@ import {
   type RoleCollection,
   type Who,
 } from "./api";
+import { clearAccountMarket, setAccountMarket, type MarketPolicy } from "./api";
 import { LogsCard } from "./LogsCard";
 import { ResourcesCard } from "./ResourcesCard";
 import { ErrorCard, whenSec } from "./ui";
@@ -319,6 +320,65 @@ function policyLabel(value: "*" | string[]): string {
   const key = policyKey(value);
   const hit = POLICY_CHOICES.find((one) => one.key === key);
   return hit ? hit.label : `목록 ${value === "*" ? "" : value.length}`;
+}
+
+const MARKET_CHOICES: { key: string; label: string; value: "*" | string[] }[] = [
+  { key: "all", label: "전부", value: "*" },
+  { key: "coin", label: "코인만", value: ["coin"] },
+  { key: "stock", label: "주식만", value: ["domestic", "foreign"] },
+  { key: "none", label: "없음", value: [] },
+];
+
+function marketKey(value: "*" | string[]): string {
+  if (value === "*") return "all";
+  const sorted = [...value].sort().join(",");
+  if (sorted === "") return "none";
+  if (sorted === "coin") return "coin";
+  if (sorted === "domestic,foreign") return "stock";
+  return `list:${sorted}`;
+}
+
+function marketLabel(value: "*" | string[]): string {
+  const hit = MARKET_CHOICES.find((one) => one.key === marketKey(value));
+  return hit ? hit.label : `목록 ${value === "*" ? "" : value.join("·")}`;
+}
+
+/** 묶음의 시장 정책 (T242) — 칸마다 전부 / 코인만 / 주식만 / 없음. */
+function MarketPolicyEditor({
+  policy,
+  onChange,
+}: {
+  policy: MarketPolicy;
+  onChange: (next: MarketPolicy) => void;
+}) {
+  return (
+    <div className="chips" aria-label="시장 정책">
+      {(["view", "backtest", "trade"] as const).map((kind) => {
+        const key = marketKey(policy[kind]);
+        return (
+          <label key={kind} className="chip" title={`${KIND_LABEL[kind]} 시장 범위`}>
+            {KIND_ICON[kind]} 시장 {KIND_LABEL[kind]}
+            <select
+              value={MARKET_CHOICES.some((one) => one.key === key) ? key : ""}
+              onChange={(event) => {
+                const picked = MARKET_CHOICES.find((one) => one.key === event.target.value);
+                if (picked) onChange({ ...policy, [kind]: picked.value });
+              }}
+            >
+              {!MARKET_CHOICES.some((one) => one.key === key) ? (
+                <option value="">{marketLabel(policy[kind])}</option>
+              ) : null}
+              {MARKET_CHOICES.map((one) => (
+                <option key={one.key} value={one.key}>
+                  {one.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        );
+      })}
+    </div>
+  );
 }
 
 /** 묶음의 매매법 정책 — 칸마다 전부 / 견본만 / 없음 (보기 없는 백테스트·사용은 서버가 거른다). */
@@ -743,6 +803,19 @@ export function Accounts({ who }: { who: Who | null }) {
                             )
                           }
                         />
+                        {/* 시장 갈래별 권한 (T242) — 코인 · 국내주식 · 미국주식. 같은 칩 모양. */}
+                        {row.markets ? (
+                          <PlaybookChips
+                            rows={row.markets}
+                            canEdit={mayTouch && busy === ""}
+                            onSet={(id, grant) =>
+                              act(row.id, () => setAccountMarket(row.email, id, grant))
+                            }
+                            onClear={(id) =>
+                              act(row.id, () => clearAccountMarket(row.email, id))
+                            }
+                          />
+                        ) : null}
                       </div>
                     )}
                   </td>
@@ -933,8 +1006,8 @@ export function Accounts({ who }: { who: Who | null }) {
         labels={labels}
         mayRoles={mayRoles}
         busy={busy}
-        onSave={(name, label, caps, policy) =>
-          act(`role:${name}`, () => saveRole(name, label, caps, policy))
+        onSave={(name, label, caps, policy, marketPolicy) =>
+          act(`role:${name}`, () => saveRole(name, label, caps, policy, marketPolicy))
         }
         onDelete={(name) => act(`role:${name}`, () => deleteRole(name))}
       />
@@ -1041,6 +1114,7 @@ function RolesCard({
     label: string,
     caps: string[],
     policy?: PlaybookPolicy,
+    marketPolicy?: MarketPolicy,
   ) => void;
   onDelete: (name: string) => void;
 }) {
@@ -1049,6 +1123,7 @@ function RolesCard({
     label: string;
     caps: string[];
     policy: PlaybookPolicy;
+    marketPolicy: MarketPolicy;
   } | null>(null);
   const [fresh, setFresh] = useState<{ name: string; label: string } | null>(
     null,
@@ -1060,6 +1135,7 @@ function RolesCard({
       label: one.label,
       caps: [...one.caps],
       policy: one.playbook_policy ?? { view: "*", backtest: [], trade: [] },
+      marketPolicy: one.market_policy ?? { view: "*", backtest: "*", trade: [] },
     });
 
   return (
@@ -1139,10 +1215,16 @@ function RolesCard({
                 </td>
                 <td>
                   {draft ? (
-                    <PolicyEditor
-                      policy={draft.policy}
-                      onChange={(policy) => setEditing({ ...draft, policy })}
-                    />
+                    <>
+                      <PolicyEditor
+                        policy={draft.policy}
+                        onChange={(policy) => setEditing({ ...draft, policy })}
+                      />
+                      <MarketPolicyEditor
+                        policy={draft.marketPolicy}
+                        onChange={(marketPolicy) => setEditing({ ...draft, marketPolicy })}
+                      />
+                    </>
                   ) : (
                     <span className="faint" title="보기 · 백테스트 · 사용">
                       {KIND_ICON.view}{" "}
@@ -1151,6 +1233,14 @@ function RolesCard({
                       {policyLabel(one.playbook_policy?.backtest ?? [])} ·{" "}
                       {KIND_ICON.trade}{" "}
                       {policyLabel(one.playbook_policy?.trade ?? [])}
+                      {one.market_policy ? (
+                        <>
+                          {" · 시장 "}
+                          {marketLabel(one.market_policy.view)} ·{" "}
+                          {marketLabel(one.market_policy.backtest)} ·{" "}
+                          {marketLabel(one.market_policy.trade)}
+                        </>
+                      ) : null}
                     </span>
                   )}
                 </td>
@@ -1169,6 +1259,7 @@ function RolesCard({
                               draft.label,
                               draft.caps,
                               draft.policy,
+                              draft.marketPolicy,
                             );
                             setEditing(null);
                           }}

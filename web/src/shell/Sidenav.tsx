@@ -10,7 +10,7 @@ import { PresentationChartLineIcon, XMarkIcon } from "@heroicons/react/24/solid"
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { modeCookie, noRealAccount, switchMode, type Who } from "../api";
 import { GroupIcon } from "./BrokerMark";
-import { GROUP_LABEL, useMarketGroup, type MarketGroup } from "./marketGroup";
+import { GROUP_LABEL, marketViewAllowed, useMarketGroup, type MarketGroup } from "./marketGroup";
 
 /**
  * Demo Trading 스위치 (T221) — 거래소 사이트의 "Demo Trading" 처럼 한 번에 전환한다.
@@ -65,17 +65,26 @@ function DemoSwitch({ who }: { who: Who | null }) {
  * 시장 스위치 (T245) — 코인 | 주식. Demo 스위치 바로 아래, 같은 결. 새로고침 없이 바뀐다 — 같은 서버의 화면을
  * 다른 기준으로 거를 뿐이다. 어느 시장이 코인/주식인지는 서버가 말하고(`/exchange/markets`), 여기는 고르기만 한다.
  */
-function MarketSwitch() {
+function MarketSwitch({ who }: { who: Who | null }) {
   const [group, setGroup] = useMarketGroup();
   const seg = (which: MarketGroup) => {
     const on = group === which;
+    // T242 — 볼 권한이 없는 묶음은 잠긴다. 판정은 서버가 다시 한다(화면은 편의).
+    const locked = !marketViewAllowed(who, which);
     return (
       <button
         key={which}
         type="button"
         role="radio"
         aria-checked={on}
-        title={which === "coin" ? "코인 시장 — Gate·Binance 선물" : "주식 시장 — 토스 시세 · 페이퍼(가상 체결)"}
+        disabled={locked}
+        title={
+          locked
+            ? `${GROUP_LABEL[which]} 시장을 볼 권한이 없다 — 관리자가 준다`
+            : which === "coin"
+              ? "코인 시장 — Gate·Binance 선물"
+              : "주식 시장 — 토스 시세 · 페이퍼(가상 체결)"
+        }
         onClick={() => setGroup(which)}
         className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold transition-colors ${
           on
@@ -85,6 +94,7 @@ function MarketSwitch() {
       >
         <GroupIcon group={which} className="h-4 w-4" />
         {GROUP_LABEL[which]}
+        {locked ? <span aria-hidden="true">🔒</span> : null}
       </button>
     );
   };
@@ -174,7 +184,7 @@ export function Sidenav({
         <div className="px-6 pb-4">
           <DemoSwitch who={who} />
           {/* T245 시장 전환 — 어느 시장을 보는지가 어느 돈을 보는지 다음의 전제다. */}
-          <MarketSwitch />
+          <MarketSwitch who={who} />
         </div>
         <button
           type="button"

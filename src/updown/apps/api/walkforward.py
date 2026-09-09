@@ -53,7 +53,7 @@ from updown.analysis.playbook.types import Playbook
 from updown.analysis.structures.box_range import SPAN_COVER
 from updown.apps.api.admin import instrument_of, rules_config
 from updown.apps.api.analysis import as_json
-from updown.apps.api.auth import require_playbook_trade
+from updown.apps.api.auth import require_market_trade, require_playbook_trade
 from updown.common.costs import (
     DEFAULT_CONFIG_PATH,
     TICK_RATIO,
@@ -780,6 +780,8 @@ async def _live_start(
     catalog = load_rules()
     symbol = str(payload.get("symbol", "BTC_USDT"))
     market = Market(str(payload.get("market", Market.GATE.value)))
+    if request is not None:
+        require_market_trade(request, market)  # T242 — 이 시장에서 거래할 권한
 
     instrument = instrument_of(symbol, market)
     provider = MarketDataProvider()
@@ -3051,6 +3053,8 @@ async def _start(payload: dict[str, Any], *, request: Request | None) -> dict[st
     book = sealed_books[0]
     symbol = str(payload.get("symbol", "KRW-BTC"))
     market = Market(str(payload.get("market", "UPBIT")))
+    if request is not None:
+        require_market_trade(request, market)  # T242
     days = int(payload.get("days", 7))
     seed = payload.get("seed")
 
