@@ -15,7 +15,6 @@ import random
 import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import cast
 
 import pytest
 
@@ -152,7 +151,7 @@ def _session(window: int) -> Session:
     return Session(
         instrument=BTC,
         playbooks=(inert,),
-        feed=cast("SealedFeed", SealedFeed(source, seal)),
+        feed=SealedFeed(source, seal),
         ledger=Ledger(seed_cash=Decimal(10_000)),
         frame_window=window,
     )

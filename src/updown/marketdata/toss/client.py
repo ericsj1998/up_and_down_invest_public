@@ -31,7 +31,7 @@ rate limit 관리·재시도·인증은 **어댑터 레이어의 책임**이다.
 import asyncio
 import contextlib
 import random
-from collections.abc import Iterator
+from collections.abc import Generator
 from types import TracebackType
 from typing import Self, cast
 
@@ -196,11 +196,14 @@ class TossClient:
         await self._client.aclose()
 
     @contextlib.contextmanager
-    def budget(self, cap: int) -> Iterator[None]:
+    def budget(self, cap: int) -> Generator[None, None, None]:
         """블록 안의 요청 수에 상한을 건다 (T253 · `RequestCounting`).
 
         Args:
             cap: 허용 요청 수. 0 이하면 무제한.
+
+        Returns:
+            블록을 닫으면 바깥 상한으로 돌아가는 컨텍스트 매니저(제너레이터).
 
         Note:
             클라이언트는 프로세스에 하나라(`MarketDataProvider._shared_toss`) 동시에 두 판이

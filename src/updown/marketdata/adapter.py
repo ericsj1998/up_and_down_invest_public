@@ -418,5 +418,8 @@ class RequestCounting(Protocol):
 
         Args:
             cap: 허용 요청 수. 0 이하면 무제한.
+
+        Returns:
+            블록을 닫으면 상한이 풀리는 컨텍스트 매니저.
         """
         ...

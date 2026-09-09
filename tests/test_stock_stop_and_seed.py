@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import cast
 
 import pytest
 
@@ -79,7 +78,7 @@ def _session() -> Session:
     return Session(
         instrument=NVDA,
         playbooks=(book,),
-        feed=cast("SealedFeed", SealedFeed({Timeframe.H1: bars}, seal)),
+        feed=SealedFeed({Timeframe.H1: bars}, seal),
         ledger=Ledger(seed_cash=Decimal(10_000)),
     )
 
@@ -155,7 +154,7 @@ def _runner(record: TradeRecord, orders: object, *, revived: bool) -> LiveRunner
     made.failures = 0
     made.last_error = ""
     made.placed = {}
-    revived_ids = frozenset({record.trade_id}) if revived else frozenset()
+    revived_ids: frozenset[str] = frozenset({record.trade_id}) if revived else frozenset()
     made._revived_open = revived_ids  # pyright: ignore[reportPrivateUsage]
     return made
 

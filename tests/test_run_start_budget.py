@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import cast
@@ -139,7 +139,7 @@ class _Counting:
         self._base = 0
 
     @contextlib.contextmanager
-    def budget(self, cap: int) -> Iterator[None]:
+    def budget(self, cap: int) -> Generator[None, None, None]:
         was = (self._cap, self._base)
         self._cap, self._base = cap, self.requests
         try:
