@@ -10,6 +10,7 @@ export type ChatMessageView = {
   evidence?: Array<{ name: string; arguments: Record<string, unknown>; ok: boolean; ms: number; digest: string; error?: string }>;
   proposals?: Array<Record<string, unknown>>;
   failure?: string | null;
+  auto?: unknown;
   tool_calls?: Array<{ call_id: string; name: string; arguments: Record<string, unknown> }>;
 };
 

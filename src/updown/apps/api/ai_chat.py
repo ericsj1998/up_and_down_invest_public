@@ -19,13 +19,14 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Annotated, Any, cast
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from updown.apps.api import analysis as analysis_api
-from updown.apps.api import auth, rebalancer
+from updown.apps.api import auth, rebalancer, walkforward
 from updown.apps.api import evidence as ev
 from updown.apps.api import exchange as exchange_api
 from updown.apps.api import fundamentals as fundamentals_api
@@ -38,6 +39,11 @@ from updown.common.db.models.ops import EventLog
 from updown.common.domain.instrument import Market
 from updown.common.logging.context import get_trace_id, new_trace_id
 from updown.common.logging.setup import get_logger
+from updown.common.security.consent import (
+    AUTO_ORDER_CONSENT_TEXT,
+    AUTO_ORDER_CONSENT_VERSION,
+    auto_consent_is_current,
+)
 from updown.common.security.redact import redact_pnl
 from updown.common.security.roles import Role
 from updown.decision.risk.policy import load_settings as load_risk_settings
@@ -47,6 +53,7 @@ from updown.llm.port import ChatMessage, ToolCall
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_chat.agent import PROMPT_VERSION, ChatResult, run_chat
 from updown.orchestration.ai_chat.aliases import load_aliases
+from updown.orchestration.ai_chat.auto import AutoState, auto_allowed
 from updown.orchestration.ai_chat.tools import ToolContext
 from updown.orchestration.report import evidence_charts as ec
 
@@ -88,11 +95,14 @@ def _thread_json(row: ChatThread, *, with_messages: bool) -> dict[str, Any]:
 
 
 @router.get("/settings")
-async def settings() -> dict[str, Any]:
+async def settings(request: Request) -> dict[str, Any]:
     """모델 목록과 기본값.
 
+    Args:
+        request: 요청 — 자동 모드 상태는 사람마다 다르다.
+
     Returns:
-        `{models: [{id, rank, note}], default, prompt_version, auto: {enabled: false, note}}`.
+        `{models: [{id, rank, note}], default, prompt_version, auto: {...}}`.
 
     Raises:
         HTTPException: 503 모델 풀 설정을 못 읽었다.
@@ -105,10 +115,7 @@ async def settings() -> dict[str, Any]:
         "models": [{"id": m.id, "rank": m.rank, "note": m.note} for m in pool.models],
         "default": pool.chat_model or (pool.models[0].id if pool.models else ""),
         "prompt_version": PROMPT_VERSION,
-        "auto": {
-            "enabled": False,
-            "note": "자동 실행 모드는 다음 조각 — 지금은 제안마다 사람이 확인한다",
-        },
+        "auto": await _auto_json(request),
     }
 
 
@@ -334,6 +341,9 @@ async def ask(
                 fallbacks=[m.id for m in pool.models if m.id != model],
             )
         assistant = _save_turn(result)
+        # ⭐ 자동 실행 모드(T248) — 문(동의 · 일 건수 · 노출)을 전부 지나야 하고, 지나도 값은
+        #    live_custom 의 확정을 다시 거친다. 결과(냈다/못 냈다·이유)는 제안 카드에 그대로 적힌다.
+        assistant["auto"] = await _auto_place(request, who, thread_id, model, result.proposals)
         await _persist(factory, thread_id, email, model, result, assistant)
         return assistant
 
@@ -406,6 +416,347 @@ async def _persist(
             )
         )
         await session.flush()
+
+
+# ── 자동 실행 모드 · AI 주문 (T248 2차) ───────────────────────────────────────
+
+AUTO_MODE_EVENT = "ai_auto_mode"
+ORDER_EVENT = "ai_order_placed"
+
+
+async def _latest_event(email: str, event_type: str) -> dict[str, Any] | None:
+    """사람의 마지막 이벤트 페이로드 (계정 저장소 `event_logs`)."""
+    factory = auth._store()  # pyright: ignore[reportPrivateUsage]
+    async with factory() as session:
+        row = await session.scalar(
+            sa.select(EventLog)
+            .where(EventLog.actor == email, EventLog.event_type == event_type)
+            .order_by(EventLog.ts.desc())
+            .limit(1)
+        )
+        return None if row is None else dict(row.payload_json)
+
+
+async def _placed_today(email: str) -> tuple[int, Decimal]:
+    """오늘(UTC) 낸 AI 주문 수와 예산 합."""
+    factory = auth._store()  # pyright: ignore[reportPrivateUsage]
+    start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    async with factory() as session:
+        rows = await session.scalars(
+            sa.select(EventLog).where(
+                EventLog.actor == email, EventLog.event_type == ORDER_EVENT, EventLog.ts >= start
+            )
+        )
+        count = 0
+        margin = Decimal(0)
+        for row in rows:
+            count += 1
+            margin += Decimal(str(dict(row.payload_json).get("margin") or 0))
+        return count, margin
+
+
+async def _auto_state(email: str) -> AutoState:
+    """사람의 자동 모드 상태 — 마지막 `ai_auto_mode` 이벤트."""
+    found = await _latest_event(email, AUTO_MODE_EVENT) or {}
+    return AutoState(
+        enabled=bool(found.get("enabled")),
+        consent_version=found.get("consent_version"),
+        shares=int(found.get("shares") or 1),
+        margin=Decimal(str(found.get("margin") or 50)),
+        max_per_day=int(found.get("max_per_day") or 3),
+        max_exposure_pct=Decimal(str(found.get("max_exposure_pct") or 30)),
+    )
+
+
+async def _auto_json(request: Request) -> dict[str, Any]:
+    """설정 응답의 `auto` 칸."""
+    found = getattr(request.state, "caller", None)
+    who = found if isinstance(found, Caller) else await caller_of(request)
+    base: dict[str, Any] = {
+        "consent": {"version": AUTO_ORDER_CONSENT_VERSION, "text": AUTO_ORDER_CONSENT_TEXT},
+        "defaults": {"max_per_day": 3, "max_exposure_pct": 30},
+    }
+    if who is None or who.role is Role.GUEST:
+        return {**base, "enabled": False, "note": "로그인한 사람만 자동 모드를 켤 수 있다"}
+    state = await _auto_state(who.email)
+    count, margin = await _placed_today(who.email)
+    return {
+        **base,
+        "enabled": state.enabled,
+        "consent_version": state.consent_version,
+        "consented": state.consent_version == AUTO_ORDER_CONSENT_VERSION,
+        "shares": state.shares,
+        "margin": str(state.margin),
+        "max_per_day": state.max_per_day,
+        "max_exposure_pct": str(state.max_exposure_pct),
+        "placed_today": count,
+        "placed_margin_today": str(margin),
+    }
+
+
+@router.post("/auto")
+async def set_auto(request: Request, payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+    """자동 실행 모드를 켜고 끈다 — 켤 때는 동의서 버전이 지금 것이어야 한다.
+
+    Args:
+        request: 요청.
+        payload: `{enabled, consent_version?, shares?, margin?, max_per_day?, max_exposure_pct?}`.
+
+    Returns:
+        새 상태 (`_auto_json`).
+
+    Raises:
+        HTTPException: 400 동의 버전이 지금 문장이 아님 · 상한이 0 이하.
+    """
+    who = await _who_or_403(request)
+    enabled = bool(payload.get("enabled"))
+    version = payload.get("consent_version")
+    if enabled and not auto_consent_is_current(version):
+        raise HTTPException(
+            400, f"자동 주문 동의 문구가 바뀌었다 — 지금 버전 {AUTO_ORDER_CONSENT_VERSION}"
+        )
+    max_per_day = int(payload.get("max_per_day") or 3)
+    max_exposure = Decimal(str(payload.get("max_exposure_pct") or 30))
+    if max_per_day <= 0 or max_exposure <= 0:
+        raise HTTPException(400, "상한은 0 보다 커야 한다")
+    factory = auth._store()  # pyright: ignore[reportPrivateUsage]
+    async with factory() as session, session.begin():
+        session.add(
+            EventLog(
+                trace_id=get_trace_id() or new_trace_id(),
+                actor=who.email,
+                module="apps.api.ai_chat",
+                level=LogLevel.INFO,
+                event_type=AUTO_MODE_EVENT,
+                payload_json={
+                    "enabled": enabled,
+                    "consent_version": AUTO_ORDER_CONSENT_VERSION if enabled else None,
+                    "consent_text": AUTO_ORDER_CONSENT_TEXT if enabled else None,
+                    "shares": int(payload.get("shares") or 1),
+                    "margin": str(payload.get("margin") or 50),
+                    "max_per_day": max_per_day,
+                    "max_exposure_pct": str(max_exposure),
+                    "at": datetime.now(UTC).isoformat(),
+                },
+            )
+        )
+        await session.flush()
+    return await _auto_json(request)
+
+
+def _order_payload(
+    proposal: dict[str, Any],
+    *,
+    shares: int | None,
+    margin: Decimal | None,
+    thread_id: str,
+    model: str,
+    reasons: list[str],
+) -> dict[str, Any]:
+    """제안 → `live_custom` 페이로드 (actor=ai · 귀속 메타)."""
+    order_id = uuid.uuid4().hex[:12]
+    group = str(proposal.get("group") or "coin")
+    body: dict[str, Any] = {
+        "symbol": str(proposal["symbol"]),
+        "market": str(proposal["market"]),
+        "entry": str(proposal["entry"]),
+        "stop": str(proposal["stop"]),
+        "first": str(proposal.get("first") or proposal["entry"]),
+        "target": str(proposal["target"]),
+        "short": proposal.get("long") is False,
+        "leverage": str(proposal.get("leverage") or 1),
+        "flags": [],
+        "timeframe": "1h",
+        "price_frame": "1m",
+        "actor": "ai",
+        "ai": {
+            "order_id": order_id,
+            "attribution": f"ai:{order_id}@1",
+            "participant": f"{model}@{PROMPT_VERSION}",
+            "thread": thread_id,
+            "reasons": reasons,
+            "prompt_version": PROMPT_VERSION,
+        },
+    }
+    if group == "coin":
+        body["margin"] = str(margin if margin is not None else Decimal(50))
+    else:
+        body["shares"] = int(shares or 1)
+        body["margin"] = str(Decimal(str(proposal["entry"])) * int(shares or 1))
+    return body
+
+
+async def _record_order(
+    email: str, thread_id: str, body: dict[str, Any], started: dict[str, Any], *, auto: bool
+) -> None:
+    """`event_logs.ai_order_placed` — 일 건수·노출 상한이 이것을 센다."""
+    factory = auth._store()  # pyright: ignore[reportPrivateUsage]
+    async with factory() as session, session.begin():
+        session.add(
+            EventLog(
+                trace_id=get_trace_id() or new_trace_id(),
+                actor=email,
+                module="apps.api.ai_chat",
+                level=LogLevel.INFO,
+                event_type=ORDER_EVENT,
+                payload_json={
+                    "thread": thread_id,
+                    "session_id": started.get("session_id"),
+                    "symbol": body["symbol"],
+                    "market": body["market"],
+                    "margin": body.get("margin"),
+                    "shares": body.get("shares"),
+                    "auto": auto,
+                    "ai": body["ai"],
+                    "confirm": started.get("confirm"),
+                },
+            )
+        )
+        await session.flush()
+
+
+@router.post("/orders")
+async def place_order(
+    request: Request, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
+    """AI 제안을 **사람이 확인**해 판을 띄운다 — 차트 주문 경로(`live_custom`) 그대로 · `actor=AI`.
+
+    Args:
+        request: 요청 (T230 · T242 관문이 `live_custom` 안에서 본다).
+        payload: `{thread_id, proposal: {...}, shares?, margin?}` — `proposal` 은 채팅 메시지의
+            제안 dict.
+
+    Returns:
+        판 상태 (`live_custom` 응답) + `order_id`.
+
+    Raises:
+        HTTPException: 400 제안이 막힌 것 · 그 외는 `live_custom` 의 것.
+    """
+    who = await _who_or_403(request)
+    proposal_raw = payload.get("proposal")
+    if not isinstance(proposal_raw, dict):
+        raise HTTPException(400, "proposal 이 없다")
+    proposal = cast("dict[str, Any]", proposal_raw)
+    if proposal.get("ok") is False:
+        raise HTTPException(400, "RiskManager 가 막은 제안이다 — 값을 고쳐 다시 제안받는다")
+    thread_id = str(payload.get("thread_id") or "")
+    shares = payload.get("shares")
+    margin = payload.get("margin")
+    body = _order_payload(
+        proposal,
+        shares=int(shares) if shares is not None else None,
+        margin=Decimal(str(margin)) if margin is not None else None,
+        thread_id=thread_id,
+        model=str(payload.get("model") or ""),
+        reasons=[str(r) for r in cast("list[object]", proposal.get("reasons") or [])],
+    )
+    started = await walkforward.live_custom(request, body)
+    await _record_order(who.email, thread_id, body, started, auto=False)
+    started["order_id"] = body["ai"]["order_id"]
+    return started
+
+
+async def _auto_place(
+    request: Request, who: Caller, thread_id: str, model: str, proposals: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """자동 모드면 제안을 문에 통과시켜 낸다 — 결과는 제안 카드가 그대로 보여 준다."""
+    if not proposals:
+        return None
+    state = await _auto_state(who.email)
+    if not state.enabled:
+        return None
+    count, exposure = await _placed_today(who.email)
+    out: list[dict[str, Any]] = []
+    for proposal in proposals:
+        group = str(proposal.get("group") or "coin")
+        market = str(proposal.get("market") or "")
+        try:
+            body = _order_payload(
+                proposal,
+                shares=state.shares,
+                margin=state.margin,
+                thread_id=thread_id,
+                model=model,
+                reasons=[str(r) for r in cast("list[object]", proposal.get("reasons") or [])],
+            )
+            total = Decimal(0)
+            try:
+                state_now = await exchange_api._state_fresh(  # pyright: ignore[reportPrivateUsage]
+                    body["symbol"], market
+                )
+                balance = cast("dict[str, Any]", state_now.get("balance") or {})
+                total = Decimal(str(balance.get("total") or 0))
+            except Exception:
+                total = Decimal(0)
+            group_key = {"coin": "coin", "domestic": "domestic"}.get(group, "foreign")
+            verdict = auto_allowed(
+                state,
+                current_version=AUTO_ORDER_CONSENT_VERSION,
+                placed_today=count,
+                exposure_now=exposure,
+                new_margin=Decimal(str(body["margin"])),
+                total=total,
+                proposal_ok=proposal.get("ok") is not False,
+                market_allowed=who.market(group_key).trade,
+                playbook_allowed=who.playbook("custom").trade,
+            )
+            if not verdict.ok:
+                out.append({"symbol": body["symbol"], "placed": False, "why": verdict.why})
+                continue
+            started = await walkforward.live_custom(request, body)
+            await _record_order(who.email, thread_id, body, started, auto=True)
+            count += 1
+            exposure += Decimal(str(body["margin"]))
+            out.append(
+                {
+                    "symbol": body["symbol"],
+                    "placed": True,
+                    "session_id": started.get("session_id"),
+                    "order_id": body["ai"]["order_id"],
+                }
+            )
+        except HTTPException as exc:
+            out.append(
+                {
+                    "symbol": str(proposal.get("symbol")),
+                    "placed": False,
+                    "why": str(exc.detail)[:200],
+                }
+            )
+        except Exception as exc:
+            out.append(
+                {"symbol": str(proposal.get("symbol")), "placed": False, "why": str(exc)[:200]}
+            )
+    return {"enabled": True, "results": out}
+
+
+@router.get("/orders")
+async def list_orders(request: Request) -> dict[str, Any]:
+    """AI 가 낸(사람 확인·자동) 판들 — 판 메타 `ai` 가 있는 살아 있는 판 + 오늘 낸 기록.
+
+    Args:
+        request: 요청.
+
+    Returns:
+        `{runs: [{key, symbol, market, ai}], today: {count, margin}}`.
+    """
+    who = await _who_or_403(request)
+    store = walkforward.ledger_store()
+    runs: list[dict[str, Any]] = []
+    if store is not None:
+        for row in await store.open_runs(live=True):
+            meta = cast("dict[str, Any]", row.get("meta") or {})
+            if isinstance(meta.get("ai"), dict):
+                runs.append(
+                    {
+                        "key": row.get("key"),
+                        "symbol": row.get("symbol"),
+                        "market": row.get("market"),
+                        "ai": meta["ai"],
+                    }
+                )
+    count, margin = await _placed_today(who.email)
+    return {"runs": runs, "today": {"count": count, "margin": str(margin)}}
 
 
 __all__ = ["router"]

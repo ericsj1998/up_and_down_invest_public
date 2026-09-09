@@ -75,6 +75,7 @@ class Actor(StrEnum):
     Attributes:
         SYSTEM: 플레이북이 자동으로 낸 것.
         HUMAN: 사람이 손으로 누른 것.
+        AI: AI 제안을 사람이 확인했거나 자동 모드가 낸 것 (T248). 집행값은 RiskManager 가 확정했다.
 
     Note:
         🔴 **섞지 않는다.** 사람의 판단으로 룰을 학습시키지 않으며, 두 열을 나란히
@@ -83,6 +84,7 @@ class Actor(StrEnum):
 
     SYSTEM = "시스템"
     HUMAN = "사람"
+    AI = "AI"
     ADOPTED = "이어받음"
     """거래소에 이미 열려 있던 포지션을 **주워 온** 기록 (2026-08-18).
 

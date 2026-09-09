@@ -253,3 +253,64 @@ class TestPool:
 
         pool = load_pool()
         assert pool.chat_model and pool.chat_timeout_seconds > 0
+
+
+class TestAuto:
+    def test_gate_order_and_reasons(self) -> None:
+        from updown.common.security.consent import AUTO_ORDER_CONSENT_VERSION
+        from updown.orchestration.ai_chat.auto import AutoState, AutoVerdict, auto_allowed
+
+        on = AutoState(enabled=True, consent_version=AUTO_ORDER_CONSENT_VERSION)
+
+        def gate(
+            state: AutoState = on,
+            *,
+            placed_today: int = 0,
+            new_margin: Decimal = Decimal(100),
+            proposal_ok: bool = True,
+        ) -> AutoVerdict:
+            return auto_allowed(
+                state,
+                current_version=AUTO_ORDER_CONSENT_VERSION,
+                placed_today=placed_today,
+                exposure_now=Decimal(0),
+                new_margin=new_margin,
+                total=Decimal(1000),
+                proposal_ok=proposal_ok,
+                market_allowed=True,
+                playbook_allowed=True,
+            )
+
+        assert gate().ok
+        assert "꺼져" in gate(AutoState(False, None)).why
+        assert "동의" in gate(AutoState(True, "old")).why
+        assert "상한 3" in gate(placed_today=3).why
+        assert "노출" in gate(new_margin=Decimal(400)).why
+        assert "막은" in gate(proposal_ok=False).why
+
+    def test_consent_pair_matches_screen(self) -> None:
+        import re
+        from pathlib import Path
+
+        from updown.common.security.consent import (
+            AUTO_ORDER_CONSENT_TEXT,
+            AUTO_ORDER_CONSENT_VERSION,
+        )
+
+        source = (Path(__file__).resolve().parent.parent / "web/src/shell/disclaimer.ts").read_text(
+            encoding="utf-8"
+        )
+        assert (
+            re.search(r'AUTO_ORDER_CONSENT_VERSION = "([^"]+)"', source).group(1)
+            == AUTO_ORDER_CONSENT_VERSION
+        )  # type: ignore[union-attr]
+        assert AUTO_ORDER_CONSENT_TEXT in source.replace("\n", "")
+
+    def test_actor_ai_exists_and_session_buy_takes_actor(self) -> None:
+        import inspect
+
+        from updown.orchestration.walkforward.ledger import Actor
+        from updown.orchestration.walkforward.session import Session
+
+        assert Actor("AI") is Actor.AI
+        assert "actor" in inspect.signature(Session.buy).parameters

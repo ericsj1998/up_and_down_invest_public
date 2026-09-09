@@ -117,7 +117,7 @@ from updown.orchestration.walkforward import (
     evidence_rows,
 )
 from updown.orchestration.walkforward import pending as pending_mod
-from updown.orchestration.walkforward.ledger import Direction
+from updown.orchestration.walkforward.ledger import Actor, Direction
 from updown.orchestration.walkforward.live_filler import LiveFiller
 from updown.orchestration.walkforward.live_runner import (
     SEED_BARS,
@@ -1268,6 +1268,14 @@ async def _live_start(
                 # ⚠️ 위의 `flags`(그릴 것) 와 다른 열이다. 그릴 것은 화면 설정이라
                 #    나중에 바뀔 수 있고, 이것은 **매매 당시의 사실**이라 안 바뀐다.
                 "custom_flags": _flag_names(payload),
+                # ⭐ T248 — AI 제안의 귀속(`ai:<order_id>@1` · 참가자 · 근거). 선언된 매매법이
+                #    아니라 **판의 메타**다 — 이름을 매번 만들면 성과 귀속의 분모가 쪼개진다
+                #    (`custom` 과 같은 원칙).
+                **(
+                    {"ai": dict(cast("dict[str, Any]", payload["ai"]))}
+                    if isinstance(payload.get("ai"), dict)
+                    else {}
+                ),
                 # ⭐ T250 — 셋업 없는 판의 판정 축(차트가 보던 축). 되살리기가 이 값을
                 #    `timeframe` 으로 돌려주지 않으면 선언 축(4h)으로 되살아나 급전이
                 #    얼어붙는다(`frame_frozen` 실측).
@@ -5597,6 +5605,9 @@ async def live_custom(
         raise HTTPException(400, f"계획 값을 못 읽었다: {exc}") from exc
     market = Market(str(payload.get("market", Market.BINANCE.value)))
     short = bool(payload.get("short"))
+    # ⭐ T248 — AI 제안을 사람이 확인했거나 자동 모드가 낸 판은 `actor=AI` 로 남긴다. 값은 여전히
+    #    이 함수의 확정(①)을 거친다 — 집행값의 SSoT 는 RiskManager (§5.3.1).
+    actor = Actor.AI if str(payload.get("actor") or "") == "ai" else Actor.HUMAN
     # ⭐ T250 — 주식 능력표: 배율 1 · 숏 없음 · 정수 주(예산 = 주수 x 진입가) · 장중만.
     #    코인은 그대로 지나간다.
     caps = capabilities_of(market)
@@ -5664,6 +5675,7 @@ async def live_custom(
             target=target,
             first=first,
             direction=Direction.SHORT if short else Direction.LONG,
+            actor=actor,
         )
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -5686,7 +5698,10 @@ async def live_custom(
             "flags": flags,
             "rr": f"{got.rr:.2f}",
             "need_pct": f"{got.need_pct:.1f}",
-            "note": "사람이 그은 계획 — actor=HUMAN, 러너는 집행·감시만 한다",
+            "actor": actor.value,
+            "note": (
+                "사람이 그은 계획 — 러너는 집행·감시만 한다 (actor 가 AI 면 사람이 확인한 AI 제안)"
+            ),
         },
     )
     body = _state(key)

@@ -11,6 +11,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   chatAsk,
   chatCreateThread,
+  chatPlaceOrder,
+  chatSetAuto,
   chatSettings,
   chatThread,
   chatThreads,
@@ -18,6 +20,7 @@ import {
   type Who,
 } from "../api";
 import { requestStockOrder } from "../StockOrder";
+import { AUTO_ORDER_CONSENT_TEXT, AUTO_ORDER_CONSENT_VERSION } from "../shell/disclaimer";
 import { ErrorCard } from "../ui";
 import { proposalLine, readDock, visibleMessages, writeDock, type ChatMessageView, type Dock } from "./chat";
 import { useJobEvents } from "./useJobEvents";
@@ -34,6 +37,10 @@ export function ChatPanel({ who, open, onClose }: { who: Who | null; open: boole
   const [threads, setThreads] = useState<ChatThreadView[]>([]);
   const [thread, setThread] = useState<ChatThreadView | null>(null);
   const [models, setModels] = useState<{ id: string; rank: number }[]>([]);
+  const [auto, setAuto] = useState<Record<string, unknown> | null>(null);
+  const [autoOpen, setAutoOpen] = useState(false);
+  const [size, setSize] = useState<Record<number, string>>({});
+  const [placed, setPlaced] = useState<Record<number, string>>({});
   const [model, setModel] = useState("");
   const [text, setText] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
@@ -57,6 +64,7 @@ export function ChatPanel({ who, open, onClose }: { who: Who | null; open: boole
       .then((got) => {
         setModels(got.models);
         setModel((was) => was || got.default);
+        setAuto(got.auto as Record<string, unknown>);
       })
       .catch(() => {});
   }, [open, allowed, loadThreads]);
@@ -169,6 +177,9 @@ export function ChatPanel({ who, open, onClose }: { who: Who | null; open: boole
             <button type="button" className="btn small" onClick={fresh}>
               +
             </button>
+            <button type="button" className={`btn small ${auto?.enabled ? "primary" : ""}`} onClick={() => setAutoOpen((was) => !was)} title="자동 실행 모드">
+              {auto?.enabled ? "자동 ON" : "자동 OFF"}
+            </button>
             <select value={model} onChange={(e) => setModel(e.target.value)} title="모델 — 성능은 T249 가 잰다">
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
@@ -178,6 +189,38 @@ export function ChatPanel({ who, open, onClose }: { who: Who | null; open: boole
             </select>
           </div>
 
+          {autoOpen ? (
+            <div className="border-b border-blue-gray-100 px-3 py-2 text-xs dark:border-gray-800">
+              <p>{AUTO_ORDER_CONSENT_TEXT}</p>
+              <p className="faint">
+                오늘 {String(auto?.placed_today ?? 0)}건 / 상한 {String(auto?.max_per_day ?? 3)} · 노출 상한 {String(auto?.max_exposure_pct ?? 30)}% · 기본 주수 {String(auto?.shares ?? 1)} · 기본 예산 {String(auto?.margin ?? 50)} USDT
+              </p>
+              <div className="mt-1 flex gap-2">
+                <button
+                  type="button"
+                  className="btn small primary"
+                  onClick={() =>
+                    chatSetAuto({ enabled: true, consent_version: AUTO_ORDER_CONSENT_VERSION })
+                      .then((got) => setAuto(got))
+                      .catch((exc: unknown) => setError(String(exc)))
+                  }
+                >
+                  동의하고 켠다 (다음에는 묻지 않음)
+                </button>
+                <button
+                  type="button"
+                  className="btn small"
+                  onClick={() =>
+                    chatSetAuto({ enabled: false })
+                      .then((got) => setAuto(got))
+                      .catch((exc: unknown) => setError(String(exc)))
+                  }
+                >
+                  끈다
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-sm">
             {messages.length === 0 ? (
               <p className="faint">
@@ -205,6 +248,16 @@ export function ChatPanel({ who, open, onClose }: { who: Who | null; open: boole
                       {m.model ? ` · ${m.model}` : ""}
                     </p>
                   ) : null}
+                  {m.auto && typeof m.auto === "object" ? (
+                    <p className="faint mt-1 text-xs">
+                      자동 모드:{" "}
+                      {((m.auto as { results?: Array<{ symbol: string; placed: boolean; why?: string; session_id?: string }> }).results ?? []).map((r, i) => (
+                        <span key={i} className={`chip ${r.placed ? "gain" : "loss"}`} title={r.why ?? ""}>
+                          {r.symbol} {r.placed ? `판 ${r.session_id}` : `안 냄 — ${r.why ?? ""}`}
+                        </span>
+                      ))}
+                    </p>
+                  ) : null}
                   {m.proposals && m.proposals.length
                     ? m.proposals.map((p, i) => (
                         <div key={i} className="mt-1 rounded border border-blue-gray-100 p-2 text-xs dark:border-gray-700">
@@ -215,20 +268,45 @@ export function ChatPanel({ who, open, onClose }: { who: Who | null; open: boole
                           {(p.reasons as string[] | undefined)?.length ? (
                             <div className="faint">근거: {(p.reasons as string[]).join(" · ")}</div>
                           ) : null}
-                          <div className="mt-1 flex gap-2">
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <input
+                              className="mono"
+                              style={{ width: 90 }}
+                              placeholder={p.group === "coin" ? "예산 USDT" : "주수"}
+                              value={size[index * 100 + i] ?? ""}
+                              onChange={(e) => setSize({ ...size, [index * 100 + i]: e.target.value })}
+                            />
+                            {/* 🔴 사람이 확인하는 자리 — 값은 서버가 다시 확정하고(RiskManager) actor=AI 로 판이 뜬다. */}
+                            <button
+                              type="button"
+                              className="btn small primary"
+                              disabled={p.ok === false || Boolean(placed[index * 100 + i]) || !thread}
+                              title="이 제안을 확인하고 판을 띄운다 — actor=AI · 집행값은 RiskManager 가 확정"
+                              onClick={() => {
+                                if (!thread) return;
+                                const raw = size[index * 100 + i];
+                                chatPlaceOrder({
+                                  thread_id: thread.id,
+                                  proposal: p,
+                                  model,
+                                  ...(p.group === "coin" ? { margin: raw || undefined } : { shares: raw ? Number(raw) : undefined }),
+                                })
+                                  .then((got) => setPlaced({ ...placed, [index * 100 + i]: got.session_id }))
+                                  .catch((exc: unknown) => setError(String(exc)));
+                              }}
+                            >
+                              {placed[index * 100 + i] ? `판 ${placed[index * 100 + i]}` : "확인하고 주문"}
+                            </button>
                             {p.group !== "coin" ? (
                               <button
                                 type="button"
-                                className="btn small primary"
-                                disabled={p.ok === false}
+                                className="btn small"
                                 onClick={() => requestStockOrder(String(p.symbol), String(p.market))}
-                                title="주식 주문 창에 종목을 채운다 — 값은 거기서 확인하고 사람이 낸다"
+                                title="주식 주문 창에 종목을 채운다 — 값을 고쳐서 사람이 낸다"
                               >
                                 주문 창으로
                               </button>
-                            ) : (
-                              <span className="faint">코인 제안은 값으로만 — 판은 콘솔에서 사람이 띄운다</span>
-                            )}
+                            ) : null}
                           </div>
                         </div>
                       ))

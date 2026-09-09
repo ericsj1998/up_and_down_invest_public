@@ -3191,6 +3191,7 @@ class Session:
         *,
         first: Decimal | None = None,
         direction: Direction = Direction.LONG,
+        actor: Actor = Actor.HUMAN,
     ) -> TradeRecord:
         """사람이 손으로 산다 (T13 ④ · 차트 주문 2026-08-30).
 
@@ -3201,6 +3202,7 @@ class Session:
             first: 1차 익절가. 🔴 **비우면 진입과 목표의 한가운데**로 잡는다 —
                 걸어가기 화면의 옛 동작이고, 그때는 1차를 물을 자리가 없었다.
             direction: 롱/숏. 기본은 롱이다.
+            actor: 누가 냈나 — 사람(기본) 또는 AI(T248 · 사람이 확인했거나 자동 모드).
 
         Returns:
             새 기록.
@@ -3227,7 +3229,7 @@ class Session:
         record = TradeRecord(
             trade_id=new_trade_id(),
             playbook=self.playbook.attribution,
-            actor=Actor.HUMAN,
+            actor=actor,
             direction=direction,
             placed_at=self.cursor,
             opened_at=self.cursor,

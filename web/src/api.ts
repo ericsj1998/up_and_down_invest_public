@@ -1838,7 +1838,17 @@ export function chatSettings(): Promise<{
   models: { id: string; rank: number; note: string }[];
   default: string;
   prompt_version: string;
-  auto: { enabled: boolean; note: string };
+  auto: {
+    enabled: boolean;
+    note?: string;
+    consented?: boolean;
+    consent?: { version: string; text: string };
+    shares?: number;
+    margin?: string;
+    max_per_day?: number;
+    max_exposure_pct?: string;
+    placed_today?: number;
+  };
 }> {
   return request("/ai/chat/settings");
 }
@@ -1857,6 +1867,26 @@ export function chatAsk(id: string, body: { text: string; model?: string }): Pro
     headers: JSON_POST,
     body: JSON.stringify(body),
   });
+}
+
+export function chatSetAuto(body: {
+  enabled: boolean;
+  consent_version?: string;
+  shares?: number;
+  margin?: string;
+  max_per_day?: number;
+  max_exposure_pct?: number;
+}): Promise<Record<string, unknown>> {
+  return request("/ai/chat/auto", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) });
+}
+export function chatPlaceOrder(body: {
+  thread_id: string;
+  proposal: Record<string, unknown>;
+  shares?: number;
+  margin?: string;
+  model?: string;
+}): Promise<{ session_id: string; order_id: string; confirm?: { moved: boolean; stop: string } }> {
+  return request("/ai/chat/orders", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) }, 180_000);
 }
 
 export function marketStatus(market: string): Promise<MarketStatusView> {

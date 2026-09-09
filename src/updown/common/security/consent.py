@@ -14,6 +14,25 @@ DISCLAIMER_TEXT = (
 )
 
 
+AUTO_ORDER_CONSENT_VERSION = "2026-09-09.1"
+AUTO_ORDER_CONSENT_TEXT = (
+    "자동 실행 모드를 켜면 AI 제안이 RiskManager 확정값으로 확인 없이 주문됩니다. "
+    "일 최대 건수와 총자본 대비 노출 상한 안에서만 나가며, 결과의 책임은 본인에게 있습니다."
+)
+
+
+def auto_consent_is_current(version: object) -> bool:
+    """자동 주문 동의 버전이 지금 문장의 것인가.
+
+    Args:
+        version: 화면이 보낸 버전.
+
+    Returns:
+        같으면 참.
+    """
+    return isinstance(version, str) and version == AUTO_ORDER_CONSENT_VERSION
+
+
 def consent_is_current(version: object) -> bool:
     """받은 동의 버전이 지금 문장의 것인가.
 
@@ -26,4 +45,11 @@ def consent_is_current(version: object) -> bool:
     return isinstance(version, str) and version == DISCLAIMER_VERSION
 
 
-__all__ = ["DISCLAIMER_TEXT", "DISCLAIMER_VERSION", "consent_is_current"]
+__all__ = [
+    "AUTO_ORDER_CONSENT_TEXT",
+    "AUTO_ORDER_CONSENT_VERSION",
+    "DISCLAIMER_TEXT",
+    "DISCLAIMER_VERSION",
+    "auto_consent_is_current",
+    "consent_is_current",
+]
