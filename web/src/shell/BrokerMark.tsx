@@ -1,10 +1,11 @@
 /**
  * 시장 아이콘 · 브로커 마크 (T245 · 2026-09-09).
  *
- * 두 층으로 나눈다 — **시장 아이콘**(₿ 코인 / 📈 주식)은 스위치와 헤더 배지에, **브로커 마크**(토스 · GATE · BINANCE)는
+ * 두 층으로 나눈다 — **시장 아이콘**(₿ 코인 / 📈 주식)은 스위치와 헤더 배지에, **브로커 마크**(토스 · Gate · Binance)는
  * 판·계좌 카드 옆에. 카드 옆 그림은 "이 돈이 어느 계좌에 있나" 를 답해야 하므로 브로커다.
  *
- * 토스 로고는 `web/public/brand/Toss_Logo_Primary*_light.png` (사용자가 넣음 · 2026-09-09 · 52 KB 판). 비트코인 ₿ 는 공개 도메인 심볼.
+ * 로고는 전부 사용자가 넣은 파일(`web/public/brand/` · 2026-09-09): 토스 `Toss_Logo_Primary*_light.png`(52 KB · 밝음/어둠 두 판),
+ * `gate_io.svg`(검정 워드마크 — 어두운 화면에서는 반전), `binance.svg`(노랑 · 두 화면 공통). 비트코인 ₿ 는 공개 도메인 심볼.
  * 로고가 없는 브로커는 이름 글자 배지 — 없는 그림을 지어내지 않는다.
  */
 import { ArrowTrendingUpIcon } from "@heroicons/react/24/solid";
@@ -40,6 +41,29 @@ export function GroupIcon({ group, className }: { group: MarketGroup; className?
   return group === "coin" ? <BitcoinIcon className={className} /> : <StockIcon className={className} />;
 }
 
+type Logo = {
+  /** 밝은 화면용 파일. */
+  light: string;
+  /** 어두운 화면용 파일 — 없으면 `light` 를 쓴다. */
+  dark?: string;
+  /** 어두운 화면에서 색 반전 (검정 워드마크). */
+  invertDark?: boolean;
+  alt: string;
+  title: string;
+};
+
+/** 브로커 → 로고. 여기 없는 브로커는 글자 배지로 떨어진다. */
+const LOGOS: Record<string, Logo> = {
+  toss: {
+    light: "/brand/Toss_Logo_Primary_light.png",
+    dark: "/brand/Toss_Logo_Primary_White_light.png",
+    alt: "토스",
+    title: "토스증권 — 시세는 토스, 체결은 페이퍼(가상)",
+  },
+  gate: { light: "/brand/gate_io.svg", invertDark: true, alt: "Gate", title: "Gate.io 선물" },
+  binance: { light: "/brand/binance.svg", alt: "Binance", title: "Binance 선물 (테스트넷)" },
+};
+
 /**
  * 브로커 마크 — 서버가 말한 브로커 이름으로 그린다. 로고가 있으면 로고, 없으면 글자 배지.
  * `broker` 가 없으면 아무것도 안 그린다(옛 서버 · 규칙 #8: 모르는 것을 꾸미지 않는다).
@@ -47,11 +71,17 @@ export function GroupIcon({ group, className }: { group: MarketGroup; className?
 export function BrokerMark({ broker, size = "sm" }: { broker?: string; size?: "sm" | "md" }) {
   if (!broker) return null;
   const h = size === "md" ? "h-5" : "h-3.5";
-  if (broker === "toss") {
+  const logo = LOGOS[broker];
+  if (logo) {
+    const dark = logo.dark ?? logo.light;
     return (
-      <span className="inline-flex shrink-0 items-center" title="토스증권 — 시세는 토스, 체결은 페이퍼(가상)">
-        <img src="/brand/Toss_Logo_Primary_light.png" alt="토스" className={`${h} w-auto dark:hidden`} />
-        <img src="/brand/Toss_Logo_Primary_White_light.png" alt="토스" className={`hidden ${h} w-auto dark:inline`} />
+      <span className="inline-flex shrink-0 items-center" title={logo.title}>
+        <img src={logo.light} alt={logo.alt} className={`${h} w-auto dark:hidden`} />
+        <img
+          src={dark}
+          alt={logo.alt}
+          className={`hidden ${h} w-auto dark:inline ${logo.invertDark ? "dark:invert" : ""}`}
+        />
       </span>
     );
   }
