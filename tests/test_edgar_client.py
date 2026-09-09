@@ -54,6 +54,11 @@ class TestClient:
         with pytest.raises(ValueError, match="User-Agent"):
             EdgarClient("   ")
 
+    def test_user_agent_must_be_ascii(self) -> None:
+        # HTTP 헤더는 라틴-1 — 한글 이름을 넣으면 httpx 가 인코딩에서 죽는다 (2026-09-10 실측 500).
+        with pytest.raises(ValueError, match="ASCII"):
+            EdgarClient("정성준 me@example.com")
+
     @pytest.mark.asyncio
     async def test_user_agent_header_is_sent(self) -> None:
         seen: list[httpx.Request] = []

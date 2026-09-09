@@ -103,11 +103,18 @@ class EdgarClient:
             transport: 시험용 전송 계층.
 
         Raises:
-            ValueError: User-Agent 가 비었다 — 403 을 반복하느니 여기서 멈춘다.
+            ValueError: User-Agent 가 비었거나 ASCII 가 아니다 — 403·인코딩 오류를 반복하느니
+                여기서 멈춘다.
         """
         if not user_agent.strip():
             raise ValueError(
                 "EDGAR 는 User-Agent(이름 이메일)가 없으면 403 이다 — EDGAR_USER_AGENT 를 설정하라"
+            )
+        if not user_agent.isascii():
+            # HTTP 헤더는 라틴-1 이라 한글 이름을 넣으면 httpx 가 UnicodeEncodeError 로 죽는다
+            # (2026-09-10 실측 · 500). 여기서 말로 멈춘다 (규칙 #8).
+            raise ValueError(
+                "EDGAR_USER_AGENT 는 ASCII 만 된다(HTTP 헤더) — 영문 이름·앱 이름 + 이메일로 쓴다"
             )
         self._client = httpx.AsyncClient(
             timeout=timeout,
