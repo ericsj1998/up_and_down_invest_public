@@ -78,6 +78,7 @@ class MarketDataProvider:
     #    만들면 요청마다 연결 풀·rate-limit 계량기가 새로 생긴다.
     _shared_gate: ClassVar[GateClient | None] = None
     _shared_binance: ClassVar[BinanceClient | None] = None
+    _shared_toss: ClassVar[TossClient | None] = None
 
     def __init__(self, settings: Settings | None = None) -> None:
         """Provider 를 만든다. 실제 클라이언트는 시장별로 지연 생성한다.
@@ -217,14 +218,19 @@ class MarketDataProvider:
             return UpbitAdapter(self._upbit_client)
 
         if market in _TOSS_MARKETS:
-            if self._toss_client is None:
+            # 🔴 **프로세스에서 하나** (T250 실측 2026-09-09). 토스는 client 당 토큰이 하나라
+            #    두 판이 각자 클라이언트를 들면 서로의 토큰을 무효화한다(`token-revoked` 401 →
+            #    재발급 반복). Gate 와 같은 이유로 클래스 수준에 둔다. 프로세스 사이(api ·
+            #    engine)는 여전히 한 키를 나눠 쓰므로 동시 백필을 띄우지 않는다(toss_api_notes §1).
+            if MarketDataProvider._shared_toss is None:
                 settings = self._settings or load_settings()
                 client_id, client_secret = settings.toss_market_data_credentials
-                self._toss_client = TossClient(client_id, client_secret)
+                MarketDataProvider._shared_toss = TossClient(client_id, client_secret)
                 _logger.info(
                     "market_data_adapter_created",
                     payload={"market": market.value, "broker": "toss"},
                 )
+            self._toss_client = MarketDataProvider._shared_toss
             return TossAdapter(self._toss_client)
 
         raise UnsupportedMarketError(f"{market} 의 조회 어댑터가 없다")
@@ -312,12 +318,13 @@ class MarketDataProvider:
         """
         # ⚠️ 새 클라이언트를 더할 때 **여기도** 채운다. 빠뜨리면 소켓이 누수되는데
         #    증상이 조용하다 — 프로세스가 오래 살아야 드러난다.
-        # ⛔ 코인 조회 클라이언트(Gate·Binance)는 **프로세스 공유**라 여기서 닫지 않는다
-        #    (2026-09-05).
+        # ⛔ 코인 조회 클라이언트(Gate·Binance)와 **토스**(T250 · 2026-09-09)는 프로세스 공유라
+        #    여기서 닫지 않는다 (2026-09-05).
         #    `async with MarketDataProvider()` 한 번이 라이브 러너의 클라이언트까지 닫아
-        #    "client has been closed" 174건 — 공유 자원의 수명은 프로세스다.
+        #    "client has been closed" 174건 — 공유 자원의 수명은 프로세스다. 토스도 공유로
+        #    올린 날 같은 증상이 재현됐다(rank60 의 async with 가 닫음 → 주식 판 전부 실패).
         pending: list[UpbitClient | TossClient] = [
-            client for client in (self._upbit_client, self._toss_client) if client is not None
+            client for client in (self._upbit_client,) if client is not None
         ]
         self._upbit_client = None
         self._toss_client = None

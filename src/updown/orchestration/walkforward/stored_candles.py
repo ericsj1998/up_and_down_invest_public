@@ -280,12 +280,14 @@ class StoredCandles:
         return iid
 
 
-def needed_frames(entry: Timeframe, step: Timeframe) -> tuple[Timeframe, ...]:
-    """폴링 브로커에 요구할 축 — 걸음 축 · 진입 축 · 일봉뿐.
+def needed_frames(entry: Timeframe, step: Timeframe, *extra: Timeframe) -> tuple[Timeframe, ...]:
+    """폴링 브로커에 요구할 축 — 걸음 축 · 진입 축 · 일봉 (+ 방아쇠 축).
 
     Args:
         entry: 매매법 진입 축.
         step: 세션 걸음 축 (`STEP_FRAME`).
+        extra: 더 넣을 축 — 셋업 없는 판의 **방아쇠 축**(T250 실측: 1m 이 급전에 없어 매 걸음
+            `live_trigger_step_failed` · 진입 주문이 영영 안 나갔다).
 
     Returns:
         중복 없이, 짧은 축부터.
@@ -294,7 +296,7 @@ def needed_frames(entry: Timeframe, step: Timeframe) -> tuple[Timeframe, ...]:
         웹소켓 브로커는 9개 축을 다 시드하지만 폴링 브로커에서 그것은 축마다 분봉 수만 개다.
         주식 저장소 생성기(T239)도 [진입 축 · 1d] 만 쓴다 — 같은 눈으로 본다.
     """
-    wanted = {step, entry, Timeframe.D1}
+    wanted = {step, entry, Timeframe.D1, *extra}
     return tuple(sorted(wanted, key=lambda f: interval(f)))
 
 

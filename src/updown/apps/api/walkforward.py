@@ -829,11 +829,23 @@ async def _live_start(
     #    분봉 수만 개(첫 실측: 15분에 890 요청 · 판은 뜨지도 못함). 그래서 ① 축을 걸음·진입·일봉으로
     #    줄이고 ② DB 봉 캐시(`StoredCandles`)를 앞에 세운다 — 재시작·되살리기는 DB 에서 시드한다.
     #    시장 이름이 아니라 **능력**(WS 없음)으로 가른다.
+    # 🔴 셋업 없는 판의 **방아쇠 축**은 급전을 조립하기 전에 안다 — 폴링 브로커의 축 목록에 넣어야
+    #    한다(T250 실측: 1m 이 없어 매 걸음 실패 · 주문이 영영 안 나갔다). 문은 여기 하나다.
+    trigger_asked: Timeframe | None = None
+    if not book.setups:
+        raw_trigger = str(payload.get("price_frame") or Timeframe.M1.value)
+        try:
+            trigger_asked = Timeframe(raw_trigger)
+        except ValueError as exc:
+            raise HTTPException(400, f"모르는 방아쇠 축이다: {raw_trigger}") from exc
     if Capability.WS not in quotes.capabilities:
         if _candles is None:
             raise HTTPException(503, "봉 저장소가 없다 — 폴링 브로커는 DB 캐시 없이 띄우지 않는다")
         quotes = StoredCandles(quotes, _candles, calendar=load_calendar())
-        frames = list(quotes.supported_frames(needed_frames(book.timeframe, STEP_FRAME)))
+        extra_frames = () if trigger_asked is None else (trigger_asked,)
+        frames = list(
+            quotes.supported_frames(needed_frames(book.timeframe, STEP_FRAME, *extra_frames))
+        )
     else:
         frames = list(quotes.supported_frames(FRAMES))
     feed = await build_live_feed(quotes, instrument, frames, book.timeframe)
@@ -1135,12 +1147,8 @@ async def _live_start(
     #
     # ⚠️ **라이브에만 있다.** 백테스트 경로에는 안 넣었다 — 셋업 없는 판은 백테스트에서
     #   매매를 한 건도 안 만들고, 넣어 두면 "쓰이지 않는데 있는 통로"가 된다.
-    if not book.setups:
-        raw = str(payload.get("price_frame") or Timeframe.M1.value)
-        try:
-            session.price_frame = Timeframe(raw)
-        except ValueError as exc:
-            raise HTTPException(400, f"모르는 방아쇠 축이다: {raw}") from exc
+    if trigger_asked is not None:
+        session.price_frame = trigger_asked
     # ⭐ 걸어 두고 받는 판이면 여기서 켜진다 (T19 ④). 선언이 없으면 시장가 그대로다.
     session.limit_entry = wants_limit(catalog, book)
     session.post_only_entry = wants_post_only(catalog, book)
@@ -1260,6 +1268,10 @@ async def _live_start(
                 # ⚠️ 위의 `flags`(그릴 것) 와 다른 열이다. 그릴 것은 화면 설정이라
                 #    나중에 바뀔 수 있고, 이것은 **매매 당시의 사실**이라 안 바뀐다.
                 "custom_flags": _flag_names(payload),
+                # ⭐ T250 — 셋업 없는 판의 판정 축(차트가 보던 축). 되살리기가 이 값을
+                #    `timeframe` 으로 돌려주지 않으면 선언 축(4h)으로 되살아나 급전이
+                #    얼어붙는다(`frame_frozen` 실측).
+                **({"judge_frame": book.timeframe.value} if not book.setups else {}),
             },
         )
     except RunStoreError as exc:
@@ -3413,7 +3425,7 @@ def revive_settings_of(row: dict[str, Any]) -> dict[str, Any]:
         row: `open_runs` 가 낸 행. `meta` 에 띄울 때 받은 금고 셋·브레이커 원문이 있다.
 
     Returns:
-        `skim · profit_line · budget_cap · drawdown_stop` 중 있는 것만.
+        `skim · profit_line · budget_cap · drawdown_stop` 중 있는 것만 (+ `run_key` · `timeframe`).
 
     Note:
         🔴 2026-08-23 발견 — `_revive` 가 매매법·종목·배율·증거금만 넘겨서 되살아난
@@ -3433,6 +3445,10 @@ def revive_settings_of(row: dict[str, Any]) -> dict[str, Any]:
     marker = str(meta.get("run_key") or row.get("key") or "")
     if marker:
         out["run_key"] = marker
+    # ⭐ T250 — 셋업 없는 판의 판정 축(차트 축)을 되살린다.
+    judge = meta.get("judge_frame")
+    if isinstance(judge, str) and judge:
+        out["timeframe"] = judge
     return out
 
 

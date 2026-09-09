@@ -186,3 +186,10 @@ async def test_calendar_filters_returned_bars_but_everything_is_stored() -> None
 def test_needed_frames_is_step_entry_daily() -> None:
     assert needed_frames(Timeframe.H1, Timeframe.M5) == (Timeframe.M5, Timeframe.H1, Timeframe.D1)
     assert needed_frames(Timeframe.D1, Timeframe.M5) == (Timeframe.M5, Timeframe.D1)
+    # T250 — 셋업 없는 판의 방아쇠 축(1m)도 급전에 있어야 한다.
+    assert needed_frames(Timeframe.H1, Timeframe.M5, Timeframe.M1) == (
+        Timeframe.M1,
+        Timeframe.M5,
+        Timeframe.H1,
+        Timeframe.D1,
+    )

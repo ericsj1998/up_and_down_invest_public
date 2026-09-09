@@ -104,3 +104,6 @@ class TestWiring:
         ).read_text(encoding="utf-8")
         assert 'if not book.setups and payload.get("timeframe")' in source
         assert source.count('payload.get("timeframe")') == 1, "셋업 있는 판의 축은 밖에서 못 바꾼다"
+        # 되살리기가 차트 축을 잃으면 선언 축(4h)으로 돌아와 급전이 얼어붙는다 — 메타 → 페이로드.
+        assert '"judge_frame": book.timeframe.value' in source
+        assert 'out["timeframe"] = judge' in source
