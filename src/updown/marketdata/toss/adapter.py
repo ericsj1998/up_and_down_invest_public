@@ -20,17 +20,26 @@
 으로 읽는다. 3년 백테스트가 그 가짜 신호로 오염된다.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any, cast
 
 from updown.common.domain.candle import Candle
-from updown.common.domain.instrument import Instrument, Timeframe
+from updown.common.domain.instrument import Instrument, Market, Timeframe
 from updown.common.domain.market import Balance, MarketStatus, OrderBook, Quote
 from updown.common.domain.order import OrderRequest, OrderResult, OrderStatus
+from updown.common.domain.session import (
+    MarketCalendar,
+    SessionConfigError,
+    Tradability,
+    load_calendar,
+)
 from updown.common.logging.setup import get_logger
 from updown.marketdata.adapter import Capability
 from updown.marketdata.ingest.aggregate import bucket_start, merge_rows
 from updown.marketdata.ingest.timeframes import interval
+from updown.marketdata.stream import CandleStream
 from updown.marketdata.toss.client import TossApiError, TossClient
 from updown.marketdata.toss.mapping import (
     DAILY_INTERVAL,
@@ -58,6 +67,11 @@ MINUTE = timedelta(minutes=1)
 #: 별도 그룹"이라고 밝힌다. 3년치 백필이 현재가·호가 조회 예산을 잡아먹지 않는 이유다.
 CHART_GROUP = "MARKET_DATA_CHART"
 MARKET_DATA_GROUP = "MARKET_DATA"
+
+#: 미국 주식 호가단위 — $1 이상은 $0.01 (능력표 `tick: broker` · 1달러 미만 종목은 안 다룬다).
+US_TICK = Decimal("0.01")
+#: 토스가 못 주는 축 — 분봉이 원재료라 초봉은 없다.
+_NO_FRAMES = frozenset({Timeframe.S10, Timeframe.S30})
 
 #: 커서 반복 안전 상한의 **여유 배수**.
 #:
@@ -121,13 +135,15 @@ class TossAdapter:
         않는다). 주문 메서드는 시그니처를 지키되 예외를 던진다.
     """
 
-    def __init__(self, client: TossClient) -> None:
+    def __init__(self, client: TossClient, *, calendar: MarketCalendar | None = None) -> None:
         """어댑터를 만든다.
 
         Args:
             client: HTTP 클라이언트. 토큰 발급·스로틀·재시도는 클라이언트의 책임이다.
+            calendar: 장 시간 판정 (시험용). None 이면 처음 필요할 때 `config/market_sessions.yml`.
         """
         self._client = client
+        self._calendar = calendar
 
     @property
     def capabilities(self) -> frozenset[Capability]:
@@ -274,19 +290,128 @@ class TossAdapter:
         return to_orderbook(result, instrument, as_of)
 
     async def get_market_status(self, instrument: Instrument) -> MarketStatus:
-        """미지원 — 마켓 캘린더가 선행 조건이다 (C2-3·C2-4).
+        """장 상태 — **마켓 캘린더가 답한다** (C2-3·C2-4 · T238 로 해소).
 
         Args:
             instrument: 대상 종목.
 
+        Returns:
+            세션과 주문 가능 여부. 캘린더 유효 구간 밖(`UNKNOWN`)은 **불가**로 답한다 —
+            그럴듯한 값을 지어내지 않는다 (절대 규칙 #8).
+
         Raises:
-            MarketCalendarRequiredError: 항상.
+            MarketCalendarRequiredError: 캘린더 설정을 읽을 수 없는 경우.
         """
-        raise MarketCalendarRequiredError(
-            f"{instrument.market.value} 의 장 상태는 마켓 캘린더 없이 답할 수 없다 "
-            f"({instrument.symbol}). 휴장일·조기마감(현지 13:00)·서머타임이 필요하며 "
-            "P2 진입 차단 항목 C2-3·C2-4 다 — 그럴듯한 값을 지어내지 않는다 (절대 규칙 #8)"
+        now = datetime.now(UTC)
+        calendar = self._calendar_or_raise()
+        state, _why = calendar.tradability(instrument.market, now)
+        next_open, next_close = calendar.next_events(instrument.market, now)
+        return MarketStatus(
+            instrument=instrument,
+            session=calendar.session_at(instrument.market, now),
+            is_order_allowed=state is Tradability.OPEN,
+            as_of=now,
+            next_open=next_open,
+            next_close=next_close,
         )
+
+    # ------------------------------------------------------------------
+    # 라이브 러너 계약 (QuoteAdapter · T240)
+    # ------------------------------------------------------------------
+
+    async def contract_spec(self, instrument: Instrument) -> dict[str, Any]:
+        """계약 명세 — 주식은 승수 1 · 정수 주 · 호가단위는 시장 규칙.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            Gate 명세와 같은 열쇠(`quanto_multiplier` · `order_size_min` · `order_price_round` ·
+            `mark_price`)로 — 러너·사이징이 시장 이름으로 분기하지 않게.
+        """
+        quote = await self.get_quote(instrument)
+        tick = self._tick_for(instrument, quote.last_price)
+        return {
+            "name": to_symbol(instrument),
+            "quanto_multiplier": "1",
+            "order_size_min": 1,
+            "order_size_max": 1_000_000,
+            "order_price_round": str(tick),
+            "mark_price": str(quote.last_price),
+            "last_price": str(quote.last_price),
+        }
+
+    async def funding_rate(self, instrument: Instrument) -> Decimal | None:  # noqa: ARG002
+        """주식에는 펀딩이 없다.
+
+        Args:
+            instrument: 종목 (쓰지 않는다 — 계약이 요구하는 자리).
+
+        Returns:
+            항상 None.
+        """
+        return None
+
+    def interval_seconds(self, timeframe: Timeframe) -> int:
+        """시간축의 초 길이.
+
+        Args:
+            timeframe: 시간축.
+
+        Returns:
+            초.
+        """
+        return int(interval(timeframe).total_seconds())
+
+    def supported_frames(self, frames: Sequence[Timeframe]) -> tuple[Timeframe, ...]:
+        """토스가 줄 수 있는 축 — 분봉(1m)에서 합성되는 것 전부 · 초봉은 없다.
+
+        Args:
+            frames: 원하는 시간축들.
+
+        Returns:
+            그중 토스가 줄 수 있는 것 (순서 유지).
+        """
+        return tuple(frame for frame in frames if frame not in _NO_FRAMES)
+
+    def candle_stream(
+        self,
+        instruments: Sequence[Instrument],
+        timeframe: Timeframe,
+        multiplier: Decimal,  # noqa: ARG002 — 주식은 승수 1 · 계약이 요구하는 자리
+    ) -> CandleStream:
+        """폴링 스트림 — 토스에는 웹소켓이 없다 (`toss/stream.py`).
+
+        Args:
+            instruments: 볼 종목들.
+            timeframe: 낼 봉의 축.
+            multiplier: 계약 승수 — 주식은 1 이라 쓰지 않는다 (계약이 요구하는 자리).
+
+        Returns:
+            캘린더가 열렸을 때만 조회하는 폴링 스트림.
+        """
+        from updown.marketdata.toss.stream import TossCandleStream
+
+        return TossCandleStream(self, instruments, timeframe, calendar=self._calendar_or_raise())
+
+    def _calendar_or_raise(self) -> MarketCalendar:
+        if self._calendar is None:
+            try:
+                self._calendar = load_calendar()
+            except (SessionConfigError, OSError) as exc:
+                raise MarketCalendarRequiredError(
+                    f"마켓 캘린더를 읽을 수 없다 — {exc}. 장 상태를 지어내지 않는다 (규칙 #8)"
+                ) from exc
+        return self._calendar
+
+    def _tick_for(self, instrument: Instrument, price: Decimal) -> Decimal:
+        if instrument.market is Market.KRX:
+            from updown.common.costs import load_cost_table, resolve_tick
+
+            return resolve_tick(
+                load_cost_table().for_market(Market.KRX), instrument.symbol, price, krw=True
+            )
+        return US_TICK
 
     # ------------------------------------------------------------------
     # 주문 경로 — 전부 차단

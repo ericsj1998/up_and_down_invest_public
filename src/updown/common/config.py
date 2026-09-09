@@ -207,6 +207,13 @@ class Settings(BaseSettings):
     live_orders: bool = False
     """운영자 스위치 (`LIVE_ORDERS=1`). 키가 있어도 이것이 꺼져 있으면 주문은 테스트넷으로 간다."""
 
+    stock_live_orders: bool = False
+    """주식 실주문 스위치 (`STOCK_LIVE_ORDERS=1` · T240). 코인 스위치와 **따로** 다.
+
+    켜져 있어도 토스 실주문 어댑터는 아직 없다(Secret·인증서 미수령 · G1 뒤) — 켜면 주식 판은
+    페이퍼로 떨어지지 않고 **예외**다 (`execution/gateway.live_adapter`).
+    """
+
     # ── 이메일 리포트 (T35) — 값은 .env 에만 (절대 규칙 #1) ──
     smtp_host: str | None = None
     smtp_port: int = 587

@@ -22,6 +22,7 @@
 | 리더 | `api` 와 `api_b` 중 **하나만** 뜬다(블루그린) — 어느 쪽인지는 `docker ps` |
 | env | 서버 `~/updown/.env.live`·`.env.demo` (600) 만 — 연구 PC 에 사본 없음(2026-09-06 정리). 목록은 [env_live.md](env_live.md). **값은 어디에도 찍지 않는다** |
 | 실계좌 스위치 | `.env.live` 의 `LIVE_ORDERS=1` (0 이면 같은 코드가 테스트넷) · Gate 만 (`UPDOWN_MARKETS=GATE`) |
+| 주식 스위치 | `STOCK_LIVE_ORDERS`(T240 · 코인과 별개). **0 으로 둔다** — 주식 판은 페이퍼(`logs/stock_paper/`). 1 은 아직 열 수 없다(토스 실주문 어댑터 없음 → 예외). 주식 시장을 목록에 올리려면 `UPDOWN_MARKETS` 에 NASDAQ 등을 더한다(사람이) |
 | 결정 기록 | `config/live_decision.yml` (자본 300 · 6종 · MDD 브레이커 없음) — 관문 API 가 읽는다 |
 
 ## 1. 배포 = 한 줄

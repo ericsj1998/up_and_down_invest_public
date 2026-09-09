@@ -28,7 +28,9 @@ import pytest
 from pydantic import SecretStr
 
 from updown.common.domain.instrument import AssetType, Currency, Instrument, Market, Side, Timeframe
+from updown.common.domain.market import MarketSession
 from updown.common.domain.order import OrderKind, OrderRequest, OrderType
+from updown.common.domain.session import SessionConfigError, Tradability
 from updown.marketdata.adapter import BrokerAdapter, Capability
 from updown.marketdata.ingest.aggregate import AggregationError, CandleRow, merge_rows
 from updown.marketdata.toss.adapter import (
@@ -658,9 +660,37 @@ async def test_order_paths_raise_rather_than_pretending() -> None:
         await adapter.get_balance()
 
 
+class _UnknownCalendar:
+    """유효 구간 밖 — 캘린더가 모른다고 답하는 경우."""
+
+    def tradability(self, market: Market, moment: datetime) -> tuple[Tradability, str]:  # noqa: ARG002
+        return Tradability.UNKNOWN, "휴장일 목록이 없는 해"
+
+    def session_at(self, market: Market, moment: datetime) -> MarketSession:  # noqa: ARG002
+        return MarketSession.CLOSED
+
+    def next_events(self, market: Market, moment: datetime) -> tuple[None, None]:  # noqa: ARG002
+        return None, None
+
+
 @pytest.mark.asyncio
-async def test_market_status_refuses_to_guess_without_a_calendar() -> None:
-    """휴장일을 모르면 `REGULAR` 을 지어내지 않는다 (C2-3·C2-4, 절대 규칙 #8)."""
+async def test_market_status_outside_calendar_coverage_is_not_orderable() -> None:
+    """캘린더가 모르는 날은 `REGULAR` 을 지어내지 않는다 (C2-3·C2-4, 절대 규칙 #8 · T240)."""
+    adapter = TossAdapter(make_client(routed([])), calendar=_UnknownCalendar())  # type: ignore[arg-type]
+    status = await adapter.get_market_status(SAMSUNG)
+    assert status.is_order_allowed is False and status.session is MarketSession.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_market_status_without_a_readable_calendar_is_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """캘린더 파일을 못 읽으면 예외 — 조용히 열린 척하지 않는다."""
+
+    def _broken() -> None:
+        raise SessionConfigError("없다")
+
+    monkeypatch.setattr("updown.marketdata.toss.adapter.load_calendar", _broken)
     adapter = TossAdapter(make_client(routed([])))
     with pytest.raises(MarketCalendarRequiredError, match="마켓 캘린더"):
         await adapter.get_market_status(SAMSUNG)

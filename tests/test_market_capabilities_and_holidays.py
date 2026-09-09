@@ -100,6 +100,21 @@ class TestHolidays2026:
             is Tradability.OPEN
         )
 
+    def test_next_events_respect_early_close_and_holidays(self, calendar: MarketCalendar) -> None:
+        # 2026-11-27 (금) 조기마감 · 12:00 ET(17:00Z) 정규장 안
+        #   → 마감 13:00 ET(18:00Z) · 다음 개장은 월 11/30 09:30 EST(14:30Z)
+        opens, closes = calendar.next_events(
+            Market.NASDAQ, datetime(2026, 11, 27, 17, 0, tzinfo=UTC)
+        )
+        assert closes == datetime(2026, 11, 27, 18, 0, tzinfo=UTC)
+        assert opens == datetime(2026, 11, 30, 14, 30, tzinfo=UTC)
+        # 2026-07-03 (금) 휴장일 아침 → 다음 개장·마감 모두 월 7/6
+        opens, closes = calendar.next_events(Market.NASDAQ, datetime(2026, 7, 3, 12, 0, tzinfo=UTC))
+        assert opens == datetime(2026, 7, 6, 13, 30, tzinfo=UTC)
+        assert closes == datetime(2026, 7, 6, 20, 0, tzinfo=UTC)
+        assert calendar.next_events(Market.GATE, datetime(2026, 7, 3, tzinfo=UTC)) == (None, None)
+        assert calendar.next_events(Market.NASDAQ, datetime(2027, 3, 1, tzinfo=UTC)) == (None, None)
+
     def test_outside_coverage_is_unknown_not_open(self, calendar: MarketCalendar) -> None:
         state, why = calendar.tradability(Market.NASDAQ, datetime(2027, 3, 1, 15, 0, tzinfo=UTC))
         assert state is Tradability.UNKNOWN and "2026-12-31" in why

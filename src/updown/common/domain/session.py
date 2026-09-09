@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from enum import StrEnum
 from pathlib import Path
 from typing import cast
@@ -332,6 +332,55 @@ class MarketCalendar:
         """
         session = self.session_at(market, moment)
         return session in (MarketSession.REGULAR, MarketSession.ALWAYS_OPEN)
+
+    def next_events(
+        self, market: Market, moment: datetime
+    ) -> tuple[datetime | None, datetime | None]:
+        """다음 정규장 **개장·마감** 시각 (UTC) — 화면·장 상태의 `next_open`/`next_close` (T240).
+
+        Args:
+            market: 시장.
+            moment: UTC aware 시각.
+
+        Returns:
+            `(다음 개장, 다음 마감)`. 24시간 장이거나 휴장일 정보가 없는 구간이면 `(None, None)` —
+            모르는 것을 그럴듯한 값으로 채우지 않는다 (절대 규칙 #8).
+
+        Note:
+            정규장 안이면 "다음 마감" 은 오늘 마감(조기마감일은 당겨진 시각)이고 "다음 개장" 은
+            다음 영업일이다. 최대 3주를 걷는다 — 연휴가 그보다 길지는 않다.
+        """
+        hours = self.hours_for(market)
+        regular = hours.regular
+        if hours.always_open or regular is None:
+            return None, None
+        known = self.known_range.get(market)
+        local = self.local(market, moment)
+        if known is None or not known[0] <= local.date() <= known[1]:
+            return None, None
+        holidays = self.holidays.get(market, frozenset())
+        early_days = self.early_closes.get(market, frozenset())
+        next_open: datetime | None = None
+        next_close: datetime | None = None
+        for offset in range(21):
+            day = local.date() + timedelta(days=offset)
+            if day.weekday() not in hours.trading_weekdays or day in holidays:
+                continue
+            end_at = regular.end
+            if day in early_days and hours.early_regular_end is not None:
+                end_at = hours.early_regular_end
+            opens = datetime.combine(day, regular.start, tzinfo=hours.zone)
+            closes = datetime.combine(day, end_at, tzinfo=hours.zone)
+            if next_close is None and closes > local:
+                next_close = closes
+            if next_open is None and opens > local:
+                next_open = opens
+            if next_open is not None and next_close is not None:
+                break
+        return (
+            None if next_open is None else next_open.astimezone(UTC),
+            None if next_close is None else next_close.astimezone(UTC),
+        )
 
     def tradability(self, market: Market, moment: datetime) -> tuple[Tradability, str]:
         """**정말 거래되는가** — 이유와 함께.

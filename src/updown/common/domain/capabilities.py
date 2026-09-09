@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import cast
@@ -145,6 +146,42 @@ def load_capabilities(path: Path | None = None) -> dict[Market, MarketCapabiliti
     if not isinstance(raw, dict):
         raise CapabilityConfigError(f"{target} 의 최상위가 매핑이 아니다")
     return parse_capabilities(cast("Mapping[str, object]", raw))
+
+
+def paper_seed_cash(market: Market, path: Path | None = None) -> Decimal:
+    """주식 페이퍼 계좌의 시작 현금 (T240 · `paper_seed_cash` 블록).
+
+    Args:
+        market: 시장.
+        path: 설정 경로 (시험용).
+
+    Returns:
+        그 시장 통화의 시작 현금.
+
+    Raises:
+        CapabilityConfigError: 블록이 없거나 그 시장 값이 없는 경우 — 기본값을 지어내지 않는다.
+    """
+    target = path or DEFAULT_CONFIG_PATH
+    if not target.exists():
+        raise CapabilityConfigError(f"능력표가 없다: {target}")
+    raw = yaml.safe_load(target.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise CapabilityConfigError(f"{target} 의 최상위가 매핑이 아니다")
+    block = cast("Mapping[str, object]", raw).get("paper_seed_cash")
+    if not isinstance(block, dict):
+        raise CapabilityConfigError("`paper_seed_cash` 매핑이 없다 — 페이퍼 계좌의 시작 현금이다")
+    value = cast("Mapping[str, object]", block).get(market.value)
+    if value is None:
+        raise CapabilityConfigError(
+            f"paper_seed_cash.{market.value} 가 없다 — config/markets.yml 에 적는다"
+        )
+    try:
+        cash = Decimal(str(value))
+    except ArithmeticError as exc:
+        raise CapabilityConfigError(f"paper_seed_cash.{market.value} 값이 틀렸다: {value}") from exc
+    if cash <= 0:
+        raise CapabilityConfigError(f"paper_seed_cash.{market.value} 는 0 보다 커야 한다")
+    return cash
 
 
 def capabilities_of(market: Market, path: Path | None = None) -> MarketCapabilities:

@@ -202,10 +202,17 @@ def paper_adapter(quotes: object) -> BrokerAdapter:
     """
     from updown.execution.binance_paper import BinancePaperAdapter
     from updown.execution.gate_paper import GatePaperAdapter
+    from updown.execution.stock_paper import StockPaperAdapter
     from updown.marketdata.binance.adapter import BinanceAdapter
     from updown.marketdata.binance.trade_client import BinanceTradeClient
     from updown.marketdata.gate.adapter import GateAdapter
     from updown.marketdata.gate.trade_client import GateTradeClient
+    from updown.marketdata.toss.adapter import TossAdapter
+
+    if isinstance(quotes, TossAdapter):
+        # T240 — 주식 페이퍼. 토스에는 테스트넷이 없어 체결을 이 프로세스가 모의한다.
+        #   자격증명을 읽지 않는다 — 시세는 조회 어댑터가 이미 갖고 있고 주문은 안 나간다.
+        return StockPaperAdapter(quotes)
 
     if isinstance(quotes, BinanceAdapter):
         # T62 — 바이낸스 testnet. Gate 와 같은 3중 잠금: 기본 base 가 testnet 인
@@ -243,6 +250,9 @@ class LiveCredentialsError(OrderGatewayError):
 LIVE_ORDERS_FLAG = "LIVE_ORDERS"
 """운영자 스위치 — `.env.live` 에 `LIVE_ORDERS=1`. 키가 있어도 이것이 꺼져 있으면 테스트넷이다."""
 
+STOCK_LIVE_ORDERS_FLAG = "STOCK_LIVE_ORDERS"
+"""주식 실주문 스위치 (T240) — 코인 스위치와 별개. 지금은 켜도 어댑터가 없어 예외다."""
+
 
 def live_adapter(quotes: object) -> BrokerAdapter:
     """Gate **실계좌** 어댑터 — **여기서만** 만들 수 있다 (T157 · 2026-09-04).
@@ -268,11 +278,23 @@ def live_adapter(quotes: object) -> BrokerAdapter:
     from updown.execution.gate_paper import GateLiveAdapter
     from updown.marketdata.gate.adapter import GateAdapter
     from updown.marketdata.gate.trade_client import LIVE_BASE_URL, GateTradeClient
+    from updown.marketdata.toss.adapter import TossAdapter
 
     settings = load_settings()
     if settings.app_env is not AppEnv.LIVE:
         raise LiveOrderBlockedError(
             f"실계좌 어댑터는 APP_ENV=live 에서만 만든다 (env={settings.app_env.value})"
+        )
+    if isinstance(quotes, TossAdapter):
+        # T240 — 주식 실주문 관문. 스위치가 켜져 있어도 **줄 어댑터가 없다**: 토스 Secret·
+        #   인증서 미수령이고 G1(승률·표본)도 주식에서 아직 없다. 페이퍼로 떨어뜨리지 않는다.
+        if not settings.stock_live_orders:
+            raise LiveOrderBlockedError(
+                f"주식 실주문 스위치가 꺼져 있다 — `.env.live` 에 {STOCK_LIVE_ORDERS_FLAG}=1"
+            )
+        raise LiveOrderBlockedError(
+            "토스 실주문 어댑터가 아직 없다 — Secret·인증서 미수령 · 주식 G1 미달 (T240). "
+            f"{STOCK_LIVE_ORDERS_FLAG}=0 으로 두면 주식 판은 페이퍼로 돈다"
         )
     if not settings.live_orders:
         raise LiveOrderBlockedError(
@@ -304,6 +326,9 @@ def order_adapter(quotes: object, *, user_id: str) -> BrokerAdapter:
     | live | 0 / 없음 | 테스트넷 |
     | **live** | **1** | **실계좌** (`live_adapter`) — 키가 없으면 예외 (페이퍼로 안 떨어진다) |
 
+    주식(토스 조회 어댑터)은 `STOCK_LIVE_ORDERS` 를 본다 (T240): 꺼져 있으면 어느 환경이든
+    주식 페이퍼(`StockPaperAdapter`), 켜져 있으면 예외 — 실주문 어댑터가 아직 없다.
+
     Args:
         quotes: 공개 조회 어댑터.
         user_id: 이중 게이트의 사용자 식별자 (로그·예외 메시지용).
@@ -316,10 +341,14 @@ def order_adapter(quotes: object, *, user_id: str) -> BrokerAdapter:
         줄 알았는데 페이크머니" 가 되고 그 성적을 실적으로 적게 된다 (spec §12.4).
     """
     from updown.common.config import load_settings
+    from updown.marketdata.toss.adapter import TossAdapter
 
     settings = load_settings()
     env = settings.app_env
-    armed = env is AppEnv.LIVE and settings.live_orders
+    # T240 — 주식은 자기 스위치를 본다. 코인 LIVE_ORDERS=1 인 실계좌 서버에서도 주식 판은
+    #   STOCK_LIVE_ORDERS 가 꺼져 있으면 페이퍼다 (측정이 먼저 · G1 뒤 실주문).
+    switch = settings.stock_live_orders if isinstance(quotes, TossAdapter) else settings.live_orders
+    armed = env is AppEnv.LIVE and switch
     toggle = UserLiveToggle(user_id=user_id, live_enabled=armed)
     # ⭐ **어댑터(=서명 클라이언트·연결 풀)를 재사용한다** (2026-09-05 · 1 GB 서버 실측).
     #    호출마다 새 `GateTradeClient` 를 만들면 요청마다 TLS 핸드셰이크가 새로 일어난다 —
