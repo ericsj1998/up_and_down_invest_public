@@ -7,16 +7,19 @@
 
 import type { Plan } from "./proposal";
 
-/** 필요 현금 = 주수 x 진입가. 잘못된 입력은 0. */
+/** 러너의 예산 여유 — 서버 `MARGIN_HEADROOM` 과 같은 값. 예산 x 0.99 / 가격 을 내림하므로 되돌려 올린다. */
+export const MARGIN_HEADROOM = 0.99;
+
+/** 필요 예산 = 주수 x 진입가 / 여유 (센트 올림). 잘못된 입력은 0. */
 export function cashNeeded(shares: number, entry: number): number {
   if (!Number.isFinite(shares) || !Number.isFinite(entry) || shares <= 0 || entry <= 0) return 0;
-  return shares * entry;
+  return Math.ceil((shares * entry) / MARGIN_HEADROOM * 100) / 100;
 }
 
-/** 이 현금으로 살 수 있는 최대 정수 주수. */
+/** 이 현금으로 살 수 있는 최대 정수 주수 (여유 반영). */
 export function maxShares(cash: number, entry: number): number {
   if (!Number.isFinite(cash) || !Number.isFinite(entry) || cash <= 0 || entry <= 0) return 0;
-  return Math.floor(cash / entry);
+  return Math.floor((cash * MARGIN_HEADROOM) / entry);
 }
 
 /**

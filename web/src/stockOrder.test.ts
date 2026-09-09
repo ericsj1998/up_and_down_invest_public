@@ -7,8 +7,9 @@ import { cashNeeded, defaultDraft, maxShares, orderBlockers } from "./stockOrder
 
 describe("cashNeeded · maxShares", () => {
   it("주수 x 진입가 · 살 수 있는 최대 정수 주", () => {
-    expect(cashNeeded(3, 100.5)).toBe(301.5);
+    expect(cashNeeded(3, 100.5)).toBe(304.55);
     expect(maxShares(1000, 316.22)).toBe(3);
+    expect(maxShares(320, 316.22)).toBe(1);
     expect(maxShares(0, 10)).toBe(0);
     expect(cashNeeded(-1, 10)).toBe(0);
   });

@@ -13,11 +13,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_UP, Decimal, InvalidOperation
 
 from updown.common.domain.capabilities import Lot, MarketCapabilities
 from updown.common.domain.instrument import Market
 from updown.common.domain.session import MarketCalendar, Tradability
+from updown.orchestration.walkforward.live_runner import MARGIN_HEADROOM
 
 HTTP_BAD_REQUEST = 400
 HTTP_CONFLICT = 409
@@ -78,7 +79,8 @@ class StockOrderTerms:
 
     Attributes:
         leverage: 판이 쓸 배율 (주식은 1).
-        margin: 판 예산. 주수를 받았으면 `주수 x 진입가`, 아니면 None(요청의 예산 그대로).
+        margin: 판 예산. 주수를 받았으면 `주수 x 진입가 / MARGIN_HEADROOM`(센트 올림), 아니면
+            None(요청의 예산 그대로).
         shares: 받은 주수. 없으면 None.
     """
 
@@ -114,7 +116,7 @@ def stock_order_terms(
             아님 · 장 마감(409).
 
     Note:
-        **수량은 여기서 계약수로 만들지 않는다.** 예산을 `주수 x 진입가` 로 두면 사이징 경로
+        **수량은 여기서 계약수로 만들지 않는다.** 예산을 `주수 x 진입가 / 여유` 로 두면 사이징 경로
         (`contracts_for`)가 정수 주수를 그대로 낸다 — 두 번째 사이징 경로를 만들지 않는다.
         예약 주문은 없다 — 페이퍼 브로커에 그 능력이 없어 장 밖이면 409 로 "다음 개장" 을
         말한다 (T250 ③).
@@ -144,7 +146,14 @@ def stock_order_terms(
             f"{caps.market.value} 장이 열려 있지 않다 — {hours.why}{when} (예약 주문 없음)",
             status=HTTP_CONFLICT,
         )
-    margin = None if count is None else entry * count
+    # 🔴 러너는 예산 x MARGIN_HEADROOM(0.99) / 가격 을 내림해 계약수를 낸다 — 예산을
+    #    주수 x 진입가로 두면 바로 그 여유 때문에 한 주가 모자란다(2026-09-09 실측 409
+    #    "최소 319.33"). 여유를 되돌려 올림한다.
+    margin = (
+        None
+        if count is None
+        else (entry * count / MARGIN_HEADROOM).quantize(Decimal("0.01"), rounding=ROUND_UP)
+    )
     return StockOrderTerms(leverage=Decimal(1), margin=margin, shares=count)
 
 

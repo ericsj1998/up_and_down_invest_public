@@ -19,6 +19,7 @@ from updown.apps.api.stock_order import (
 from updown.common.domain.capabilities import capabilities_of
 from updown.common.domain.instrument import Market, MarketGroup
 from updown.common.domain.session import Tradability, load_calendar
+from updown.orchestration.walkforward.live_runner import MARGIN_HEADROOM
 
 NASDAQ = capabilities_of(Market.NASDAQ)
 GATE = capabilities_of(Market.GATE)
@@ -47,7 +48,9 @@ class TestTerms:
         got = stock_order_terms(
             NASDAQ, leverage=Decimal(1), short=False, shares=3, entry=Decimal("316.22"), hours=OPEN
         )
-        assert got.leverage == Decimal(1) and got.shares == 3 and got.margin == Decimal("948.66")
+        assert got.leverage == Decimal(1) and got.shares == 3
+        assert got.margin == Decimal("958.25"), "948.66 / 0.99 를 센트 올림 — 러너 여유를 되돌린다"
+        assert got.margin is not None and int(got.margin * MARGIN_HEADROOM / Decimal("316.22")) == 3
         with pytest.raises(StockOrderRejectedError, match="정수"):
             stock_order_terms(
                 NASDAQ,

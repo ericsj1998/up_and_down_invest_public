@@ -381,8 +381,8 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
                     onChange={(e) => setShares(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
                   />
                 </label>
-                <span className="chip" title="주수 x 진입가 — 서버는 이 값을 판 예산으로 받는다">
-                  필요 현금 {num(cashNeeded(shares, draft.entry), 2)}
+                <span className="chip" title="주수 x 진입가 / 0.99(러너 여유) — 서버는 이 값을 판 예산으로 받는다">
+                  필요 예산 {num(cashNeeded(shares, draft.entry), 2)}
                 </span>
                 <span className="chip faint" title="페이퍼 계좌 가용 현금">
                   가용 {cash === null ? "—" : num(cash, 2)}
