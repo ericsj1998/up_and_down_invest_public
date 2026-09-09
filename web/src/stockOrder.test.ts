@@ -3,7 +3,19 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { cashNeeded, defaultDraft, maxShares, orderBlockers } from "./stockOrder";
+import { cashNeeded, defaultDraft, maxShares, orderBlockers, symbolFits, symbolForMarket } from "./stockOrder";
+
+describe("symbolForMarket", () => {
+  it("KRX 는 6자리 숫자 · 미국은 영문 티커 — 안 맞으면 견본으로 바꾼다", () => {
+    expect(symbolFits("KRX", "005930")).toBe(true);
+    expect(symbolFits("KRX", "AAPL")).toBe(false);
+    expect(symbolFits("NASDAQ", "BRK.B")).toBe(true);
+    expect(symbolFits("NASDAQ", "005930")).toBe(false);
+    expect(symbolForMarket("KRX", "AAPL")).toBe("005930");
+    expect(symbolForMarket("NASDAQ", "005930")).toBe("AAPL");
+    expect(symbolForMarket("NASDAQ", "NVDA")).toBe("NVDA");
+  });
+});
 
 describe("cashNeeded · maxShares", () => {
   it("주수 x 진입가 · 살 수 있는 최대 정수 주", () => {

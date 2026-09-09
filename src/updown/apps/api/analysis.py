@@ -186,12 +186,17 @@ async def frame(
                 f"{market.value} 는 {timeframe} 봉을 주지 않는다 — "
                 f"고를 수 있는 축: {', '.join(item.value for item in served)}",
             )
-        rows = await adapter.get_candles(
-            _instrument(symbol, market),
-            only,
-            now - interval(only) * (window + WARMUP_BARS),
-            now,
-        )
+        try:
+            rows = await adapter.get_candles(
+                _instrument(symbol, market),
+                only,
+                now - interval(only) * (window + WARMUP_BARS),
+                now,
+            )
+        except ValueError as exc:
+            # ⭐ 종목 규칙 위반(KRX 에 AAPL · 토스 `TossMappingError` 는 ValueError)은 사람이 고칠
+            #    입력이라 400 이다 — 500 으로 흘리면 화면에 이유가 안 보인다 (2026-09-10 신고).
+            raise HTTPException(HTTP_BAD_REQUEST, f"{market.value} {symbol}: {exc}") from exc
     # 🔴 마지막은 **형성 중**이라 버린다 — 그 종가로 잡은 구조물은 봉마다 달라진다.
     closed: list[Candle] = list(rows[:-1]) if rows else []
     if not closed:

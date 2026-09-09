@@ -10,6 +10,21 @@ import type { Plan } from "./proposal";
 /** 러너의 예산 여유 — 서버 `MARGIN_HEADROOM` 과 같은 값. 예산 x 0.99 / 가격 을 내림하므로 되돌려 올린다. */
 export const MARGIN_HEADROOM = 0.99;
 
+/** 시장별 종목 코드 모양 — KRX 는 6자리 숫자, 미국은 영문 티커 (토스 `symbol` 규칙). */
+export function symbolFits(market: string, symbol: string): boolean {
+  return market === "KRX" ? /^\d{6}$/.test(symbol) : /^[A-Z][A-Z0-9.]{0,9}$/.test(symbol);
+}
+
+/** 시장을 바꿨을 때 넣어 줄 견본 종목 — 지금 종목이 그 시장 모양이 아니면. */
+export function defaultSymbol(market: string): string {
+  return market === "KRX" ? "005930" : "AAPL";
+}
+
+/** 시장 전환 뒤의 종목 — 맞으면 그대로, 아니면 견본. (KRX+AAPL 로 500 이 나던 것 · 2026-09-10) */
+export function symbolForMarket(market: string, symbol: string): string {
+  return symbolFits(market, symbol) ? symbol : defaultSymbol(market);
+}
+
 /** 필요 예산 = 주수 x 진입가 / 여유 (센트 올림). 잘못된 입력은 0. */
 export function cashNeeded(shares: number, entry: number): number {
   if (!Number.isFinite(shares) || !Number.isFinite(entry) || shares <= 0 || entry <= 0) return 0;

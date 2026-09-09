@@ -23,7 +23,7 @@ import { MIN_STOP_PCT, blockers, move, recompute, warnings, type Plan } from "./
 import { BrokerMark } from "./shell/BrokerMark";
 import { MarketHours } from "./shell/MarketHours";
 import { brokerOfName, marketTradeAllowed } from "./shell/marketGroup";
-import { cashNeeded, defaultDraft, maxShares, orderBlockers } from "./stockOrder";
+import { symbolForMarket, cashNeeded, defaultDraft, maxShares, orderBlockers } from "./stockOrder";
 import { ErrorCard, frameSeconds, num, useFold } from "./ui";
 import { useAnalysisForming } from "./useForming";
 import { pick, useStream } from "./useStream";
@@ -266,7 +266,14 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
           </p>
           <div className="row">
             <BrokerMark broker={brokerOfName(markets, market)} />
-            <select value={market} onChange={(e) => setMarket(e.target.value)}>
+            <select
+              value={market}
+              onChange={(e) => {
+                const next = e.target.value;
+                setMarket(next);
+                setSymbol((was) => symbolForMarket(next, was));
+              }}
+            >
               {markets.map((item) => (
                 <option key={item.name} value={item.name}>
                   {item.name}
