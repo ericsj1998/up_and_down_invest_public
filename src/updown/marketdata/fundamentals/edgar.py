@@ -10,9 +10,12 @@ from __future__ import annotations
 import time
 
 from updown.common.domain.fundamentals import Filing, FinancialFact, FundamentalsConfig
+from updown.common.logging.setup import get_logger
 from updown.marketdata.fundamentals.adapter import UnknownEntityError
-from updown.marketdata.fundamentals.client import EdgarClient
+from updown.marketdata.fundamentals.client import EdgarApiError, EdgarClient
 from updown.marketdata.fundamentals.mapping import SOURCE, parse_company_facts
+
+_logger = get_logger("marketdata.fundamentals.edgar")
 
 TICKERS_TTL_S = 24 * 3600.0
 """CIK 표를 들고 있는 시간. 상장·티커 변경은 드물고, 하루 뒤 따라오면 충분하다."""
@@ -54,6 +57,7 @@ class EdgarAdapter:
         self._tickers_ttl = tickers_ttl
         self._tickers: dict[str, str] | None = None
         self._tickers_at = 0.0
+        self._table_ok = False
 
     async def aclose(self) -> None:
         """HTTP 연결을 닫는다."""
@@ -69,15 +73,28 @@ class EdgarAdapter:
             10자리 CIK.
 
         Raises:
-            UnknownEntityError: 표에 없다.
+            UnknownEntityError: 표에도 검색에도 없다.
         """
+        wanted = symbol.upper()
         now = time.monotonic()
         if self._tickers is None or now - self._tickers_at > self._tickers_ttl:
-            self._tickers = await self._client.company_tickers()
+            try:
+                self._tickers = await self._client.company_tickers()
+                self._table_ok = True
+            except EdgarApiError as exc:
+                # ⭐ `www.sec.gov` 의 표는 Akamai 가 403 으로 막을 수 있다(2026-09-10 실측) —
+                #    빈 표를 두고 티커마다 efts 검색으로 간다. 표 재시도는 TTL 뒤.
+                _logger.warning("edgar_tickers_unavailable", payload={"detail": str(exc)[:120]})
+                self._tickers = {}
+                self._table_ok = False
             self._tickers_at = now
-        cik = self._tickers.get(symbol.upper())
-        if cik is None:
+        cik = self._tickers.get(wanted)
+        if cik is not None:
+            return cik
+        if self._table_ok:
             raise UnknownEntityError(f"EDGAR 티커 표에 {symbol} 이 없다")
+        cik = await self._client.cik_by_search(wanted)
+        self._tickers[wanted] = cik
         return cik
 
     async def facts(self, symbol: str) -> list[FinancialFact]:

@@ -70,7 +70,36 @@ class TestClient:
         async with make_client(handler) as client:
             table = await client.company_tickers()
         assert table == {"AAPL": "0000320193"}
-        assert seen[0].headers["User-Agent"] == "Test test@example.com"
+        # 2026-09-10: 선언 UA 는 Akamai 가 막아서 브라우저형 UA + From(연락처)로 나간다.
+        assert seen[0].headers["User-Agent"].startswith("Mozilla/")
+        assert seen[0].headers["From"] == "test@example.com"
+
+    @pytest.mark.asyncio
+    async def test_cik_by_search_matches_ticker_field(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.host == "efts.sec.gov"
+            return httpx.Response(
+                200,
+                json={
+                    "hits": {
+                        "hits": [
+                            {
+                                "_id": "2055491",
+                                "_source": {"entity": "Permuto AAPL Trust", "tickers": None},
+                            },
+                            {
+                                "_id": "320193",
+                                "_source": {"entity": "Apple Inc. (AAPL)", "tickers": "AAPL"},
+                            },
+                        ]
+                    }
+                },
+            )
+
+        async with make_client(handler) as client:
+            assert await client.cik_by_search("aapl") == "0000320193"
+            with pytest.raises(UnknownEntityError):
+                await client.cik_by_search("NOPE")
 
     @pytest.mark.asyncio
     async def test_429_then_200_is_retried(self) -> None:
@@ -140,3 +169,24 @@ class TestAdapter:
             filings[0].url == "https://www.sec.gov/Archives/edgar/data/320193/000032019324000001/"
         )
         assert paths.count("/files/company_tickers.json") == 1, "티커 표는 한 번만 받는다"
+
+    @pytest.mark.asyncio
+    async def test_tickers_403_falls_back_to_search(self) -> None:
+        paths: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.host + request.url.path)
+            if request.url.path.endswith("company_tickers.json"):
+                return httpx.Response(403, text="<html>Access Denied</html>")
+            if request.url.host == "efts.sec.gov":
+                return httpx.Response(
+                    200,
+                    json={"hits": {"hits": [{"_id": "320193", "_source": {"tickers": "AAPL"}}]}},
+                )
+            return httpx.Response(200, json=FACTS)
+
+        async with make_client(handler, max_retries=0) as client:
+            adapter = EdgarAdapter(client, CONFIG)
+            assert await adapter.cik_of("AAPL") == "0000320193"
+            assert await adapter.cik_of("aapl") == "0000320193", "검색 결과는 기억한다"
+        assert paths.count("efts.sec.gov/LATEST/search-index") == 1

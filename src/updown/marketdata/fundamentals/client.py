@@ -39,6 +39,18 @@ BASE_URL = "https://data.sec.gov"
 """companyfacts · submissions 가 사는 호스트."""
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 """티커 → CIK 표. 호스트가 다르다 (www.sec.gov)."""
+SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
+"""티커 한 개 → CIK 검색 (`?keysTyped=AAPL`).
+
+`www.sec.gov` 의 표가 403 일 때의 대체 경로 (2026-09-10 실측)."""
+BROWSER_UA = "Mozilla/5.0"
+"""실제로 보내는 User-Agent.
+
+🔴 2026-09-10 실측: SEC 문서가 요구하는 `이름 이메일` 꼴 UA 는 **Akamai 가 403** 으로 막았다
+(한국 가정망 · `www.sec.gov`·`data.sec.gov` 전부 · 앱이름·영문이름·브라우저형+이메일 셋 다).
+브라우저형 UA 만 통과한다. 연락처는 지우지 않고 표준 `From` 헤더(RFC 9110 §10.1.2)로 밝힌다 —
+`EDGAR_USER_AGENT` 의 이메일이 거기 간다.
+"""
 
 HTTP_OK = 200
 HTTP_FORBIDDEN = 403
@@ -51,6 +63,21 @@ RATE_PER_SECOND = 10
 MAX_RETRY_AFTER_SECONDS = 120.0
 CIK_WIDTH = 10
 """companyfacts 경로의 CIK 는 10자리 0 채움이다."""
+
+
+def contact_of(declared: str) -> str:
+    """`이름 이메일` 선언에서 `From` 헤더에 넣을 연락처 — 이메일 토큰, 없으면 선언 전체.
+
+    Args:
+        declared: `EDGAR_USER_AGENT` 값.
+
+    Returns:
+        연락처 문자열.
+    """
+    for token in declared.split():
+        if "@" in token:
+            return token.strip("<>()[],;")
+    return declared
 
 
 class EdgarApiError(FundamentalsError):
@@ -94,7 +121,8 @@ class EdgarClient:
         """클라이언트를 만든다.
 
         Args:
-            user_agent: `이름 이메일` 꼴. EDGAR 가 요구한다.
+            user_agent: `이름 이메일` 꼴(EDGAR 가 요구하는 연락처 선언). 실제 `User-Agent` 헤더는
+                `BROWSER_UA` 로 나가고, 이 값의 이메일이 `From` 헤더로 간다.
             base_url: data.sec.gov.
             tickers_url: 티커 표 URL.
             timeout: 요청 타임아웃(초). companyfacts 는 수 MB 라 넉넉히.
@@ -116,10 +144,12 @@ class EdgarClient:
             raise ValueError(
                 "EDGAR_USER_AGENT 는 ASCII 만 된다(HTTP 헤더) — 영문 이름·앱 이름 + 이메일로 쓴다"
             )
+        self._declared = user_agent.strip()
         self._client = httpx.AsyncClient(
             timeout=timeout,
             headers={
-                "User-Agent": user_agent.strip(),
+                "User-Agent": BROWSER_UA,
+                "From": contact_of(self._declared),
                 "Accept": "application/json",
                 "Accept-Encoding": "gzip, deflate",
             },
@@ -175,6 +205,39 @@ class EdgarClient:
         if not out:
             raise EdgarApiError("company_tickers.json 에 티커가 하나도 없다")
         return out
+
+    async def cik_by_search(self, ticker: str) -> str:
+        """티커 하나의 CIK — `efts.sec.gov` 검색 (`keysTyped`).
+
+        Args:
+            ticker: 티커.
+
+        Returns:
+            10자리 CIK.
+
+        Raises:
+            UnknownEntityError: 그 티커를 가진 발행사가 검색에 없다.
+            EdgarApiError: 호출 실패 또는 모양이 다르다.
+        """
+        wanted = ticker.upper()
+        body = await self.get_json(f"{SEARCH_URL}?keysTyped={wanted}")
+        if not isinstance(body, dict):
+            raise EdgarApiError("search-index 의 최상위가 매핑이 아니다")
+        hits_raw = cast("dict[str, Any]", body).get("hits")
+        hits = cast("dict[str, Any]", hits_raw).get("hits") if isinstance(hits_raw, dict) else None
+        if not isinstance(hits, list):
+            raise EdgarApiError("search-index 응답에 hits 가 없다")
+        for hit in cast("list[object]", hits):
+            if not isinstance(hit, dict):
+                continue
+            item = cast("dict[str, Any]", hit)
+            source = cast("dict[str, Any]", item.get("_source") or {})
+            tickers = str(source.get("tickers") or "")
+            names = {t.strip().upper() for t in tickers.split(",") if t.strip()}
+            cik = item.get("_id")
+            if wanted in names and isinstance(cik, str | int) and not isinstance(cik, bool):
+                return str(cik).zfill(CIK_WIDTH)
+        raise UnknownEntityError(f"EDGAR 검색에 티커 {wanted} 를 가진 발행사가 없다")
 
     async def company_facts(self, cik: str) -> dict[str, Any]:
         """`/api/xbrl/companyfacts/CIK##########.json`.
