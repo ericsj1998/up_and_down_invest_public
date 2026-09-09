@@ -2134,8 +2134,21 @@ class LiveRunner:
             (item for item in self._session.ledger.records if item.trade_id == trade_id), None
         )
         if record is None or record.closed_at is None or record.opened_at is None:
+            self._log.info(
+                "live_fee_align_skipped",
+                payload={"trade_id": trade_id, "why": "기록 없음 또는 열린/미체결 기록"},
+            )
             return
-        if record.fee_actual is not None or not hasattr(self._orders, "position_closes"):
+        if record.fee_actual is not None:
+            return
+        if not hasattr(self._orders, "position_closes"):
+            self._log.info(
+                "live_fee_align_skipped",
+                payload={
+                    "trade_id": trade_id,
+                    "why": f"어댑터에 청산 이력이 없다 ({type(self._orders).__name__})",
+                },
+            )
             return
         try:
             rows = cast(
@@ -2161,9 +2174,17 @@ class LiveRunner:
                 picked = row  # 최신순이라 첫 번째가 가장 늦은 청산
                 break
         if picked is None:
+            self._log.info(
+                "live_fee_align_skipped",
+                payload={"trade_id": trade_id, "why": f"창 안 청산 행 없음 (행 {len(rows)}개)"},
+            )
             return
         found = fee_from_close(picked, multiplier)
         if found is None:
+            self._log.info(
+                "live_fee_align_skipped",
+                payload={"trade_id": trade_id, "why": "청산 행에 pnl_fee/max_size/가격이 없다"},
+            )
             return
         fee, ratio = found
         before = record.cost_pct
@@ -3241,8 +3262,13 @@ class LiveRunner:
             if item.closed_at is not None and item.fee_actual is None
         ][-3:]
         for trade_id in pending:
-            with contextlib.suppress(Exception):
+            try:
                 await self._align_fee(trade_id)
+            except Exception as exc:
+                self._log.warning(
+                    "live_fee_align_failed",
+                    payload={"trade_id": trade_id, "error": f"{type(exc).__name__}: {exc}"[:200]},
+                )
         try:
             found = await self.audit()
         except Exception as exc:
