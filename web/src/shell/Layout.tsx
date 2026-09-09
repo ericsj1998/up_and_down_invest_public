@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import type { Who } from "../api";
 import { ChatShell, DockedChat } from "../chat/ChatShell";
 import { useChatShell } from "../chat/shell";
+import { SIDE_NARROW, SIDE_WIDE, useSidenavCollapsed } from "./sidenavState";
 import { AnalysisCluster } from "./AnalysisCluster";
 import { ChartField } from "./ChartField";
 import { Navbar } from "./Navbar";
@@ -31,6 +32,8 @@ export function Layout({
   const dockCol = chat.mode === "top" || chat.mode === "bottom";
   // ⭐ 왼쪽 도킹은 사이드바까지 밀어낸다 (사용자 2026-09-10 "사이드바의 왼쪽에도") — 채팅 너비 + 여백만큼 전부 오른쪽으로.
   const leftPad = chat.mode === "left" ? chat.dock.left + 16 : 0;
+  const collapsed = useSidenavCollapsed();
+  const sideW = collapsed ? SIDE_NARROW : SIDE_WIDE;
 
   return (
     <div className="min-h-screen bg-blue-gray-50/50 dark:bg-gray-950">
@@ -46,8 +49,8 @@ export function Layout({
       <ChatShell who={who} />
       {chat.mode === "left" ? <DockedChat who={who} /> : null}
       <div
-        className={`p-4 transition-[margin] duration-300 ml-[var(--chat-left)] xl:ml-[calc(20rem+var(--chat-left))] ${dockRow ? "flex min-h-screen items-stretch gap-2" : ""} ${dockCol ? "flex min-h-screen flex-col gap-2" : ""}`}
-        style={{ "--chat-left": `${leftPad}px` } as React.CSSProperties}
+        className={`p-4 transition-[margin] duration-300 ml-[var(--chat-left)] xl:ml-[calc(var(--side-w)+var(--chat-left))] ${dockRow ? "flex min-h-screen items-stretch gap-2" : ""} ${dockCol ? "flex min-h-screen flex-col gap-2" : ""}`}
+        style={{ "--chat-left": `${leftPad}px`, "--side-w": `${sideW}px` } as React.CSSProperties}
       >
         {chat.mode === "top" || chat.mode === "left-inner" ? <DockedChat who={who} /> : null}
         <div className="min-w-0 flex-1">

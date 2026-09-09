@@ -22,7 +22,7 @@ import {
 import { Accounts } from "./Accounts";
 import { AiReport } from "./AiReport";
 import { assistantDraft, type Who } from "./api";
-import { Assistant } from "./Assistant";
+import { AssistantPage } from "./AssistantPage";
 import { readLocal } from "./assistant";
 import { Boundary } from "./Boundary";
 import { ChatPopout } from "./chat/ChatShell";
@@ -108,7 +108,7 @@ function Shell() {
           <Routes>
             {/* ⭐ T247 — 초안도 펀드도 없는 사람은 어시스턴트가 첫 화면을 잡는다. 판정은 서버(`/assistant/draft.first`). */}
             <Route path="/" element={<Home who={who} />} />
-            <Route path="/assistant" element={<Assistant who={who} />} />
+            <Route path="/assistant" element={<AssistantPage who={who} />} />
             <Route path="/console" element={<ConsolePage />} />
             <Route
               path="/report"

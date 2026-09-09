@@ -6,7 +6,7 @@
  *
  * ⭐ `NavLink` 는 `<a href>` 다 — 가운데 클릭·새 탭·주소 복사가 그냥 된다 (옛 화면 규칙 유지).
  */
-import { PresentationChartLineIcon, XMarkIcon } from "@heroicons/react/24/solid";
+import { ChevronDoubleLeftIcon, ChevronDoubleRightIcon, PresentationChartLineIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { modeCookie, noRealAccount, switchMode, type Who } from "../api";
 import { GroupIcon } from "./BrokerMark";
@@ -112,6 +112,7 @@ function MarketSwitch({ who }: { who: Who | null }) {
 import { Typography } from "../mt";
 import { LABELS_ON, PAGES } from "./nav";
 import { useOpenRuns } from "./openRuns";
+import { toggleSidenav, useSidenavCollapsed } from "./sidenavState";
 import { useHealth } from "./useHealth";
 
 function ServerState() {
@@ -154,6 +155,8 @@ export function Sidenav({
   const runs = useOpenRuns();
   const { pathname } = useLocation();
   const navigate = useNavigate();
+  // ⭐ 접기/펴기(T257 · 사용자 2026-09-10) — xl 에서만 뜻이 있다. 접히면 아이콘만 남고 본문 여백이 줄어든다.
+  const collapsed = useSidenavCollapsed();
 
   const pages = PAGES.filter(
     (page) => (!page.admin || who?.may_admin) && (!page.dev || LABELS_ON),
@@ -167,29 +170,39 @@ export function Sidenav({
   };
 
   const item =
-    "flex w-full items-center gap-3 rounded-lg px-4 py-2.5 text-sm font-medium capitalize transition-colors";
+    `flex w-full items-center gap-3 rounded-lg py-2.5 text-sm font-medium capitalize transition-colors ${collapsed ? "xl:justify-center xl:px-2 px-4" : "px-4"}`;
   const idle = "text-blue-gray-700 hover:bg-blue-gray-50 dark:text-blue-gray-200 dark:hover:bg-gray-800";
   const active = "bg-gray-900 text-white shadow-md dark:bg-blue-gray-100 dark:text-gray-900";
 
   return (
     <aside
-      className={`${open ? "translate-x-0" : "-translate-x-80"} fixed inset-0 z-50 my-4 ml-4 h-[calc(100vh-32px)] w-72 overflow-y-auto rounded-xl border border-blue-gray-100 bg-white shadow-sm transition-transform duration-300 xl:translate-x-0 dark:border-gray-800 dark:bg-gray-900`}
+      className={`${open ? "translate-x-0" : "-translate-x-80"} fixed inset-0 z-50 my-4 ml-4 h-[calc(100vh-32px)] ${collapsed ? "xl:w-16" : ""} w-72 overflow-y-auto rounded-xl border border-blue-gray-100 bg-white shadow-sm transition-[transform,width] duration-300 xl:translate-x-0 dark:border-gray-800 dark:bg-gray-900`}
       aria-label="화면 목록"
       style={offsetLeft ? { left: offsetLeft } : undefined}
     >
       <div className="relative">
-        <NavLink to="/console" className="flex items-center gap-3 px-6 pb-2 pt-6" onClick={onClose}>
+        <NavLink to="/console" className={`flex items-center gap-3 pb-2 pt-6 ${collapsed ? "xl:justify-center xl:px-2" : "px-6"}`} onClick={onClose}>
           <img src="/brand/up_and_down_logo.png" alt="" className="h-8 w-8" />
-          <Typography variant="h6" color="blue-gray" className="dark:text-white">
+          <Typography variant="h6" color="blue-gray" className={`dark:text-white ${collapsed ? "xl:hidden" : ""}`}>
             업 앤 다운
           </Typography>
         </NavLink>
         {/* T221 Demo Trading — 로고 바로 아래, 늘 보이는 자리. 어느 돈을 보고 있는지가 이 화면의 전제다. */}
-        <div className="px-6 pb-4">
+        <div className={`px-6 pb-4 ${collapsed ? "xl:hidden" : ""}`}>
           <DemoSwitch who={who} />
           {/* T245 시장 전환 — 어느 시장을 보는지가 어느 돈을 보는지 다음의 전제다. */}
           <MarketSwitch who={who} />
         </div>
+        {/* ⭐ 접기/펴기 — xl 에서만. 접힌 상태는 브라우저가 기억한다. */}
+        <button
+          type="button"
+          className={`hidden xl:grid absolute top-2 h-8 w-8 place-items-center rounded-lg text-blue-gray-500 hover:bg-blue-gray-50 dark:hover:bg-gray-800 ${collapsed ? "right-4" : "right-2"}`}
+          aria-label={collapsed ? "사이드바 펴기" : "사이드바 접기"}
+          title={collapsed ? "사이드바 펴기" : "사이드바 접기"}
+          onClick={toggleSidenav}
+        >
+          {collapsed ? <ChevronDoubleRightIcon className="h-4 w-4" /> : <ChevronDoubleLeftIcon className="h-4 w-4" />}
+        </button>
         <button
           type="button"
           className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-lg text-blue-gray-500 hover:bg-blue-gray-50 xl:hidden"
@@ -209,8 +222,8 @@ export function Sidenav({
                 className={({ isActive }) => `${item} ${isActive ? active : idle}`}
                 onClick={onClose}
               >
-                <page.icon className="h-5 w-5 text-inherit" />
-                {page.name}
+                <page.icon className="h-5 w-5 shrink-0 text-inherit" />
+                <span className={collapsed ? "xl:hidden" : ""}>{page.name}</span>
               </NavLink>
             </li>
           ))}
@@ -237,7 +250,7 @@ export function Sidenav({
                   title={run}
                 >
                   <PresentationChartLineIcon className="h-5 w-5 shrink-0 text-inherit" />
-                  <span className="truncate font-mono normal-case">{runs.label(run)}</span>
+                  <span className={`truncate font-mono normal-case ${collapsed ? "xl:hidden" : ""}`}>{runs.label(run)}</span>
                 </NavLink>
                 <button
                   type="button"
