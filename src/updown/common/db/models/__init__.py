@@ -108,7 +108,8 @@ SETTINGS_TABLE_COUNT = 1
 #: + `market_grants`(T242 · 0119 · 시장 갈래별 권한 덮어쓰기).
 #: + `assistant_drafts`(T247 · 0121 · 온보딩 위저드 초안 — 사람마다 한 행 · 계정 저장소와 같은 축).
 #: + `chat_threads`(T248 · 0122 · AI 채팅 대화 — 사람마다 여럿).
-ACCOUNTS_TABLE_COUNT = 7
+#: + `ai_participants`(T249 · 0123 · AI 토너먼트 참가자 — 모델 x 프롬프트 해시 x 스냅샷 · 얼린 행).
+ACCOUNTS_TABLE_COUNT = 8
 
 #: `tests/test_migrations.py` 가 실제 DB 와 대조하는 총합.
 #:
