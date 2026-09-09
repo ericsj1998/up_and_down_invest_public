@@ -1744,6 +1744,85 @@ export function fundamentals(symbol: string, market: string, asOf?: string): Pro
   return request(`/fundamentals/${encodeURIComponent(symbol)}?market=${encodeURIComponent(market)}${tail}`);
 }
 
+/** 온보딩 위저드 초안 (T247 · `/assistant/draft`). */
+export type AssistantDraft = {
+  step: "consent" | "capital" | "profile" | "setup" | "review" | "done";
+  answers: Record<string, unknown>;
+  consent_version: string | null;
+  consent_at: string | null;
+  fund_id: string | null;
+  updated_at?: string;
+};
+
+export function assistantDraft(): Promise<{
+  /** 초안도 펀드도 없다 — 첫 화면을 어시스턴트가 잡는다. */
+  first: boolean;
+  /** 서버가 초안을 들고 있나. 게스트는 거짓 — 브라우저에 든다. */
+  persisted: boolean;
+  draft: AssistantDraft | null;
+  disclaimer: { version: string; text: string };
+  steps: string[];
+}> {
+  return request("/assistant/draft");
+}
+
+export function assistantSaveDraft(body: {
+  step: string;
+  answers: Record<string, unknown>;
+  consent_version?: string;
+}): Promise<{ persisted: boolean; draft: AssistantDraft | null }> {
+  return request("/assistant/draft", { method: "PUT", headers: JSON_POST, body: JSON.stringify(body) });
+}
+
+/** 성향에 맞는 후보와 과거 창 실측 (`/assistant/preview`). 손익은 백테스트 권한이 없으면 null(`redacted`). */
+export type AssistantPreview = {
+  group: string;
+  group_label: string;
+  tier: string;
+  tier_label: string;
+  market: string | null;
+  chosen: string | null;
+  windows: string[];
+  note: string;
+  candidates: Array<{
+    id: string;
+    label: string;
+    leverage: number | null;
+    recommended: boolean;
+    backtest_note?: string | null;
+    store: {
+      years?: number | null;
+      total_pct?: number | null;
+      cagr_pct?: number | null;
+      mdd_pct?: number | null;
+      calmar?: number | null;
+      trades_count?: number | null;
+      liquidations?: number | null;
+      underwater_pct?: number | null;
+      risk_tier?: string | null;
+      risk_tier_label?: string | null;
+      frame?: string | null;
+      redacted?: boolean;
+      windows?: Record<
+        string,
+        { days: number; total_pct: number | null; mdd_pct: number; underwater_pct: number; trades: number; liquidations: number } | null
+      >;
+    } | null;
+  }>;
+};
+
+export function assistantPreview(group: string, tier: string): Promise<AssistantPreview> {
+  return request(`/assistant/preview?group=${encodeURIComponent(group)}&tier=${encodeURIComponent(tier)}`);
+}
+
+export function assistantCreate(body: {
+  answers: Record<string, unknown>;
+  consent_version: string;
+  label?: string;
+}): Promise<FundStatus & { draft: AssistantDraft }> {
+  return request("/assistant/create", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) }, 180_000);
+}
+
 export function marketStatus(market: string): Promise<MarketStatusView> {
   return request(`/exchange/market-status?market=${encodeURIComponent(market)}`);
 }

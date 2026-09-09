@@ -9,7 +9,7 @@
  * 🔴 **화면을 변수에 담아 렌더하지 않는다** (2026-08-19 실측). 라우트의 `element` 는 고정 JSX 다 — 컴포넌트
  *    신원이 렌더마다 바뀌면 React 가 그 아래를 통째로 언마운트-리마운트해 차트가 처음부터 다시 그려진다.
  */
-import { lazy, Suspense, useCallback, useEffect } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import {
   BrowserRouter,
   Navigate,
@@ -20,6 +20,9 @@ import {
   useParams,
 } from "react-router-dom";
 import { Accounts } from "./Accounts";
+import { assistantDraft, type Who } from "./api";
+import { Assistant } from "./Assistant";
+import { readLocal } from "./assistant";
 import { Boundary } from "./Boundary";
 import { ConsoleTab } from "./ConsoleTab";
 import { AuthTroubleNote, Gate, PendingNote, useMe } from "./Gate";
@@ -54,6 +57,31 @@ export function App() {
   );
 }
 
+/** 첫 화면 — 서버가 "처음" 이라 하면 어시스턴트, 아니면 콘솔. 게스트는 브라우저 초안이 끝났으면 콘솔. */
+function Home({ who }: { who: Who | null }) {
+  const [to, setTo] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    if (!who?.signed_in) {
+      setTo("/console");
+      return;
+    }
+    assistantDraft()
+      .then((got) => {
+        if (!alive) return;
+        const local = got.persisted ? null : readLocal();
+        const first = got.persisted ? got.first : !(local && local.step === "done");
+        setTo(first ? "/assistant" : "/console");
+      })
+      .catch(() => alive && setTo("/console"));
+    return () => {
+      alive = false;
+    };
+  }, [who?.signed_in]);
+  if (!to) return <p className="faint">첫 화면을 정하는 중…</p>;
+  return <Navigate to={to} replace />;
+}
+
 function Shell() {
   // 🔴 **문은 화면 전체를 감싼다** (2026-08-30). 다만 이것은 편의지 방어가 아니다 — 진짜 방어는 API
   //    미들웨어에 있다. URL 을 아는 사람은 화면을 안 거친다.
@@ -76,7 +104,9 @@ function Shell() {
             말하게** 하는 것이다 (규칙 #8). */}
         <Boundary where={where} onRetry={refresh}>
           <Routes>
-            <Route path="/" element={<Navigate to="/console" replace />} />
+            {/* ⭐ T247 — 초안도 펀드도 없는 사람은 어시스턴트가 첫 화면을 잡는다. 판정은 서버(`/assistant/draft.first`). */}
+            <Route path="/" element={<Home who={who} />} />
+            <Route path="/assistant" element={<Assistant who={who} />} />
             <Route path="/console" element={<ConsolePage />} />
             <Route
               path="/report"

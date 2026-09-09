@@ -5,7 +5,7 @@
  *    이름만 바꾼다.
  */
 import type { ComponentType, SVGProps } from "react";
-import { BanknotesIcon, BeakerIcon, ChartBarIcon, TagIcon, UsersIcon } from "@heroicons/react/24/solid";
+import { BanknotesIcon, BeakerIcon, ChartBarIcon, SparklesIcon, TagIcon, UsersIcon } from "@heroicons/react/24/solid";
 
 export type Icon = ComponentType<SVGProps<SVGSVGElement>>;
 
@@ -25,6 +25,8 @@ export const LABELS_ON = import.meta.env.VITE_LABELS === "1";
 export const PAGES: readonly Page[] = [
   // 🔴 **콘솔이 홈이다** (사용자 확정 2026-08-19). 거래소가 말하는 사실이 첫 화면이다.
   { to: "/console", name: "거래 콘솔", icon: BanknotesIcon },
+  // AI 투자 어시스턴트 (T247) — 첫 접속 온보딩 · 이어 하기 · 펀드 기본값 편집. 처음 온 사람은 `/` 가 여기로 보낸다.
+  { to: "/assistant", name: "AI 투자 어시스턴트", icon: SparklesIcon },
   { to: "/report", name: "리포트", icon: ChartBarIcon },
   // 백테스트 리포트 (T222) — 어떤 데이터·전략·결과로 검증했나. 주소는 /evidence 그대로(링크 보존) · 이름만 바꿈 (사용자 2026-09-06).
   { to: "/evidence", name: "백테스트 리포트", icon: BeakerIcon },

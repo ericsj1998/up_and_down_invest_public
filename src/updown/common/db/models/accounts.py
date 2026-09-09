@@ -166,6 +166,29 @@ class MarketGrantRow(Base):
     note: Mapped[str] = mapped_column(default="", server_default="")
 
 
+class AssistantDraft(Base):
+    """온보딩 위저드 초안 — 사람마다 한 행 (T247 · 0121).
+
+    Note:
+        답은 JSONB 한 칸(자본 · 납입 · 갈래 · 성향 · 매매법) — 단계가 늘 때마다 마이그레이션하지
+        않는다. 동의는 문구 **버전**과 시각으로 남고, 같은 트랜잭션에 `event_logs.consent_given` 이
+        들어간다 —
+        어떤 문장에 동의했는지가 기록의 뜻이다. 게스트(공유 계정)는 행을 만들지 않는다.
+    """
+
+    __tablename__ = "assistant_drafts"
+
+    email: Mapped[str] = mapped_column(primary_key=True)
+    step: Mapped[str] = mapped_column(default="consent", server_default="consent")
+    answers: Mapped[JsonDict] = mapped_column(default=dict, server_default=sa.text("'{}'::jsonb"))
+    consent_version: Mapped[str | None] = mapped_column(default=None)
+    consent_at: Mapped[datetime | None] = mapped_column(default=None)
+    fund_id: Mapped[str | None] = mapped_column(default=None)
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=sa.func.now(), onupdate=sa.func.now()
+    )
+
+
 class AccountContact(Base):
     """보류·대기 중인 사람이 보낸 관리자 문의 한 건 (사용자 2026-09-07).
 

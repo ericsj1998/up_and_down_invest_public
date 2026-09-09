@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from updown.apps.api.admin import router as admin_router
 from updown.apps.api.ai_analysis import router as ai_router
 from updown.apps.api.analysis import router as analysis_router
+from updown.apps.api.assistant import router as assistant_router
 from updown.apps.api.auth import attach_accounts
 from updown.apps.api.auth import guard as auth_guard
 from updown.apps.api.auth import router as auth_router
@@ -394,6 +395,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     app.include_router(exchange_router)
     # ⭐ 재무 표(T243) — 읽기는 열람자도(`need_for` READ), 새로고침(POST)은 거래자부터.
     app.include_router(fundamentals_router)
+    # ⭐ 온보딩 위저드(T247) — 초안은 계정 저장소, 생성은 펀드 API 를 그대로 부른다.
+    app.include_router(assistant_router)
 
     @app.get("/health")
     async def health() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]

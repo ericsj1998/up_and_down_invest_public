@@ -9,6 +9,7 @@
 from updown.common.db.models.accounts import (
     Account,
     AccountContact,
+    AssistantDraft,
     MarketGrantRow,
     PlaybookGrantRow,
     RoleCollection,
@@ -53,6 +54,7 @@ __all__ = [
     "AnalysisReport",
     "AppSetting",
     "ApprovedOrder",
+    "AssistantDraft",
     "BacktestRun",
     "BrokerCredential",
     "Candle",
@@ -100,7 +102,8 @@ SETTINGS_TABLE_COUNT = 1
 #: ⚠️ 두 표를 더하고 여기를 안 올려 2026-09-07~08 CI 가 붉었다 (1.3.1 에서 고침).
 #: + `playbook_grants`(T230 · 0115 · 매매법별 권한 덮어쓰기).
 #: + `market_grants`(T242 · 0119 · 시장 갈래별 권한 덮어쓰기).
-ACCOUNTS_TABLE_COUNT = 5
+#: + `assistant_drafts`(T247 · 0121 · 온보딩 위저드 초안 — 사람마다 한 행 · 계정 저장소와 같은 축).
+ACCOUNTS_TABLE_COUNT = 6
 
 #: `tests/test_migrations.py` 가 실제 DB 와 대조하는 총합.
 #:
