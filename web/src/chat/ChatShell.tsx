@@ -290,8 +290,11 @@ export function DockedChat({ who }: { who: Who | null }) {
       </div>
     );
   }
+  // ⭐ 페이지가 길어도 창은 화면을 따라온다 — 붙은 창은 뷰포트에 sticky, 높이는 화면 높이(좌우) 또는 지정 크기(상하).
+  //    (사용자 2026-09-10: "입력창이 저 아래 가 있다")
+  const stick = horizontal ? "sticky top-4 self-start" : edge === "top" ? "sticky top-4 self-stretch" : "sticky bottom-4 self-stretch";
   const frame = (
-    <div className="chat-dock shrink-0" style={horizontal ? { width: size } : { height: size }}>
+    <div className={`chat-dock shrink-0 ${stick}`} style={horizontal ? { width: size, height: "calc(100vh - 2rem)" } : { height: size }}>
       <ChatFrame who={who} mode={edge} className="h-full rounded-xl border border-blue-gray-100 shadow-sm dark:border-gray-800" />
     </div>
   );

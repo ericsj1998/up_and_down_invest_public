@@ -45,7 +45,7 @@ from updown.apps.api.walkforward import (
     _drop_one,
     _live_start,
 )
-from updown.common.domain.instrument import Market, Timeframe
+from updown.common.domain.instrument import Market, MarketGroup, Timeframe
 from updown.decision.allocation import Basket, BasketError, BasketMember, as_members, rank_members
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider
@@ -741,15 +741,38 @@ async def _status(fund: Fund) -> dict[str, Any]:
 BASKETS_CONFIG = Path(os.environ.get("BASKETS_CONFIG", "config/baskets.yml"))
 
 
+def basket_block_of(market: str) -> str:
+    """시장 → `config/baskets.yml` 블록 이름.
+
+    코인 `default` · 해외주식 `foreign_stock` · 국내주식 `domestic_stock`.
+
+    Args:
+        market: 시장 이름. 모르는 이름이면 `default`.
+
+    Returns:
+        블록 이름.
+    """
+    try:
+        group = MarketGroup.of(Market(market))
+    except ValueError:
+        return "default"
+    if group is MarketGroup.FOREIGN_STOCK:
+        return "foreign_stock"
+    if group is MarketGroup.DOMESTIC_STOCK:
+        return "domestic_stock"
+    return "default"
+
+
 def _default_basket(market: str) -> tuple[list[dict[str, str]], list[str]]:
     """기본 바스켓 (config/baskets.yml) 을 대상 거래소에 맞춰 거른다.
 
     Args:
-        market: GATE / BINANCE. testnet 에 계약이 없는 종목을 뺀다.
+        market: 거래소·시장. 코인(GATE/BINANCE)은 `default` 블록에서 testnet 에 계약이 없는 종목을
+            빼고, 해외주식은 `foreign_stock`, 국내주식은 `domestic_stock` 블록을 쓴다.
 
     Returns:
-        (남는 멤버들, 이 거래소라서 뺀 종목들). 파일이 없거나 비면 둘 다 빈 목록 —
-        조용히 엉뚱한 기본값을 만들지 않는다 (규칙 #8).
+        (남는 멤버들, 이 거래소라서 뺀 종목들). 파일이 없거나 그 묶음의 블록이 비면 둘 다 빈 목록 —
+        조용히 엉뚱한 기본값(주식 펀드에 코인)을 만들지 않는다 (규칙 #8 · 2026-09-10 실측).
     """
     try:
         raw: object = yaml.safe_load(BASKETS_CONFIG.read_text(encoding="utf-8"))
@@ -757,7 +780,7 @@ def _default_basket(market: str) -> tuple[list[dict[str, str]], list[str]]:
         return [], []
     if not isinstance(raw, dict):
         return [], []
-    body = cast("dict[str, Any]", raw).get("default")
+    body = cast("dict[str, Any]", raw).get(basket_block_of(market))
     if not isinstance(body, dict):
         return [], []
     spec = cast("dict[str, Any]", body)

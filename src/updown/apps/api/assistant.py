@@ -349,6 +349,11 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
     if market is None:
         raise HTTPException(400, f"{GROUP_LABELS.get(group, group)} 갈래에 지금 열린 시장이 없다")
     members, missing = rebalancer._default_basket(market.value)  # pyright: ignore[reportPrivateUsage]
+    if not members:
+        raise HTTPException(
+            503,
+            f"{market.value} 의 기본 바스켓이 없다 — config/baskets.yml 에 그 묶음의 블록을 둔다",
+        )
     body = {
         "label": str(payload.get("label") or answers.get("label") or "어시스턴트 펀드"),
         "total_cash": capital,
