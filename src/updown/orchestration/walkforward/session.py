@@ -681,6 +681,14 @@ class Session:
     `SealedFiller` 의 진입 판정(`<` 엄격)과 같은 잣대. 라이브는 거래소 체결이 답이므로 꺼 둔다.
     켜면 익절 건수가 줄어 잔고가 내려간다 — 그것이 사실에 가까운 쪽이다.
     """
+    frame_window: int = 0
+    """`_frame` 이 지표를 재는 창의 봉 수 (T252). 0 이면 전 구간(봉인 시작부터 지금까지).
+
+    🔴 걸음마다 전 구간에 `indicator_snapshot.compute` 를 다시 돌리면 한 판이 O(n²) 다
+    (15m 1년 셀 9~40분 실측). 창을 자르면 EMA·RSI 계열이 씨앗에 민감해 값이 미세하게
+    바뀌므로 **기본은 0** 이고, 창 크기의 근거는 전 구간 대비 차이를 잰 골든 시험
+    (`tests/test_frame_window_golden.py`)이다. 켜는 것은 저장소 재생성과 함께 한다(규칙 #5).
+    """
     span_cover: Decimal = SPAN_COVER
     """박스로 인정할 최소 폭 = 왕복 비용 x 이 배수 (T42 ⑤). 룰의 `span_cover` 를 조립층이 넣는다.
 
@@ -963,6 +971,10 @@ class Session:
             **과거 계산을 재사용**하게 된다. 보기만 하는 것이 판정을 오염시키는 셈이다.
         """
         rows: list[Candle] = list(self.feed.judged(frame, at=at))
+        if self.frame_window > 0 and len(rows) > self.frame_window:
+            # ⭐ T252 — 창을 고정 폭으로 자른다. 캐시 열쇠는 개수 + 마지막 봉 시각이라
+            #    개수가 그대로여도 커서가 가면 다시 잰다(아래 2026-08-22 주석).
+            rows = rows[-self.frame_window :]
         if not rows:
             return None
         live = at is None
