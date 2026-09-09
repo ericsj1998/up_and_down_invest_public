@@ -682,6 +682,8 @@ export type Book = {
   trigger: string | null;
   /** 라이브 세트(권장) 그룹에 올릴지 — playbooks.yml 의 recommended (2026-08-24). */
   recommended?: boolean;
+  /** 어느 시장 묶음에서 도나 (T245) — 없으면 옛 서버(어디서나 보인다). */
+  groups?: ("coin" | "stock")[];
   regimes?: string[];
   setups?: string[];
   primary_flags?: string[];
@@ -1616,7 +1618,27 @@ export type MarketInfo = {
   scoped: boolean;
   group?: "coin" | "stock";
   broker?: string;
+  /** 능력표(T238) — 없으면 옛 서버(코인처럼 그린다). */
+  leverage?: boolean;
+  short?: boolean;
+  funding?: boolean;
+  always_open?: boolean;
 };
+
+/** 장 시간 배지 값 (T245 · `/exchange/market-status`). 시각은 ISO(UTC) — 화면이 사람 시간대로 보여 준다. */
+export type MarketStatusView = {
+  market: string;
+  always_open: boolean;
+  state: "open" | "closed" | "unknown";
+  why: string;
+  session: string;
+  next_open: string | null;
+  next_close: string | null;
+};
+
+export function marketStatus(market: string): Promise<MarketStatusView> {
+  return request(`/exchange/market-status?market=${encodeURIComponent(market)}`);
+}
 export function exchangeMarkets(): Promise<{
   markets: string[];
   all: MarketInfo[];

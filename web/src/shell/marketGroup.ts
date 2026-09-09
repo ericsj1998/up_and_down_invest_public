@@ -52,6 +52,24 @@ export function groupOfName(all: readonly MarketInfo[], name: string): MarketGro
   return all.find((m) => m.name === name)?.group ?? "coin";
 }
 
+/** 시장의 능력(배율·펀딩·24h) — 서버가 말한 값. 모르면 코인처럼(전부 보인다 · 코인 화면 불변). */
+export function capsOfName(
+  all: readonly MarketInfo[],
+  name: string,
+): { leverage: boolean; funding: boolean; alwaysOpen: boolean } {
+  const m = all.find((one) => one.name === name);
+  return {
+    leverage: m?.leverage ?? true,
+    funding: m?.funding ?? true,
+    alwaysOpen: m?.always_open ?? true,
+  };
+}
+
+/** 매매법이 이 묶음에서 도나 — `groups` 가 없는 옛 서버 응답은 어디서나. */
+export function bookInGroup(book: { groups?: readonly string[] }, group: MarketGroup): boolean {
+  return !book.groups || book.groups.includes(group);
+}
+
 /** 시장 이름의 브로커 — 서버가 말한 값. 없으면 undefined (마크를 안 그린다 · 꾸미지 않는다). */
 export function brokerOfName(all: readonly MarketInfo[], name: string): string | undefined {
   return all.find((m) => m.name === name)?.broker;

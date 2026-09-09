@@ -50,7 +50,8 @@ import {
 import { positionsSummary } from "./consoleSummary";
 import { connection } from "./api";
 import { BrokerMark } from "./shell/BrokerMark";
-import { brokerOfName, pickMarkets, useMarketGroup } from "./shell/marketGroup";
+import { MarketHours } from "./shell/MarketHours";
+import { brokerOfName, capsOfName, pickMarkets, useMarketGroup } from "./shell/marketGroup";
 
 /** ⚠️ 거래소를 두드리는 일이라 느긋하게. 정리하려고 여는 화면이지 초를 보는 곳이 아니다. */
 // 2026-09-05: 4초는 1 GB 서버에서 CPU 를 다 먹었다(요청마다 거래소 왕복). 10초면 충분하다.
@@ -301,6 +302,8 @@ export function ConsoleTab({ openRun }: Props) {
     [bodies, boxMkt, marketList],
   );
   const boxPositions = useMemo(() => scopedOf((one) => one.positions), [scopedOf]);
+  // ⭐ 청산가 열 — 표에 보이는 포지션의 시장 중 배율이 있는 곳이 하나라도 있으면 (능력표 · T245).
+  const liqHere = boxPositions.some((row) => capsOfName(allMarkets, String(row.market ?? "")).leverage);
   const boxOrders = useMemo(() => scopedOf((one) => one.orders), [scopedOf]);
   const boxStops = useMemo(() => scopedOf((one) => one.stops), [scopedOf]);
   const boxHistory = useMemo(() => scopedOf((one) => one.history), [scopedOf]);
@@ -687,7 +690,7 @@ export function ConsoleTab({ openRun }: Props) {
       {/* 🔴 **판을 안 띄운 종목은 볼 사람이 없다** (사용자 요구 2026-08-21).
           XRP 조건부가 판이 지워진 뒤로 남아 있었는데 화면 어디에도 나올 자리가
           없었다 — 거래소를 직접 찔러서야 찾았다. */}
-      <Leftovers />
+      {group === "coin" ? <Leftovers /> : null}
 
       {/* 🔴 가장 위험한 조합 — 포지션은 있는데 손절이 없다. */}
       {naked.length ? (
@@ -728,9 +731,11 @@ export function ConsoleTab({ openRun }: Props) {
       )}
       {/* T245 — 고른 시장의 머리: 시장 이름 + 브로커 마크(토스 로고 · GATE · BINANCE). "이 돈이 어느 계좌에 있나". */}
       {effMkt !== "전체" ? (
-        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-blue-gray-700 dark:text-blue-gray-200">
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-blue-gray-700 dark:text-blue-gray-200">
           <span>{effMkt}</span>
           <BrokerMark broker={brokerOfName(allMarkets, effMkt)} size="md" />
+          {/* 장 시간 — 24시간 장(코인)은 아무것도 안 그린다. */}
+          <MarketHours market={effMkt} alwaysOpen={capsOfName(allMarkets, effMkt).alwaysOpen} />
         </div>
       ) : null}
       <div className="cards">
@@ -939,7 +944,7 @@ export function ConsoleTab({ openRun }: Props) {
       {/* ⭐ **순위가 도는 RUN 바로 위다** (사용자 요구 2026-08-20). 판 화면에도 같은
           표가 있었는데, 거기는 *"이 판이 어떻게 하고 있나"* 를 보는 곳이라 자리가
           아니었다 — 판을 여럿 열면 같은 표가 화면마다 반복되고 왕복도 그만큼 늘었다. */}
-      <Ranking />
+      {group === "coin" ? <Ranking /> : null}
 
       {/* 🔴 **판은 여기서 연다.** 판 화면을 홈으로 두면 판이 없을 때 빈 화면이 뜨고,
           여럿일 때 화면이 임의로 하나를 고른다. */}
@@ -1065,6 +1070,7 @@ export function ConsoleTab({ openRun }: Props) {
       <div className="table-wrap">
         {boxPositions.length ? (
           <table>
+
             <thead>
               <tr>
                 <th>종목</th>
@@ -1073,7 +1079,7 @@ export function ConsoleTab({ openRun }: Props) {
                 <th className="num">표시가</th>
                 <th className="num">미실현</th>
                 <th className="num">증거금</th>
-                <th className="num">청산가</th>
+                {liqHere ? <th className="num">청산가</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -1082,11 +1088,7 @@ export function ConsoleTab({ openRun }: Props) {
                 return (
                   <tr key={`${row.market}:${row.symbol}`}>
                     <td className="mono">
-                      {row.market === "BINANCE" ? (
-                    <span style={{ color: "#d29922", marginRight: 4 }}>BN</span>
-                  ) : (
-                    <span className="faint" style={{ marginRight: 4 }}>GT</span>
-                  )}
+                      <BrokerMark broker={brokerOfName(allMarkets, String(row.market ?? ""))} />{" "}
                       {row.symbol}
                     </td>
                     <td className="num">{row.size}</td>
@@ -1096,8 +1098,8 @@ export function ConsoleTab({ openRun }: Props) {
                       {num(row.unrealised_pnl, 2)}
                     </td>
                     <td className="num">{num(row.margin, 2)}</td>
-                    {/* 🔴 청산가가 있어야 배율의 뜻이 읽힌다 — 20배면 5% 다. */}
-                    <td className="num loss">{num(row.liq_price, 2)}</td>
+                    {/* 🔴 청산가가 있어야 배율의 뜻이 읽힌다 — 20배면 5% 다. 배율 없는 시장(주식)은 열 자체가 없다. */}
+                    {liqHere ? <td className="num loss">{num(row.liq_price, 2)}</td> : null}
                   </tr>
                 );
               })}

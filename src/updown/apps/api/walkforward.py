@@ -2862,6 +2862,10 @@ def _playbooks_all() -> dict[str, Any]:
                     None if (found := trigger_frame(catalog, item)) is None else found.value
                 ),
                 "regimes": [regime.value for regime in item.regimes],
+                # ⭐ T245 — 어느 시장 묶음(코인/주식)에서 도나. 매매법 선택창이 묶음으로 거른다.
+                "groups": sorted(
+                    {"coin" if g is MarketGroup.COIN else "stock" for g in item.market_groups}
+                ),
                 "setups": list(item.setups),
                 "primary_flags": list(item.primary_flags),
                 # 🔴 **측정된 배율** (2026-08-30). 화면의 기본값이 여기서 온다 —

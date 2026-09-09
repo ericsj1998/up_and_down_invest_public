@@ -4,7 +4,7 @@
  * 두 층으로 나눈다 — **시장 아이콘**(₿ 코인 / 📈 주식)은 스위치와 헤더 배지에, **브로커 마크**(토스 · GATE · BINANCE)는
  * 판·계좌 카드 옆에. 카드 옆 그림은 "이 돈이 어느 계좌에 있나" 를 답해야 하므로 브로커다.
  *
- * 토스 로고는 `web/public/brand/Toss_Logo_Primary*.png` (사용자가 넣음 · 2026-09-09). 비트코인 ₿ 는 공개 도메인 심볼.
+ * 토스 로고는 `web/public/brand/Toss_Logo_Primary*_light.png` (사용자가 넣음 · 2026-09-09 · 52 KB 판). 비트코인 ₿ 는 공개 도메인 심볼.
  * 로고가 없는 브로커는 이름 글자 배지 — 없는 그림을 지어내지 않는다.
  */
 import { ArrowTrendingUpIcon } from "@heroicons/react/24/solid";
@@ -50,8 +50,8 @@ export function BrokerMark({ broker, size = "sm" }: { broker?: string; size?: "s
   if (broker === "toss") {
     return (
       <span className="inline-flex shrink-0 items-center" title="토스증권 — 시세는 토스, 체결은 페이퍼(가상)">
-        <img src="/brand/Toss_Logo_Primary.png" alt="토스" className={`${h} w-auto dark:hidden`} />
-        <img src="/brand/Toss_Logo_Primary_White.png" alt="토스" className={`hidden ${h} w-auto dark:inline`} />
+        <img src="/brand/Toss_Logo_Primary_light.png" alt="토스" className={`${h} w-auto dark:hidden`} />
+        <img src="/brand/Toss_Logo_Primary_White_light.png" alt="토스" className={`hidden ${h} w-auto dark:inline`} />
       </span>
     );
   }

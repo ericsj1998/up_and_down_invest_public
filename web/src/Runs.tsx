@@ -11,7 +11,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { exchangeMarkets, type MarketInfo } from "./api";
-import { groupOfName, useMarketGroup } from "./shell/marketGroup";
+import { bookInGroup, capsOfName, groupOfName, useMarketGroup } from "./shell/marketGroup";
 import {
   dropSession,
   health as fetchHealth,
@@ -232,6 +232,20 @@ export function Runs({ rows, open, refresh, available }: Props) {
   useEffect(() => {
     if (groupMarkets.length && !groupMarkets.includes(market)) setMarket(groupMarkets[0] ?? market);
   }, [groupMarkets, market]);
+  // ⭐ 매매법 후보도 묶음 안의 것만 — 주식 묶음에서 코인 세트를 고르면 서버가 거절할 뿐이다.
+  const groupBooks = useMemo(() => books.filter((b) => bookInGroup(b, group)), [books, group]);
+  useEffect(() => {
+    if (groupBooks.length && !groupBooks.some((b) => b.id === book)) {
+      const pick = groupBooks.find((b) => b.recommended) ?? groupBooks[0];
+      if (pick) setBook(pick.id);
+    }
+  }, [groupBooks, book]);
+  // ⭐ 판 목록도 묶음으로 — 옛 판(market 없음)은 GATE 로 본다.
+  const shown = useMemo(
+    () => rows.filter((row) => groupOfName(infos, row.market || "GATE") === group),
+    [rows, infos, group],
+  );
+  const showLeverage = shown.some((row) => capsOfName(infos, row.market || "GATE").leverage);
   const [symbol, setSymbol] = useState("");
   const [margin, setMargin] = useState("300");
   const [leverage, setLeverage] = useState("3");
@@ -317,8 +331,8 @@ export function Runs({ rows, open, refresh, available }: Props) {
     //    타이머가 끝없이 다시 걸린다.
   }, [rows.map((row) => row.session_id).join(",")]);
 
-  const alive = rows.filter((row) => row.running && !row.stored);
-  const dead = rows.filter((row) => !(row.running && !row.stored));
+  const alive = shown.filter((row) => row.running && !row.stored);
+  const dead = shown.filter((row) => !(row.running && !row.stored));
 
   const act = (name: string, run: () => Promise<unknown>) => {
     setBusy(name);
@@ -360,7 +374,7 @@ export function Runs({ rows, open, refresh, available }: Props) {
                 <th>매매법</th>
                 <th>상태</th>
                 <th className="num">증거금</th>
-                <th>배율</th>
+                {showLeverage ? <th>배율</th> : null}
                 {/* 🔴 **1.2.0 인지 1.3.0 인지 가르는 유일한 열** (2026-08-30).
                     두 버전의 번들 구성원이 같아서 매매법 이름으로는 구별이 안 된다.
                     β = 손절을 청산거리의 몇 % 안쪽으로 당기나 · 하한 = 그보다
@@ -441,7 +455,7 @@ export function Runs({ rows, open, refresh, available }: Props) {
                       값이 생길 경로 자체가 닫혔다. */}
                     {/* ⭐ 값만 보여 준다 — 바꾸는 위젯은 편집 확장행에 (사용자 요구
                       2026-08-26: 행 액션 통합). */}
-                    <td className="num">{row.leverage}x</td>
+                    {showLeverage ? <td className="num">{row.leverage}x</td> : null}
                     {/* 🔴 안전장치 — 값이 없으면 **옛 설정으로 도는 판**이다 (1.2.0 이하). */}
                     <td>
                       {row.stop_cap_ratio == null &&
@@ -572,12 +586,11 @@ export function Runs({ rows, open, refresh, available }: Props) {
                           style={{ alignItems: "center", gap: 12 }}
                         >
                           {/* 🔴 배율 다이얼은 뺐다 (T219 결정 2026-09-05) — 펀드가 배율을 정한다. 값만 보인다. */}
-                          <span
-                            className="chip"
-                            title="배율은 펀드(플레이북 선언)가 정한다"
-                          >
-                            배율 {Number(row.leverage)}x
-                          </span>
+                          {capsOfName(infos, row.market || "GATE").leverage ? (
+                            <span className="chip" title="배율은 펀드(플레이북 선언)가 정한다">
+                              배율 {Number(row.leverage)}x
+                            </span>
+                          ) : null}
                           {/* ⚠️ 중지는 일시정지가 아니다 — 새 진입만 막고, 든 포지션의
                             손절·반익은 계속 관리된다. */}
                           <button
@@ -673,7 +686,7 @@ export function Runs({ rows, open, refresh, available }: Props) {
                 {/* 🔵 권장 세트는 이제 playbooks.yml 의 recommended 가 정한다 (2026-08-24) —
                     하드코딩하던 0.2 문자열을 설정으로 옮겼다. 새 메인을 확정하면 yaml 한 줄이면 바뀐다. */}
                 <optgroup label="라이브 세트 (3배 권장)">
-                  {books
+                  {groupBooks
                     .filter((item) => item.recommended)
                     .map((item) => (
                       <option key={item.id} value={item.id}>
@@ -681,9 +694,9 @@ export function Runs({ rows, open, refresh, available }: Props) {
                       </option>
                     ))}
                 </optgroup>
-                {books.some((item) => !item.recommended) && (
+                {groupBooks.some((item) => !item.recommended) && (
                   <optgroup label="구성 요소 단독">
-                    {books
+                    {groupBooks
                       .filter((item) => !item.recommended)
                       .map((item) => (
                         <option key={item.id} value={item.id}>

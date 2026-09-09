@@ -33,9 +33,12 @@ from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Body, HTTPException
 
+from updown.apps.api.market_hours import market_status_payload
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
+from updown.common.domain.capabilities import CapabilityConfigError, capabilities_of
 from updown.common.domain.instrument import Instrument, Market, MarketGroup, Timeframe
 from updown.common.domain.order import OrderKind, OrderRequest, OrderType, Side
+from updown.common.domain.session import SessionConfigError, load_calendar
 from updown.common.logging.setup import get_logger
 from updown.execution.gateway import OrderGatewayError, order_adapter
 from updown.marketdata.adapter import QuoteAdapter
@@ -108,6 +111,17 @@ async def markets() -> dict[str, Any]:
         except Exception:
             ready = False
         # ⭐ T245 — 시장 묶음(코인/주식)과 브로커는 **서버가 말한다**. 화면은 이름으로 안 가른다.
+        # ⭐ 능력표(T238)도 같이 — 배율·청산·펀딩 칸을 숨길지는 화면이 이 값으로 정한다.
+        try:
+            caps = capabilities_of(market)
+            traits: dict[str, Any] = {
+                "leverage": caps.leverage_allowed,
+                "short": caps.short_allowed,
+                "funding": caps.funding,
+                "always_open": caps.always_open,
+            }
+        except CapabilityConfigError:
+            traits = {}
         known.append(
             {
                 "name": market.value,
@@ -115,6 +129,7 @@ async def markets() -> dict[str, Any]:
                 "scoped": market.value in scoped,
                 "group": "coin" if MarketGroup.of(market) is MarketGroup.COIN else "stock",
                 "broker": provider.broker_of(market),
+                **traits,
             }
         )
     # `markets` = 이 API 가 실제로 붙어 있는 거래소(범위 안 · 키 있음) — 폴링·대조가 도는 곳.
@@ -122,6 +137,30 @@ async def markets() -> dict[str, Any]:
     # "기능은 있되, 선택권을 사람이 가지는 거지"). 연결 안 된 것을 고르면 "API 키 설정이
     # 필요합니다".
     return {"markets": [m["name"] for m in known if m["ready"] and m["scoped"]], "all": known}
+
+
+@router.get("/market-status")
+async def market_status(market: str) -> dict[str, Any]:
+    """장 시간 배지 (T245) — 캘린더만 읽는다. 브로커 호출 없음.
+
+    Args:
+        market: 시장 코드.
+
+    Returns:
+        `market_status_payload` 의 모양.
+
+    Raises:
+        HTTPException: 모르는 시장(400) · 캘린더를 못 읽음(503).
+    """
+    try:
+        target = Market(market)
+    except ValueError as exc:
+        raise HTTPException(400, f"모르는 시장이다: {market}") from exc
+    try:
+        calendar = load_calendar()
+    except (SessionConfigError, OSError) as exc:
+        raise HTTPException(503, f"마켓 캘린더를 읽을 수 없다 — {exc}") from exc
+    return market_status_payload(calendar, target, datetime.now(UTC))
 
 
 @router.get("/balances")

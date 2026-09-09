@@ -9,7 +9,8 @@
 import { useEffect, useState } from "react";
 
 import * as api from "./api";
-import type { FundStatus } from "./api";
+import type { FundStatus, MarketInfo } from "./api";
+import { bookInGroup, groupOfName, useMarketGroup } from "./shell/marketGroup";
 import { ErrorCard, SelectField } from "./ui";
 
 // ⭐ 기본 바스켓·전략은 서버가 준다 (/rebalancer/defaults · SSoT = config/baskets.yml).
@@ -123,6 +124,7 @@ export function FundPanel() {
       label: string;
       leverage?: number | null;
       backtest_note?: string;
+      groups?: ("coin" | "stock")[];
     }[]
   >([]);
   const [playbook, setPlaybook] = useState("");
@@ -132,6 +134,20 @@ export function FundPanel() {
   );
   const [missing, setMissing] = useState<string[]>([]);
   const [markets, setMarkets] = useState<string[]>([]);
+  // ⭐ T245 — 고른 시장 묶음의 거래소·매매법만.
+  const [group] = useMarketGroup();
+  const [infos, setInfos] = useState<MarketInfo[]>([]);
+  useEffect(() => {
+    api
+      .exchangeMarkets()
+      .then((r) => setInfos(r.all ?? []))
+      .catch(() => setInfos([]));
+  }, []);
+  const groupMarkets = markets.filter((m) => groupOfName(infos, m) === group);
+  const groupBooks = books.filter((b) => bookInGroup(b, group));
+  useEffect(() => {
+    if (groupMarkets.length && !groupMarkets.includes(market)) setMarket(groupMarkets[0] ?? market);
+  }, [groupMarkets.join(","), market]);
 
   const refresh = () =>
     api
@@ -150,6 +166,7 @@ export function FundPanel() {
             label: b.label,
             leverage: b.leverage,
             backtest_note: b.backtest_note,
+            groups: b.groups,
           })),
         );
         const live = r.live_markets ?? [];
@@ -762,7 +779,7 @@ export function FundPanel() {
           label="거래소"
           value={market}
           onChange={setMarket}
-          options={markets.map((m) => ({ value: m }))}
+          options={groupMarkets.map((m) => ({ value: m }))}
         />
         <SelectField
           label="전략"
@@ -770,7 +787,7 @@ export function FundPanel() {
           onChange={setPlaybook}
           options={[
             ...(books.length === 0 && playbook ? [{ value: playbook }] : []),
-            ...books.map((b) => ({ value: b.id, label: b.label })),
+            ...groupBooks.map((b) => ({ value: b.id, label: b.label })),
           ]}
         />
         <button
