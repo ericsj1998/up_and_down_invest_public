@@ -234,7 +234,7 @@ function RowPair({
         style={row.has_facts ? { cursor: "pointer" } : undefined}
         title={row.has_facts ? "누르면 근거가 펼쳐진다" : "공시를 아직 안 받았다"}
       >
-        <td className="mono">
+        <td className="mono" style={{ minWidth: "8rem" }}>
           <span className="inline-flex items-center gap-1">
             <BrokerMark broker={row.broker ?? undefined} />
             {row.symbol}

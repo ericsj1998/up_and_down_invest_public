@@ -75,7 +75,8 @@ export function BrokerMark({ broker, size = "sm" }: { broker?: string; size?: "s
         className="inline-flex shrink-0 items-center rounded-md bg-white px-1.5 py-0.5 ring-1 ring-blue-gray-100 dark:ring-0"
         title={logo.title}
       >
-        <img src={logo.src} alt={logo.alt} className={`${h} w-auto`} />
+        {/* max-w-none: 표 셀 안에서 전역 img{max-width:100%} 가 폭 계산을 꼬아 옆 칸을 덮었다 (2026-09-10 저평가 카드). */}
+        <img src={logo.src} alt={logo.alt} className={`${h} w-auto max-w-none`} />
       </span>
     );
   }
