@@ -53,6 +53,8 @@ class PoolConfig:
         max_concurrency: 동시 실행 상한.
         schema_retries: 스키마 위반 시 재시도 횟수.
         temperature: 표집 온도.
+        chat_model: 채팅(T248)이 먼저 부를 모델. None 이면 rank 1.
+        chat_timeout_seconds: 채팅 한 턴의 타임아웃 — 도구 왕복이 여러 번이라 팬아웃보다 짧게.
     """
 
     endpoint: str
@@ -61,6 +63,8 @@ class PoolConfig:
     max_concurrency: int
     schema_retries: int
     temperature: float
+    chat_model: str | None = None
+    chat_timeout_seconds: float = 60.0
 
 
 def load_pool(path: Path | None = None) -> PoolConfig:
@@ -104,12 +108,17 @@ def load_pool(path: Path | None = None) -> PoolConfig:
 
     fanout = document.get("fanout")
     settings: dict[str, Any] = cast(dict[str, Any], fanout) if isinstance(fanout, dict) else {}
+    chat_raw = document.get("chat")
+    chat: dict[str, Any] = cast(dict[str, Any], chat_raw) if isinstance(chat_raw, dict) else {}
+    chat_model = chat.get("model")
     return PoolConfig(
         endpoint=str(document.get("endpoint", "")),
         models=tuple(sorted(models, key=lambda spec: spec.rank)),
         timeout_seconds=float(str(settings.get("timeout_seconds", 90))),
         max_concurrency=int(str(settings.get("max_concurrency", 10))),
         schema_retries=int(str(settings.get("schema_retries", 1))),
+        chat_model=str(chat_model) if chat_model else None,
+        chat_timeout_seconds=float(str(chat.get("timeout_seconds", 60))),
         temperature=float(str(settings.get("temperature", 0.2))),
     )
 
