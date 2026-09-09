@@ -532,7 +532,8 @@ class GatePaperAdapter:
             limit: 가져올 줄 수.
 
         Returns:
-            `{time, pnl, side, text, max_size}` 목록. 못 읽으면 빈 목록.
+            `{time, pnl, side, text, max_size, long/short_price, pnl_fee, pnl_fund …}` 목록.
+            못 읽으면 빈 목록.
 
         Note:
             ⚠️ **포지션 하나의 손익**이지 주문 하나의 손익이 아니다. 분할 청산이면 여러
@@ -549,6 +550,13 @@ class GatePaperAdapter:
                 "first_open_time": str(row.get("first_open_time", "")),
                 "long_price": str(row.get("long_price", "")),
                 "short_price": str(row.get("short_price", "")),
+                # ⭐ T236 — 실제 수수료·펀딩·누적 계약: 원장 비용 정렬(`_align_fee`)이 읽는다.
+                #    빼먹으면 정렬이
+                #    조용히 건너뛴다 (1.6.2~1.6.3 실측 · "청산 행에 pnl_fee 가 없다").
+                "pnl_fee": str(row.get("pnl_fee", "")),
+                "pnl_fund": str(row.get("pnl_fund", "")),
+                "pnl_pnl": str(row.get("pnl_pnl", "")),
+                "accum_size": str(row.get("accum_size", "")),
             }
             for row in rows
         ]
