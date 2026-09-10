@@ -2387,6 +2387,59 @@ export interface Confirmed {
  * ⛔ 확정에 걸리면 400 이고 **판은 만들어지지 않는다** — 아무것도 안 하는 빈 판이
  * 남으면 화면에서 진짜 판과 구별되지 않는다.
  */
+/** AI 차트 주문 (T273) — 갈래 · 분석 응답. 숫자는 서버 문자열 그대로(지어내지 않는다). */
+export type ChartBucket = { key: string; label: string; entry: string; context: string[]; valid_bars: number; rr: string };
+export type ChartPlanSide = {
+  side: "long" | "short";
+  ok: boolean;
+  entry?: string;
+  stop?: string;
+  stop_moved?: boolean;
+  first?: string;
+  target?: string;
+  rr?: string;
+  need_pct?: string;
+  stop_pct?: string;
+  blocked: string[];
+  warnings?: string[];
+  basis: string;
+  distance?: { to_entry_pct: string; to_stop_pct: string; to_target_pct: string; risk_pct: string; reward_pct: string };
+  market?: string;
+};
+export type ChartAnalysis = {
+  analysis_id: string;
+  at: string;
+  symbol: string;
+  market: string;
+  bucket: { key: string; label: string; entry: string; context: string[]; valid_bars: number };
+  frame: AnalysisFrame;
+  structure: {
+    last: string;
+    atr: string;
+    nearest_support: AnalysisFrame["levels"][number] | null;
+    nearest_resistance: AnalysisFrame["levels"][number] | null;
+    levels_raw: string;
+    swings: { swing_high: { price: number; away_pct: number | null; ts: string } | null; swing_low: { price: number; away_pct: number | null; ts: string } | null };
+    rule_plan: AnalysisFrame["plan"];
+    note: string;
+  };
+  extremes: Record<string, unknown>;
+  valuation: Record<string, unknown> | null;
+  valuation_note: string;
+  vix: { value?: number | string; note?: string; band?: string } | null;
+  plans: { long: ChartPlanSide | null; short: ChartPlanSide | null };
+  note: string;
+};
+
+export function chartOrderBuckets(): Promise<{ buckets: ChartBucket[] }> {
+  return request("/chart-order/buckets");
+}
+
+export function chartOrderAnalyze(params: { symbol: string; market: string; bucket: string }): Promise<ChartAnalysis> {
+  const query = new URLSearchParams(params);
+  return request(`/chart-order/analyze?${query.toString()}`);
+}
+
 export function orderCustom(payload: {
   symbol: string;
   market: string;

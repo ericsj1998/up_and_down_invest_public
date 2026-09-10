@@ -34,6 +34,7 @@ import { Ranking } from "./Ranking";
 import { MacroPanel } from "./MacroPanel";
 import { ValueRanking } from "./ValueRanking";
 import { StockOrder } from "./StockOrder";
+import { AiChartOrder } from "./AiChartOrder";
 import { FundPanel } from "./FundPanel";
 import { Runs } from "./Runs";
 import { Sound } from "./Sound";
@@ -964,6 +965,8 @@ export function ConsoleTab({ openRun }: Props) {
         : null}
       {/* ⭐ 주식 주문 창(T250) — 카드의 "주문" 단추가 여기로 종목을 채운다. 팝업 없음. */}
       {group === "stock" && allMarkets.length ? <StockOrder markets={allMarkets} who={me.who ?? null} /> : null}
+      {/* ⭐ AI 차트 주문(T273) — 종목·갈래 → 구조·계획. 주문은 주식 주문 창으로 넘긴다(코인 연결은 2단계). */}
+      {allMarkets.length ? <AiChartOrder markets={allMarkets} who={me.who ?? null} /> : null}
 
       {/* 🔴 **판은 여기서 연다.** 판 화면을 홈으로 두면 판이 없을 때 빈 화면이 뜨고,
           여럿일 때 화면이 임의로 하나를 고른다. */}

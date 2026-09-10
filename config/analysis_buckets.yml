@@ -1,0 +1,30 @@
+# AI 차트 주문(T273) — 매매 갈래가 시간축을 정한다. 숫자는 코드에 안 박는다 (CLAUDE.md §1).
+#
+#   entry      진입 축 — 차트를 그리고 구조(전고/전저 · 지지/저항 · 오더블록 · 추세)를 읽는 축
+#   context    맥락 축 — 이평 기울기·추세를 같이 읽는 상위 축 (Timeframe 열거형 값만: 5m 15m 1h 4h 1d)
+#   valid_bars 계획이 진입가에 닿아야 하는 봉 수 — 지나면 "진입 안 됨" 으로 따로 센다 (보완 ①)
+#   rr         익절 목표 = 손절 거리 x rr (다음 저항/지지가 더 가까우면 그쪽 · 좁은 쪽 · 결정 2026-09-11 권장안)
+#   stop_atr   손절은 구조(지지/저항) 뒤로 ATR 의 이 배수만큼
+version: "1.0"
+buckets:
+  short:
+    label: 단기
+    entry: 15m
+    context: [1h, 4h]
+    valid_bars: 12
+    rr: 2
+    stop_atr: 0.5
+  swing:
+    label: 스윙
+    entry: 1h
+    context: [4h, 1d]
+    valid_bars: 10
+    rr: 2
+    stop_atr: 0.5
+  long:
+    label: 장투
+    entry: 1d
+    context: [1d]
+    valid_bars: 5
+    rr: 2
+    stop_atr: 0.5

@@ -51,8 +51,16 @@ function remembered(): string[] {
 }
 
 /** 카드에서 이 창으로 — 팝업 없이 같은 화면 안에서 이어진다. */
-export function requestStockOrder(symbol: string, market: string): void {
-  window.dispatchEvent(new CustomEvent(ORDER_EVENT, { detail: { symbol, market } }));
+/** 카드·분석 화면이 넘기는 것 — 계획과 축은 선택 (T273 "이 계획으로 주문"). */
+export type OrderRequest = {
+  symbol: string;
+  market: string;
+  plan?: { long: boolean; entry: number; stop: number; first: number; target: number };
+  frame?: string;
+};
+
+export function requestStockOrder(symbol: string, market: string, extra: Omit<OrderRequest, "symbol" | "market"> = {}): void {
+  window.dispatchEvent(new CustomEvent<OrderRequest>(ORDER_EVENT, { detail: { symbol, market, ...extra } }));
 }
 
 export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who | null }) {
@@ -90,10 +98,13 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
   // 카드의 "주문" 단추 → 종목·시장을 채우고 접혀 있으면 편다.
   useEffect(() => {
     const onEvent = (event: Event) => {
-      const detail = (event as CustomEvent<{ symbol: string; market: string }>).detail;
+      const detail = (event as CustomEvent<OrderRequest>).detail;
       if (!detail) return;
       setSymbol(detail.symbol);
       if (markets.some((m) => m.name === detail.market)) setMarket(detail.market);
+      if (detail.frame) setFrame(detail.frame);
+      // ⭐ T273 — 분석 화면의 계획을 그대로 초안으로. 사람이 보고 고친 뒤 보낸다(팝업 없음 · 재인증 문은 서버).
+      if (detail.plan) setDraft(detail.plan);
       if (!open) toggle();
     };
     window.addEventListener(ORDER_EVENT, onEvent);

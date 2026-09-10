@@ -40,6 +40,7 @@ from updown.apps.api.auth import attach_accounts
 from updown.apps.api.auth import guard as auth_guard
 from updown.apps.api.auth import router as auth_router
 from updown.apps.api.backtest import router as backtest_router
+from updown.apps.api.chart_order import router as chart_order_router
 from updown.apps.api.evidence import router as evidence_router
 from updown.apps.api.exchange import router as exchange_router
 from updown.apps.api.fundamentals import attach_fundamentals
@@ -387,6 +388,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     #    2026-01-01 이후가 봉인돼 있다 — 그 봉인은 옳고 건드리지 않는다. 매매 화면은
     #    지금 시세를 보므로 목적이 다르고, 그래서 입구를 나눴다.
     app.include_router(analysis_router)
+    app.include_router(chart_order_router)  # T273 AI 차트 주문 — 분석만, 주문은 live_custom
     # ⭐ 실시간 봉(SSE) — 같은 `/analysis` 접두사지만 파일을 나눈다. 스트림은
     #    수명·구독 관리가 있어 요청-응답 코드와 섞으면 둘 다 읽기 어려워진다.
     app.include_router(live_stream_router)
