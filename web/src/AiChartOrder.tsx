@@ -19,7 +19,9 @@ import {
   consoleBalances,
   exchangeMarkets,
   orderCustom,
+  symbols as coinSymbols,
   validatePlan,
+  valueScreen,
 } from "./api";
 import type {
   ChartAnalysis,
@@ -27,6 +29,7 @@ import type {
   ChartParticipant,
   ChartPlanSide,
   ChartRun,
+  Choice,
   MarketInfo,
   ScoreRow,
   Who,
@@ -34,25 +37,48 @@ import type {
 import { Chart } from "./Chart";
 import { useJobEvents } from "./chat/useJobEvents";
 import { BrokerMark } from "./shell/BrokerMark";
-import { brokerOfName } from "./shell/marketGroup";
+import {
+  brokerOfName,
+  pickMarkets,
+  useMarketGroup,
+  type MarketGroup,
+} from "./shell/marketGroup";
 import { requestStockOrder, stashStockOrder } from "./StockOrder";
 import { ErrorCard, useFold } from "./ui";
 
-const SLOT = "ai-chart-order:last";
+/** 마지막 선택 — 묶음(코인/주식)마다 따로 기억한다. 주식에서 고른 것이 코인 화면에 뜨면 안 된다. */
+function slotFor(group: MarketGroup): string {
+  return `ai-chart-order:last:${group}`;
+}
 
-function remembered(): {
+function remembered(group: MarketGroup): {
   symbol: string;
   market: string;
   bucket: string;
 } | null {
   try {
-    const raw = localStorage.getItem(SLOT);
+    const raw = localStorage.getItem(slotFor(group));
     return raw
       ? (JSON.parse(raw) as { symbol: string; market: string; bucket: string })
       : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * 기본 종목 (사용자 2026-09-11): 코인은 BTC, 주식은 S&P 500. 지수 자체는 봉이 없어 **SPY(S&P 500 ETF)** 로 본다 —
+ * 서버 토스가 SPY 일봉을 준다(실측 09-10). 시장은 NYSE 가 있으면 NYSE, 아니면 그 묶음의 첫 시장(토스는 종목으로 찾는다).
+ */
+function defaultsFor(
+  group: MarketGroup,
+  markets: MarketInfo[],
+): { symbol: string; market: string } {
+  if (group === "stock") {
+    const nyse = markets.find((m) => m.name === "NYSE");
+    return { symbol: "SPY", market: nyse?.name ?? markets[0]?.name ?? "NYSE" };
+  }
+  return { symbol: "BTC_USDT", market: markets[0]?.name ?? "GATE" };
 }
 
 function pctText(raw: string | undefined): string {
@@ -373,19 +399,32 @@ export function AiChartOrder({
   markets,
   who,
   page = false,
+  group: groupProp,
 }: {
   markets: MarketInfo[];
   who: Who | null;
   page?: boolean;
+  /** 사이드바 토글의 묶음 — 화면 모드에서 넘긴다. 없으면 첫 시장의 묶음. */
+  group?: MarketGroup;
 }) {
   const [open, toggle] = useFold("ai-chart-order", false);
   const navigate = useNavigate();
-  const last = remembered();
+  // ⭐ 묶음(코인/주식)은 사이드바의 토글을 따른다 — 콘솔과 같은 쿠키. 기억한 것이 없으면 기본 종목(BTC · SPY).
+  const groupOf = (name: string): MarketGroup =>
+    markets.find((m) => m.name === name)?.group ?? "coin";
+  const group: MarketGroup = groupProp ?? groupOf(markets[0]?.name ?? "");
+  const last = remembered(group);
+  const fallback = defaultsFor(group, markets);
   const [market, setMarket] = useState(
-    last?.market ?? markets[0]?.name ?? "NASDAQ",
+    last?.market && markets.some((m) => m.name === last.market)
+      ? last.market
+      : fallback.market,
   );
-  const [symbol, setSymbol] = useState(last?.symbol ?? "AAPL");
+  const [symbol, setSymbol] = useState(last?.symbol ?? fallback.symbol);
   const [bucket, setBucket] = useState(last?.bucket ?? "swing");
+  // 종목 고르개 — 코인은 띄울 수 있는 목록(`/exchange/symbols`), 주식은 저평가 유니버스의 이름표(datalist).
+  const [choices, setChoices] = useState<Choice[]>([]);
+  const [names, setNames] = useState<{ symbol: string; name: string }[]>([]);
   const [buckets, setBuckets] = useState<ChartBucket[]>([]);
   const [body, setBody] = useState<ChartAnalysis | null>(null);
   const [busy, setBusy] = useState(false);
@@ -475,11 +514,35 @@ export function AiChartOrder({
   };
 
   useEffect(() => {
-    if (!open || buckets.length) return;
+    if ((!open && !page) || buckets.length) return;
     chartOrderBuckets()
       .then((got) => setBuckets(got.buckets))
       .catch((exc: unknown) => setError(String(exc)));
-  }, [open, buckets.length]);
+  }, [open, page, buckets.length]);
+
+  // 종목 목록 — 코인은 한 번, 주식은 시장마다. 실패해도 손으로 칠 수 있으니 조용히 넘긴다.
+  useEffect(() => {
+    if (!open && !page) return;
+    if (!stock) {
+      coinSymbols()
+        .then((got) => setChoices(got.rows))
+        .catch(() => setChoices([]));
+      return;
+    }
+    let alive = true;
+    valueScreen(market, { size: 300, sort: "score" })
+      .then(
+        (got) =>
+          alive &&
+          setNames(
+            got.rows.map((r) => ({ symbol: r.symbol, name: r.name ?? "" })),
+          ),
+      )
+      .catch(() => alive && setNames([]));
+    return () => {
+      alive = false;
+    };
+  }, [open, page, stock, market]);
 
   const run = () => {
     if (!symbol.trim()) return;
@@ -490,7 +553,7 @@ export function AiChartOrder({
         setBody(got);
         try {
           localStorage.setItem(
-            SLOT,
+            slotFor(group),
             JSON.stringify({ symbol: got.symbol, market: got.market, bucket }),
           );
         } catch {
@@ -500,6 +563,12 @@ export function AiChartOrder({
       .catch((exc: unknown) => setError(String(exc)))
       .finally(() => setBusy(false));
   };
+
+  // ⭐ 화면으로 들어오면 기본 종목(또는 마지막 종목)의 차트가 **바로** 떠 있어야 한다 (사용자 2026-09-11) — 첫 렌더에 한 번.
+  useEffect(() => {
+    if (page) run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
   const order = (plan: ChartPlanSide) => {
     if (!body || !plan.entry || !plan.stop || !plan.first || !plan.target)
@@ -659,16 +728,49 @@ export function AiChartOrder({
               ))}
             </select>
             <BrokerMark broker={brokerOfName(markets, market)} />
-            <input
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") run();
-              }}
-              placeholder={stock ? "AAPL" : "BTC_USDT"}
-              style={{ width: 140 }}
-              title="종목 코드 — 코인은 BTC_USDT 꼴"
-            />
+            {!stock && choices.length ? (
+              <select
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value)}
+                title="종목 — 띄울 수 있는 코인 목록"
+              >
+                {choices.some((c) => c.symbol === symbol) ? null : (
+                  <option value={symbol}>{symbol}</option>
+                )}
+                {choices.map((c) => (
+                  <option key={c.symbol} value={c.symbol}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <>
+                <input
+                  value={symbol}
+                  list={stock ? "ai-chart-order-names" : undefined}
+                  onChange={(e) => setSymbol(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") run();
+                  }}
+                  placeholder={stock ? "SPY" : "BTC_USDT"}
+                  style={{ width: 160 }}
+                  title={
+                    stock
+                      ? "종목 코드 — 치면 유니버스 이름표가 뜬다"
+                      : "종목 코드 — 코인은 BTC_USDT 꼴"
+                  }
+                />
+                {stock ? (
+                  <datalist id="ai-chart-order-names">
+                    {names.map((n) => (
+                      <option key={n.symbol} value={n.symbol}>
+                        {n.name}
+                      </option>
+                    ))}
+                  </datalist>
+                ) : null}
+              </>
+            )}
             <div className="row" style={{ gap: 4 }}>
               {buckets.map((b) => (
                 <button
@@ -1025,19 +1127,19 @@ export function AiChartOrder({
  * 시장 목록은 콘솔과 같은 곳(`/exchange/markets`)에서 받고, 코인·주식 구분 없이 연결된 시장 전부를 고를 수 있다.
  */
 export function AiChartOrderPage({ who }: { who: Who | null }) {
-  const [markets, setMarkets] = useState<MarketInfo[] | null>(null);
+  const [all, setAll] = useState<MarketInfo[] | null>(null);
   const [error, setError] = useState("");
+  // ⭐ 사이드바의 코인/주식 토글을 따른다 (사용자 2026-09-11 "주식 상태면 주식 · 코인 상태면 코인").
+  const [group] = useMarketGroup();
   useEffect(() => {
     let alive = true;
     exchangeMarkets()
       .then(
         (r) =>
           alive &&
-          setMarkets(
-            (
-              r.all ??
-              r.markets.map((name) => ({ name, ready: true, scoped: true }))
-            ).filter((m) => m.ready && m.scoped),
+          setAll(
+            r.all ??
+              r.markets.map((name) => ({ name, ready: true, scoped: true })),
           ),
       )
       .catch((exc: unknown) => alive && setError(String(exc)));
@@ -1047,16 +1149,26 @@ export function AiChartOrderPage({ who }: { who: Who | null }) {
   }, []);
   if (error)
     return <ErrorCard title="시장 목록을 받지 못했다" message={error} />;
-  if (markets === null) return <p className="faint">시장 목록을 받는 중…</p>;
+  if (all === null) return <p className="faint">시장 목록을 받는 중…</p>;
+  // 분석은 조회만이라 `ready`(조회 어댑터가 있다)면 된다 — `scoped`(판을 띄울 수 있다)까지는 안 본다.
+  //   서버는 NYSE 를 판 범위에 안 넣었지만 토스가 SPY 봉을 주므로 여기선 고를 수 있어야 한다.
+  const markets = pickMarkets(
+    all.filter((m) => m.ready),
+    group,
+  );
   if (markets.length === 0)
     return (
       <>
         <h1>AI 차트 분석 주문</h1>
         <p className="notice warn">
-          이 API 에 연결된 시장이 없다 — 관리자가 시장을 연결하면 여기서 종목을
+          이 API 에 연결된 {group === "stock" ? "주식" : "코인"} 시장이 없다 —
+          사이드바에서 묶음을 바꾸거나, 관리자가 시장을 연결하면 여기서 종목을
           고를 수 있다.
         </p>
       </>
     );
-  return <AiChartOrder markets={markets} who={who} page />;
+  // key=group — 묶음이 바뀌면 상태(종목·시장·결과)를 새로 시작한다.
+  return (
+    <AiChartOrder key={group} markets={markets} who={who} page group={group} />
+  );
 }
