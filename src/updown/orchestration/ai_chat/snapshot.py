@@ -104,7 +104,7 @@ def summarize_frame(
         "to_high_pct": _pct(high, last),
         "to_low_pct": _pct(low, last),
         "rsi14": _num(series.rsi14[index], 1) if series.rsi14 else None,
-        "atr_pct": _pct(atr_last, last) if atr_last is not None else None,
+        "atr_pct": _num(atr_last / last * 100, 2) if atr_last is not None and last else None,
         "volume_ratio": _num(series.volume_ratio[index], 2) if series.volume_ratio else None,
         "ohlc": compress(window),
     }
