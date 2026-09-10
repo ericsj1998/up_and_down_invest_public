@@ -83,6 +83,15 @@ class Account(Base):
     """차단. 🔴 **삭제와 다르다** — 지우면 같은 이메일로 다시 가입해 `PENDING` 이 되고,
     승인 목록에 또 떠서 실수로 승인될 수 있다. 차단은 그 길을 막는다.
     """
+
+    def alive(self) -> bool:
+        """살아 있는 계정인가 — 차단도 삭제도 아님 (T269 #1 · 소프트 삭제 불변식 한 곳).
+
+        Returns:
+            참이면 로그인·권한 집계에 센다.
+        """
+        return not self.blocked and self.deleted_at is None
+
     demo_trade: Mapped[bool] = mapped_column(default=False, server_default=sa.false())
     """열람자에게 **데모(테스트넷) 주문만** 허용 — 실계좌 서버에서는 효과 없음 (2026-09-07)."""
     hold_released_until: Mapped[datetime | None] = mapped_column(default=None)

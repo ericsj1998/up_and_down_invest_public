@@ -1930,7 +1930,9 @@ async def _clear_orphans() -> None:
 
     try:
         body = await console_state()
-    except Exception:
+    except Exception as exc:
+        # T269 #2 — 못 읽으면 경보를 그대로 두는 것이 맞지만, 못 읽었다는 사실은 남긴다.
+        _logger.warning("orphan_sweep_unreadable", payload={"error": str(exc)[:120]})
         return
     alive = {str(row.get("symbol", "")) for row in body.get("positions", [])}
     for symbol in list(ORPHANS):

@@ -579,7 +579,11 @@ def fee_from_close(row: dict[str, object], multiplier: Decimal) -> tuple[Decimal
         size = abs(Decimal(str(row.get("max_size"))))
         side = str(row.get("side") or "")
         price = Decimal(str(row.get("short_price" if side == "short" else "long_price")))
-    except Exception:
+    except Exception as exc:
+        # T269 #2 — 조용히 None 이면 수수료 대조가 빠진 채 지나간다. 사실은 로그에 남긴다.
+        _logger.warning(
+            "live_fee_row_unreadable", payload={"row": str(row)[:160], "error": str(exc)[:80]}
+        )
         return None
     notional = size * price * multiplier
     if notional <= 0:
@@ -2124,7 +2128,12 @@ class LiveRunner:
             return None
         try:
             rows = await self._orders.recent_orders(self.instrument)  # type: ignore[attr-defined]
-        except Exception:
+        except Exception as exc:
+            # T269 #2 — 체결가를 못 읽으면 원장이 계획가로 남는다. 그 사실을 적는다.
+            self._log.warning(
+                "live_closing_fill_lookup_failed",
+                payload={"trade": trade_id, "error": str(exc)[:120]},
+            )
             return None
         ours = [
             row
@@ -2144,7 +2153,11 @@ class LiveRunner:
             return None
         try:
             return Decimal(str(pick["fill_price"]))
-        except Exception:
+        except Exception as exc:
+            self._log.warning(
+                "live_fill_price_unreadable",
+                payload={"row": str(pick)[:160], "error": str(exc)[:80]},
+            )
             return None
 
     async def _align_fee(self, trade_id: str) -> None:
@@ -4322,7 +4335,10 @@ class LiveRunner:
                 "list[dict[str, str]]",
                 await self._orders.recent_orders(self.instrument),  # type: ignore[attr-defined]
             )
-        except Exception:
+        except Exception as exc:
+            self._log.warning(
+                "live_fill_lookup_failed", payload={"order": order_id, "error": str(exc)[:120]}
+            )
             return None
         for row in rows:
             if str(row.get("id", "")) != order_id:

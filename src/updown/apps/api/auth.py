@@ -933,7 +933,7 @@ async def caller_of(request: Request) -> Caller | None:
     if on_real_money() and is_guest_email(email):
         return None
     found = await account_of(email)
-    if found is None or found.blocked:
+    if found is None or not found.alive():
         return None
     # ⭐ T267 #9 — 로그아웃 뒤의 옛 쪽지는 서명이 맞아도 없는 것과 같다.
     cutoff = found.sessions_invalid_before
@@ -2033,8 +2033,8 @@ def _actor_of(request: Request) -> _Actor | None:
 
 async def _holders_of(session: AsyncSession, cap: Cap, table: dict[str, Collection]) -> int:
     """이 기능을 쥔(차단 안 된) 계정 수 — 마지막 슈퍼 관리자 보호."""
-    rows = list(await session.scalars(sa.select(Account).where(Account.blocked.is_(False))))
-    return sum(1 for row in rows if cap in _caps_of(row, table))
+    rows = list(await session.scalars(sa.select(Account)))
+    return sum(1 for row in rows if row.alive() and cap in _caps_of(row, table))
 
 
 async def _apply_grant(

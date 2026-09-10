@@ -27,7 +27,6 @@ out-of-sample 구간을 눈으로 보면 그 뒤의 판정이 오염되고, 오�
 
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
@@ -38,6 +37,7 @@ from updown.analysis.detectors.rules import load_rules
 from updown.analysis.indicators.atr import atr
 from updown.analysis.levels import Level, useful
 from updown.analysis.plan import propose
+from updown.common.cache import TtlCache
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Market, Timeframe
@@ -87,7 +87,7 @@ FORMING_TTL = 0.7
 ⭐ 러너의 `FORMING_TTL` 과 같은 값이다 — 같은 이유로 같은 값을 쓴다.
 """
 
-_FORMING: dict[str, tuple[float, Candle | None]] = {}
+_FORMING = TtlCache[Candle | None]("analysis.forming", FORMING_TTL)
 """`시장:종목:축 -> (받은 시각, 봉)`.
 
 ⚠️ 프로세스 안에만 있고 판마다 갈리지 않는다 — 같은 종목을 두 창에서 봐도 거래소에는
@@ -338,9 +338,8 @@ async def tick(
         raise HTTPException(HTTP_BAD_REQUEST, f"모르는 시간축이다: {timeframe}") from exc
 
     key = f"{market.value}:{symbol}:{only.value}"
-    now_mono = time.monotonic()
-    kept = _FORMING.get(key)
-    if kept is not None and now_mono - kept[0] < FORMING_TTL:
+    kept = _FORMING.fresh(key)  # 값이 None(봉 없음)일 수 있어 fresh() — TtlCache (T269 #3)
+    if kept is not None:
         bar = kept[1]
     else:
         span = interval(only)
@@ -360,7 +359,7 @@ async def tick(
                 payload={"key": key, "error": str(exc)[:160]},
             )
             return {"frame": only.value, "at": datetime.now(UTC).isoformat(), "bar": None}
-        _FORMING[key] = (now_mono, bar)
+        _FORMING.put(key, bar)
     return {
         "frame": only.value,
         "at": datetime.now(UTC).isoformat(),

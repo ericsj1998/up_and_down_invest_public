@@ -160,7 +160,7 @@ async def market_status(market: str) -> dict[str, Any]:
 
 
 CALENDAR_CHECK_TTL_S = 3600.0
-_CALENDAR_CHECK: dict[str, tuple[float, dict[str, Any]]] = {}
+_CALENDAR_CHECK = TtlCache[dict[str, Any]]("exchange.calendar_check", CALENDAR_CHECK_TTL_S)
 
 
 @router.get("/calendar-check")
@@ -185,8 +185,8 @@ async def calendar_check(market: str) -> dict[str, Any]:
     if country is None:
         raise HTTPException(400, f"{target.value} 는 토스 달력이 없다(24시간 장)")
     cached = _CALENDAR_CHECK.get(target.value)
-    if cached is not None and time.monotonic() - cached[0] < CALENDAR_CHECK_TTL_S:
-        return cached[1]
+    if cached is not None:
+        return cached
     try:
         calendar = load_calendar()
     except (SessionConfigError, OSError) as exc:
@@ -213,8 +213,7 @@ async def calendar_check(market: str) -> dict[str, Any]:
         "findings": findings,
         "ok": not findings,
     }
-    _CALENDAR_CHECK[target.value] = (time.monotonic(), made)
-    return made
+    return _CALENDAR_CHECK.put(target.value, made)
 
 
 @router.get("/balances")
@@ -297,8 +296,11 @@ async def _balances_fresh() -> dict[str, Any]:
                 info = cast("dict[str, str]", await ident())
                 row["margin_mode"] = str(info.get("margin_mode", ""))
                 row["testnet"] = str(info.get("testnet", ""))
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.info(
+                    "exchange_identity_failed",
+                    payload={"market": market.value, "error": str(exc)[:100]},
+                )
         found[market.value] = row
     return {"balances": found}
 
@@ -881,8 +883,9 @@ async def _closes(orders: object, instrument: Instrument) -> list[dict[str, str]
     return _CLOSES_CACHE.put(key, rows)
 
 
-_LOTS: dict[str, Decimal] = {}
-"""종목별 계약 승수 — **한 번만 묻는다.**
+LOT_TTL_S = 6 * 3600.0
+_LOTS = TtlCache[Decimal]("exchange.lots", LOT_TTL_S)
+"""종목별 계약 승수 — **6시간에 한 번** 묻는다 (T269 #3 · 전에는 TTL 없는 손캐시).
 
 ⚠️ 콘솔은 4초마다 폴링하고 종목이 9개다. 매번 명세를 물으면 하루 20만 번이 되는데,
 승수는 계약이 상장돼 있는 한 **안 바뀌는 값**이다.
@@ -894,8 +897,9 @@ _LOTS: dict[str, Decimal] = {}
 async def _lot(orders: Any, instrument: Any) -> Decimal:
     """계약 승수 (1계약이 몇 코인인가) — 증거금을 계산하는 데 필요하다."""
     symbol = str(instrument.symbol)
-    if symbol in _LOTS:
-        return _LOTS[symbol]
+    kept = _LOTS.get(symbol)
+    if kept is not None:
+        return kept
     try:
         spec = await orders.contract_spec(instrument)
     except Exception:
@@ -903,7 +907,7 @@ async def _lot(orders: Any, instrument: Any) -> Decimal:
         return Decimal(0)
     got = Decimal(str(spec.get("quanto_multiplier", "0")))
     if got > 0:
-        _LOTS[symbol] = got
+        _LOTS.put(symbol, got)
     return got
 
 
@@ -1101,8 +1105,6 @@ async def close(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
         ⚠️ 멱등키에 시각을 넣는다. 같은 키로 두 번 보내면 거래소가 두 번째를 거부하는데,
         사용자가 "닫기" 를 두 번 누르는 것은 정상 행동이다 (첫 번째가 실패했을 수 있다).
     """
-    import time
-
     symbol = str(payload.get("symbol", DEFAULT_SYMBOL))
     market = str(payload.get("market", "GATE"))
     orders = _orders_adapter(market)
@@ -1213,8 +1215,6 @@ async def escape_place(payload: Annotated[dict[str, Any], Body()]) -> dict[str, 
         ⚠️ 멱등키에 시각을 넣는다 — 사람이 두 번 누르는 것은 정상 행동이다 (첫 번째가
         실패했을 수 있다).
     """
-    import time
-
     symbol = str(payload.get("symbol", DEFAULT_SYMBOL))
     market = str(payload.get("market", "GATE"))
     orders = _orders_adapter(market)
