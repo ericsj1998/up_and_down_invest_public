@@ -1741,6 +1741,28 @@ export type FundamentalsView = {
   filings: Array<{ accession: string; form: string; filed_at: string; url: string | null }>;
 };
 
+/** 개인 API 토큰 한 줄 (T263 MCP) — 값은 없다. */
+export type ApiTokenRow = {
+  id: string;
+  name: string;
+  created_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+};
+
+export function apiTokens(): Promise<{ tokens: ApiTokenRow[] }> {
+  return request("/auth/tokens");
+}
+
+/** 만든 직후 한 번만 값이 온다. */
+export function apiTokenCreate(name: string): Promise<ApiTokenRow & { token: string }> {
+  return request("/auth/tokens", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+}
+
+export function apiTokenRevoke(id: string): Promise<{ revoked: boolean; id: string }> {
+  return request(`/auth/tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 /** 거시 지표 한 줄 (T262). */
 export type MacroIndicator = {
   key: string;

@@ -5,7 +5,7 @@
  *    이름만 바꾼다.
  */
 import type { ComponentType, SVGProps } from "react";
-import { BanknotesIcon, BeakerIcon, ChartBarIcon, CpuChipIcon, SparklesIcon, TagIcon, UsersIcon } from "@heroicons/react/24/solid";
+import { BanknotesIcon, BeakerIcon, ChartBarIcon, CpuChipIcon, KeyIcon, SparklesIcon, TagIcon, UsersIcon } from "@heroicons/react/24/solid";
 
 export type Icon = ComponentType<SVGProps<SVGSVGElement>>;
 
@@ -32,6 +32,8 @@ export const PAGES: readonly Page[] = [
   { to: "/evidence", name: "백테스트 리포트", icon: BeakerIcon },
   // AI 퍼포먼스 리포트 (T249) — 참가자(모델 x 프롬프트 x 스냅샷)별 페이퍼 실측. n<30 은 회색.
   { to: "/ai-report", name: "AI 리포트", icon: CpuChipIcon },
+  // ⭐ T263 — 바깥 AI(Claude Desktop 등)가 우리 도구를 쓰는 열쇠. 로그인한 사람 누구나.
+  { to: "/tokens", name: "MCP 토큰", icon: KeyIcon },
   { to: "/accounts", name: "관리", icon: UsersIcon, admin: true },
   { to: "/label", name: "라벨(임시)", icon: TagIcon, dev: true },
 ];

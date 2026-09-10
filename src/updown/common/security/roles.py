@@ -113,6 +113,12 @@ PUBLIC_PATHS = frozenset(
 ⛔ 여기에 경로를 더할 때는 **그 응답에 계좌·성적·주문이 한 톨도 없어야** 한다.
 """
 
+SELF_SERVICE_PREFIXES = ("/auth/tokens", "/mcp")
+"""로그인만 하면 되는 경로 (T263 · `caps.SELF_SERVICE_PREFIXES` 와 같은 목록).
+
+개인 토큰 관리 · MCP 끝점.
+"""
+
 ADMIN_PREFIXES = (
     "/auth/users",
     "/auth/contacts",
@@ -175,6 +181,10 @@ def need_for(method: str, path: str, *, live: bool = False) -> Need:
     clean = path.rstrip("/") or "/"
     if clean in PUBLIC_PATHS:
         return Need.PUBLIC
+    # ⭐ T263 — 개인 토큰 관리와 MCP 끝점은 로그인만(읽기 등급). 기능 단위 판정은
+    #    `caps.required_cap` 이 한다.
+    if any(clean == p or clean.startswith(p + "/") for p in SELF_SERVICE_PREFIXES):
+        return Need.READ
     if any(clean.startswith(prefix) for prefix in ADMIN_PREFIXES):
         return Need.ADMIN
     if method.upper() in READ_METHODS:

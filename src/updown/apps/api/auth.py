@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import secrets
@@ -53,6 +54,7 @@ from updown.analysis.playbook.select import load_playbooks
 from updown.common.db.models.accounts import (
     Account,
     AccountContact,
+    ApiToken,
     MarketGrantRow,
     PlaybookGrantRow,
     RoleCollection,
@@ -490,6 +492,8 @@ class Caller:
     caps: frozenset[Cap] | None = None
     """유효 권한 (묶음 + 개별). None 이면 등급의 내장 묶음으로 본다 — 등급만 아는 호출자(시험)용."""
     collection: str = ""
+    via_token: bool = False
+    """개인 API 토큰(Bearer)으로 왔나 — 읽기와 MCP 만 된다 (T263). 구글 쪽지면 거짓."""
     """권한 묶음 이름."""
     policy: PlaybookPolicy | None = None
     """묶음의 매매법 정책 (T230). None 이면 등급의 내장값으로 본다."""
@@ -837,21 +841,31 @@ async def caller_of(request: Request) -> Caller | None:
         ⛔ 예외를 밖으로 안 낸다 — 쪽지가 이상한 것은 "로그인 안 함" 과 같은 처리다.
         여기서 500 이 나면 로그인 화면조차 못 뜬다.
     """
-    token = request.cookies.get(COOKIE, "")
-    if not token:
-        return None
-    try:
-        app = google_app()
-        note = read_note(token, app.session_secret, now=time.time())
-    except (AuthNotConfiguredError, BadTokenError):
-        return None
+    bearer = request.headers.get("authorization", "")
+    if bearer.startswith("Bearer ") and bearer[7:].strip().startswith(TOKEN_PREFIX):
+        # ⭐ T263 — 개인 토큰. 쪽지가 아니라 표에서 주인을 찾는다. 되돌린 토큰은 없는 것과 같다.
+        email_of_token = await token_owner(bearer[7:].strip())
+        if email_of_token is None:
+            return None
+        email, fresh, auth_at, via_token = email_of_token, False, 0.0, True
+    else:
+        token = request.cookies.get(COOKIE, "")
+        if not token:
+            return None
+        try:
+            app = google_app()
+            note = read_note(token, app.session_secret, now=time.time())
+        except (AuthNotConfiguredError, BadTokenError):
+            return None
+        email, fresh, auth_at = note.email, note.fresh(time.time()), note.auth_at
+        via_token = False
     # 🔴 **실계좌 서버는 게스트 쪽지를 안 받는다** (T221). 데모 서버가 발급한 게스트 쿠키는
     #    서명이 같아 여기서도 풀리지만, 게스트는 실계좌를 **보지도** 못해야 한다. 계정 행이
     #    없어 막히는 것에 기대지 않고 여기서 명시적으로 거른다 — 행이 생기는 사고가 문을 열면
     #    안 된다.
-    if on_real_money() and is_guest_email(note.email):
+    if on_real_money() and is_guest_email(email):
         return None
-    found = await account_of(note.email)
+    found = await account_of(email)
     if found is None or found.blocked:
         return None
     table = await collections()
@@ -859,8 +873,9 @@ async def caller_of(request: Request) -> Caller | None:
     return Caller(
         email=found.email,
         role=found.role,
-        fresh=note.fresh(time.time()),
-        auth_at=note.auth_at,
+        fresh=fresh,
+        auth_at=auth_at,
+        via_token=via_token,
         audit=Cap.AUDIT in caps,
         caps=caps,
         collection=found.role_collection or "",
@@ -2541,6 +2556,12 @@ async def _pass(request: Request, call_next: Any, *, need: Need, who: Caller | N
     #    등급 문(`allows`)보다 먼저다 — 대기 등급은 읽기가 허용되기 때문이다.
     if who is not None and who.held:
         return JSONResponse({"detail": HOLD_MESSAGE, "held": True}, status_code=403)
+    # ⭐ T263 — 개인 토큰은 읽기와 MCP 만. 돈이 움직이는 길은 여전히 구글 로그인 화면이다.
+    if who is not None and who.via_token and not token_allowed(request.method, request.url.path):
+        return JSONResponse(
+            {"detail": "개인 토큰은 읽기와 MCP 만 된다 — 이 일은 화면에서 구글 로그인으로"},
+            status_code=403,
+        )
     # ⭐ 기능별 권한 (사용자 2026-09-07) — 경로·메서드·서버가 요구하는 기능 하나를 계정이 쥐었나.
     #    `need`(옛 등급 요구)는 공개 경로 판정에만 쓰고, 문은 Cap 으로 연다.
     req = required_cap(request.method, request.url.path, live=on_real_money())
@@ -2640,3 +2661,190 @@ def _claims(id_token: str) -> dict[str, Any]:
         return dict(json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))))
     except (ValueError, TypeError) as exc:
         raise HTTPException(400, "구글 응답을 못 읽었다") from exc
+
+
+# ── 개인 API 토큰 (T263 MCP) ─────────────────────────────────────────────────
+
+TOKEN_PREFIX = "updn_"
+"""토큰 값의 머리 — 로그·문서에서 알아보게 하고, Bearer 가 우리 것인지 가른다."""
+TOKEN_USED_EVERY_S = 60.0
+"""`last_used_at` 갱신 간격 — 도구 호출마다 쓰면 읽기 경로에 쓰기가 붙는다."""
+_token_seen: dict[str, float] = {}
+
+
+def new_token() -> str:
+    """새 토큰 값 — 무작위 32바이트(URL-safe). 한 번만 보여 주고 해시만 남긴다.
+
+    Returns:
+        `updn_` 머리가 붙은 값.
+    """
+    return TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+
+def hash_token(token: str) -> str:
+    """토큰 → SHA-256 16진(64자). 표에는 이것만 둔다.
+
+    Args:
+        token: 토큰 값.
+
+    Returns:
+        64자 16진 문자열.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def token_allowed(method: str, path: str) -> bool:
+    """개인 토큰으로 되는 요청인가 — 읽기 메서드 또는 MCP 끝점 (순수).
+
+    Args:
+        method: HTTP 메서드.
+        path: 경로.
+
+    Returns:
+        읽기(GET·HEAD·OPTIONS)거나 `/mcp` 면 참. 그 밖의 쓰기는 거짓 — 주문·설정 변경은 화면에서.
+    """
+    clean = path.rstrip("/") or "/"
+    return clean == "/mcp" or clean.startswith("/mcp/") or method.upper() in READ_METHODS
+
+
+async def token_owner(token: str) -> str | None:
+    """토큰 값 → 주인 이메일. 없거나 되돌렸으면 None. 1분에 한 번 `last_used_at` 을 찍는다.
+
+    Args:
+        token: `updn_…` 값.
+
+    Returns:
+        소문자 이메일 또는 None.
+    """
+    if _factory is None:
+        return None
+    digest = hash_token(token)
+    factory = _store()
+    async with factory() as session:
+        row = await session.scalar(
+            sa.select(ApiToken).where(ApiToken.token_hash == digest, ApiToken.revoked_at.is_(None))
+        )
+        if row is None:
+            return None
+        now = time.monotonic()
+        if now - _token_seen.get(digest, 0.0) > TOKEN_USED_EVERY_S:
+            _token_seen[digest] = now
+            row.last_used_at = datetime.now(UTC)
+            await session.commit()
+        return row.email
+
+
+def _token_row(row: ApiToken) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
+        "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+    }
+
+
+def _signed_in_or_401(request: Request) -> Caller:
+    who = getattr(request.state, "caller", None)
+    if not isinstance(who, Caller):
+        raise HTTPException(401, "로그인이 필요하다")
+    return who
+
+
+@router.get("/tokens")
+async def list_tokens(request: Request) -> dict[str, Any]:
+    """내 토큰 목록 — 값은 없다(해시뿐).
+
+    Args:
+        request: 요청(로그인한 사람).
+
+    Returns:
+        `{"tokens": [{id, name, created_at, last_used_at, revoked_at}]}`.
+
+    Raises:
+        HTTPException: 401 로그인 없음 · 503 계정 저장소 없음.
+    """
+    who = _signed_in_or_401(request)
+    factory = _store()
+    async with factory() as session:
+        rows = (
+            await session.scalars(
+                sa.select(ApiToken)
+                .where(ApiToken.email == who.email)
+                .order_by(ApiToken.created_at.desc())
+            )
+        ).all()
+    return {"tokens": [_token_row(r) for r in rows]}
+
+
+@router.post("/tokens")
+async def create_token(request: Request) -> dict[str, Any]:
+    """토큰을 만든다 — 값은 이 응답에만 있다.
+
+    Args:
+        request: 본문 `{"name": "..."}`. 구글 재인증이 최근(`fresh`)이어야 한다 — 토큰은 열쇠라
+            돈이 움직이는 일과 같은 문턱을 둔다.
+
+    Returns:
+        `{"id", "name", "token", "created_at"}`.
+
+    Raises:
+        HTTPException: 401 로그인/재인증 · 403 게스트·토큰으로 토큰 · 503 저장소 없음.
+    """
+    who = _signed_in_or_401(request)
+    if who.via_token:
+        raise HTTPException(403, "토큰으로 토큰을 만들 수 없다 — 화면에서 구글 로그인으로")
+    if is_guest_email(who.email):
+        raise HTTPException(403, "게스트는 토큰을 만들 수 없다")
+    if not who.fresh:
+        raise HTTPException(401, "보안 확인이 필요하다 — 구글 재인증 뒤 다시 시도한다")
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = {}
+    body = cast("dict[str, Any]", payload if isinstance(payload, dict) else {})
+    name = str(body.get("name") or "MCP").strip()[:60] or "MCP"
+    token = new_token()
+    factory = _store()
+    async with factory() as session:
+        row = ApiToken(email=who.email, name=name, token_hash=hash_token(token))
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        made = _token_row(row)
+    _logger.info("api_token_created", payload={"email": who.email, "name": name, "id": made["id"]})
+    return {**made, "token": token}
+
+
+@router.delete("/tokens/{token_id}")
+async def revoke_token(request: Request, token_id: str) -> dict[str, Any]:
+    """토큰을 되돌린다 — 내 것만. 되돌린 토큰은 즉시 안 통한다.
+
+    Args:
+        request: 요청(로그인한 사람).
+        token_id: 토큰 id.
+
+    Returns:
+        `{"revoked": true, "id"}`.
+
+    Raises:
+        HTTPException: 401 · 404 내 토큰이 아니거나 없음.
+    """
+    who = _signed_in_or_401(request)
+    try:
+        wanted = uuid.UUID(token_id)
+    except ValueError as exc:
+        raise HTTPException(404, "그런 토큰이 없다") from exc
+    factory = _store()
+    async with factory() as session:
+        row = await session.scalar(
+            sa.select(ApiToken).where(ApiToken.id == wanted, ApiToken.email == who.email)
+        )
+        if row is None:
+            raise HTTPException(404, "그런 토큰이 없다")
+        if row.revoked_at is None:
+            row.revoked_at = datetime.now(UTC)
+            await session.commit()
+            _token_seen.pop(row.token_hash, None)
+    _logger.info("api_token_revoked", payload={"email": who.email, "id": token_id})
+    return {"revoked": True, "id": token_id}

@@ -357,6 +357,8 @@ LIVE_RUNS_READ_PREFIXES = ("/walkforward/live", "/rebalancer")
 """실계좌에서 **실거래 RUN 조회**를 요구하는 경로 — 옛 `MONEY_READ_PREFIXES` 와 같다 (사용자 확정 2026-08-30).
 `/walkforward/sessions` 같은 목록은 실계좌에서도 로그인만 하면 본다 — 그 판정을 바꾸지 않는다."""
 REPORT_PREFIXES = ("/report",)
+SELF_SERVICE_PREFIXES = ("/auth/tokens", "/mcp")
+"""로그인만 하면 되는 경로 — 개인 토큰 관리와 MCP 끝점 (T263). MCP 도구는 조회·제안뿐이다."""
 ROLES_PREFIX = "/auth/roles"
 
 
@@ -378,6 +380,8 @@ def required_cap(method: str, path: str, *, live: bool) -> Cap | Access:
     clean = path.rstrip("/") or "/"
     if clean in PUBLIC_PATHS:
         return Access.PUBLIC
+    if any(clean == p or clean.startswith(p + "/") for p in SELF_SERVICE_PREFIXES):
+        return Access.SIGNED_IN
     if clean.startswith(ROLES_PREFIX):
         return Cap.MANAGE_USERS if method.upper() in READ_METHODS else Cap.MANAGE_ROLES
     if any(clean.startswith(prefix) for prefix in ADMIN_PREFIXES):

@@ -250,3 +250,27 @@ class AccountContact(Base):
     handled_at: Mapped[datetime | None] = mapped_column(default=None)
     handled_by: Mapped[str] = mapped_column(default="", server_default="")
     """누가 처리했나 (관리자 이메일)."""
+
+
+class ApiToken(Base):
+    """개인 API 토큰 (T263 MCP · 0125).
+
+    Attributes:
+        id: 열쇠.
+        email: 주인.
+        name: 사람이 붙인 이름(예: Claude Desktop).
+        token_hash: 토큰의 SHA-256 — 값은 저장하지 않는다.
+        created_at: 만든 때.
+        last_used_at: 마지막 사용(1분에 한 번만 갱신).
+        revoked_at: 되돌린 때. None 이면 살아 있다.
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(index=True)
+    name: Mapped[str] = mapped_column(default="", server_default="")
+    token_hash: Mapped[str] = mapped_column(sa.String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)

@@ -29,6 +29,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.routing import Route
 
 from updown.apps.api.admin import router as admin_router
 from updown.apps.api.ai_analysis import router as ai_router
@@ -56,6 +57,7 @@ from updown.apps.api.labels import router as labels_router
 from updown.apps.api.live_stream import router as live_stream_router
 from updown.apps.api.logs_admin import router as logs_admin_router
 from updown.apps.api.macro import router as macro_router
+from updown.apps.api.mcp_server import McpEndpoint, build_manager, build_server
 from updown.apps.api.middleware import trace_id_middleware
 from updown.apps.api.rebalancer import router as rebalancer_router
 from updown.apps.api.report import router as report_router
@@ -168,6 +170,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     """
     resolved_state = state
 
+    mcp_manager = build_manager(build_server())
+
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """기동·종료 시 자원을 관리한다.
@@ -275,7 +279,9 @@ def create_app(state: ApiState | None = None) -> FastAPI:
             with contextlib.suppress(Exception):
                 await leader.begin()
         try:
-            yield
+            # ⭐ T263 — MCP 전송(무상태)은 lifespan 안에서만 산다.
+            async with mcp_manager.run():
+                yield
         finally:
             _logger.info("api_stopping", payload={})
             if leader is not None:
@@ -347,6 +353,10 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         tasks.append(asyncio.create_task(equity_snapshot_loop(), name="equity-snapshot"))
 
     app = FastAPI(title="업 앤 다운 API", lifespan=lifespan)
+    # ⭐ T263 — MCP 끝점. 문(auth.guard)이 먼저 보고(`/mcp` 는 로그인만), 도구는 호출자로 돈다.
+    app.router.routes.append(
+        Route("/mcp", McpEndpoint(mcp_manager), methods=["GET", "POST", "DELETE"])
+    )
     # 🔴 **인증 문이 가장 바깥이다** (2026-08-30 배포 준비). 미들웨어는 나중에 등록한
     #    것이 바깥을 감싸므로, `trace_id` 보다 **뒤에** 붙여야 인증이 먼저 돈다.
     #    URL 을 아는 사람이 API 를 직접 부르는 것을 막는 유일한 지점이다 —
