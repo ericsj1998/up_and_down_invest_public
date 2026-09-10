@@ -704,3 +704,40 @@ async def test_market_status_without_a_readable_calendar_is_loud(
     adapter = TossAdapter(make_client(routed([])))
     with pytest.raises(MarketCalendarRequiredError, match="마켓 캘린더"):
         await adapter.get_market_status(SAMSUNG)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_401_refreshes_once_and_reuses_the_new_token() -> None:
+    """동시 요청 둘이 같은 토큰으로 401 을 맞아도 재발급은 **한 번**이다.
+
+    2026-09-11 실측: 남(다른 프로세스)이 한 번 무효화하면 A 의 재발급을 B 의 재발급이 다시
+    무효화하고 A 의 재시도가 또 401 — 안에서 수십 번으로 불었다(서버 30분 127회). 401 을 맞은
+    토큰이 이미 현재 것이 아니면 새로 받지 않고 남이 받은 것을 쓴다.
+    """
+    issued: list[str] = []
+    state = {"valid": ""}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth2/token":
+            token = f"tok{len(issued) + 1}"
+            issued.append(token)
+            state["valid"] = token
+            return httpx.Response(200, json={**TOKEN_BODY, "access_token": token})
+        bearer = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        if bearer == "tok1":
+            # 첫 토큰은 밖에서 무효화된 것으로 본다 — 누가 들고 오든 401.
+            state["valid"] = "external"
+            return httpx.Response(401, json={"error": {"code": "token-revoked"}})
+        if bearer != state["valid"]:
+            return httpx.Response(401, json={"error": {"code": "token-revoked"}})
+        return httpx.Response(200, json={"result": {"ok": True}})
+
+    client = make_client(handler)
+    async with client:
+        await client._access_token()  # pyright: ignore[reportPrivateUsage]  # 둘이 같은 tok1 을 들게
+        results = await asyncio.gather(
+            client.get_result("/api/v1/stocks", group="A"),
+            client.get_result("/api/v1/stocks", group="B"),
+        )
+    assert results == [{"ok": True}, {"ok": True}]
+    assert issued == ["tok1", "tok2"], issued

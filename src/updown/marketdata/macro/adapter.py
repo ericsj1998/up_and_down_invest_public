@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
+from updown.common.cache import TtlCache
 from updown.common.domain.macro import Indicator, cpi_yoy, pct_change, vix_band
 from updown.common.logging.setup import get_logger
 from updown.marketdata.macro.client import MacroClient
@@ -24,6 +25,11 @@ from updown.marketdata.macro.parse import (
 )
 
 _logger = get_logger("marketdata.macro")
+
+EFFR_TTL_S = 3600.0
+"""뉴욕연준 EFFR 은 하루 한 값 — 한 시간 기억."""
+CPI_TTL_S = 12 * 3600.0
+"""BLS CPI 는 월 한 값 · 공개 API 하루 상한 — 12시간 기억."""
 
 
 class TossIndicatorSource(Protocol):
@@ -106,6 +112,9 @@ class MacroAdapter:
         """
         self._client = client
         self._toss = toss
+        # ⭐ 일·월 단위 출처는 오래 기억한다 (2026-09-11 실측: BLS 공개 API 는 하루 요청 상한이 있어
+        #    /macro 폴링(60초 캐시)이 반나절 만에 "daily threshold reached" 로 CPI 를 잃었다).
+        self._slow = TtlCache[Indicator]("macro.slow", EFFR_TTL_S, register=False)
 
     async def indicators(
         self, keys: tuple[str, ...] | None = None
@@ -229,6 +238,9 @@ class MacroAdapter:
         )
 
     async def _effr(self) -> Indicator:
+        return await self._slow.get_or_fetch("effr", self._effr_fetch, ttl_s=EFFR_TTL_S)
+
+    async def _effr_fetch(self) -> Indicator:
         rate, low, high, day = parse_effr(await self._client.nyfed_effr())
         as_of = datetime.fromisoformat(day).replace(tzinfo=UTC) if day else None
         target = f"목표범위 {low}~{high}%" if low is not None and high is not None else ""
@@ -243,6 +255,9 @@ class MacroAdapter:
         )
 
     async def _cpi(self) -> Indicator:
+        return await self._slow.get_or_fetch("cpi", self._cpi_fetch, ttl_s=CPI_TTL_S)
+
+    async def _cpi_fetch(self) -> Indicator:
         points = parse_bls_series(await self._client.bls_series())
         period, index, yoy = cpi_yoy(points)
         year, month = period.split("-")

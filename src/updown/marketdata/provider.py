@@ -28,6 +28,8 @@ Phase 2 에서 주문이 열릴 때도 이 파일은 바뀌지 않는다 — 주
 가 별도로 만들며, 그것이 라이브 이중 게이트(§12.4)를 통과한 경로다.
 """
 
+import os
+from collections.abc import Mapping
 from types import TracebackType
 from typing import ClassVar, Self
 
@@ -55,6 +57,38 @@ _logger = get_logger("marketdata.provider")
 
 #: 토스 어댑터가 담당하는 시장.
 _TOSS_MARKETS = frozenset({Market.KRX, Market.NASDAQ, Market.NYSE})
+
+
+def market_allowlist(env: Mapping[str, str] | None = None) -> frozenset[str]:
+    """`UPDOWN_MARKETS` 가 허용한 시장 이름들 — 비면 제한 없음.
+
+    Args:
+        env: 환경 (시험용). None 이면 `os.environ`.
+
+    Returns:
+        대문자 시장 코드 집합. `NONE` 처럼 시장이 아닌 이름도 그대로 들어간다(아무 시장도
+        안 맞는다).
+    """
+    raw = (os.environ if env is None else env).get("UPDOWN_MARKETS", "")
+    return frozenset(m.strip().upper() for m in raw.split(",") if m.strip())
+
+
+def toss_allowed(allow: frozenset[str]) -> bool:
+    """이 프로세스가 토스를 불러도 되는가 — 허용 목록에 토스 시장(KRX·NASDAQ·NYSE)이 있으면.
+
+    Args:
+        allow: `market_allowlist()`.
+
+    Returns:
+        비면 True(제한 없음). 있으면 토스 시장 포함 여부.
+
+    Note:
+        토스는 client 당 access token 이 하나라 **키를 가진 프로세스가 둘이면 서로를 무효화**한다.
+        `UPDOWN_MARKETS=BINANCE` 인 로컬 데모가 저평가 화면 준비(종가 일봉)로 토스를 30분에 300번
+        불러 서버 시세를 계속 끊었다(2026-09-11 실측). 시장 목록에 토스 시장이 없으면 어댑터를
+        **아예 만들지 않는다** — 그러면 토큰도 안 받는다.
+    """
+    return not allow or any(m.value in allow for m in _TOSS_MARKETS)
 
 
 class UnsupportedMarketError(ValueError):
@@ -113,11 +147,7 @@ class MarketDataProvider:
             대조가 Binance 를 계속 물어 경고가 분당 수십 건 쌓였다 — 목록을 여기서 좁히면
             그 위의 화면·리포트·대조가 전부 같이 좁아진다 (한 곳이 SSoT).
         """
-        import os
-
-        allow = {
-            m.strip().upper() for m in os.environ.get("UPDOWN_MARKETS", "").split(",") if m.strip()
-        }
+        allow = market_allowlist()
         found: list[str] = []
         for market in Market:
             if allow and market.value not in allow:
@@ -224,6 +254,11 @@ class MarketDataProvider:
             #    두 판이 각자 클라이언트를 들면 서로의 토큰을 무효화한다(`token-revoked` 401 →
             #    재발급 반복). Gate 와 같은 이유로 클래스 수준에 둔다. 프로세스 사이(api ·
             #    engine)는 여전히 한 키를 나눠 쓰므로 동시 백필을 띄우지 않는다(toss_api_notes §1).
+            if not toss_allowed(market_allowlist()):
+                raise UnsupportedMarketError(
+                    f"{market.value}: 이 프로세스는 토스를 부르지 않는다 — "
+                    "UPDOWN_MARKETS 에 KRX/NASDAQ/NYSE 가 없다 (토큰은 client 당 하나)"
+                )
             if MarketDataProvider._shared_toss is None:
                 settings = self._settings or load_settings()
                 client_id, client_secret = settings.toss_market_data_credentials

@@ -236,11 +236,13 @@ class TossClient:
         self._token_failures += 1
         self._token_backoff_until = now + token_backoff_s(self._token_failures)
 
-    async def _access_token(self, *, force: bool = False) -> str:
+    async def _access_token(self, *, force: bool = False, stale: str | None = None) -> str:
         """유효한 액세스 토큰을 준다 (캐시).
 
         Args:
             force: 캐시를 무시하고 재발급할지. 401 을 만났을 때만 True 다.
+            stale: 401 을 맞은 그 토큰. **지금 토큰과 다르면 이미 누가 재발급한 것**이라 새로
+                받지 않고 지금 것을 준다.
 
         Returns:
             액세스 토큰.
@@ -250,10 +252,19 @@ class TossClient:
 
         Note:
             **락으로 감싼다.** 동시 요청이 각자 발급하면 서로를 무효화한다 (모듈 docstring).
+
+            ⭐ `stale` 이 없으면 락만으로는 부족하다 (2026-09-11 실측 · 서버 30분에 재발급 127회).
+            동시 요청 A·B 가 같은 토큰으로 나가 둘 다 401 을 맞으면, A 가 재발급한 새 토큰을
+            B 의 재발급이 곧바로 무효화하고, A 의 재시도가 다시 401 → 다시 재발급 … 요청이
+            겹치는 동안 끝없이 주고받는다. 외부(다른 프로세스)가 한 번 무효화해도 안에서 수십
+            번으로 불어난 것이 그 127회다.
         """
         async with self._token_lock:
             loop = asyncio.get_running_loop()
             if not force and self._token is not None and loop.time() < self._token_expires_at:
+                return self._token
+            if force and stale is not None and self._token is not None and self._token != stale:
+                _logger.info("toss_token_reused", payload={"reason": "already_refreshed"})
                 return self._token
             if loop.time() < self._token_backoff_until:
                 left = int(self._token_backoff_until - loop.time())
@@ -373,7 +384,7 @@ class TossClient:
                     "toss_token_refresh", payload={"path": path, "request_id": request_id}
                 )
                 refreshed = True
-                await self._access_token(force=True)
+                await self._access_token(force=True, stale=token)
                 continue
             if response.status_code == HTTP_UNAUTHORIZED:
                 raise TossAuthError(

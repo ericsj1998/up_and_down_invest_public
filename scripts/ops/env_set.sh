@@ -20,7 +20,11 @@ TARGET="${1:?live | demo | both}"; shift
 case "$TARGET" in live) FILES=".env.live";; demo) FILES=".env.demo";; both) FILES=".env.live .env.demo";; *) echo "첫 인자는 live|demo|both"; exit 1;; esac
 tmp="$(mktemp)"; chmod 600 "$tmp"
 trap 'rm -f "$tmp"' EXIT
-if [ "${1:-}" = "--from-dev" ]; then
+if [ "${1:-}" = "--unset" ]; then
+  # 이름을 지운다 — 값은 빈 문자열로 둔다(줄을 없애는 대신 `NAME=` · 코드는 빈 값을 "없음" 으로 본다)
+  shift
+  for name in "$@"; do printf '%s=\n' "$name" >> "$tmp"; done
+elif [ "${1:-}" = "--from-dev" ]; then
   shift
   [ -f .env.dev ] || { echo ".env.dev 가 없다"; exit 1; }
   for name in "$@"; do

@@ -207,3 +207,29 @@ class TestAdapter:
         found, failures = await made.indicators(("effr", "usdkrw"))
         assert [i.key for i in found] == ["usdkrw", "effr"] and failures == []
         assert "야후" in found[0].note
+
+
+@pytest.mark.asyncio
+async def test_daily_sources_are_remembered_across_calls() -> None:
+    """BLS(CPI)·연준(EFFR) 은 한 번 받으면 다음 호출이 다시 부르지 않는다.
+
+    BLS 공개 API 는 하루 요청 상한이 있어 60초 캐시의 `/macro` 폴링이 반나절에 소진했다
+    (2026-09-11 실측 "daily threshold reached").
+    """
+    calls = {"bls": 0, "fed": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "api.bls.gov" in url:
+            calls["bls"] += 1
+            return httpx.Response(200, json=BLS)
+        if "newyorkfed" in url:
+            calls["fed"] += 1
+            return httpx.Response(200, json=EFFR)
+        return httpx.Response(404)
+
+    made = MacroAdapter(MacroClient(transport=httpx.MockTransport(handler)), None)
+    for _ in range(3):
+        found, failures = await made.indicators(("cpi", "effr"))
+        assert [i.key for i in found] == ["effr", "cpi"] and failures == []
+    assert calls == {"bls": 1, "fed": 1}
