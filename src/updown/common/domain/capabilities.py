@@ -16,7 +16,7 @@ from typing import cast
 
 import yaml
 
-from updown.common.domain.instrument import Market
+from updown.common.domain.instrument import Currency, Market
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[4] / "config" / "markets.yml"
 
@@ -34,6 +34,20 @@ class Lot(StrEnum):
 
     INTEGER = "integer"
     FRACTIONAL = "fractional"
+
+
+class SymbolStyle(StrEnum):
+    """원장 심볼 표기 — 기초 자산에서 종목 코드를 만드는 규칙 (T269 #6).
+
+    거래소 전송 표기(`BTCUSDT`)는 어댑터의 일이다. 여기는 **원장·화면·도구가 쓰는** 표기다.
+    """
+
+    PLAIN = "plain"
+    """코드 그대로 — 주식(`AAPL` · `005930`)."""
+    BASE_QUOTE = "base_quote"
+    """`BTC_USDT` — Gate · Binance 원장 표기."""
+    KRW_DASH = "krw_dash"
+    """`KRW-BTC` — 업비트."""
 
 
 class TickRule(StrEnum):
@@ -57,6 +71,8 @@ class MarketCapabilities:
         funding: 펀딩 정산이 있나 (무기한 선물).
         always_open: 24시간 장인가.
         tick: 호가단위 규칙.
+        quote_currency: 정산 통화 — 원장·화면의 `Instrument.currency`. USDT 마진은 USD 로 적는다.
+        symbol_style: 원장 심볼 표기 규칙.
     """
 
     market: Market
@@ -67,6 +83,23 @@ class MarketCapabilities:
     funding: bool
     always_open: bool
     tick: TickRule
+    quote_currency: Currency
+    symbol_style: SymbolStyle
+
+    def symbol_of(self, base: str) -> str:
+        """기초 자산(또는 코드) → 이 시장의 원장 심볼.
+
+        Args:
+            base: `BTC` · `AAPL`.
+
+        Returns:
+            `BTC_USDT` · `KRW-BTC` · 그대로.
+        """
+        if self.symbol_style is SymbolStyle.BASE_QUOTE:
+            return f"{base}_USDT"
+        if self.symbol_style is SymbolStyle.KRW_DASH:
+            return f"KRW-{base}"
+        return base
 
 
 def parse_capabilities(raw: Mapping[str, object]) -> dict[Market, MarketCapabilities]:
@@ -93,6 +126,8 @@ def parse_capabilities(raw: Mapping[str, object]) -> dict[Market, MarketCapabili
         "funding",
         "always_open",
         "tick",
+        "quote_currency",
+        "symbol_style",
     )
     for key, value in cast("Mapping[str, object]", markets_raw).items():
         try:
@@ -119,6 +154,8 @@ def parse_capabilities(raw: Mapping[str, object]) -> dict[Market, MarketCapabili
                 funding=bool(block["funding"]),
                 always_open=bool(block["always_open"]),
                 tick=TickRule(str(block["tick"])),
+                quote_currency=Currency(str(block["quote_currency"])),
+                symbol_style=SymbolStyle(str(block["symbol_style"])),
             )
         except (ValueError, TypeError) as exc:
             raise CapabilityConfigError(f"markets.{key} 값이 틀렸다: {exc}") from exc

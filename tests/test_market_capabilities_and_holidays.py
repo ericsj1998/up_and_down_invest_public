@@ -43,6 +43,21 @@ class TestCapabilities:
         assert gate.leverage_allowed and gate.short_allowed and gate.funding and gate.always_open
         assert gate.tick is TickRule.FIXED and capabilities_of(Market.KRX).tick is TickRule.TIERED
 
+    def test_quote_currency_and_symbol_style_come_from_the_table(self) -> None:
+        """통화·심볼 표기는 시장 이름 분기가 아니라 능력표가 말한다 (T269 #6)."""
+        from updown.common.domain.capabilities import SymbolStyle
+        from updown.common.domain.instrument import Currency
+
+        assert capabilities_of(Market.KRX).quote_currency is Currency.KRW
+        assert capabilities_of(Market.UPBIT).quote_currency is Currency.KRW
+        assert capabilities_of(Market.NASDAQ).quote_currency is Currency.USD
+        assert capabilities_of(Market.GATE).quote_currency is Currency.USD
+        assert capabilities_of(Market.GATE).symbol_of("BTC") == "BTC_USDT"
+        assert capabilities_of(Market.BINANCE).symbol_of("BTC") == "BTC_USDT"
+        assert capabilities_of(Market.UPBIT).symbol_of("BTC") == "KRW-BTC"
+        assert capabilities_of(Market.NASDAQ).symbol_of("AAPL") == "AAPL"
+        assert capabilities_of(Market.KRX).symbol_style is SymbolStyle.PLAIN
+
     def test_missing_field_is_loud(self) -> None:
         with pytest.raises(CapabilityConfigError):
             parse_capabilities({"markets": {"KRX": {"leverage_allowed": False}}})

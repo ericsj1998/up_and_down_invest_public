@@ -29,9 +29,9 @@ from updown.analysis.structures.balance import ZIGZAG_ATR_MULTIPLE
 from updown.analysis.trend.service import evaluate as trend_evaluate
 from updown.apps.api.analysis import MAX_BARS
 from updown.common.domain.candle import Candle
+from updown.common.domain.capabilities import capabilities_of
 from updown.common.domain.instrument import (
     AssetType,
-    Currency,
     Instrument,
     Market,
     MarketGroup,
@@ -129,7 +129,7 @@ def instrument_of(symbol: str, market: Market) -> Instrument:
         symbol=symbol,
         name=symbol,
         asset_type=AssetType.COIN if coin else AssetType.STOCK,
-        currency=Currency.KRW if market is Market.UPBIT else Currency.USD,
+        currency=capabilities_of(market).quote_currency,  # 능력표 (T269 #6)
     )
 
 

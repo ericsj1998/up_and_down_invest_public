@@ -18,9 +18,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
 from updown.common.domain.candle import Candle
+from updown.common.domain.capabilities import capabilities_of
 from updown.common.domain.instrument import (
     AssetType,
-    Currency,
     Instrument,
     Market,
     MarketGroup,
@@ -155,13 +155,7 @@ def coin_symbol(base: str, market: Market) -> str:
         2026-09-10 3차 실측까지 `market_view` 가 세 번 다 실패한 원인 — Binance 를 `BTCUSDT` 로
         줘서 `instrument_of` 가 거절하고, 모델이 표기를 넷 넘게 짐작하다 왕복 상한에 닿았다.
     """
-    if market is Market.BINANCE:
-        return f"{base}_USDT"
-    if market is Market.GATE:
-        return f"{base}_USDT"
-    if market is Market.UPBIT:
-        return f"KRW-{base}"
-    return base
+    return capabilities_of(market).symbol_of(base)  # 능력표 (T269 #6)
 
 
 def instrument_of(symbol: str, market: Market) -> Instrument:
@@ -175,21 +169,9 @@ def instrument_of(symbol: str, market: Market) -> Instrument:
         종목.
     """
     group = MarketGroup.of(market)
-    if group is MarketGroup.COIN:
-        return Instrument(
-            market,
-            symbol,
-            symbol,
-            AssetType.COIN,
-            Currency.KRW if market is Market.UPBIT else Currency.USD,
-        )
-    return Instrument(
-        market,
-        symbol,
-        symbol,
-        AssetType.STOCK,
-        Currency.KRW if market is Market.KRX else Currency.USD,
-    )
+    currency = capabilities_of(market).quote_currency  # 능력표 (T269 #6)
+    asset = AssetType.COIN if group is MarketGroup.COIN else AssetType.STOCK
+    return Instrument(market, symbol, symbol, asset, currency)
 
 
 def market_for(group: str, live: Sequence[str]) -> Market | None:

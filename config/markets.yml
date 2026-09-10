@@ -16,6 +16,8 @@
 version: "1.0"
 markets:
   KRX:
+    quote_currency: KRW
+    symbol_style: plain
     leverage_allowed: false
     short_allowed: false
     lot: integer
@@ -24,6 +26,8 @@ markets:
     always_open: false
     tick: tiered
   NASDAQ: &us_equity
+    quote_currency: USD
+    symbol_style: plain
     leverage_allowed: false
     short_allowed: false
     lot: integer          # 소수점 수량은 토스 US 시장가 매도에만 — 진입은 정수로 둔다 (T240)
@@ -33,6 +37,8 @@ markets:
     tick: broker
   NYSE: *us_equity
   UPBIT:
+    quote_currency: KRW
+    symbol_style: krw_dash
     leverage_allowed: false
     short_allowed: false
     lot: fractional
@@ -41,6 +47,8 @@ markets:
     always_open: true
     tick: tiered
   GATE: &usdt_perp
+    quote_currency: USD      # USDT 마진 — 원장·화면은 USD 로 적는다 (Currency 에 USDT 없음)
+    symbol_style: base_quote
     leverage_allowed: true
     short_allowed: true
     lot: fractional       # 계약 수(정수)지만 승수가 있어 명목은 연속 — 사이징은 계약 명세가 정한다

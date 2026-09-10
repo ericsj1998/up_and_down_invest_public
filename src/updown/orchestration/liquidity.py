@@ -22,6 +22,7 @@ testnet SPCX   매수 1호가가 표시가에서 21.8%   → 팔 곳이 없다
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import TYPE_CHECKING, Any, cast
@@ -36,7 +37,23 @@ if TYPE_CHECKING:
 _logger = get_logger("orchestration.liquidity")
 
 THRESHOLDS = load_cost_table(DEFAULT_CONFIG_PATH).for_market(Market.GATE).liquidity
-"""유동성 문턱 — 비어 있으면 검사를 안 한다 (`config/costs.yml`)."""
+"""유동성 문턱(Gate) — 비어 있으면 검사를 안 한다 (`config/costs.yml`). 종목이 있는 자리는
+`thresholds_for(market)` 을 쓴다 (T269 #6)."""
+
+
+def thresholds_for(market: Market) -> Mapping[str, Decimal]:
+    """그 시장의 유동성 문턱 — 비용표 블록이 없으면 빈 매핑(검사 없음 · Gate 값을 빌리지 않는다).
+
+    Args:
+        market: 시장.
+
+    Returns:
+        `max_gap_pct` · `depth_multiple` · `order_deviation_pct` 등.
+    """
+    try:
+        return load_cost_table(DEFAULT_CONFIG_PATH).for_market(market).liquidity
+    except (KeyError, ValueError):
+        return {}
 
 
 @dataclass(frozen=True, slots=True)

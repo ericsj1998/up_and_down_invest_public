@@ -945,7 +945,7 @@ class StockPaperAdapter:
         raw = await self._store.load(market)
         loaded = None if raw is None else _book_from(raw)
         if loaded is None:
-            currency = Currency.KRW if market is Market.KRX else Currency.USD
+            currency = capabilities_of(market).quote_currency  # 능력표 (T269 #6)
             loaded = _Book(
                 market=market.value, currency=currency.value, cash=_text(self._seed_for(market))
             )
@@ -1008,7 +1008,7 @@ class StockPaperAdapter:
     def _instrument_of(self, market: Market, symbol: str) -> Instrument:
         from updown.common.domain.instrument import AssetType
 
-        currency = Currency.KRW if market is Market.KRX else Currency.USD
+        currency = capabilities_of(market).quote_currency  # 능력표 (T269 #6)
         return Instrument(market, symbol, symbol, AssetType.STOCK, currency)
 
     # ------------------------------------------------------------------

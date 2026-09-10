@@ -68,7 +68,10 @@ router = APIRouter(prefix="/exchange", tags=["exchange"])
 #   거래소로는 TTL 에 한 번만 나간다. 값은 관찰용 화면 기준이라 신선도 손해가 없다.
 #   ⛔ 주문·취소·청산(집행)은 캐시하지 않는다 — 상태 조회만이다.
 _STATE_CACHE = TtlCache[dict[str, Any]]("exchange.state", 5.0)
-_CACHE_TTL_S = {"GATE": 3.0, "BINANCE": 20.0, "BALANCES": 30.0}
+_CACHE_TTL_S = {"GATE": 10.0, "BINANCE": 20.0, "BALANCES": 30.0}
+"""콘솔 상태 캐시 TTL — GATE 3 → 10s (T268 #7 · 2026-09-11).
+
+4초 폴링 x 종목 9 가 요율 156% 를 만들던 자리다."""
 
 
 async def _cached(key: str, market: str, build: Any) -> dict[str, Any]:
