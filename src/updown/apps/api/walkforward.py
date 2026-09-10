@@ -1624,6 +1624,7 @@ async def live_health(key: str) -> dict[str, Any]:
         #    구별하는 것은 사람이며 이 표는 그 판단의 재료다 (§1-0s).
         "guards": runner.guards,
         "steps": runner.steps,
+        "step_ms": runner.step_stats(),
         "orders": runner.orders,
         "gaps": runner.gaps,
         "backfilled": runner.backfilled,

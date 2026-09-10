@@ -30,6 +30,7 @@ import contextlib
 import json
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
@@ -135,6 +136,14 @@ FRESH_TICK = 1.0
 """
 
 WATCH_TTL = 90.0
+STEP_WINDOW = 200
+"""걸음 소요 표본 창 — 최근 200걸음(15m 판이면 이틀치)."""
+STEP_SLOW_MS = 250.0
+"""이보다 느린 걸음은 `live_step_slow` 로 남긴다.
+
+백테스트 실측(0% 100ms → 80% 282ms · 최대 1.4초)의 가운데다.
+"""
+MS_PER_S = 1000.0
 """보기용 축을 **마지막으로 본 뒤** 이만큼은 계속 데운다 (초).
 
 ⚠️ 너무 짧으면 화면을 보는 중에 축이 식어 봉이 늙는다. 너무 길면 탭을 닫아도
@@ -745,6 +754,8 @@ class LiveRunner:
         """
         self.steps = 0
         """판정한 봉 수."""
+        self.step_ms: deque[float] = deque(maxlen=STEP_WINDOW)
+        """최근 걸음의 소요(ms) — 이벤트 루프를 얼마나 붙잡는지 (T265 눈금 · `step_stats`)."""
         self.backfilled = 0
         """REST 로 메운 봉 수 — **0 이 아니면 웹소켓이 끊겼던 것**이다."""
         self.orders = 0
@@ -2883,7 +2894,18 @@ class LiveRunner:
             (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),
             None,
         )
+        started = time.perf_counter()
         shot = self._session.step()
+        took_ms = (time.perf_counter() - started) * MS_PER_S
+        self.step_ms.append(took_ms)
+        if took_ms >= STEP_SLOW_MS:
+            # ⭐ T265 — 걸음은 이벤트 루프 **위에서** 돈다. 이 시간만큼 API·다른 판·MCP 가
+            #    전부 선다.
+            #    수십 ms 면 두고, 수백 ms 가 잦으면 `to_thread`/엔진 이전을 정한다(눈금이 먼저).
+            self._log.warning(
+                "live_step_slow",
+                payload={"took_ms": round(took_ms, 1), "steps": self.steps, **self.step_stats()},
+            )
         if shot is None:
             # 세션이 멈춰 있다(일시정지). 봉은 이미 급전에 들어갔으므로 잃지 않는다.
             return
@@ -3292,6 +3314,14 @@ class LiveRunner:
         #    `pnl_sign_split` = 원장·거래소 실현손익 부호 반대. 펀드가 이 세션의 허구
         #    손익을 총자본·TWR 에 안 넣게 한다 (`SessionBridge` 가 읽는다).
         self._session.accounting_ok = not any(item["code"] == "pnl_sign_split" for item in found)
+
+    def step_stats(self) -> dict[str, float | int]:
+        """최근 걸음 소요의 요약 — 화면(`/walkforward/state`)과 느린 걸음 로그가 같이 쓴다.
+
+        Returns:
+            `step_stats_of(self.step_ms)`.
+        """
+        return step_stats_of(self.step_ms)
 
     async def audit(self) -> list[dict[str, str]]:
         """**스스로 점검한다** — 걸음마다. 이상이 있으면 목록으로 낸다.
@@ -5735,6 +5765,30 @@ class LiveRunner:
                     )
             if done:
                 self._ladder_pending.pop(trade_id, None)
+
+
+def step_stats_of(values: Sequence[float]) -> dict[str, float | int]:
+    """걸음 소요(ms) 표본의 요약 (T265 눈금).
+
+    Args:
+        values: 최근 걸음의 ms.
+
+    Returns:
+        `{n, last_ms, p50_ms, max_ms}` — 비면 전부 0. 값은 소수 첫째 자리.
+
+    Note:
+        평균은 안 낸다 — 한 번 1.4초 걸린 걸음이 평균을 끌어올려 "늘 느린가" 를 못 가른다.
+        p50 이 평소, max 가 최악이다.
+    """
+    if not values:
+        return {"n": 0, "last_ms": 0.0, "p50_ms": 0.0, "max_ms": 0.0}
+    ordered = sorted(values)
+    return {
+        "n": len(values),
+        "last_ms": round(values[-1], 1),
+        "p50_ms": round(ordered[len(ordered) // 2], 1),
+        "max_ms": round(ordered[-1], 1),
+    }
 
 
 def open_seconds(calendar: MarketCalendar | None, market: Market, now: datetime) -> float | None:

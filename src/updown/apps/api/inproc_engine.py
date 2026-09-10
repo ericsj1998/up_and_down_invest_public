@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from updown.apps.engine.resource_beat import register_resource_beat
 from updown.apps.engine.scheduler import build_scheduler, job_ids
 from updown.common.logging.setup import get_logger
+from updown.common.resources import start_loop_lag
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -64,6 +65,7 @@ class InprocEngine:
             return
         scheduler = build_scheduler()
         register_resource_beat(scheduler, self._redis, proc=PROC_LABEL)
+        start_loop_lag()  # T265 눈금 — 스냅샷의 `loop_lag_ms`
         scheduler.start()
         self._scheduler = scheduler
         _logger.info("inproc_engine_started", payload={"jobs": job_ids(scheduler)})

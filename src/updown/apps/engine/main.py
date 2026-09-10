@@ -45,6 +45,7 @@ from updown.common.domain.instrument import Market
 from updown.common.lock.redis_lock import LockConfig, SingleInstanceLock
 from updown.common.logging.context import trace_context
 from updown.common.logging.setup import configure_logging, get_logger
+from updown.common.resources import start_loop_lag
 from updown.marketdata.ingest.backfill import BackfillScope
 from updown.marketdata.ingest.integrity import IntegrityThresholds
 from updown.marketdata.ingest.repository import CandleRepository
@@ -173,6 +174,7 @@ class EngineRunner:
             )
             # 자원 비트 (T215) — api 가 engine 프로세스를 못 보므로 Redis 로 건넨다.
             register_resource_beat(self._scheduler, self._redis)
+            start_loop_lag()  # T265 눈금
 
             boot = asyncio.create_task(
                 boot_engine(

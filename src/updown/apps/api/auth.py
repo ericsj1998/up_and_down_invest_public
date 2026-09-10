@@ -48,6 +48,7 @@ import httpx
 import sqlalchemy as sa
 from fastapi import APIRouter, Body, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from updown.analysis.playbook.select import load_playbooks
@@ -440,8 +441,14 @@ async def _touch_account(email: str, claims: dict[str, Any], *, admins: frozense
             _logger.info("account_created", payload={"email": email, "admin": first})
             created_pending = not first
         else:
-            if found.blocked:
-                # ⛔ 차단은 삭제와 다르다 — 지우면 다시 가입해 승인 목록에 또 뜬다.
+            if found.deleted_at is not None:
+                # ⭐ 지운 계정이 다시 왔다 — 대기 계정으로 0 부터 (T266). 권한·토큰은 지울 때
+                #    비웠다.
+                revive_account(found, now)
+                _logger.info("account_revived", payload={"email": email})
+                created_pending = True
+            elif found.blocked:
+                # ⛔ 차단은 삭제와 다르다 — 차단은 되살아나지 않는다.
                 raise HTTPException(403, "차단된 계정이다")
             found.name = str(claims.get("name", "")) or found.name
             found.picture = str(claims.get("picture", "")) or found.picture
@@ -1197,7 +1204,13 @@ async def users() -> dict[str, Any]:
     """
     factory = _store()
     async with factory() as session:
-        found = list(await session.scalars(sa.select(Account).order_by(Account.created_at.desc())))
+        found = list(
+            await session.scalars(
+                sa.select(Account)
+                .where(Account.deleted_at.is_(None))
+                .order_by(Account.created_at.desc())
+            )
+        )
         open_counts = {
             email: int(count)
             for email, count in await session.execute(
@@ -1322,6 +1335,7 @@ def _account_row(
         "picture": item.picture,
         "role": item.role.value,
         "blocked": item.blocked,
+        "deleted_at": item.deleted_at.isoformat() if item.deleted_at else None,
         # ⭐ 기능별 권한 (2026-09-07) — 묶음 + 개별. 옛 플래그 둘은 파생값이다.
         "collection": item.role_collection or "",
         "collection_label": picked.label
@@ -1444,24 +1458,86 @@ async def delete_user(request: Request, email: str) -> dict[str, Any]:
         HTTPException: 503 · 404 · 400 자기 자신 · 관리자.
 
     Note:
-        ⚠️ 지우면 같은 이메일로 다시 로그인했을 때 **새 대기 계정**이 생긴다 — 다시 못 오게 하려면
-        차단이 맞다. 삭제는 잘못 만들어진 행(오타 테스트 계정 등)을 치우는 용도다. 문의 기록은
-        남긴다 — 표에 사람이 없어도 언제 두드렸는지는 기록이다.
+        🔴 **소프트 삭제다** (T266 · 2026-09-10). 행을 지우지 않고 `deleted_at` + `blocked` 를
+        적는다.
+        같이 **토큰을 되돌리고 권한 행(플레이북·시장)을 비운다** — 하드 삭제 때는 이메일로 매인 이
+        행들이 남아, 같은 이메일이 다시 로그인하면 새 계정에 옛 권한·토큰이 그대로 붙었다.
+        다시 오면 `_touch_account` 가 **대기 계정으로 되살린다**(권한 0). 다시 못 오게 하려면 차단.
+        문의 기록·채팅 스레드는 남긴다 — 표에 사람이 없어도 언제 두드렸는지는 기록이다.
     """
     who = getattr(request.state, "caller", None)
     factory = _store()
     target = email.strip().lower()
     if who is not None and who.email == target:
         raise HTTPException(400, "자기를 지울 수 없다")
+    now = datetime.now(UTC)
     async with factory() as session, session.begin():
         found = await session.scalar(sa.select(Account).where(Account.email == target))
-        if found is None:
+        if found is None or found.deleted_at is not None:
             raise HTTPException(404, f"{target} 계정이 없다")
         if found.role is Role.ADMIN:
             raise HTTPException(400, "관리자는 지울 수 없다 — 먼저 등급을 내린다")
-        await session.delete(found)
-        _logger.info("account_deleted", payload={"email": target, "by": who.email if who else "?"})
+        erase_account(found, now)
+        revoked = await session.execute(
+            sa.update(ApiToken)
+            .where(ApiToken.email == target, ApiToken.revoked_at.is_(None))
+            .values(revoked_at=now)
+        )
+        grants = await session.execute(
+            sa.delete(PlaybookGrantRow).where(PlaybookGrantRow.email == target)
+        )
+        markets = await session.execute(
+            sa.delete(MarketGrantRow).where(MarketGrantRow.email == target)
+        )
+        _logger.info(
+            "account_deleted",
+            payload={
+                "email": target,
+                "by": who.email if who else "?",
+                "tokens_revoked": _rows_touched(revoked),
+                "grants_dropped": _rows_touched(grants) + _rows_touched(markets),
+            },
+        )
     return {"email": target, "deleted": True}
+
+
+def _rows_touched(result: object) -> int:
+    """UPDATE/DELETE 결과의 행 수 — 로그용. 커서가 아니면 0."""
+    if isinstance(result, CursorResult):
+        return int(cast("CursorResult[Any]", result).rowcount)
+    return 0
+
+
+def erase_account(found: Account, now: datetime) -> None:
+    """계정을 소프트 삭제 상태로 만든다 — 행은 남고 문은 닫힌다 (T266).
+
+    Args:
+        found: 계정 행.
+        now: 삭제 시각.
+    """
+    found.deleted_at = now
+    found.blocked = True
+
+
+def revive_account(found: Account, now: datetime) -> None:
+    """지운 계정이 다시 로그인했다 — **새 대기 계정처럼** 되살린다 (T266).
+
+    Args:
+        found: 계정 행.
+        now: 로그인 시각.
+
+    Note:
+        등급·묶음·승인·감사 깃발을 전부 0 으로 되돌린다. 권한 행과 토큰은 지울 때 이미 없앴다.
+        되살린 사람이 예전에 무엇이었는지는 `event_logs`·앱 로그가 안다 — 표는 현재 상태다.
+    """
+    found.deleted_at = None
+    found.blocked = False
+    found.role = Role.PENDING
+    found.role_collection = ""
+    found.approved_at = None
+    found.approved_by = ""
+    found.audit = False
+    found.last_login_at = now
 
 
 @router.get("/contacts")

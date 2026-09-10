@@ -71,6 +71,10 @@ class Account(Base):
     """
 
     blocked: Mapped[bool] = mapped_column(default=False, server_default=sa.false())
+    deleted_at: Mapped[datetime | None] = mapped_column(default=None)
+    """소프트 삭제 시각 (T266 · 0126). 지운 계정은 `blocked` 도 True 다 — 미들웨어가 그것으로
+    막는다.
+    같은 이메일이 다시 로그인하면 대기 계정으로 되살아난다(권한·토큰 0)."""
     """차단. 🔴 **삭제와 다르다** — 지우면 같은 이메일로 다시 가입해 `PENDING` 이 되고,
     승인 목록에 또 떠서 실수로 승인될 수 있다. 차단은 그 길을 막는다.
     """

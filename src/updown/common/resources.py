@@ -20,12 +20,13 @@ disks    logs 볼륨 · 루트                               (shutil.disk_usage)
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import psutil
 
@@ -178,7 +179,103 @@ def snapshot(proc: str, disks: Mapping[str, Path] | None = None) -> dict[str, An
         "cgroup": {"memory": cgroup_memory(), "cpu": cgroup_cpu()},
         "host": host_stats(),
         "disks": disk_stats(disks or {}),
+        "loop_lag_ms": loop_lag_stats(),
     }
+
+
+LOOP_LAG_TICK_S = 1.0
+"""이벤트 루프 지연 표본 주기 — 1초 타이머가 실제로 몇 ms 늦게 깨는지 잰다 (T265 눈금)."""
+LOOP_LAG_WARN_MS = 500.0
+"""이보다 늦으면 경고 — 그동안 이 프로세스의 모든 요청·틱이 서 있었다는 뜻이다."""
+
+
+class LoopLag:
+    """이벤트 루프 지연 눈금 — 순수 관측기. `observe(드리프트 ms)` 를 부르면 창을 갱신한다.
+
+    Attributes:
+        last_ms: 마지막 표본.
+        max_ms: 마지막 `reset` 뒤 최대.
+        samples: 마지막 `reset` 뒤 표본 수.
+    """
+
+    def __init__(self) -> None:
+        """비운 눈금."""
+        self.last_ms = 0.0
+        self.max_ms = 0.0
+        self.samples = 0
+
+    def observe(self, drift_ms: float) -> None:
+        """표본 하나 — 음수(먼저 깸)는 0 으로 본다.
+
+        Args:
+            drift_ms: 예정보다 늦게 깬 ms.
+        """
+        value = max(0.0, drift_ms)
+        self.last_ms = value
+        self.max_ms = max(self.max_ms, value)
+        self.samples += 1
+
+    def stats(self, *, reset: bool = True) -> dict[str, float | int]:
+        """요약 — 스냅샷 한 장에 실린다.
+
+        Args:
+            reset: True 면 최대·표본 수를 비운다(비트 주기마다 "그동안의 최악").
+
+        Returns:
+            `{last_ms, max_ms, samples}`.
+        """
+        out = {
+            "last_ms": round(self.last_ms, 1),
+            "max_ms": round(self.max_ms, 1),
+            "samples": self.samples,
+        }
+        if reset:
+            self.max_ms = 0.0
+            self.samples = 0
+        return out
+
+
+_loop_lag: LoopLag | None = None
+_loop_lag_task: asyncio.Task[None] | None = None
+
+
+def loop_lag_stats() -> dict[str, float | int] | None:
+    """돌고 있는 지연 눈금의 요약.
+
+    Returns:
+        `LoopLag.stats()` — 안 띄웠으면 None (스냅샷에 그대로 실린다).
+    """
+    return None if _loop_lag is None else _loop_lag.stats()
+
+
+def start_loop_lag(tick_s: float = LOOP_LAG_TICK_S) -> LoopLag:
+    """지연 눈금을 띄운다 — 프로세스에 하나. 두 번 불러도 하나만 돈다.
+
+    Args:
+        tick_s: 표본 주기(초).
+
+    Returns:
+        눈금.
+
+    Note:
+        실행 중인 이벤트 루프 안에서 불러야 한다. 태스크 참조는 모듈이 든다 — 지역 변수로 두면
+        GC 가 거둔다(`jobs.py` 와 같은 함정).
+    """
+    global _loop_lag, _loop_lag_task  # 프로세스 단일 눈금
+    if _loop_lag is not None and _loop_lag_task is not None and not _loop_lag_task.done():
+        return _loop_lag
+    gauge = LoopLag()
+
+    async def _sample() -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            planned = loop.time() + tick_s
+            await asyncio.sleep(tick_s)
+            gauge.observe((loop.time() - planned) * 1000.0)
+
+    _loop_lag = gauge
+    _loop_lag_task = asyncio.get_running_loop().create_task(_sample(), name="loop_lag")
+    return gauge
 
 
 def warnings_for(snap: Mapping[str, Any]) -> list[str]:
@@ -193,6 +290,14 @@ def warnings_for(snap: Mapping[str, Any]) -> list[str]:
     """
     out: list[str] = []
     proc = str(snap.get("proc", "?"))
+    lag = snap.get("loop_lag_ms")
+    if isinstance(lag, Mapping):
+        lag_max = float(cast("Mapping[str, Any]", lag).get("max_ms") or 0.0)
+        if lag_max >= LOOP_LAG_WARN_MS:
+            out.append(
+                f"{proc}: 이벤트 루프가 최대 {lag_max:.0f}ms 섰다 — 그동안 요청·틱이 전부 대기했다 "
+                f"(걸음 `step_ms`·계산 오프로드 검토 · T265)"
+            )
     cg = snap.get("cgroup", {}).get("memory", {})
     host = snap.get("host", {})
     pct = cg.get("percent")
