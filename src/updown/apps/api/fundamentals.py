@@ -469,7 +469,7 @@ async def _quick_rows(key: str, symbols: Mapping[str, Market | None]) -> dict[st
         ciks: dict[str, str] = {}
         wanted_symbols = list(symbols)
 
-        async def one(symbol: str) -> None:
+        async def _one(symbol: str) -> None:
             """종목 하나의 CIK 를 채운다 — 못 풀면 로그만 남기고 뺀다."""
             try:
                 ciks[symbol] = await adapter.cik_of(symbol)
@@ -478,8 +478,8 @@ async def _quick_rows(key: str, symbols: Mapping[str, Market | None]) -> dict[st
                     "screen_cik_missing", payload={"symbol": symbol, "detail": str(exc)[:80]}
                 )
 
-        await one(wanted_symbols[0])
-        await asyncio.gather(*(one(s) for s in wanted_symbols[1:]))
+        await _one(wanted_symbols[0])
+        await asyncio.gather(*(_one(s) for s in wanted_symbols[1:]))
         if not ciks:
             return {}
         # frames — 개념마다 폴백 태그 · 기간 순서대로, 빈 CIK 만 다음 것으로 채운다.

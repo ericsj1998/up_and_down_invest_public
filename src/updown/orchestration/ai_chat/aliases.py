@@ -29,6 +29,11 @@ NAME_GROUPS = {
     "KRX": "domestic",
 }
 FUZZY_CUTOFF = 0.75
+MIN_CONTAINED = 3
+"""별칭이 질문 **안에** 들어 있다고 볼 최소 길이.
+
+그보다 짧으면 정확 일치, 또는 질문이 별칭 안에 든 것만 잡는다.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +81,10 @@ class AliasBook:
             return [Resolved(exact[0], exact[1], exact[2], 1.0)]
         found: dict[str, Resolved] = {}
         for alias, (symbol, group, name) in self.entries.items():
-            if needle in alias or alias in needle:
+            # ⛔ 짧은 별칭이 긴 질문 안에 "들어 있다" 고 잡지 않는다 — 이름표가 들어오며
+            #    한 글자 종목(A · J · T · V …)이 생겨 "JPMorgan" 이 A(애질런트)로 풀렸다
+            #    (2026-09-10 실측).
+            if needle in alias or (len(alias) >= MIN_CONTAINED and alias in needle):
                 found.setdefault(symbol, Resolved(symbol, group, name, 0.9))
         if found:
             return sorted(found.values(), key=lambda r: -r.confidence)[:limit]

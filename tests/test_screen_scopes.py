@@ -88,6 +88,10 @@ class TestNamesSheet:
         found = book.resolve("오라클 종목")
         assert found and found[0].symbol == "ORCL"
         assert book.resolve("Oracle")[0].symbol == "ORCL"
+        # 한 글자 종목(A · J …)이 긴 질문 안에 "들어 있다" 고 잡히면 안 된다
+        # (2026-09-10 실측: JPMorgan → A)
+        assert [r.symbol for r in book.resolve("JPMorgan")] == ["JPM"]
+        assert book.resolve("A")[0].symbol == "A"
         # 손 별칭은 그대로
         assert parse_aliases({"stocks": {"AAPL": ["애플"]}}).resolve("애플")[0].symbol == "AAPL"
 
