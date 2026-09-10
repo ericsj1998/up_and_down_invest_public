@@ -100,3 +100,17 @@ class TestGate:
         assert detail["code"] == "market_forbidden"
         bypass = SimpleNamespace(state=SimpleNamespace())
         mod.require_market_trade(bypass, Market.NASDAQ)  # type: ignore[arg-type]  # 시험 우회는 통과
+
+    def test_run_moving_doors_take_the_request(self) -> None:
+        """판을 움직이는 여섯 문이 `request` 를 받아 시장 권한을 본다 (T267 #6)."""
+        import inspect
+
+        from updown.apps.api import walkforward as wf
+
+        for fn in (wf.buy, wf.sell, wf.resume, wf.drop, wf.adopt_orphan, wf.sweep_symbol):
+            assert "request" in inspect.signature(fn).parameters, fn.__name__
+        guest = mod.Caller(email="g@example.com", role=Role.GUEST, fresh=True)
+        request = SimpleNamespace(state=SimpleNamespace(caller=guest))
+        # 모르는 판은 막을 근거가 없다 — 그 뒤의 404 가 답한다
+        wf._require_run_market(request, "nope")  # type: ignore[arg-type]  # pyright: ignore[reportPrivateUsage]
+        assert wf._market_of("nope") is None  # pyright: ignore[reportPrivateUsage]

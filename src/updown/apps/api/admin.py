@@ -27,6 +27,7 @@ from fastapi import APIRouter, Body, HTTPException
 from updown.analysis.context.guard import AsOfSequence
 from updown.analysis.structures.balance import ZIGZAG_ATR_MULTIPLE
 from updown.analysis.trend.service import evaluate as trend_evaluate
+from updown.apps.api.analysis import MAX_BARS
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import (
     AssetType,
@@ -368,6 +369,7 @@ async def inspect(
     frames = _frames(timeframes)
     if bars < 1:
         raise HTTPException(status_code=HTTP_BAD_REQUEST, detail=f"봉 수가 1 미만이다: {bars}")
+    bars = min(bars, MAX_BARS)  # 보안 점검 #8 — `/analysis/frame` 과 같은 상한
 
     chosen = expand(
         [item.strip() for item in flags.split(",") if item.strip()], available_flags(rules_config())
@@ -581,6 +583,7 @@ async def outcome(
     moment, _ = _as_of(as_of, None, (frame,), bars)
     if bars < 1:
         raise HTTPException(status_code=HTTP_BAD_REQUEST, detail=f"봉 수가 1 미만이다: {bars}")
+    bars = min(bars, MAX_BARS)  # 보안 점검 #8 — `/analysis/frame` 과 같은 상한
 
     instrument = instrument_of(symbol, market)
     span = interval(frame) * bars

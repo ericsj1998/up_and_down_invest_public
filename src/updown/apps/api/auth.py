@@ -366,13 +366,16 @@ async def callback(request: Request, code: str = "", state: str = "") -> Redirec
         raise HTTPException(400, "확인된 이메일이 없는 계정이다")
 
     now = time.time()
+    # ⭐ 보안 점검 #4 완성 (2026-09-11): 구글이 `prompt=login` 을 무시하고 SSO 로 통과시키면
+    #    `auth_time` 이 옛날이다 — 그때는 "방금 인증" 으로 치지 않는다(재인증 문이 다시 잠긴다).
+    auth_at = _auth_at_of(claims, now)
     await _touch_account(email, claims, admins=app.admins)
     made = RedirectResponse(next_path or "/", status_code=302)
     try:
         _bake(
             made,
             COOKIE,
-            issue_note(Session(email=email, issued_at=now, auth_at=now), app.session_secret),
+            issue_note(Session(email=email, issued_at=now, auth_at=auth_at), app.session_secret),
             request=request,
             age=MAX_AGE_S,
         )
@@ -472,6 +475,24 @@ async def _touch_account(email: str, claims: dict[str, Any], *, admins: frozense
         task = asyncio.create_task(_notify_signup(email, str(claims.get("name", "")), now=now))
         _signup_tasks.add(task)
         task.add_done_callback(_signup_tasks.discard)
+
+
+def _auth_at_of(claims: dict[str, Any], now: float) -> float:
+    """구글 id_token 의 `auth_time` 을 믿되, 미래·결측은 `now`.
+
+    Args:
+        claims: id_token 클레임.
+        now: 지금(epoch 초).
+
+    Returns:
+        세션 쪽지에 적을 인증 시각 — `min(now, auth_time)`.
+    """
+    raw = claims.get("auth_time")
+    try:
+        stamp = float(raw) if raw is not None else now
+    except (TypeError, ValueError):
+        return now
+    return min(now, stamp) if stamp > 0 else now
 
 
 async def account_of(email: str) -> Account | None:
@@ -892,6 +913,7 @@ async def caller_of(request: Request) -> Caller | None:
         if email_of_token is None:
             return None
         email, fresh, auth_at, via_token = email_of_token, False, 0.0, True
+        issued_at = None
     else:
         token = request.cookies.get(COOKIE, "")
         if not token:
@@ -903,6 +925,7 @@ async def caller_of(request: Request) -> Caller | None:
             return None
         email, fresh, auth_at = note.email, note.fresh(time.time()), note.auth_at
         via_token = False
+        issued_at = note.issued_at
     # 🔴 **실계좌 서버는 게스트 쪽지를 안 받는다** (T221). 데모 서버가 발급한 게스트 쿠키는
     #    서명이 같아 여기서도 풀리지만, 게스트는 실계좌를 **보지도** 못해야 한다. 계정 행이
     #    없어 막히는 것에 기대지 않고 여기서 명시적으로 거른다 — 행이 생기는 사고가 문을 열면
@@ -911,6 +934,10 @@ async def caller_of(request: Request) -> Caller | None:
         return None
     found = await account_of(email)
     if found is None or found.blocked:
+        return None
+    # ⭐ T267 #9 — 로그아웃 뒤의 옛 쪽지는 서명이 맞아도 없는 것과 같다.
+    cutoff = found.sessions_invalid_before
+    if issued_at is not None and cutoff is not None and issued_at < cutoff.timestamp():
         return None
     table = await collections()
     caps = _caps_of(found, table)
@@ -1127,17 +1154,28 @@ async def _hold_at_of(who: Caller) -> str | None:
 
 @router.post("/logout")
 async def logout(request: Request) -> Response:
-    """세션 쿠키를 지운다.
+    """세션 쿠키를 지우고, 서버에도 "이 시각 전 쪽지는 무효" 를 적는다 (T267 #9).
 
     Args:
-        request: 요청 (읽지 않는다 — 라우터 시그니처 통일).
+        request: 요청 — 쿠키의 주인을 알아 그 계정의 `sessions_invalid_before` 를 지금으로.
 
     Returns:
         204. 쿠키 삭제 헤더가 실린다.
+
+    Note:
+        게스트는 한 계정 행을 여럿이 쓰므로 서버측 폐기를 하지 않는다 — 한 사람의 로그아웃이
+        다른 게스트를 내쫓으면 안 된다. 개인 토큰(Bearer)은 쿠키가 아니라 여기 해당 없음.
     """
     made = Response(status_code=204)
     made.delete_cookie(COOKIE, path="/")
-    _ = request
+    who = await caller_of(request)
+    if who is not None and not who.via_token and who.role is not Role.GUEST:
+        factory = _store()
+        async with factory() as session, session.begin():
+            found = await session.scalar(sa.select(Account).where(Account.email == who.email))
+            if found is not None:
+                found.sessions_invalid_before = datetime.now(UTC)
+        _logger.info("logout_revoked", payload={"email": who.email})
     return made
 
 
@@ -1962,6 +2000,15 @@ async def guard(request: Request, call_next: Any) -> Response:
             return cast("Response", await call_next(request))
 
     request.state.caller = who
+    # ⭐ 보안 점검 #7 (2026-09-11): 토큰이 드는 `/ai/*` 쓰기는 게스트에게 없다 — 끝점마다
+    #    따로 거르던 것을 한 곳으로. 읽기(GET)는 그대로(리포트·대화 목록은 끝점이 판단).
+    if (
+        who is not None
+        and who.role is Role.GUEST
+        and request.url.path.startswith("/ai/")
+        and request.method.upper() not in READ_METHODS
+    ):
+        return JSONResponse({"detail": "게스트는 AI 기능을 쓸 수 없다 — 구글 로그인 뒤에"}, 403)
     # 🔴 **누가 시작한 흐름인지 감사 로그가 알아야 한다** (2026-08-30). `trace_id` 는
     #    흐름을 잇지만 사람을 안 말해 준다 — 여기서 한 번 넣으면 async 경계를 넘어
     #    따라가므로, 로그를 남기는 모든 함수에 인자로 끌고 다닐 필요가 없다.

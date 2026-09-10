@@ -72,6 +72,11 @@ class Account(Base):
 
     blocked: Mapped[bool] = mapped_column(default=False, server_default=sa.false())
     deleted_at: Mapped[datetime | None] = mapped_column(default=None)
+    sessions_invalid_before: Mapped[datetime | None] = mapped_column(default=None)
+    """이 시각 전에 발급된 세션 쪽지는 무효 — 로그아웃이 서버에서도 문을 닫는다 (0128 · T267 #9).
+
+    쪽지는 서명만으로 살아 12시간이었다: 로그아웃해도 훔친 쿠키는 그대로 통했다. 게스트 계정은
+    한 행을 여럿이 쓰므로 여기 값을 만지지 않는다."""
     """소프트 삭제 시각 (T266 · 0126). 지운 계정은 `blocked` 도 True 다 — 미들웨어가 그것으로
     막는다.
     같은 이메일이 다시 로그인하면 대기 계정으로 되살아난다(권한·토큰 0)."""

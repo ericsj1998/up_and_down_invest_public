@@ -1760,10 +1760,13 @@ async def set_leverage(key: str, payload: Annotated[dict[str, Any], Body()]) -> 
 
 
 @router.post("/adopt")
-async def adopt_orphan(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def adopt_orphan(
+    request: Request, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
     """고아 포지션을 **살아 있는 판이 다시 이어받게** 한다 (사용자 요구 2026-09-01).
 
     Args:
+        request: 요청 — 그 시장에서 거래할 권한(T242 · T267 #6).
         payload: `{market, symbol}` — 대조 배너가 가리키는 거래소·종목.
 
     Returns:
@@ -1790,6 +1793,10 @@ async def adopt_orphan(payload: Annotated[dict[str, Any], Body()]) -> dict[str, 
     symbol = str(payload.get("symbol", "")).strip()
     if not market or not symbol:
         raise HTTPException(400, "market 과 symbol 이 둘 다 필요하다")
+    try:
+        require_market_trade(request, Market(market))
+    except ValueError as exc:
+        raise HTTPException(400, f"모르는 시장: {market}") from exc
     hit = next(
         (
             (handle, runner)
@@ -2803,10 +2810,11 @@ async def reconcile_state(refresh: bool = False) -> dict[str, Any]:
 
 
 @router.post("/leftovers/{symbol}")
-async def sweep_symbol(symbol: str) -> dict[str, Any]:
+async def sweep_symbol(request: Request, symbol: str) -> dict[str, Any]:
     """그 종목의 잔재를 **거둔다** — 포지션이 있으면 아무것도 안 한다.
 
     Args:
+        request: 요청 — 그 시장에서 거래할 권한(T242 · T267 #6).
         symbol: 계약 이름.
 
     Returns:
@@ -2830,7 +2838,9 @@ async def sweep_symbol(symbol: str) -> dict[str, Any]:
         _orders_adapter,  # pyright: ignore[reportPrivateUsage]
     )
 
-    swept = await sweep_leftovers(_orders_adapter(), _instrument(symbol), why="콘솔 정리")
+    instrument = _instrument(symbol)
+    require_market_trade(request, instrument.market)
+    swept = await sweep_leftovers(_orders_adapter(), instrument, why="콘솔 정리")
     return {"swept": [f"{item.kind} {item.at}" for item in swept]}
 
 
@@ -4091,10 +4101,11 @@ async def sessions() -> dict[str, Any]:
 
 
 @router.post("/resume/{key}")
-async def resume(key: str) -> dict[str, Any]:
+async def resume(request: Request, key: str) -> dict[str, Any]:
     """저널에 남은 판을 **다시 세워** 이어서 걸어간다.
 
     Args:
+        request: 요청 — 이 시장에서 거래할 권한(T242 · T267 #6).
         key: 세션 id (저널 파일 이름).
 
     Returns:
@@ -4111,6 +4122,7 @@ async def resume(key: str) -> dict[str, Any]:
         ⚠️ 그래서 **시간이 걸린다.** 7일치면 수천 걸음이라 수 분이 든다. 목록은
         그동안 `복원 중` 으로 뜬다.
     """
+    _require_run_market(request, key)
     if key in SESSIONS:
         return _state(key)
     path = JOURNAL_ROOT / f"{key}.json"
@@ -4392,10 +4404,11 @@ async def _drop_one(key: str) -> None:
 
 
 @router.delete("/sessions/{key}")
-async def drop(key: str) -> dict[str, Any]:
+async def drop(request: Request, key: str) -> dict[str, Any]:
     """RUN 하나를 접는다 (메모리 + 저널).
 
     Args:
+        request: 요청 — 이 시장에서 거래할 권한(T242 · T267 #6).
         key: RUN id.
 
     Returns:
@@ -4403,6 +4416,7 @@ async def drop(key: str) -> dict[str, Any]:
     """
     # 🔴 **포지션을 먼저 닫는다.** 러너만 취소하면 거래소에 아무도 관리하지 않는
     #    포지션이 남고, 조건부 손절이 24시간에 만료되면 **손절 없는 포지션**이 된다.
+    _require_run_market(request, key)
     closed = await _close_live_position(key)
     _note_orphan(key, closed)
     await _drop_one(key)
@@ -4538,6 +4552,46 @@ def _only(key: str, frame: str | None) -> Timeframe:
         with contextlib.suppress(Exception):
             runner.watch(picked)
     return picked
+
+
+def _market_of(key: str) -> Market | None:
+    """판의 시장 — 살아 있는 러너 → 메모리 세션 → 저널 순. 셋 다 없으면 None.
+
+    Args:
+        key: 세션 id.
+
+    Returns:
+        시장. 판을 못 찾으면 None — 막을 근거가 없다는 뜻이고, 그 뒤의 404 가 답한다.
+    """
+    runner = LIVE_RUNNERS.get(key)
+    if runner is not None:
+        return runner.instrument.market
+    live = SESSIONS.get(key)
+    if live is not None:
+        return live.session.instrument.market
+    path = JOURNAL_ROOT / f"{key}.json"
+    body = _read_journal(path) if path.exists() else None
+    if body is None:
+        return None
+    try:
+        return Market(str(body.get("market", Market.UPBIT.value)))
+    except ValueError:
+        return None
+
+
+def _require_run_market(request: Request, key: str) -> None:
+    """판을 **만드는** 문(T242)이 판을 **움직이는** 문에도 걸린다 (T267 #6 · 2026-09-11).
+
+    사다·팔다·접다·되살리다·이어받다·잔재 정리는 전부 그 시장에서 돈을 움직이는 행동인데,
+    권한은 판 생성에만 걸려 있어 시장 권한이 없는 사람도 남의 판을 접을 수 있었다.
+
+    Args:
+        request: 요청 (`state.caller`).
+        key: 세션 id.
+    """
+    market = _market_of(key)
+    if market is not None:
+        require_market_trade(request, market)
 
 
 def _live(key: str) -> Live:
@@ -5795,10 +5849,13 @@ async def live_custom(
 
 
 @router.post("/buy/{key}")
-async def buy(key: str, payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def buy(
+    request: Request, key: str, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
     """사람이 산다 (T13 ④).
 
     Args:
+        request: 요청 — 이 시장에서 거래할 권한(T242 · T267 #6).
         key: 세션 id.
         payload: `{price, stop, target, first, short}`. `first` 를 비우면 진입과
             목표의 한가운데로 잡는다 (걸어가기 화면의 옛 동작).
@@ -5810,6 +5867,7 @@ async def buy(key: str, payload: Annotated[dict[str, Any], Body()]) -> dict[str,
         HTTPException: 이미 보유 중이면 400.
     """
     live = _live(key)
+    _require_run_market(request, key)
     raw_first = payload.get("first")
     try:
         live.session.buy(
@@ -5825,10 +5883,13 @@ async def buy(key: str, payload: Annotated[dict[str, Any], Body()]) -> dict[str,
 
 
 @router.post("/sell/{key}")
-async def sell(key: str, payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def sell(
+    request: Request, key: str, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
     """사람이 판다.
 
     Args:
+        request: 요청 — 이 시장에서 거래할 권한(T242 · T267 #6).
         key: 세션 id.
         payload: `{price}`.
 
@@ -5839,6 +5900,7 @@ async def sell(key: str, payload: Annotated[dict[str, Any], Body()]) -> dict[str
         HTTPException: 보유 중이 아니면 400.
     """
     live = _live(key)
+    _require_run_market(request, key)
     try:
         live.session.sell(price=Decimal(str(payload["price"])))
     except RuntimeError as exc:

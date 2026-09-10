@@ -39,11 +39,18 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from fastapi import HTTPException
+
 from updown.common.logging.setup import get_logger
 
 _logger = get_logger("apps.api.jobs")
 
 MAX_JOBS = 20
+KIND_LIMIT = 2
+"""같은 종류의 작업이 동시에 도는 상한 — 넘으면 429 (보안 점검 #7 · 2026-09-11).
+
+모델 호출 작업 하나가 수 분이라, 단추를 연타하면 NVIDIA 요율과 이벤트 루프를 같이 먹는다.
+한 사람의 화면이 두 개를 넘게 띄울 일은 없다."""
 """보관할 작업 수. 넘으면 **끝난 것부터** 버린다 — 도는 작업을 버리면 추적이 끊긴다."""
 
 type Reporter = Callable[[str], None]
@@ -147,11 +154,17 @@ class JobRegistry:
         Returns:
             생성된 작업. 태스크는 이미 돌고 있다.
 
+        Raises:
+            HTTPException: 같은 종류가 이미 `KIND_LIMIT` 개 돌고 있으면 429.
+
         Note:
             🔴 태스크 참조를 **레지스트리가 들고 있어야** 한다. 지역 변수로 두면
             가비지 컬렉터가 도중에 회수할 수 있고(파이썬 문서의 알려진 함정), 그러면
             분석이 조용히 사라진다 — 우리가 고치려던 증상과 똑같이 보인다.
         """
+        running = sum(1 for item in self._jobs.values() if item.kind == kind and not item.done)
+        if running >= KIND_LIMIT:
+            raise HTTPException(429, f"{kind} 작업이 이미 {running}개 돌고 있다 — 끝난 뒤 다시")
         job = Job(
             job_id=uuid4().hex[:12],
             kind=kind,

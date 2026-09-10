@@ -126,6 +126,9 @@ ADMIN_PREFIXES = (
     "/auth/roles",
     "/admin/logs",
     "/admin/resources",
+    # 보안 점검 #8 (2026-09-11): 규칙 조사·재현은 봉 수만큼 CPU 를 먹는 관리자 도구다.
+    "/admin/inspect",
+    "/admin/reproduce",
 )
 """관리자만 닿는 경로 앞자리 — 가입 승인·등급 변경 · **로그 내려받기**(T211) · **자원 창**(T215).
 

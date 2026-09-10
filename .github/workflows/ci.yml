@@ -58,7 +58,7 @@ jobs:
       # v8·v9 는 발행하지 않았다 — `@v9` 는 존재하지 않아 워크플로가 시작조차 못 한다.
       # 두 액션의 표기를 섞지 않으려고 checkout 도 같은 방식으로 고정했다.
       # 갱신은 수동이다: `git ls-remote --tags <repo>` 로 확인하고 올린다.
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: uv 설치
         uses: astral-sh/setup-uv@v9.0.0
@@ -131,7 +131,7 @@ jobs:
     # ⚠️ 이 잡이 없던 동안 `frontend/` 는 **CI 가 한 번도 안 봤다.** 타입 오류가 있는
     #    채로 머지될 수 있었고, 테스트는 아예 돌릴 자리가 없었다.
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-node@v4.1.0
         with:
