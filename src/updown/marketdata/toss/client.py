@@ -41,6 +41,24 @@ from updown.common.http.throttle import Throttle
 from updown.common.logging.setup import get_logger
 
 BASE_URL = "https://openapi.tossinvest.com"
+TOKEN_BACKOFF_BASE_S = 30.0
+TOKEN_BACKOFF_MAX_S = 900.0
+"""토큰 발급 실패 뒤 쉬는 시간 — 30초부터 배로, 최대 15분 (2026-09-11 · 서버 403 반복 실측)."""
+
+
+def token_backoff_s(failures: int) -> float:
+    """연속 실패 n 회 뒤 토큰 재발급을 쉬는 시간.
+
+    Args:
+        failures: 연속 실패 횟수(1 부터).
+
+    Returns:
+        초 — 30 · 60 · 120 … 900 상한. 0 이하면 0.
+    """
+    if failures <= 0:
+        return 0.0
+    return min(TOKEN_BACKOFF_MAX_S, TOKEN_BACKOFF_BASE_S * (2 ** min(failures - 1, 10)))
+
 
 HTTP_OK = 200
 HTTP_BAD_REQUEST = 400
@@ -175,6 +193,11 @@ class TossClient:
         self._token: str | None = None
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()
+        # ⭐ 발급 실패 뒤 쉬는 시간 — 서버에서 403 이 반복되자 8초마다 재요청해 30분에 230회를
+        #    보냈다(2026-09-11 실측 · 실계좌 서버 IP 가 토스에 등록되지 않은 것으로 보임).
+        #    실패마다 배로 늘려 최대 15분. 성공하면 0 으로.
+        self._token_failures = 0
+        self._token_backoff_until = 0.0
 
     @property
     def requests(self) -> int:
@@ -209,6 +232,10 @@ class TossClient:
         """
         return self._client.budget(cap)
 
+    def _note_token_failure(self, now: float) -> None:
+        self._token_failures += 1
+        self._token_backoff_until = now + token_backoff_s(self._token_failures)
+
     async def _access_token(self, *, force: bool = False) -> str:
         """유효한 액세스 토큰을 준다 (캐시).
 
@@ -228,6 +255,11 @@ class TossClient:
             loop = asyncio.get_running_loop()
             if not force and self._token is not None and loop.time() < self._token_expires_at:
                 return self._token
+            if loop.time() < self._token_backoff_until:
+                left = int(self._token_backoff_until - loop.time())
+                raise TossAuthError(
+                    f"토큰 발급 실패 뒤 쉬는 중 — {left}초 뒤 다시 (연속 {self._token_failures}회)"
+                )
 
             try:
                 response = await self._client.request(
@@ -242,17 +274,21 @@ class TossClient:
                     throttle_key="AUTH",
                 )
             except OutboundError as exc:
+                self._note_token_failure(loop.time())
                 raise TossAuthError(
                     f"토큰 발급 요청 실패: {exc}", status_code=exc.status_code
                 ) from exc
 
             if response.status_code != HTTP_OK:
                 # 본문에 시크릿이 없지만 그래도 앞부분만 싣는다.
+                self._note_token_failure(loop.time())
                 raise TossAuthError(
                     f"토큰 발급 실패: {response.status_code} {response.text[:200]}",
                     status_code=response.status_code,
                     request_id=response.headers.get("X-Request-Id"),
                 )
+            self._token_failures = 0
+            self._token_backoff_until = 0.0
             try:
                 body: object = response.json()
                 if not isinstance(body, dict):

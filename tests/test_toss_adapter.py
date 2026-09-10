@@ -132,6 +132,16 @@ def routed(pages: list[dict[str, Any]], *, record: list[httpx.Request] | None = 
 # ---------------------------------------------------------------------------
 
 
+def test_token_backoff_doubles_from_30s_and_caps_at_15min() -> None:
+    """토큰 발급 실패 뒤 쉬는 시간 — 서버 403 반복이 30분에 230회를 보내던 것 (2026-09-11)."""
+    from updown.marketdata.toss.client import TOKEN_BACKOFF_MAX_S, token_backoff_s
+
+    assert token_backoff_s(0) == 0.0
+    assert [token_backoff_s(n) for n in (1, 2, 3, 4)] == [30.0, 60.0, 120.0, 240.0]
+    assert token_backoff_s(6) == TOKEN_BACKOFF_MAX_S == 900.0
+    assert token_backoff_s(50) == 900.0
+
+
 def test_offset_timestamp_is_converted_not_attached() -> None:
     """함정 ① — 오프셋이 붙어 오므로 UTC 로 **변환**해야 한다 (업비트와 반대)."""
     parsed = parse_timestamp("2026-03-25T09:00:00+09:00")
