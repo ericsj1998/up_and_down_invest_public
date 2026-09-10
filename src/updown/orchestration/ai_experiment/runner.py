@@ -268,11 +268,14 @@ async def save_result(
     hold_bars: int = DEFAULT_HOLD_BARS,
     source: CycleSource = CycleSource.SCHEDULED,
     on_progress: ProgressFn | None = None,
+    extra_proposals: Sequence[Proposal] = (),
 ) -> Cycle:
     """이미 끝난 분석을 **원장에 남긴다** — 우리 알고리즘·기준선을 같은 스냅샷에 얹어서.
 
     Args:
         result: 분석 결과.
+        extra_proposals: 같은 스냅샷에 더 얹을 참가자들 (T273 `우리-구조`). 원장은 덮어쓰지
+            않으므로 회차를 만들 때 한 번에 넣는다.
         instrument: 대상.
         provider: 조회 경로.
         ledger: 원장.
@@ -331,6 +334,7 @@ async def save_result(
     proposals = [_llm_proposal(item, snapshot.entry) for item in result.verdicts]
     proposals.append(algorithm)
     proposals.append(baseline_proposal(snapshot.entry, atr))
+    proposals.extend(extra_proposals)
 
     cycle = Cycle(
         run_id=make_run_id(instrument.symbol, snapshot.taken_at),

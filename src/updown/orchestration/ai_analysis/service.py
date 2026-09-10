@@ -111,6 +111,8 @@ class AnalysisRequest:
     instrument: Instrument
     models: tuple[str, ...] = ()
     hold_note: str = "상관 없음"
+    evidence_note: str = ""
+    """우리 규칙이 읽은 구조·맥락 — 비면 절이 없다 (T273 "AI+근거")."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +257,7 @@ async def analyze(
     client: LlmClient,
     config: PoolConfig,
     on_progress: ProgressFn | None = None,
+    snapshot: Snapshot | None = None,
 ) -> AnalysisResult:
     """스냅샷을 받아 모델들에 던지고 결과를 모은다.
 
@@ -264,6 +267,9 @@ async def analyze(
         client: LLM 포트.
         config: 팬아웃 설정.
         on_progress: 진행 로그 콜백.
+        snapshot: 이미 고정한 스냅샷 — 같은 봉으로 프롬프트만 바꿔 한 번 더 물을 때(T273 "AI+근거").
+            없으면 새로 받는다. 토스 시장은 스냅샷 한 번이 2분이라 두 번 받으면 봉이 달라져 비교가
+            아니게 된다(2026-09-11 실측: digest 가 갈렸다).
 
     Returns:
         회차 결과. **실패한 모델도 들어 있다** (G-AI-4).
@@ -279,10 +285,13 @@ async def analyze(
         if on_progress:
             on_progress(message)
 
-    snapshot = await fetch_snapshot(request.instrument, provider, on_progress)
+    if snapshot is None:
+        snapshot = await fetch_snapshot(request.instrument, provider, on_progress)
     note(f"스냅샷 고정 · digest={snapshot.digest} · 현재가 {snapshot.entry}")
 
-    user_prompt = build_user_prompt(snapshot.frames, snapshot.entry, request.hold_note)
+    user_prompt = build_user_prompt(
+        snapshot.frames, snapshot.entry, request.hold_note, evidence_note=request.evidence_note
+    )
     chosen = request.models or tuple(spec.id for spec in config.models)
     note(f"LLM {len(chosen)}종 동시 호출")
 

@@ -8,9 +8,10 @@
  * 숫자는 전부 서버가 준 문자열이다 — 화면은 계산하지 않는다(규칙 #2 정신 · 대시보드와 같은 원칙).
  */
 import { useEffect, useState } from "react";
-import { chartOrderAnalyze, chartOrderBuckets } from "./api";
-import type { ChartAnalysis, ChartBucket, ChartPlanSide, MarketInfo, Who } from "./api";
+import { chartOrderAnalyze, chartOrderBuckets, chartOrderResolve, chartOrderRun, chartOrderRuns } from "./api";
+import type { ChartAnalysis, ChartBucket, ChartParticipant, ChartPlanSide, ChartRun, MarketInfo, Who } from "./api";
 import { Chart } from "./Chart";
+import { useJobEvents } from "./chat/useJobEvents";
 import { BrokerMark } from "./shell/BrokerMark";
 import { brokerOfName } from "./shell/marketGroup";
 import { requestStockOrder } from "./StockOrder";
@@ -79,6 +80,62 @@ function PlanCard({ plan, label, onOrder }: { plan: ChartPlanSide | null; label:
   );
 }
 
+/** 실험 엔진의 판정 값(`follow_through.Outcome`) — 익절 먼저 · 손절 먼저 · 기한 만료 청산(손익 있음) · 미결(봉 부족). */
+const OUTCOME_LABEL: Record<string, string> = {
+  FOLLOWED: "익절 먼저",
+  NOT_FOLLOWED: "손절 먼저",
+  EXPIRED: "기한 만료 청산",
+  UNRESOLVED: "미결(봉 부족)",
+};
+
+function judgementText(j: ChartParticipant["judgement"]): string {
+  if (j === null || j === undefined) return "미판정";
+  if (!j.entered) return "진입 안 됨";
+  const label = j.outcome ? (OUTCOME_LABEL[j.outcome] ?? j.outcome) : "—";
+  return `${label} · 순 R ${j.net_r ?? "—"} · 진입까지 ${j.bars_to_entry ?? "—"}봉`;
+}
+
+/** 참가자 표 — 우리-구조 · 우리-알고리즘 · 기준선 · AI 단독 · AI+근거. 값은 서버 문자열 그대로. */
+function ParticipantsTable({ rows }: { rows: ChartParticipant[] }) {
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table className="table text-xs">
+        <thead>
+          <tr>
+            <th>참가자</th>
+            <th>입장</th>
+            <th>진입</th>
+            <th>손절</th>
+            <th>1차</th>
+            <th>목표</th>
+            <th>확신</th>
+            <th>근거·판정</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.participant}>
+              <td>
+                <b>{r.participant}</b> <span className="faint">{r.kind}</span>
+              </td>
+              <td>{r.stance === "PROPOSED" ? "제안" : r.stance === "ABSTAINED" ? "관망" : "실패"}</td>
+              <td>{r.entry ?? "—"}</td>
+              <td>{r.stop ?? "—"}</td>
+              <td>{r.first ?? "—"}</td>
+              <td>{r.target ?? "—"}</td>
+              <td>{r.conviction ?? "—"}</td>
+              <td className="faint">
+                {r.detail}
+                {r.judgement !== undefined ? <div>{judgementText(r.judgement)}</div> : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who | null }) {
   const [open, toggle] = useFold("ai-chart-order", false);
   const last = remembered();
@@ -91,6 +148,57 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
   const [error, setError] = useState("");
   const info = markets.find((m) => m.name === market);
   const stock = info?.group === "stock";
+  // 2단계 — AI 비교 작업 · 3단계 — 이력·채점
+  const [jobId, setJobId] = useState<string | null>(null);
+  const job = useJobEvents(jobId);
+  const [participants, setParticipants] = useState<ChartParticipant[] | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [history, setHistory] = useState<ChartRun[] | null>(null);
+  const [resolveId, setResolveId] = useState<string | null>(null);
+  const resolveJob = useJobEvents(resolveId);
+  const guest = Boolean(who?.guest);
+
+  useEffect(() => {
+    if (!job.done) return;
+    setJobId(null);
+    if (job.error) {
+      setError(job.error);
+      return;
+    }
+    const got = job.result as { analysis?: ChartAnalysis; participants?: ChartParticipant[]; run_id?: string } | null;
+    if (got?.analysis) setBody(got.analysis);
+    setParticipants(got?.participants ?? []);
+    setRunId(got?.run_id ?? null);
+  }, [job.done, job.error, job.result]);
+
+  const loadHistory = (sym: string, mkt: string) => {
+    chartOrderRuns({ symbol: sym, market: mkt, limit: 10 })
+      .then((got) => setHistory(got.runs))
+      .catch((exc: unknown) => setError(String(exc)));
+  };
+
+  useEffect(() => {
+    if (!resolveJob.done) return;
+    setResolveId(null);
+    if (resolveJob.error) setError(resolveJob.error);
+    if (body) loadHistory(body.symbol, body.market);
+  }, [resolveJob.done, resolveJob.error, body]);
+
+  const compare = (side?: string) => {
+    if (!symbol.trim() || jobId) return;
+    setError("");
+    setParticipants(null);
+    chartOrderRun({ symbol: symbol.trim().toUpperCase(), market, bucket, side })
+      .then((got) => setJobId(got.job_id))
+      .catch((exc: unknown) => setError(String(exc)));
+  };
+
+  const resolveNow = () => {
+    if (resolveId) return;
+    chartOrderResolve()
+      .then((got) => setResolveId(got.job_id))
+      .catch((exc: unknown) => setError(String(exc)));
+  };
 
   useEffect(() => {
     if (!open || buckets.length) return;
@@ -127,7 +235,9 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
   const s = body?.structure;
   const chosen = body?.plans.long ?? body?.plans.short ?? null;
   const chartPlan = chosen && chosen.ok ? { entry: chosen.entry, stop: chosen.stop, first: chosen.first, target: chosen.target } : null;
-  const val = body?.valuation as { score?: number; cheapness?: number; flags?: string[]; per?: unknown } | null | undefined;
+  // `/fundamentals/snapshot` 은 점수를 `score: {score, cheapness, flags}` 로 감싼다 — 그 안을 읽는다.
+  const valRaw = body?.valuation as { score?: number | { score?: number; cheapness?: number; flags?: string[] } } | null | undefined;
+  const val = valRaw && typeof valRaw.score === "object" && valRaw.score !== null ? valRaw.score : null;
   const ex = body?.extremes as { to_high_52w_pct?: number | null; to_low_52w_pct?: number | null; to_sma200_pct?: number | null; rsi14?: number | null } | undefined;
 
   return (
@@ -178,7 +288,30 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
             <button type="button" className="btn small primary" disabled={busy || !symbol.trim()} onClick={run}>
               {busy ? "읽는 중…" : "분석"}
             </button>
+            <button
+              type="button"
+              className="btn small"
+              disabled={Boolean(jobId) || !symbol.trim() || guest}
+              onClick={() => compare()}
+              title={guest ? "게스트는 AI 비교를 돌릴 수 없다(토큰)" : "같은 스냅샷을 AI 단독 · AI+우리 근거 · 우리-구조 셋으로 기록한다 — 모델 호출 2회"}
+            >
+              {jobId ? "AI 비교 중…" : "AI 비교"}
+            </button>
+            <button
+              type="button"
+              className="btn small"
+              disabled={!symbol.trim()}
+              onClick={() => loadHistory(symbol.trim().toUpperCase(), market)}
+              title="이 종목의 지난 AI 비교와 판정"
+            >
+              이력
+            </button>
           </div>
+          {jobId ? (
+            <p className="faint text-xs" style={{ marginTop: 6 }}>
+              {job.lines.length ? job.lines[job.lines.length - 1] : "AI 비교를 띄우는 중"}
+            </p>
+          ) : null}
           {error ? <ErrorCard message={error} /> : null}
           {body && s ? (
             <>
@@ -233,10 +366,40 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
                 <PlanCard plan={body.plans.long} label="롱" onOrder={stock && who && body.plans.long ? () => order(body.plans.long as ChartPlanSide) : undefined} />
                 <PlanCard plan={body.plans.short} label="숏" onOrder={stock && who && body.plans.short ? () => order(body.plans.short as ChartPlanSide) : undefined} />
               </div>
+              {participants ? (
+                <div className="card" style={{ marginTop: 8 }}>
+                  <b>세 참가자 비교</b>
+                  <p className="faint text-xs">
+                    같은 봉을 보고 낸 계획 — AI 계획은 표시·기록·채점 전용이고 주문이 되지 않는다. 채점은 익절·손절에 실제로 닿은 봉으로 한다
+                    {runId ? ` · 회차 ${runId}` : ""}.
+                  </p>
+                  <ParticipantsTable rows={participants} />
+                </div>
+              ) : null}
               <p className="faint text-xs">
-                분석 id {body.analysis_id} — 기록돼 나중에 익절/손절에 실제로 닿았는지로 채점한다. 코인 주문 연결과 AI 참가자 비교는 다음 단계.
+                분석 id {body.analysis_id} — 기록돼 나중에 익절/손절에 실제로 닿았는지로 채점한다. 코인 주문 연결은 다음 단계.
               </p>
             </>
+          ) : null}
+          {history ? (
+            <div className="card" style={{ marginTop: 8 }}>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <b>이력 · 판정</b>
+                <button type="button" className="btn small" disabled={Boolean(resolveId) || guest} onClick={resolveNow} title="익은 회차를 채점한다(원장 전체)">
+                  {resolveId ? "채점 중…" : "채점 실행"}
+                </button>
+              </div>
+              {history.length === 0 ? <p className="faint text-xs">아직 없다 — "AI 비교" 를 누르면 여기 쌓인다.</p> : null}
+              {history.map((h) => (
+                <div key={h.run_id} style={{ marginTop: 6 }}>
+                  <div className="text-xs">
+                    <b>{h.run_id}</b> · 현재가 {h.entry} · 기한 {h.hold_bars}봉 · {h.judged ? "판정됨" : `판정 가능 ${h.matures_at.slice(0, 16).replace("T", " ")}Z 이후`}
+                  </div>
+                  <ParticipantsTable rows={h.participants} />
+                </div>
+              ))}
+              {resolveId ? <p className="faint text-xs">{resolveJob.lines[resolveJob.lines.length - 1] ?? "채점 중"}</p> : null}
+            </div>
           ) : null}
         </div>
       ) : null}

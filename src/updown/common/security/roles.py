@@ -113,7 +113,7 @@ PUBLIC_PATHS = frozenset(
 ⛔ 여기에 경로를 더할 때는 **그 응답에 계좌·성적·주문이 한 톨도 없어야** 한다.
 """
 
-SELF_SERVICE_PREFIXES = ("/auth/tokens", "/mcp")
+SELF_SERVICE_PREFIXES = ("/auth/tokens", "/mcp", "/chart-order")
 """로그인만 하면 되는 경로 (T263 · `caps.SELF_SERVICE_PREFIXES` 와 같은 목록).
 
 개인 토큰 관리 · MCP 끝점.

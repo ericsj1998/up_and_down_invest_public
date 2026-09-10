@@ -2431,6 +2431,49 @@ export type ChartAnalysis = {
   note: string;
 };
 
+/** AI 비교의 참가자 한 줄 — 실험 원장의 제안. `judgement` 는 채점 뒤에만. */
+export type ChartParticipant = {
+  participant: string;
+  kind: string;
+  stance: string;
+  entry: string | null;
+  stop: string | null;
+  first: string | null;
+  target: string | null;
+  conviction: number | null;
+  trigger: string;
+  detail: string;
+  latency_ms: number;
+  judgement?: { entered: boolean; outcome: string | null; net_r: string | null; bars_to_entry: number | null; bars_held: number | null } | null;
+};
+export type ChartRun = {
+  run_id: string;
+  symbol: string;
+  market: string;
+  taken_at: string;
+  entry: string;
+  hold_bars: number;
+  matures_at: string;
+  judged: boolean;
+  participants: ChartParticipant[];
+};
+
+export function chartOrderRun(payload: { symbol: string; market: string; bucket: string; side?: string }): Promise<{ job_id: string }> {
+  return request("/chart-order/run", { method: "POST", headers: JSON_POST, body: JSON.stringify(payload) });
+}
+
+export function chartOrderRuns(params: { symbol?: string; market?: string; limit?: number } = {}): Promise<{ runs: ChartRun[] }> {
+  const query = new URLSearchParams();
+  if (params.symbol) query.set("symbol", params.symbol);
+  if (params.market) query.set("market", params.market);
+  if (params.limit) query.set("limit", String(params.limit));
+  return request(`/chart-order/runs?${query.toString()}`);
+}
+
+export function chartOrderResolve(): Promise<{ job_id: string }> {
+  return request("/chart-order/resolve", { method: "POST", headers: JSON_POST, body: "{}" });
+}
+
 export function chartOrderBuckets(): Promise<{ buckets: ChartBucket[] }> {
   return request("/chart-order/buckets");
 }

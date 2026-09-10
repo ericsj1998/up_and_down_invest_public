@@ -73,6 +73,7 @@ def build_user_prompt(
     entry: Decimal,
     hold_note: str,
     bars_per_frame: int = 120,
+    evidence_note: str = "",
 ) -> str:
     """차트 데이터를 사용자 프롬프트로 조립한다.
 
@@ -81,6 +82,8 @@ def build_user_prompt(
         entry: 현재가 — 계획 정합성의 기준이며 모델에게도 알려 준다.
         hold_note: 주문 유지 기간 설명 (사용자 설정).
         bars_per_frame: 타임프레임당 실을 봉 수.
+        evidence_note: 우리 규칙이 읽은 구조·재무·거시 (T273 "AI+근거" 참가자). 비면 절이 없다 —
+            같은 봉을 보는 "AI 단독" 과 프롬프트가 이 절 하나만 다르다.
 
     Returns:
         사용자 프롬프트.
@@ -99,5 +102,7 @@ def build_user_prompt(
             continue
         shown = min(len(candles), bars_per_frame)
         blocks.append(f"## {name} 캔들 (최근 {shown}봉)\n{_render(candles, bars_per_frame)}")
+    if evidence_note:
+        blocks.append(f"## 우리 규칙이 읽은 구조·맥락 (참고 · 결론 아님)\n{evidence_note}")
     blocks.append("위 데이터만으로 분석하고, 지정된 JSON 스키마 하나만 출력하라.")
     return "\n\n".join(blocks)
