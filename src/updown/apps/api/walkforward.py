@@ -1159,13 +1159,16 @@ async def _live_start(
         )
     # ⭐ T241 — 일중 청산은 마감이 있는 시장에서만 뜻이 있다. 달력을 세션에 준다.
     session.flat_at_close = any(item.flat_at_close for item in session.playbooks)
-    if session.flat_at_close:
-        if caps.always_open:
-            raise RiskConfigError(
-                f"{session.instrument.market} 는 24시간 장이라 마감 청산(flat_at_close)이 없다 — "
-                "매매법 선언을 지운다"
-            )
+    # ⭐ T259 2차 — 마감이 있는 시장은 **전부** 달력을 든다. 마감 청산(flat_at_close)뿐 아니라
+    #    감사가 휴장 중 축 동결을 오탐하지 않으려면 러너가 달력을 봐야 한다
+    #    (실측: AAPL 휴장 중 frame_frozen).
+    if not caps.always_open:
         session.calendar = load_calendar()
+    if session.flat_at_close and caps.always_open:
+        raise RiskConfigError(
+            f"{session.instrument.market} 는 24시간 장이라 마감 청산(flat_at_close)이 없다 — "
+            "매매법 선언을 지운다"
+        )
     session.span_cover = span_cover_of(catalog, book)
     # ✅ T42 ④ (사용자 확정 2026-08-22) — 라이브 원장도 체결 유형대로 센다. 일간 리포트의
     #    거래소 실제 수수료와 같은 자가 된다. 관문은 0.15% 그대로.
@@ -3084,13 +3087,16 @@ def apply_playbook_knobs(session: Session, book: Playbook, catalog: dict[str, Ru
         )
     # ⭐ T241 — 일중 청산은 마감이 있는 시장에서만 뜻이 있다. 달력을 세션에 준다.
     session.flat_at_close = any(item.flat_at_close for item in session.playbooks)
-    if session.flat_at_close:
-        if caps.always_open:
-            raise RiskConfigError(
-                f"{session.instrument.market} 는 24시간 장이라 마감 청산(flat_at_close)이 없다 — "
-                "매매법 선언을 지운다"
-            )
+    # ⭐ T259 2차 — 마감이 있는 시장은 **전부** 달력을 든다. 마감 청산(flat_at_close)뿐 아니라
+    #    감사가 휴장 중 축 동결을 오탐하지 않으려면 러너가 달력을 봐야 한다
+    #    (실측: AAPL 휴장 중 frame_frozen).
+    if not caps.always_open:
         session.calendar = load_calendar()
+    if session.flat_at_close and caps.always_open:
+        raise RiskConfigError(
+            f"{session.instrument.market} 는 24시간 장이라 마감 청산(flat_at_close)이 없다 — "
+            "매매법 선언을 지운다"
+        )
     session.span_cover = span_cover_of(catalog, book)
     # ✅ T42 ④ (사용자 확정 2026-08-22) — 라이브 원장도 체결 유형대로 센다. 일간 리포트의
     #    거래소 실제 수수료와 같은 자가 된다. 관문은 0.15% 그대로.

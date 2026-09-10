@@ -3335,8 +3335,11 @@ class LiveRunner:
         # 🔴 **진입가를 적는 축도 본다** (T20 ②). 2026-08-19 ① 은 *"10초봉이 15분마다만
         #    갱신된다"* 였는데 **아무 예외도 안 났다** — 값이 있고 갱신만 안 됐기 때문이다.
         #    그 축이 얼면 진입가가 조용히 낡고, 낡은 가격으로 계획이 선다.
-        open_for = open_seconds(
-            getattr(self._session, "calendar", None), self._session.instrument.market, now
+        held_instrument = getattr(self._session, "instrument", None)
+        open_for = (
+            open_seconds(getattr(self._session, "calendar", None), held_instrument.market, now)
+            if held_instrument is not None
+            else None
         )
         for frame in {STEP_FRAME, self.entry, self.price_frame}:
             rows = self._feed.observed(frame)
