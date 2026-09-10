@@ -100,7 +100,7 @@ class TestAliases:
     def test_coin_symbol_and_market_for(self) -> None:
         assert (
             coin_symbol("BTC", Market.GATE) == "BTC_USDT"
-            and coin_symbol("BTC", Market.BINANCE) == "BTCUSDT"
+            and coin_symbol("BTC", Market.BINANCE) == "BTC_USDT"
         )
         assert market_for("coin", ("NASDAQ", "BINANCE")) is Market.BINANCE
         assert market_for("foreign", ("NASDAQ", "BINANCE")) is Market.NASDAQ

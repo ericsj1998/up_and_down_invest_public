@@ -140,10 +140,15 @@ def coin_symbol(base: str, market: Market) -> str:
         market: 시장.
 
     Returns:
-        `BTC_USDT`(Gate) · `BTCUSDT`(Binance) · `KRW-BTC`(업비트) · 그 외 그대로.
+        `BTC_USDT`(Gate · Binance — 원장 표기. 거래소 표기 `BTCUSDT` 는 어댑터가 바꾼다) ·
+        `KRW-BTC`(업비트) · 그 외 그대로.
+
+    Note:
+        2026-09-10 3차 실측까지 `market_view` 가 세 번 다 실패한 원인 — Binance 를 `BTCUSDT` 로
+        줘서 `instrument_of` 가 거절하고, 모델이 표기를 넷 넘게 짐작하다 왕복 상한에 닿았다.
     """
     if market is Market.BINANCE:
-        return f"{base}USDT"
+        return f"{base}_USDT"
     if market is Market.GATE:
         return f"{base}_USDT"
     if market is Market.UPBIT:
@@ -890,8 +895,8 @@ TOOLS: tuple[Tool, ...] = (
             "profile_wizard",
             "투자 시작 온보딩 — 동의·자본·성향·매매법·검토를 채팅 안 카드로 진행한다. "
             "카드를 띄우기만 하고 단계는 카드 단추가 넘긴다. "
-            "유사어: 처음, 시작하고 싶어, 투자 시작, 성향 진단, "
-            "온보딩, 어떻게 시작, 셋업, 나한테 맞는 매매법, 펀드 만들기 도와줘.",
+            "유사어: 처음인데 뭐부터, 성향 진단, 온보딩, 셋업, 펀드 만들기 도와줘. "
+            "예산으로 무엇을 살지 묻는 것은 recommend_by_budget 이다.",
             _obj(
                 {
                     "action": {
