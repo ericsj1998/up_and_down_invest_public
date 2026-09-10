@@ -70,6 +70,8 @@ from updown.orchestration.chart_order.plans import (
     distances_of,
     load_buckets,
     load_limits,
+    snap,
+    tick_of,
 )
 from updown.orchestration.chart_order.scoreboard import bucket_of, scoreboard_of
 
@@ -140,17 +142,21 @@ def _plan_json(
         dist = distances_of(last, cand.entry, got.stop, cand.target)
     except ValueError as exc:
         return {"side": side, "ok": False, "blocked": [str(exc)], "basis": cand.basis}
+    # 화면이 읽는 수 — 가격은 현재가의 자릿수, 비율은 소수 둘째 자리. Decimal 산술 꼬리
+    # (`1.0000…079`)를 화면에 보이지 않는다 (사용자 2026-09-11).
+    tick = tick_of(last)
+    cent = Decimal("0.01")
     return {
         "side": side,
         "ok": got.ok,
         "entry": str(cand.entry),
-        "stop": str(got.stop),
+        "stop": str(snap(got.stop, tick)),
         "stop_moved": got.moved,
         "first": str(cand.first),
         "target": str(cand.target),
-        "rr": str(got.rr),
-        "need_pct": str(got.need_pct),
-        "stop_pct": str(got.stop_pct),
+        "rr": str(snap(got.rr, cent)),
+        "need_pct": str(snap(got.need_pct, cent)),
+        "stop_pct": str(snap(got.stop_pct, cent)),
         "blocked": list(got.blocked),
         "warnings": list(got.warnings),
         "basis": cand.basis,

@@ -88,6 +88,16 @@ function pctText(raw: string | undefined): string {
   return `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
+/** 서버 문자열을 그대로 두되 소수 꼬리만 자른다(최대 `max` 자리 · 끝 0 제거) — 값을 다시 계산하지 않는다. */
+function numText(raw: string | null | undefined, max = 6): string {
+  if (raw === null || raw === undefined || raw === "") return "—";
+  const m = /^(-?\d+)(?:\.(\d+))?$/.exec(raw);
+  if (!m) return raw;
+  const whole = m[1] ?? raw;
+  const frac = (m[2] ?? "").slice(0, max).replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : whole;
+}
+
 function PlanCard({
   plan,
   label,
@@ -128,9 +138,9 @@ function PlanCard({
       </div>
       <ul className="text-sm">
         <li>
-          진입 {plan.entry} · 손절 {plan.stop}
-          {plan.stop_moved ? " (RiskManager 가 옮김)" : ""} · 1차 {plan.first} ·
-          목표 {plan.target}
+          진입 {numText(plan.entry)} · 손절 {numText(plan.stop)}
+          {plan.stop_moved ? " (RiskManager 가 옮김)" : ""} · 1차{" "}
+          {numText(plan.first)} · 목표 {numText(plan.target)}
         </li>
         {d ? (
           <li>
@@ -140,7 +150,7 @@ function PlanCard({
           </li>
         ) : null}
         <li className="faint text-xs">
-          1차 손익비 {plan.rr ?? "—"} · 필요 승률{" "}
+          1차 손익비 {numText(plan.rr, 2)} · 필요 승률{" "}
           {plan.need_pct ? `${Number(plan.need_pct).toFixed(1)}%` : "—"} ·
           손절폭 {plan.stop_pct ? `${Number(plan.stop_pct).toFixed(2)}%` : "—"}
         </li>

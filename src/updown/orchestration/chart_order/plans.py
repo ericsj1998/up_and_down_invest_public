@@ -7,12 +7,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
 
+from updown.analysis.plan import MIN_STOP_PCT
 from updown.common.domain.instrument import Timeframe
 
 DEFAULT_BUCKETS_PATH = Path(__file__).resolve().parents[4] / "config" / "analysis_buckets.yml"
@@ -152,6 +153,28 @@ def _mid(a: Decimal, b: Decimal) -> Decimal:
     return (a + b) / 2
 
 
+def tick_of(last: Decimal) -> Decimal:
+    """가격을 적을 자릿수 — 현재가가 쓴 소수 자릿수 그대로 (`76987.5` → `0.1` · `648.21` → `0.01`).
+
+    호가 눈금표 없이도 화면이 `78435.72404081035…` 같은 수를 보지 않게 한다(사용자 2026-09-11).
+
+    Args:
+        last: 마지막 종가.
+
+    Returns:
+        quantize 에 넘길 눈금.
+    """
+    exponent = last.normalize().as_tuple().exponent
+    if not isinstance(exponent, int) or exponent >= 0:
+        return Decimal(1)
+    return Decimal(1).scaleb(exponent)
+
+
+def snap(value: Decimal, tick: Decimal, rounding: str = ROUND_HALF_UP) -> Decimal:
+    """값을 눈금에 맞춘다 — 기본 반올림. 손절은 진입에서 **먼 쪽**으로(하한을 눈금이 못 깎게)."""
+    return value.quantize(tick, rounding=rounding)
+
+
 def candidates_of(
     *,
     last: Decimal,
@@ -181,10 +204,18 @@ def candidates_of(
         `{"long": Candidate | None, "short": Candidate | None}`.
     """
     pad = (atr or Decimal(0)) * stop_atr
+    tick = tick_of(last)
     out: dict[str, Candidate | None] = {"long": None, "short": None}
     if support is not None and support[1] < last:
         entry = support[1]
         stop = support[0] - pad
+        # ⭐ 손절폭 하한 0.5% (T173 · `MIN_STOP_PCT`). 띠가 좁고 ATR 이 작으면
+        #    구조 손절이 0.16% 처럼 나와 노이즈에 먼저 죽고 필요 승률이 96% 가 된다
+        #    (실계좌 BTC 1h 실측 2026-09-11) — 하한까지 넓힌다. 눈금은 진입에서
+        #    먼 쪽으로 붙여 하한이 반올림에 깎이지 않게 한다.
+        floored = entry * (1 - MIN_STOP_PCT)
+        widened = stop > floored
+        stop = min(stop, floored)
         if stop < entry:
             by_rr = entry + (entry - stop) * rr
             target = (
@@ -195,30 +226,35 @@ def candidates_of(
             if target > entry:
                 out["long"] = Candidate(
                     short=False,
-                    entry=entry,
-                    stop=stop,
-                    first=_mid(entry, target),
-                    target=target,
+                    entry=snap(entry, tick),
+                    stop=snap(stop, tick, ROUND_FLOOR),
+                    first=snap(_mid(entry, target), tick),
+                    target=snap(target, tick),
                     basis=f"지지 {support[0]}~{support[1]} 상단 진입 · 지지 하단 -ATR x{stop_atr} "
                     + "손절 · "
-                    + ("첫 저항" if target != by_rr else f"손절 거리 x{rr}"),
+                    + ("첫 저항" if target != by_rr else f"손절 거리 x{rr}")
+                    + (f" · 손절폭 하한 {MIN_STOP_PCT * 100:.1f}% 로 넓힘" if widened else ""),
                 )
     if short_allowed and resistance is not None and resistance[0] > last:
         entry = resistance[0]
         stop = resistance[1] + pad
+        ceiled = entry * (1 + MIN_STOP_PCT)
+        widened = stop < ceiled
+        stop = max(stop, ceiled)
         if stop > entry:
             by_rr = entry - (stop - entry) * rr
             target = max(by_rr, support[1]) if support is not None and support[1] < entry else by_rr
             if 0 < target < entry:
                 out["short"] = Candidate(
                     short=True,
-                    entry=entry,
-                    stop=stop,
-                    first=_mid(entry, target),
-                    target=target,
+                    entry=snap(entry, tick),
+                    stop=snap(stop, tick, ROUND_CEILING),
+                    first=snap(_mid(entry, target), tick),
+                    target=snap(target, tick),
                     basis=f"저항 {resistance[0]}~{resistance[1]} 하단 진입 · 저항 상단 +ATR "
                     + f"x{stop_atr} 손절 · "
-                    + ("첫 지지" if target != by_rr else f"손절 거리 x{rr}"),
+                    + ("첫 지지" if target != by_rr else f"손절 거리 x{rr}")
+                    + (f" · 손절폭 하한 {MIN_STOP_PCT * 100:.1f}% 로 넓힘" if widened else ""),
                 )
     return out
 
@@ -287,4 +323,6 @@ __all__ = [
     "candidates_of",
     "distances_of",
     "load_buckets",
+    "snap",
+    "tick_of",
 ]
