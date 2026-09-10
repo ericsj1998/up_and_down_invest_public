@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -105,3 +106,29 @@ __all__ = [
     "AutoVerdict",
     "auto_allowed",
 ]
+
+
+DEFAULT_MARGIN = Decimal(50)
+"""코인 기본 예산(USDT) — 설정 이벤트에 없을 때."""
+DEFAULT_SHARES = 1
+"""주식 기본 주수 — 설정 이벤트에 없을 때."""
+
+
+def state_from_event(found: Mapping[str, object] | None) -> AutoState:
+    """마지막 `ai_auto_mode` 이벤트 → 상태 (T269 #8 · 판정 입력은 orchestration 이 만든다).
+
+    Args:
+        found: 이벤트 payload. None 이면 켠 적 없음.
+
+    Returns:
+        상태 — 없는 칸은 기본값(일 3건 · 30% · 예산 50 · 1주).
+    """
+    row = dict(found or {})
+    return AutoState(
+        enabled=bool(row.get("enabled")),
+        consent_version=None if row.get("consent_version") is None else str(row["consent_version"]),
+        shares=int(str(row.get("shares") or DEFAULT_SHARES)),
+        margin=Decimal(str(row.get("margin") or DEFAULT_MARGIN)),
+        max_per_day=int(str(row.get("max_per_day") or DEFAULT_MAX_PER_DAY)),
+        max_exposure_pct=Decimal(str(row.get("max_exposure_pct") or DEFAULT_MAX_EXPOSURE_PCT)),
+    )

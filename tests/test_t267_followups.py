@@ -62,3 +62,34 @@ def test_workflows_pin_checkout_by_sha() -> None:
         for line in text.splitlines():
             if "actions/checkout@" in line:
                 assert re.search(r"actions/checkout@[0-9a-f]{40}", line), (name, line)
+
+
+def test_three_doors_from_the_review() -> None:
+    """점검 문서의 시험 3건 — 대기 계정 토큰의 계좌 조회 · 게스트 일괄 삭제 · 재인증 없는 주문."""
+    from types import SimpleNamespace
+
+    from updown.apps.api import walkforward as wf
+    from updown.apps.api.mcp_server import required_cap_of
+    from updown.common.security.roles import Role
+
+    # ① 대기 계정의 개인 토큰으로 `positions` — 계좌 조회 기능이 없다
+    pending = auth.Caller(
+        email="p@example.com",
+        role=Role["PENDING"] if "PENDING" in Role.__members__ else Role.GUEST,
+        fresh=False,
+        via_token=True,
+    )
+    cap = required_cap_of("positions")
+    assert cap is not None and not pending.has(cap)
+
+    # ② 게스트의 일괄 삭제 — 삭제 기능이 없어 403
+    guest = auth.Caller(email="g@example.com", role=Role.GUEST, fresh=True)
+    with pytest.raises(HTTPException) as caught:
+        wf._require_bulk_delete(SimpleNamespace(state=SimpleNamespace(caller=guest)))  # type: ignore[arg-type]  # pyright: ignore[reportPrivateUsage]
+    assert caught.value.status_code == 403
+
+    # ③ 재인증이 낡은 거래자의 주문 확정 — 401
+    stale = auth.Caller(email="t@example.com", role=Role.TRADER, fresh=False)
+    with pytest.raises(HTTPException) as caught:
+        auth.require_fresh(SimpleNamespace(state=SimpleNamespace(caller=stale)))  # type: ignore[arg-type]
+    assert caught.value.status_code == 401

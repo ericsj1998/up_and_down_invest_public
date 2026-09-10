@@ -59,7 +59,13 @@ from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_chat import wizard
 from updown.orchestration.ai_chat.agent import PROMPT_VERSION, ChatResult, run_chat
 from updown.orchestration.ai_chat.aliases import load_aliases
-from updown.orchestration.ai_chat.auto import AutoState, auto_allowed
+from updown.orchestration.ai_chat.auto import (
+    DEFAULT_MAX_EXPOSURE_PCT,
+    DEFAULT_MAX_PER_DAY,
+    AutoState,
+    auto_allowed,
+    state_from_event,
+)
 from updown.orchestration.ai_chat.report import participant_key, prompt_fingerprint
 from updown.orchestration.ai_chat.tools import ToolContext, starters
 from updown.orchestration.report import evidence_charts as ec
@@ -690,15 +696,7 @@ async def _placed_today(email: str) -> tuple[int, Decimal]:
 
 async def _auto_state(email: str) -> AutoState:
     """사람의 자동 모드 상태 — 마지막 `ai_auto_mode` 이벤트."""
-    found = await _latest_event(email, AUTO_MODE_EVENT) or {}
-    return AutoState(
-        enabled=bool(found.get("enabled")),
-        consent_version=found.get("consent_version"),
-        shares=int(found.get("shares") or 1),
-        margin=Decimal(str(found.get("margin") or 50)),
-        max_per_day=int(found.get("max_per_day") or 3),
-        max_exposure_pct=Decimal(str(found.get("max_exposure_pct") or 30)),
-    )
+    return state_from_event(await _latest_event(email, AUTO_MODE_EVENT))
 
 
 async def _auto_json(request: Request) -> dict[str, Any]:
@@ -709,7 +707,10 @@ async def _auto_json(request: Request) -> dict[str, Any]:
         who = None
     base: dict[str, Any] = {
         "consent": {"version": AUTO_ORDER_CONSENT_VERSION, "text": AUTO_ORDER_CONSENT_TEXT},
-        "defaults": {"max_per_day": 3, "max_exposure_pct": 30},
+        "defaults": {
+            "max_per_day": DEFAULT_MAX_PER_DAY,
+            "max_exposure_pct": int(DEFAULT_MAX_EXPOSURE_PCT),
+        },
     }
     if who is None or who.role is Role.GUEST:
         return {**base, "enabled": False, "note": "로그인한 사람만 자동 모드를 켤 수 있다"}

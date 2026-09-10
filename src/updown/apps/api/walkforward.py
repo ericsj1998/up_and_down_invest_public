@@ -4615,13 +4615,37 @@ def _live(key: str) -> Live:
     return live
 
 
-def _chart(live: Live, at: datetime | None, only: Timeframe | None) -> list[dict[str, Any]]:
+def _chart_ttl(key: str, live: Live) -> float:
+    """차트 캐시 TTL — 라이브는 방아쇠 축 간격의 1/10 이상 (T268 #2 · 2026-09-11).
+
+    재생 판은 1초(부드러움)면 되지만, 라이브 판은 봉이 15분에 하나 늘어나는데 4초 폴링마다
+    3~5초짜리 전체 작도를 다시 했다 — `/state` 가 CPU 병목의 첫째였다(점검 2026-09-10).
+
+    Args:
+        key: 세션 id.
+        live: 세션.
+
+    Returns:
+        초.
+    """
+    if key not in LIVE_RUNNERS:
+        return CHART_TTL
+    frame = live.session.price_frame
+    if frame is None:
+        return CHART_TTL
+    return max(CHART_TTL, interval_seconds(frame) / 10)
+
+
+def _chart(
+    live: Live, at: datetime | None, only: Timeframe | None, *, ttl: float = CHART_TTL
+) -> list[dict[str, Any]]:
     """그 시점의 시간축별 화면 — **점검기와 같은 계산·같은 페이로드**.
 
     Args:
         live: 세션.
         at: 기준 시각. 되감기면 과거.
         only: 이 시간축만 작도한다. None 이면 전부.
+        ttl: 캐시를 다시 쓰는 시간(초) — `_chart_ttl`.
 
     Returns:
         `frames` 목록.
@@ -4668,7 +4692,7 @@ def _chart(live: Live, at: datetime | None, only: Timeframe | None) -> list[dict
         #    ⛔ 되감기(`at`)에는 안 쓴다. 그때는 정확한 시점의 그림이어야 한다.
         if cached is not None:
             drawn_bars, drawn_at, chart = cached
-            fresh = time.monotonic() - drawn_at < CHART_TTL
+            fresh = time.monotonic() - drawn_at < ttl
             if drawn_bars == bars or fresh:
                 return chart
 
@@ -5337,7 +5361,7 @@ def _state(key: str, at: datetime | None = None, only: Timeframe | None = None) 
         # 🔴 "왜 아무 일도 안 일어나나" 에 화면이 답할 수 있어야 한다.
         "gate": _gate(session),
         "position": _record(session.position),
-        "frames": _chart(live, at, only),
+        "frames": _chart(live, at, only, ttl=_chart_ttl(key, live)),
         "dashboard": {
             "trades": len(book.records),
             "closed": len(book.closed),

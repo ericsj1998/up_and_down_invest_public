@@ -107,7 +107,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 192M  # T268 #8 — 블루그린 겹침 창(api+api_b) 에 1 GB 를 안 넘게 (데모 실측 95 MiB)
     # 🔴 실계좌와 **다른 볼륨** (2026-09-08 실측). base 의 api 슬롯을 물려받아 같은 `runlogs` 를 쓰니
     #    데모가 실계좌 펀드 파일(`logs/funds`)을 읽어 테스트넷에 자기 판을 만들고 그 파일을 같이 썼고,
     #    자산 스냅샷(테스트넷 10,078 USDT)을 실계좌 `logs/equity/daily.jsonl` 에 적어 차트가 틀렸다.
