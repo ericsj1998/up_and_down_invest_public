@@ -137,8 +137,9 @@ class TestEndpoint:
             async def get(self, key: str) -> str:
                 return kept.get(key, "")
 
-            async def put(self, key: str, value: str) -> None:
+            async def put(self, key: str, value: str, *, by: str = "") -> None:
                 kept[key] = value
+                del by  # T266-4: the real store writes this into the event log
 
         # ⚠️ 라우터가 이미 `/walkforward` 접두를 든다 — 여기서 또 붙이면 두 겹이 된다.
         app = FastAPI()

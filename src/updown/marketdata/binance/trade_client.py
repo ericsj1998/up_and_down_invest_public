@@ -28,6 +28,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from updown.common.http.outbound import NO_RETRY, Outbound, OutboundError
 from updown.common.logging.setup import get_logger
 from updown.marketdata.binance.mapping import price_text, spec_with_compat
 from updown.marketdata.ratelimit import note_ban, observe
@@ -108,18 +109,27 @@ class BinanceTradeClient:
         심볼 문맥에서 `find_order(key, symbol=...)` 로 직접 준다.
     """
 
-    def __init__(self, api_key: str, api_secret: str, base_url: str = TESTNET_BASE) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        base_url: str = TESTNET_BASE,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         """클라이언트를 만든다.
 
         Args:
             api_key: API 키.
             api_secret: 서명 비밀키.
             base_url: 기본 **testnet**. 라이브는 명시적으로 넘겨야 한다.
+            transport: 시험용 전송 계층 — 서명 바이트를 가로채 검증한다 (T264 3차).
         """
         self._key = api_key
         self._secret = api_secret.encode()
         self._base_url = base_url.rstrip("/")
-        self._http: httpx.AsyncClient | None = None
+        self._http: Outbound | None = None
+        self._transport = transport
         self._symbol_of: dict[str, str] = {}
         # 🔴 서버시간 오프셋(ms) — 이 호스트는 WSL↔Windows 재동기화가 시계를 계속
         #    +1.1s 로 끌고 간다(RTC 는 +2일 고장, 2026-08-25 실측). OS 를 고치는
@@ -155,9 +165,17 @@ class BinanceTradeClient:
             await self._http.aclose()
             self._http = None
 
-    def _session(self) -> httpx.AsyncClient:
+    def _session(self) -> Outbound:
         if self._http is None:
-            self._http = httpx.AsyncClient(base_url=self._base_url, timeout=10.0)
+            # 🔴 `NO_RETRY` — 주문은 층이 재시도하지 않는다. -1021(시계) 한 번 재전송은
+            #    아래 `_request` 가 스스로 한다(집행 전 거절이라 멱등 규칙과 충돌 없음).
+            self._http = Outbound(
+                "BINANCE",
+                base_url=self._base_url,
+                timeout=10.0,
+                policy=NO_RETRY,
+                transport=self._transport,
+            )
         return self._http
 
     async def _server_offset(self, *, refresh: bool = False) -> int:
@@ -174,10 +192,10 @@ class BinanceTradeClient:
         """
         if self._clock_offset_ms is None or refresh:
             try:
-                response = await self._session().get("/fapi/v1/time")
+                response = await self._session().request("GET", "/fapi/v1/time")
                 server = int(cast("dict[str, Any]", response.json())["serverTime"])
                 self._clock_offset_ms = server - int(time.time() * 1000)
-            except (httpx.HTTPError, KeyError, ValueError) as exc:
+            except (OutboundError, KeyError, ValueError) as exc:
                 # ⛔ 시간 조회 실패로 본 요청을 막지 않는다 — 오프셋 0 으로 시도하고,
                 #   틀리면 -1021 재시도 경로가 다시 온다.
                 _logger.warning("binance_time_unreadable", payload={"error": str(exc)[:120]})
@@ -239,7 +257,7 @@ class BinanceTradeClient:
         url = f"{path}?{encoded}&signature={signature}"
         try:
             return await self._session().request(method, url, headers={"X-MBX-APIKEY": self._key})
-        except httpx.HTTPError as exc:
+        except OutboundError as exc:
             raise BinanceTradeError(f"바이낸스 전송 실패({method} {path}): {exc}") from exc
 
     # ── 계정 ─────────────────────────────────────────────────────────

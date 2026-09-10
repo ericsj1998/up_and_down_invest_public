@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
-from threading import Lock
 from typing import Any
+
+from updown.common.cache import TtlCache
 
 TTL_S = 3600.0
 """명세를 들고 있는 시간(초).
@@ -34,8 +35,8 @@ TTL_S = 3600.0
 5분에 130회 부르던 것이 종목당 한 번이 되고, 규칙 변경은 다음 시간에 따라온다.
 """
 
-_BOX: dict[str, tuple[float, dict[str, Any]]] = {}
-_LOCK = Lock()
+_BOX = TtlCache[dict[str, Any]]("marketdata.spec", TTL_S, clock=time.time)
+"""명세 기억통 — 벽시계(`time.time`)를 쓰는 이유는 시험이 `now=` 로 시각을 밀어 넣기 때문이다."""
 
 
 async def spec(
@@ -62,21 +63,9 @@ async def spec(
     Note:
         🔴 **실패는 기억하지 않는다.** `fetch` 가 던지면 그대로 올려보내고 아무것도
         남기지 않는다 — 실패를 캐시하면 요율 제한 한 번이 `ttl` 만큼 이어진다.
-
-        ⚠️ **락 안에서 `await` 하지 않는다.** 같은 종목을 두 걸음이 동시에 물으면
-        요청이 두 번 나갈 수 있는데, 그 낭비는 락을 들고 네트워크를 기다리다 다른
-        종목까지 막는 것보다 싸다.
+        같은 종목을 두 걸음이 동시에 물으면 **한 번만** 나간다(키 락 · `common/cache`).
     """
-    key = f"{venue}:{symbol}"
-    clock = time.time() if now is None else now
-    with _LOCK:
-        kept = _BOX.get(key)
-        if kept is not None and clock - kept[0] < ttl:
-            return kept[1]
-    got = await fetch()
-    with _LOCK:
-        _BOX[key] = (clock, got)
-    return got
+    return await _BOX.get_or_fetch(f"{venue}:{symbol}", fetch, ttl_s=ttl, now=now)
 
 
 def forget(venue: str | None = None) -> None:
@@ -85,12 +74,7 @@ def forget(venue: str | None = None) -> None:
     Args:
         venue: 이 거래소 것만 지운다. `None` 이면 전부.
     """
-    with _LOCK:
-        if venue is None:
-            _BOX.clear()
-            return
-        for key in [k for k in _BOX if k.startswith(f"{venue}:")]:
-            del _BOX[key]
+    _BOX.forget(None if venue is None else f"{venue}:")
 
 
 def size() -> int:
@@ -99,5 +83,4 @@ def size() -> int:
     Returns:
         만료 여부와 무관한 항목 수.
     """
-    with _LOCK:
-        return len(_BOX)
+    return _BOX.size()

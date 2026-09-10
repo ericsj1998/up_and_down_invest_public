@@ -24,7 +24,6 @@ import contextlib
 import json
 import logging
 import os
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -46,6 +45,7 @@ from updown.apps.api.walkforward import (
     _drop_one,
     _live_start,
 )
+from updown.common.cache import TtlCache
 from updown.common.domain.instrument import Market, MarketGroup, Timeframe
 from updown.decision.allocation import Basket, BasketError, BasketMember, as_members, rank_members
 from updown.marketdata.ingest.timeframes import interval
@@ -652,10 +652,10 @@ async def _create_fund(
     return fund
 
 
-_UNREAL_CACHE: dict[str, tuple[float, str, str]] = {}
-"""handle -> (읽은 시각, 미실현손익, 포지션 증거금). 잦은 폴링이 거래소를 안 두드리게 짧게 캐시."""
-
 _UNREAL_TTL = 20.0
+"""handle -> (미실현손익, 포지션 증거금) · 20초. 잦은 폴링이 거래소를 안 두드리게 짧게 캐시."""
+
+_UNREAL_CACHE = TtlCache[tuple[str, str]]("fund.unreal", _UNREAL_TTL)
 """T217 (2026-09-04): 8s 였다. 화면이 4s 폴링이라 핸들당 7.5회/분 x positionRisk(weight 5) x
 6핸들 = 분당 225 였다. 20s 면 90. 미실현손익은 표시값이라 20초 지연은 문제가 아니다."""
 
@@ -674,13 +674,12 @@ async def _exchange_facts(handle: str) -> tuple[str, str]:
         손익**이라 입금하면 주문 없이도 뛴다. 거래소가 실제로 잡고 있는 돈은 이 값이다 — 둘을 한
         열에 섞으면 입금이 곧 매수로 읽힌다.
     """
-    now = time.monotonic()
-    cached = _UNREAL_CACHE.get(handle)
-    if cached is not None and now - cached[0] < _UNREAL_TTL:
-        return cached[1], cached[2]
+    kept = _UNREAL_CACHE.fresh(handle)
+    if kept is not None:
+        return kept[1]
+    stale = _UNREAL_CACHE.peek(handle)
     runner = LIVE_RUNNERS.get(handle)
-    unreal = cached[1] if cached is not None else "0"
-    margin = cached[2] if cached is not None else "0"
+    unreal, margin = stale[1] if stale is not None else ("0", "0")
     if runner is not None:
         try:
             orders: Any = runner._orders  # position_snapshot 은 구체 어댑터에만 있다
@@ -689,8 +688,7 @@ async def _exchange_facts(handle: str) -> tuple[str, str]:
             margin = str(snap.get("margin", "0") or "0")
         except Exception:  # 조회 실패는 표시값일 뿐 — 마지막 값 유지
             pass
-    _UNREAL_CACHE[handle] = (now, unreal, margin)
-    return unreal, margin
+    return _UNREAL_CACHE.put(handle, (unreal, margin))
 
 
 async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
@@ -941,7 +939,7 @@ MEMBER_BARS = 90
 """상세보기가 그리는 일봉 수 (기본)."""
 MEMBERS_TTL_S = 300.0
 """상세 응답 기억 시간 — 종목마다 브로커 일봉이라 폴링마다 부르지 않는다."""
-_MEMBERS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_MEMBERS_CACHE = TtlCache[dict[str, Any]]("fund.members", MEMBERS_TTL_S)
 
 
 def bar_changes(closes: Sequence[Decimal]) -> dict[str, str | None]:
@@ -986,8 +984,8 @@ async def members(fund_id: str, bars: int = MEMBER_BARS) -> dict[str, Any]:
     wanted = max(10, min(int(bars), 250))
     key = f"{fund_id}:{wanted}"
     cached = _MEMBERS_CACHE.get(key)
-    if cached is not None and time.monotonic() - cached[0] < MEMBERS_TTL_S:
-        return cached[1]
+    if cached is not None:
+        return cached
     market = Market(fund.market)
     end = datetime.now(UTC)
     start = end - timedelta(days=int(wanted * 1.6) + 7)
@@ -1032,7 +1030,7 @@ async def members(fund_id: str, bars: int = MEMBER_BARS) -> dict[str, Any]:
         "at": end.isoformat(),
         "members": rows,
     }
-    _MEMBERS_CACHE[key] = (time.monotonic(), body)
+    _MEMBERS_CACHE.put(key, body)
     return body
 
 

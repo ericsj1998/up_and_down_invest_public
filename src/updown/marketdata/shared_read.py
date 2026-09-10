@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
-from threading import Lock
 from typing import Any
+
+from updown.common.cache import TtlCache
 
 TTL_S = 2.0
 """계정 조회를 나눠 쓰는 시간(초).
@@ -39,8 +40,8 @@ TTL_S = 2.0
 둘 다 예산 산정과 감사가 쓴다.
 """
 
-_BOX: dict[str, tuple[float, Any]] = {}
-_LOCK = Lock()
+_BOX = TtlCache[Any]("marketdata.shared_read", TTL_S, clock=time.time)
+"""계정 조회 기억통 — 벽시계는 시험이 `now=` 로 시각을 밀어 넣기 때문이다."""
 
 
 async def shared(
@@ -66,20 +67,10 @@ async def shared(
         🔴 **실패는 기억하지 않는다.** `fetch` 가 던지면 그대로 올려보내고 아무것도
         남기지 않는다 — 실패를 캐시하면 한 번의 요율 제한이 `ttl` 만큼 이어지고,
         그 사이 손절 감시가 계좌를 못 읽는다.
-
-        ⚠️ **락 안에서 `await` 하지 않는다.** 같은 값을 두 걸음이 동시에 물으면 요청이
-        두 번 나갈 수 있는데, 그 낭비는 락을 들고 네트워크를 기다리다 다른 판까지
-        멈추는 것보다 싸다.
+        같은 값을 판 여섯이 동시에 물으면 **한 번만** 나간다(키 락 · `common/cache`) —
+        이 모듈이 생긴 이유(5분에 `account` 266회)를 락이 직접 막는다.
     """
-    clock = time.time() if now is None else now
-    with _LOCK:
-        kept = _BOX.get(key)
-        if kept is not None and clock - kept[0] < ttl:
-            return kept[1]
-    got = await fetch()
-    with _LOCK:
-        _BOX[key] = (clock, got)
-    return got
+    return await _BOX.get_or_fetch(key, fetch, ttl_s=ttl, now=now)
 
 
 def forget(prefix: str | None = None) -> None:
@@ -92,12 +83,7 @@ def forget(prefix: str | None = None) -> None:
         ⭐ **주문을 낸 뒤에는 지운다.** 잔고가 방금 바뀌었는데 2초짜리 옛 값을 보면
         다음 주문이 없는 돈으로 산정된다.
     """
-    with _LOCK:
-        if prefix is None:
-            _BOX.clear()
-            return
-        for key in [k for k in _BOX if k.startswith(prefix)]:
-            del _BOX[key]
+    _BOX.forget(prefix)
 
 
 def size() -> int:
@@ -106,5 +92,4 @@ def size() -> int:
     Returns:
         만료 여부와 무관한 항목 수.
     """
-    with _LOCK:
-        return len(_BOX)
+    return _BOX.size()

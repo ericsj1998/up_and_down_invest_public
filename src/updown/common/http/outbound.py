@@ -187,7 +187,7 @@ class RetryPolicy:
         return self.base_delay_s * (2**attempt) + random.uniform(0, self.jitter_s)
 
 
-NO_RETRY = RetryPolicy(max_retries=0)
+NO_RETRY = RetryPolicy(max_retries=0, retriable=frozenset(), retry_5xx=False)
 """한 번만 보낸다 — 주문처럼 멱등이 아닌 경로, 또는 부르는 쪽이 실패를 값으로 다루는 경로(LLM)."""
 
 
@@ -304,6 +304,7 @@ class Outbound:
         json: Any = None,
         data: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
+        content: str | bytes | None = None,
         throttle_key: str | None = None,
     ) -> httpx.Response:
         """보내고, 재시도 대상이면 정책대로 다시 보낸다.
@@ -315,6 +316,8 @@ class Outbound:
             json: JSON 본문.
             data: 폼 본문.
             headers: 이 요청에만 붙는 헤더(서명 · 토큰).
+            content: **원문 본문** — 서명한 문자열을 바이트 그대로 보내야 하는 곳(Gate 주문)이 쓴다.
+                `json=` 은 httpx 가 다시 직렬화해 공백 하나가 달라질 수 있다.
             throttle_key: 스로틀 키. None 이면 경로 — 업비트·토스처럼 **그룹** 한도인 출처가 넘긴다.
 
         Returns:
@@ -342,7 +345,13 @@ class Outbound:
             started = time.perf_counter()
             try:
                 response = await self._client.request(
-                    method, url, params=params, json=json, data=data, headers=headers
+                    method,
+                    url,
+                    params=params,
+                    json=json,
+                    data=data,
+                    content=content,
+                    headers=headers,
                 )
             except httpx.HTTPError as exc:
                 last_exc = type(exc).__name__

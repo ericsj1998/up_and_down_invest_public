@@ -30,9 +30,7 @@ FAST = RetryPolicy(max_retries=2, base_delay_s=0.0, jitter_s=0.0)
 RAW_CLIENT_ALLOWLIST = frozenset(
     {
         "src/updown/common/http/outbound.py",  # 층 자체
-        "src/updown/marketdata/gate/trade_client.py",  # 실주문 — 측정 뒤 옮긴다 (3차)
         "src/updown/marketdata/binance/ws.py",  # 웹소켓 핸드셰이크 — 층은 HTTP 만
-        "src/updown/marketdata/binance/trade_client.py",  # 실주문 — 측정 뒤 옮긴다 (3차)
     }
 )
 

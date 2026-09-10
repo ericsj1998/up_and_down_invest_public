@@ -6,13 +6,12 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter
 
+from updown.common.cache import TtlCache
 from updown.common.domain.macro import VIX_BANDS, VIX_NOTE
 from updown.marketdata.macro.adapter import KEYS
 from updown.marketdata.provider import macro_adapter
@@ -20,8 +19,7 @@ from updown.marketdata.provider import macro_adapter
 router = APIRouter(prefix="/macro", tags=["macro"])
 
 MACRO_TTL_S = 60.0
-_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_LOCK = asyncio.Lock()
+_CACHE = TtlCache[dict[str, Any]]("macro", MACRO_TTL_S)
 
 
 async def macro_snapshot(keys: tuple[str, ...] | None = None) -> dict[str, Any]:
@@ -34,17 +32,11 @@ async def macro_snapshot(keys: tuple[str, ...] | None = None) -> dict[str, Any]:
         `{at, indicators: [...], failures: [{key, label, reason}], vix_bands, vix_note, keys}`.
     """
     cache_key = ",".join(sorted(keys)) if keys else "*"
-    now = time.monotonic()
-    cached = _CACHE.get(cache_key)
-    if cached is not None and now - cached[0] < MACRO_TTL_S:
-        return cached[1]
-    async with _LOCK:
-        cached = _CACHE.get(cache_key)
-        if cached is not None and time.monotonic() - cached[0] < MACRO_TTL_S:
-            return cached[1]
+
+    async def _build() -> dict[str, Any]:
         adapter = macro_adapter()
         found, failures = await adapter.indicators(keys)
-        body: dict[str, Any] = {
+        return {
             "at": datetime.now(UTC).isoformat(),
             "indicators": [item.as_json() for item in found],
             "failures": failures,
@@ -55,8 +47,8 @@ async def macro_snapshot(keys: tuple[str, ...] | None = None) -> dict[str, Any]:
             "vix_note": VIX_NOTE,
             "keys": list(KEYS),
         }
-        _CACHE[cache_key] = (time.monotonic(), body)
-        return body
+
+    return await _CACHE.get_or_fetch(cache_key, _build)
 
 
 @router.get("")

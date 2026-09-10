@@ -34,6 +34,7 @@ from typing import Annotated, Any, cast
 from fastapi import APIRouter, Body, HTTPException
 
 from updown.apps.api.market_hours import market_status_payload
+from updown.common.cache import TtlCache
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.domain.capabilities import CapabilityConfigError, capabilities_of
 from updown.common.domain.instrument import Instrument, Market, MarketGroup, Timeframe
@@ -66,27 +67,13 @@ router = APIRouter(prefix="/exchange", tags=["exchange"])
 #   (income 30 · account 5)는 4초 화면 폴링을 감당 못 한다 — 화면이 몇 탭이든
 #   거래소로는 TTL 에 한 번만 나간다. 값은 관찰용 화면 기준이라 신선도 손해가 없다.
 #   ⛔ 주문·취소·청산(집행)은 캐시하지 않는다 — 상태 조회만이다.
-_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_STATE_CACHE = TtlCache[dict[str, Any]]("exchange.state", 5.0)
 _CACHE_TTL_S = {"GATE": 3.0, "BINANCE": 20.0, "BALANCES": 30.0}
-_CACHE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 async def _cached(key: str, market: str, build: Any) -> dict[str, Any]:
-    """TTL 안이면 저장분을, 지나면 한 번만 다시 만든다 (동시 요청은 락으로 합류)."""
-    ttl = _CACHE_TTL_S.get(market, 5.0)
-    now = time.monotonic()
-    hit = _CACHE.get(key)
-    if hit is not None and now - hit[0] < ttl:
-        return hit[1]
-    lock = _CACHE_LOCKS.setdefault(key, asyncio.Lock())
-    async with lock:
-        hit = _CACHE.get(key)
-        now = time.monotonic()
-        if hit is not None and now - hit[0] < ttl:
-            return hit[1]
-        made = await build()
-        _CACHE[key] = (time.monotonic(), made)
-        return made
+    """TTL 안이면 저장분을, 지나면 한 번만 다시 만든다 (동시 요청은 키 락으로 합류)."""
+    return await _STATE_CACHE.get_or_fetch(key, build, ttl_s=_CACHE_TTL_S.get(market, 5.0))
 
 
 @router.get("/markets")
@@ -854,14 +841,14 @@ async def _all_history(
     return {"history": history, "closes": closes}
 
 
-_CLOSES_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
+_CLOSES_TTL_S = 120.0
 """종목별 청산 이력 캐시 — `(읽은 시각, 행들)`.
 
 🔴 T217 (2026-09-04): 이 호출이 바이낸스 `income` 이라 **weight 30** 인데 콘솔 `/exchange/state`
 가 종목마다 20초에 한 번씩 불러 6종목 = 분당 540 — 한도(2400)의 22% 를 청산 이력 하나가
 먹었다. 청산 이력은 분 단위로 안 바뀐다. 실패는 캐시하지 않는다 (빈 목록을 2분간 굳히지 않게).
 """
-_CLOSES_TTL_S = 120.0
+_CLOSES_CACHE = TtlCache[list[dict[str, str]]]("exchange.closes", _CLOSES_TTL_S)
 
 
 async def _closes(orders: object, instrument: Instrument) -> list[dict[str, str]]:
@@ -882,17 +869,16 @@ async def _closes(orders: object, instrument: Instrument) -> list[dict[str, str]
         return []
     market = getattr(getattr(instrument, "market", None), "value", instrument.market)
     key = f"{market}:{instrument.symbol}"
-    now = time.monotonic()
-    hit = _CLOSES_CACHE.get(key)
-    if hit is not None and now - hit[0] < _CLOSES_TTL_S:
-        return hit[1]
+    kept = _CLOSES_CACHE.fresh(key)
+    if kept is not None:
+        return kept[1]
+    stale = _CLOSES_CACHE.peek(key)
     try:
         rows = cast("list[dict[str, str]]", await orders.position_closes(instrument))  # type: ignore[attr-defined]
     except Exception as exc:
         _logger.warning("console_closes_unreadable", payload={"error": str(exc)[:140]})
-        return hit[1] if hit is not None else []
-    _CLOSES_CACHE[key] = (now, rows)
-    return rows
+        return stale[1] if stale is not None else []
+    return _CLOSES_CACHE.put(key, rows)
 
 
 _LOTS: dict[str, Decimal] = {}

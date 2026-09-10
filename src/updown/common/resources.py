@@ -30,6 +30,8 @@ from typing import Any, cast
 
 import psutil
 
+from updown.common.cache import cache_stats
+
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 RAM_WARN_PCT = 85.0
 DISK_WARN_PCT = 80.0
@@ -180,6 +182,7 @@ def snapshot(proc: str, disks: Mapping[str, Path] | None = None) -> dict[str, An
         "host": host_stats(),
         "disks": disk_stats(disks or {}),
         "loop_lag_ms": loop_lag_stats(),
+        "caches": cache_stats(),
     }
 
 

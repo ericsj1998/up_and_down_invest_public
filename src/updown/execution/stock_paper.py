@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
 
+from updown.common.cache import TtlCache
 from updown.common.costs import MarketCosts, load_cost_table
 from updown.common.db.models.ops import StockPaperAccount
 from updown.common.domain.candle import Candle
@@ -390,7 +391,7 @@ class StockPaperAdapter:
         self._store = store
         self._seed = seed_cash
         self._books: dict[Market, _Book] = {}
-        self._quote_cache: dict[str, tuple[float, Quote]] = {}
+        self._quote_cache = TtlCache[Quote]("stock_paper.quote", QUOTE_TTL_SECONDS, register=False)
         self._costs: dict[Market, MarketCosts] = {}
         self._caps: dict[Market, MarketCapabilities] = {}
 
@@ -1016,13 +1017,7 @@ class StockPaperAdapter:
 
     async def _mark(self, instrument: Instrument) -> Quote:
         key = f"{instrument.market.value}:{instrument.symbol}"
-        cached = self._quote_cache.get(key)
-        now = time.monotonic()
-        if cached is not None and now - cached[0] < QUOTE_TTL_SECONDS:
-            return cached[1]
-        quote = await self._quotes.get_quote(instrument)
-        self._quote_cache[key] = (now, quote)
-        return quote
+        return await self._quote_cache.get_or_fetch(key, lambda: self._quotes.get_quote(instrument))
 
     async def _market_status(self, instrument: Instrument) -> MarketStatus | None:
         try:

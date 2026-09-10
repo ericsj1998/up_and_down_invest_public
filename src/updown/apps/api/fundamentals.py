@@ -50,6 +50,7 @@ from updown.apps.api.fundamentals_rank import (
     ranking_symbols,
     screen_rows,
 )
+from updown.common.cache import TtlCache
 from updown.common.config import ConfigurationError, Settings
 from updown.common.domain.fundamentals import (
     Filing,
@@ -95,8 +96,7 @@ RANKING_TTL_S = 600.0
 """저평가 후보 표를 들고 있는 시간. 공시는 분기마다, 종가는 하루에 한 번 바뀐다 — 화면 폴링
 (60초)마다 종목 수 x 60개월 표를 다시 만들 이유가 없다. 새로고침(POST)이 비운다."""
 
-_RANKING_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_RANKING_LOCK = asyncio.Lock()
+_RANKING_CACHE = TtlCache[dict[str, Any]]("fundamentals.ranking", RANKING_TTL_S)
 
 
 def attach_fundamentals(
@@ -117,7 +117,7 @@ def attach_fundamentals(
     _candles = None if factory is None else CandleRepository(factory)
     _settings = settings
     _adapter = None
-    _RANKING_CACHE.clear()
+    _RANKING_CACHE.forget()
 
 
 def _repo_or_503() -> FundamentalsRepository:
@@ -278,14 +278,8 @@ async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
     repo = _repo_or_503()
     config = _config_or_503()
     found = _market_or_400(market)
-    now = time.monotonic()
-    cached = _RANKING_CACHE.get(found.value)
-    if cached is not None and now - cached[0] < RANKING_TTL_S:
-        return cached[1]
-    async with _RANKING_LOCK:
-        cached = _RANKING_CACHE.get(found.value)
-        if cached is not None and time.monotonic() - cached[0] < RANKING_TTL_S:
-            return cached[1]
+
+    async def _build() -> dict[str, Any]:
         when = datetime.now(UTC)
         broker = MarketDataProvider().broker_of(found)
         rows: list[dict[str, Any]] = []
@@ -302,7 +296,7 @@ async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
                     made, broker=broker, filings=filings, closes=closes, has_facts=has_facts
                 )
             )
-        body: dict[str, Any] = {
+        return {
             "rows": order_rows(rows),
             "at": when.isoformat(),
             "market": found.value,
@@ -313,8 +307,8 @@ async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
                 "점수는 정렬 기준이다 — 수익을 가르는지는 OOS 판정 뒤에만 '추천' 이 된다 (규칙 #12)"
             ),
         }
-        _RANKING_CACHE[found.value] = (time.monotonic(), body)
-        return body
+
+    return await _RANKING_CACHE.get_or_fetch(found.value, _build)
 
 
 UNIVERSE_CONFIG = Path(__file__).resolve().parents[4] / "config" / "fundamentals" / "universe.yml"
@@ -767,7 +761,7 @@ async def refresh(symbol: str, market: str = "NASDAQ") -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     count = await repo.upsert_facts(facts)
     filings = filings_of(facts)
-    _RANKING_CACHE.clear()
+    _RANKING_CACHE.forget()
     _forget_quick(ticker)
     _logger.info(
         "fundamentals_refreshed",

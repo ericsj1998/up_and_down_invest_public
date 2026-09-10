@@ -20,7 +20,6 @@
 으로 읽는다. 3년 백테스트가 그 가짜 신호로 오염된다.
 """
 
-import time
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime, timedelta
@@ -28,6 +27,7 @@ from decimal import Decimal
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
+from updown.common.cache import TtlCache
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Market, Timeframe
 from updown.common.domain.market import Balance, MarketSession, MarketStatus, OrderBook, Quote
@@ -171,7 +171,9 @@ class TossAdapter:
         """
         self._client = client
         self._calendar = calendar
-        self._live: dict[str, tuple[float, MarketSession | None]] = {}
+        self._live = TtlCache[MarketSession | None](
+            "toss.live_session", LIVE_SESSION_TTL_S, register=False
+        )
         """종목 → (잰 시각, 장중 제약). None 은 "제약 없음" 이고 항목이 없으면 "안 물어봄" 이다."""
 
     @property
@@ -533,10 +535,9 @@ class TossAdapter:
         Note:
             ⚠️ 유의사항(VI)은 국내 종목에만 있다 — `koreanMarketDetail` 이 없는 종목은 정보만 본다.
         """
-        now = time.monotonic()
-        cached = self._live.get(symbol)
-        if cached is not None and now - cached[0] < LIVE_SESSION_TTL_S:
-            return cached[1]
+        kept = self._live.fresh(symbol)
+        if kept is not None:
+            return kept[1]
         try:
             rows = await self.stock_info([symbol])
             info: Mapping[str, Any] = rows[0] if rows else {}
@@ -549,7 +550,7 @@ class TossAdapter:
                 "toss_live_session_failed", payload={"symbol": symbol, "detail": str(exc)[:120]}
             )
             return None
-        self._live[symbol] = (now, found)
+        self._live.put(symbol, found)
         if found is not None:
             _logger.warning("toss_live_session", payload={"symbol": symbol, "session": found.value})
         return found

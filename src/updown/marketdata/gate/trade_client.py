@@ -37,6 +37,7 @@ from typing import Any, Final, Self, cast
 
 import httpx
 
+from updown.common.http.outbound import NO_RETRY, Outbound, OutboundError
 from updown.common.logging.setup import get_logger
 from updown.marketdata.gate.client import (
     LIVE_BASE_URL,
@@ -230,23 +231,16 @@ class GateTradeClient:
         self._key = key
         self._secret = secret
         self._base_url = base_url
-        self._timeout = timeout
-        self._transport = transport
-        self._client = self._new_http()
-
-    def _new_http(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url=self._base_url,
-            timeout=self._timeout,
+        # 🔴 `NO_RETRY` — 주문은 층이 재시도하지 않는다 (규칙 #6: 재시도 전 체결 조회 먼저).
+        #    닫힌 풀 재개방·타임아웃·호출 로그만 층(T264 3차). 서명·본문은 여기서 만든다.
+        self._client = Outbound(
+            "GATE",
+            base_url=base_url,
+            timeout=timeout,
             headers={"Accept": "application/json"},
-            transport=self._transport,
+            policy=NO_RETRY,
+            transport=transport,
         )
-
-    def _http(self) -> httpx.AsyncClient:
-        """살아 있는 HTTP 클라이언트 — 닫혔으면 다시 만든다 (2026-09-05 · 공유 어댑터 캐시 이후)."""
-        if self._client.is_closed:
-            self._client = self._new_http()
-        return self._client
 
     @property
     def is_testnet(self) -> bool:
@@ -312,9 +306,15 @@ class GateTradeClient:
         headers = auth_headers(
             self._key, self._secret, method, path, params=params, body=text, timestamp=stamp
         )
-        response = await self._http().request(
-            method, path, params=params, content=text or None, headers=headers
-        )
+        try:
+            response = await self._client.request(
+                method, path, params=params, content=text or None, headers=headers
+            )
+        except OutboundError as exc:
+            # 전송 실패 — 보냈는지 모른다. 재시도는 부르는 쪽이 체결 조회 뒤에(규칙 #6).
+            raise GateApiError(
+                f"Gate 전송 실패({method} {path}): {exc}", status_code=None, payload=""
+            ) from exc
         # 🔴 **얼마나 썼는지 헤더로 안다** (2026-08-29 사고 · Binance 와 같은 사정).
         #    Gate 는 `x-gate-ratelimit-remain` 으로 **남은 것**을 준다. 실패 응답에도
         #    실리므로 성공 판정보다 먼저 읽는다.

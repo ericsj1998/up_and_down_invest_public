@@ -55,7 +55,7 @@ def _inst(symbol: str = "XRP_USDT") -> Any:
 
 @pytest.fixture(autouse=True)
 def _clear_cache() -> None:
-    exchange._CLOSES_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
+    exchange._CLOSES_CACHE.forget()  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_closes_are_cached_per_symbol() -> None:
@@ -71,9 +71,9 @@ async def test_failure_is_not_cached_but_stale_is_served(monkeypatch: pytest.Mon
     orders = _Orders()
     first = await exchange._closes(orders, _inst())  # pyright: ignore[reportPrivateUsage]
     # TTL 을 지나게 한다
-    key = next(iter(exchange._CLOSES_CACHE))  # pyright: ignore[reportPrivateUsage]
-    stamp, rows = exchange._CLOSES_CACHE[key]  # pyright: ignore[reportPrivateUsage]
-    exchange._CLOSES_CACHE[key] = (stamp - 999, rows)  # pyright: ignore[reportPrivateUsage]
+    key = next(iter(exchange._CLOSES_CACHE.entries))  # pyright: ignore[reportPrivateUsage]
+    stamp, rows = exchange._CLOSES_CACHE.entries[key]  # pyright: ignore[reportPrivateUsage]
+    exchange._CLOSES_CACHE.entries[key] = (stamp - 999, rows)  # pyright: ignore[reportPrivateUsage]
     orders.fail = True
     again = await exchange._closes(orders, _inst())  # pyright: ignore[reportPrivateUsage]
     assert again == first, "실패하면 마지막 값을 낸다 — 빈 목록으로 화면을 비우지 않는다"
