@@ -55,7 +55,12 @@ import { positionsSummary } from "./consoleSummary";
 import { connection } from "./api";
 import { BrokerMark } from "./shell/BrokerMark";
 import { MarketHours } from "./shell/MarketHours";
-import { brokerOfName, capsOfName, pickMarkets, useMarketGroup } from "./shell/marketGroup";
+import {
+  brokerOfName,
+  capsOfName,
+  pickMarkets,
+  useMarketGroup,
+} from "./shell/marketGroup";
 
 /** ⚠️ 거래소를 두드리는 일이라 느긋하게. 정리하려고 여는 화면이지 초를 보는 곳이 아니다. */
 // 2026-09-05: 4초는 1 GB 서버에서 CPU 를 다 먹었다(요청마다 거래소 왕복). 10초면 충분하다.
@@ -91,16 +96,20 @@ function ReconcileLine({ now }: { now: Reconcile | null }) {
   if (!now) {
     return (
       <p className="notice bad">
-        🔴 거래소 대조 상태를 못 읽었다 — 서버가 옛 판이거나 목록 조회가 실패했다.
+        🔴 거래소 대조 상태를 못 읽었다 — 서버가 옛 판이거나 목록 조회가
+        실패했다.
       </p>
     );
   }
-  const ago = now.at ? Math.round((Date.now() - Date.parse(now.at)) / 1000) : null;
+  const ago = now.at
+    ? Math.round((Date.now() - Date.parse(now.at)) / 1000)
+    : null;
   if (now.stale) {
     return (
       <p className="notice bad">
-        🔴 거래소 대조가 멈췄다 — 마지막 {ago === null ? "기록 없음" : `${ago}초 전`} (주기{" "}
-        {now.period_s}초). 원장과 거래소가 갈려도 **지금은 아무도 안 보고 있다**.
+        🔴 거래소 대조가 멈췄다 — 마지막{" "}
+        {ago === null ? "기록 없음" : `${ago}초 전`} (주기 {now.period_s}초).
+        원장과 거래소가 갈려도 **지금은 아무도 안 보고 있다**.
       </p>
     );
   }
@@ -108,8 +117,10 @@ function ReconcileLine({ now }: { now: Reconcile | null }) {
     return (
       <p className="notice bad">
         🔴 거래소 대조: {now.findings}건 갈렸다
-        {now.blocked.length > 0 ? ` · 신규 진입 보류 ${now.blocked.join(", ")}` : ""} (위 배너
-        참고)
+        {now.blocked.length > 0
+          ? ` · 신규 진입 보류 ${now.blocked.join(", ")}`
+          : ""}{" "}
+        (위 배너 참고)
       </p>
     );
   }
@@ -192,7 +203,6 @@ export function ConsoleTab({ openRun }: Props) {
   //    화면을 다시 그릴 이유가 없고, 다시 그리면 그 렌더가 또 시각을 흔든다.
   const seenNaked = useRef<Map<string, number>>(new Map());
 
-
   // 🔴 **문자열 키로 메모한다** (2026-09-05 실계좌 첫날 사고). `purses` 객체를 deps 로 두면
   //    폴링 응답마다 새 객체 → 새 marketList 배열 → 새 `pull` → `useEffect([pull])` 가 즉시 다시
   //    pull() 하고 타이머를 다시 건다. 결과: 응답이 올 때마다 또 요청 — 초당 3~5회 폭주
@@ -205,7 +215,14 @@ export function ConsoleTab({ openRun }: Props) {
   useEffect(() => {
     let alive = true;
     exchangeMarkets()
-      .then((r) => alive && setMarkets(r.all ?? r.markets.map((name) => ({ name, ready: true, scoped: true }))))
+      .then(
+        (r) =>
+          alive &&
+          setMarkets(
+            r.all ??
+              r.markets.map((name) => ({ name, ready: true, scoped: true })),
+          ),
+      )
       .catch(() => alive && setMarkets([]));
     return () => {
       alive = false;
@@ -213,13 +230,19 @@ export function ConsoleTab({ openRun }: Props) {
   }, []);
   // ⭐ T245 — 고른 시장 묶음(코인/주식)의 것만 본다. 칩·폴링·카드 전부 여기서 갈린다. 묶음이 무엇인지는 서버가 말한다.
   const [group] = useMarketGroup();
-  const allMarkets = useMemo(() => pickMarkets(markets ?? [], group), [markets, group]);
+  const allMarkets = useMemo(
+    () => pickMarkets(markets ?? [], group),
+    [markets, group],
+  );
   useEffect(() => setMkt("전체"), [group]);
   const marketKey = allMarkets
     .filter((m) => m.ready && m.scoped)
     .map((m) => m.name)
     .join(",");
-  const marketList = useMemo(() => (marketKey ? marketKey.split(",") : []), [marketKey]);
+  const marketList = useMemo(
+    () => (marketKey ? marketKey.split(",") : []),
+    [marketKey],
+  );
   const isReady = (name: string) => marketList.includes(name);
   const noExchange = markets !== null && marketList.length === 0;
   // 어느 키가 없는지는 **모드**가 정한다 — 실계좌 모드면 실계좌 키, 데모면 테스트넷 키 (사용자 2026-09-06).
@@ -235,7 +258,8 @@ export function ConsoleTab({ openRun }: Props) {
   const KEYLESS = /TESTNET_API_KEY/;
   // 거래소가 하나면 "전체" 는 그 거래소와 같다 — 칩을 숨기고 그 거래소 카드를 바로 그린다.
   // 연결된 거래소가 하나면 "전체" 는 그것이다. 사람이 연결 안 된 거래소를 골랐으면 그 이름이 그대로 남아 아래에서 키 카드가 뜬다.
-  const effMkt: string = mkt === "전체" && marketList.length === 1 ? (marketList[0] ?? mkt) : mkt;
+  const effMkt: string =
+    mkt === "전체" && marketList.length === 1 ? (marketList[0] ?? mkt) : mkt;
 
   const pull = useCallback(() => {
     for (const name of marketList) {
@@ -246,13 +270,17 @@ export function ConsoleTab({ openRun }: Props) {
         })
         .catch((exc: unknown) => {
           if (KEYLESS.test(String(exc))) {
-            setKeyless((prev) => (prev[name] ? prev : { ...prev, [name]: true }));
+            setKeyless((prev) =>
+              prev[name] ? prev : { ...prev, [name]: true },
+            );
             return;
           }
           // 첫 거래소 실패는 화면 전체의 문제다 — 그때만 에러 배너.
           if (name === marketList[0]) setError(String(exc));
           // "답했다" 는 사실은 남긴다 (값은 null) — 알림 소리가 이 거래소를 영원히 기다리지 않게.
-          setBodies((prev) => (name in prev ? prev : { ...prev, [name]: null }));
+          setBodies((prev) =>
+            name in prev ? prev : { ...prev, [name]: null },
+          );
         })
         .finally(() => setLink(connection()));
     }
@@ -272,9 +300,10 @@ export function ConsoleTab({ openRun }: Props) {
   //    사람 눈에는 "버튼이 아무 일도 안 한다" 로 보였다. actNote 는 폴링이 못 지운다.
   // ⭐ 톤: bad=실패 · warn=처리중(⏳) · info=완료(✅) — 청산처럼 느린 액션은 진행이
   //    안 보이면 사람이 또 누른다 (사용자 2026-09-03).
-  const [actNote, setActNote] = useState<{ tone: "bad" | "warn" | "info"; text: string } | null>(
-    null,
-  );
+  const [actNote, setActNote] = useState<{
+    tone: "bad" | "warn" | "info";
+    text: string;
+  } | null>(null);
   const act = (name: string, run: () => Promise<unknown>) => {
     setBusy(name);
     setActNote(null);
@@ -293,7 +322,9 @@ export function ConsoleTab({ openRun }: Props) {
   // ⭐ 범위 박스(포지션·미결·조건부·이력)의 거래소 선택 — 전체 = 병합.
   const [boxMkt, setBoxMkt] = useState("전체");
   const scopedOf = useCallback(
-    <T,>(sel: (one: Exchange) => T[] | undefined): (T & { market: string })[] => {
+    <T,>(
+      sel: (one: Exchange) => T[] | undefined,
+    ): (T & { market: string })[] => {
       const names = boxMkt === "전체" ? marketList : [boxMkt];
       return names.flatMap((name) => {
         const one = bodies[name];
@@ -305,9 +336,14 @@ export function ConsoleTab({ openRun }: Props) {
     },
     [bodies, boxMkt, marketList],
   );
-  const boxPositions = useMemo(() => scopedOf((one) => one.positions), [scopedOf]);
+  const boxPositions = useMemo(
+    () => scopedOf((one) => one.positions),
+    [scopedOf],
+  );
   // ⭐ 청산가 열 — 표에 보이는 포지션의 시장 중 배율이 있는 곳이 하나라도 있으면 (능력표 · T245).
-  const liqHere = boxPositions.some((row) => capsOfName(allMarkets, String(row.market ?? "")).leverage);
+  const liqHere = boxPositions.some(
+    (row) => capsOfName(allMarkets, String(row.market ?? "")).leverage,
+  );
   const boxOrders = useMemo(() => scopedOf((one) => one.orders), [scopedOf]);
   const boxStops = useMemo(() => scopedOf((one) => one.stops), [scopedOf]);
   const boxHistory = useMemo(() => scopedOf((one) => one.history), [scopedOf]);
@@ -381,7 +417,15 @@ export function ConsoleTab({ openRun }: Props) {
     }
     return { avail, margin, unreal, count, per };
   }, [bodies, marketList]);
-  const perLine = (read: (one: { avail: number; margin: number; unreal: number; count: number }) => number, digits = 2) =>
+  const perLine = (
+    read: (one: {
+      avail: number;
+      margin: number;
+      unreal: number;
+      count: number;
+    }) => number,
+    digits = 2,
+  ) =>
     marketList
       .map((name) => {
         const one = agg.per[name];
@@ -429,7 +473,9 @@ export function ConsoleTab({ openRun }: Props) {
   //    값(`held`·`open`·`size`·`pnl`)은 안전 배너 등 종목 문맥에만 남긴다.
   const all = positionsSummary(body?.positions ?? []);
   const allHint = (tail: string) =>
-    all.count === 0 ? tail : `${all.lines.slice(0, 3).join(" · ")}${all.count > 3 ? ` · +${all.count - 3}` : ""}`;
+    all.count === 0
+      ? tail
+      : `${all.lines.slice(0, 3).join(" · ")}${all.count > 3 ? ` · +${all.count - 3}` : ""}`;
   // 🔴 **가장 위험한 조합을 전 종목에서 찾는다** (사용자 신고 2026-08-20).
   //    예전에는 고른 종목(BTC)의 포지션과 조건부만 봤다 — 판을 여섯 종목에서 돌리면
   //    SPCX 가 무방비여도 이 배너가 조용하고, 반대로 BTC 만 보고 "조건부 0건" 을
@@ -453,7 +499,10 @@ export function ConsoleTab({ openRun }: Props) {
     const bare = marketList.flatMap((name) =>
       (bodies[name]?.positions ?? [])
         .filter((row) => !armed.has(`${name}:${row.symbol}`))
-        .map((row) => ({ ...row, symbol: `${name === "BINANCE" ? "BN " : ""}${row.symbol}` })),
+        .map((row) => ({
+          ...row,
+          symbol: `${name === "BINANCE" ? "BN " : ""}${row.symbol}`,
+        })),
     );
     const step = confirmedNaked(
       bare,
@@ -479,7 +528,9 @@ export function ConsoleTab({ openRun }: Props) {
   );
   // ⭐ 거래소가 총액을 말해 주면 그것이 사실이다 (대기 주문 증거금까지 포함 · 2026-09-05).
   //    못 말하는 어댑터에서만 available + 포지션 증거금으로 계산한다.
-  const orderMargin = body?.balance.order_margin ? Number(body.balance.order_margin) : 0;
+  const orderMargin = body?.balance.order_margin
+    ? Number(body.balance.order_margin)
+    : 0;
   const total = body
     ? body.balance.total
       ? Number(body.balance.total)
@@ -487,7 +538,8 @@ export function ConsoleTab({ openRun }: Props) {
     : null;
   // 🔴 % 의 분모는 **계좌 총액** — 상단 카드는 계좌 단위고 "오늘 손익" 과 같은 자여야 한다 (사용자 확정 2026-09-06:
   //    증거금 대비 +7.3% 와 계좌 대비 +0.1% 가 같은 화면에 섞여 헷갈렸다). 총액을 못 읽으면 % 를 내지 않는다.
-  const allPnlPct = total !== null && total > 0 ? (all.pnl / total) * 100 : null;
+  const allPnlPct =
+    total !== null && total > 0 ? (all.pnl / total) * 100 : null;
   const allPnlText =
     all.count === 0
       ? "—"
@@ -507,12 +559,23 @@ export function ConsoleTab({ openRun }: Props) {
           있어야 한다. */}
       {(() => {
         const orphans = board.watch.filter(
-          (row) => row.code === "reconcile_orphan_position" && !!row.market && !!row.symbol,
+          (row) =>
+            row.code === "reconcile_orphan_position" &&
+            !!row.market &&
+            !!row.symbol,
         );
         const others = board.watch.length - orphans.length;
         if (board.watch.length === 0) return null;
         return (
-          <div className="notice bad" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div
+            className="notice bad"
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
             <b>🔴 문제 있는 원장 {board.watch.length}개</b>
             <span className="faint">
               (고아 {orphans.length}
@@ -540,20 +603,32 @@ export function ConsoleTab({ openRun }: Props) {
                         tone: "warn",
                         text: `⏳ 되받는 중 ${done + 1}/${orphans.length} — ${row.symbol}…`,
                       });
-                      const r = await adoptOrphan(row.market as string, row.symbol as string);
-                      if (r.adopted !== "yes") failed.push(`${row.run}: ${r.reason}`);
+                      const r = await adoptOrphan(
+                        row.market as string,
+                        row.symbol as string,
+                      );
+                      if (r.adopted !== "yes")
+                        failed.push(`${row.run}: ${r.reason}`);
                       else done += 1;
                     }
                     await board.refresh();
                     setActNote(
                       failed.length
-                        ? { tone: "bad", text: `일부 되받기 실패 — ${failed.join(" / ")}` }
-                        : { tone: "info", text: `✅ ${done}개 되받기 완료 — 이제 원장이 관리한다` },
+                        ? {
+                            tone: "bad",
+                            text: `일부 되받기 실패 — ${failed.join(" / ")}`,
+                          }
+                        : {
+                            tone: "info",
+                            text: `✅ ${done}개 되받기 완료 — 이제 원장이 관리한다`,
+                          },
                     );
                   })
                 }
               >
-                {busy === "adopt-all" ? "되받는 중…" : `고아 ${orphans.length}개 모두 되받기`}
+                {busy === "adopt-all"
+                  ? "되받는 중…"
+                  : `고아 ${orphans.length}개 모두 되받기`}
               </button>
             ) : null}
           </div>
@@ -568,14 +643,34 @@ export function ConsoleTab({ openRun }: Props) {
         //    매번 판을 지웠다 만드는 대신 여기서 되받는다 (2026-09-01). 죽은 판
         //    (no_runner·task_dead·steps_stall)에는 단추가 없다 — 되받을 러너가 없다.
         const orphan =
-          row.code === "reconcile_orphan_position" && !!row.market && !!row.symbol;
+          row.code === "reconcile_orphan_position" &&
+          !!row.market &&
+          !!row.symbol;
         const tag = `adopt:${row.run}`;
+        // ⭐ 되살리기가 왜 안 됐는지는 `revive` 에 있다 — 숨기면 "실패했다" 만 보고 겁만 먹는다
+        //    (2026-09-11: 로컬 데모가 BINANCE 만 연결한 뒤 NASDAQ 페이퍼 판 셋이 이 문구로만 떴다).
+        //    이 API 가 연결하지 않은 시장이면 거래소 포지션 경고 대신 그 사실을 말한다.
+        const notConnected =
+          !!row.revive && row.revive.includes("연결하지 않은 거래소");
         return (
           <p key={row.run} className="notice bad">
             🔴 {row.run} — {row.detail}
+            {row.guard ? (
+              <>
+                <br />
+                거래소 대조: {row.guard}
+              </>
+            ) : null}
+            {row.revive ? (
+              <>
+                <br />
+                되살리기: {row.revive}
+              </>
+            ) : null}
             <br />
-            거래소에 포지션이 남아 있으면 지금 아무도 관리하지 않는다. 아래
-            포지션·조건부 주문을 확인한다.
+            {notConnected
+              ? "이 API 가 그 시장을 연결하지 않아 러너를 띄울 수 없다 — 시장을 연결(UPDOWN_MARKETS)하거나 판을 닫는다."
+              : "거래소에 포지션이 남아 있으면 지금 아무도 관리하지 않는다. 아래 포지션·조건부 주문을 확인한다."}
             {orphan ? (
               <>
                 {" "}
@@ -584,13 +679,25 @@ export function ConsoleTab({ openRun }: Props) {
                   disabled={busy !== ""}
                   onClick={() =>
                     act(tag, async () => {
-                      setActNote({ tone: "warn", text: `⏳ ${row.symbol} 되받는 중…` });
-                      const r = await adoptOrphan(row.market as string, row.symbol as string);
+                      setActNote({
+                        tone: "warn",
+                        text: `⏳ ${row.symbol} 되받는 중…`,
+                      });
+                      const r = await adoptOrphan(
+                        row.market as string,
+                        row.symbol as string,
+                      );
                       await board.refresh();
                       setActNote(
                         r.adopted === "yes"
-                          ? { tone: "info", text: `✅ ${row.symbol} 되받기 완료 — 이제 원장이 관리한다` }
-                          : { tone: "bad", text: `이어받기 안 됨 — ${r.reason}` },
+                          ? {
+                              tone: "info",
+                              text: `✅ ${row.symbol} 되받기 완료 — 이제 원장이 관리한다`,
+                            }
+                          : {
+                              tone: "bad",
+                              text: `이어받기 안 됨 — ${r.reason}`,
+                            },
                       );
                     })
                   }
@@ -605,8 +712,7 @@ export function ConsoleTab({ openRun }: Props) {
                     {" "}
                     <span className="loss">
                       {row.symbol} 시장가 전량 청산 — 되돌릴 수 없다.
-                    </span>
-                    {" "}
+                    </span>{" "}
                     <button
                       className="btn primary"
                       disabled={busy !== ""}
@@ -620,7 +726,10 @@ export function ConsoleTab({ openRun }: Props) {
                             tone: "warn",
                             text: `⏳ ${row.symbol} 시장가 청산 주문 보내는 중…`,
                           });
-                          await closePosition(row.symbol as string, row.market as string);
+                          await closePosition(
+                            row.symbol as string,
+                            row.market as string,
+                          );
                           setActNote({
                             tone: "warn",
                             text: `⏳ ${row.symbol} 주문 접수됨 — 거래소 대조 갱신 중…`,
@@ -635,8 +744,7 @@ export function ConsoleTab({ openRun }: Props) {
                       }}
                     >
                       {busy === `close:${row.run}` ? "닫는 중…" : "정말 닫는다"}
-                    </button>
-                    {" "}
+                    </button>{" "}
                     <button
                       className="btn"
                       disabled={busy !== ""}
@@ -676,7 +784,9 @@ export function ConsoleTab({ openRun }: Props) {
       {!link.ok ? <Disconnected silentFor={link.silentFor} /> : null}
       {error ? <p className="notice bad">{error}</p> : null}
       {actNote ? (
-        <p className={`notice${actNote.tone === "info" ? "" : ` ${actNote.tone}`}`}>
+        <p
+          className={`notice${actNote.tone === "info" ? "" : ` ${actNote.tone}`}`}
+        >
           {actNote.text}
         </p>
       ) : null}
@@ -688,7 +798,12 @@ export function ConsoleTab({ openRun }: Props) {
           ⛔ 자동으로 안 던진다. 얼마에 거느냐가 곧 손실 결정이다 (실측: 던졌으면
           -420, 표시가 아래에서 기다렸더니 -74). */}
       {(body?.positions ?? []).map((row) => (
-        <Escape key={`${effMkt}:${row.symbol}`} symbol={row.symbol} market={effMkt} onDone={pull} />
+        <Escape
+          key={`${effMkt}:${row.symbol}`}
+          symbol={row.symbol}
+          market={effMkt}
+          onDone={pull}
+        />
       ))}
 
       {/* 🔴 **판을 안 띄운 종목은 볼 사람이 없다** (사용자 요구 2026-08-21).
@@ -712,7 +827,10 @@ export function ConsoleTab({ openRun }: Props) {
       {/* 거래소가 하나면 칩도 "전체" 합산도 뜻이 없다 — 그 거래소 카드만 그린다 (2026-09-05 · 배포는 Gate 만). */}
       {allMarkets.length > 1 && (
         <div className="row" style={{ marginBottom: 8 }}>
-          {[...(marketList.length > 1 ? ["전체"] : []), ...allMarkets.map((m) => m.name)].map((name) => {
+          {[
+            ...(marketList.length > 1 ? ["전체"] : []),
+            ...allMarkets.map((m) => m.name),
+          ].map((name) => {
             const ready = name === "전체" || isReady(name);
             return (
               <button
@@ -720,12 +838,18 @@ export function ConsoleTab({ openRun }: Props) {
                 type="button"
                 className={`chip${mkt === name ? " live" : ""}`}
                 style={ready ? undefined : { opacity: 0.7 }}
-                title={ready ? undefined : `${name} — ${keyWord} 설정이 필요하다. 눌러서 무엇이 필요한지 본다`}
+                title={
+                  ready
+                    ? undefined
+                    : `${name} — ${keyWord} 설정이 필요하다. 눌러서 무엇이 필요한지 본다`
+                }
                 onClick={() => setMkt(name)}
               >
                 <span className="inline-flex items-center gap-1.5">
                   {name}
-                  {name === "전체" ? null : <BrokerMark broker={brokerOfName(allMarkets, name)} />}
+                  {name === "전체" ? null : (
+                    <BrokerMark broker={brokerOfName(allMarkets, name)} />
+                  )}
                   {ready ? "" : " · 연결 필요"}
                 </span>
               </button>
@@ -739,7 +863,10 @@ export function ConsoleTab({ openRun }: Props) {
           <span>{effMkt}</span>
           <BrokerMark broker={brokerOfName(allMarkets, effMkt)} size="md" />
           {/* 장 시간 — 24시간 장(코인)은 아무것도 안 그린다. */}
-          <MarketHours market={effMkt} alwaysOpen={capsOfName(allMarkets, effMkt).alwaysOpen} />
+          <MarketHours
+            market={effMkt}
+            alwaysOpen={capsOfName(allMarkets, effMkt).alwaysOpen}
+          />
         </div>
       ) : null}
       {group === "stock" ? <MacroPanel /> : null}
@@ -757,8 +884,13 @@ export function ConsoleTab({ openRun }: Props) {
             hint={
               liveSide ? (
                 <>
-                  이 API 에는 실계좌 키가 없다 — 화면·원장·백테스트 리포트만 본다. 위 칩에서 거래소를 고르면 무엇이 필요한지 보인다.{" "}
-                  <button type="button" className="underline" onClick={() => switchMode("demo")}>
+                  이 API 에는 실계좌 키가 없다 — 화면·원장·백테스트 리포트만
+                  본다. 위 칩에서 거래소를 고르면 무엇이 필요한지 보인다.{" "}
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => switchMode("demo")}
+                  >
                     Demo Trading 으로 →
                   </button>
                 </>
@@ -781,7 +913,9 @@ export function ConsoleTab({ openRun }: Props) {
                 말**이고, 틀린 말은 없는 말보다 나쁘다 (규칙 #8). */}
             <Card
               name="유저"
-              value={me.who?.email ?? (me.loading ? "확인 중…" : "로그인 안 됨")}
+              value={
+                me.who?.email ?? (me.loading ? "확인 중…" : "로그인 안 됨")
+              }
               hint={
                 me.who?.signed_in
                   ? `${roleName(me.who.role)}${me.who.may_trade ? "" : " · 거래 불가"}`
@@ -813,7 +947,9 @@ export function ConsoleTab({ openRun }: Props) {
             <Card
               name="미실현 손익 (합)"
               value={`${num(agg.unreal, 2)} USDT`}
-              tone={agg.unreal > 0 ? "gain" : agg.unreal < 0 ? "loss" : undefined}
+              tone={
+                agg.unreal > 0 ? "gain" : agg.unreal < 0 ? "loss" : undefined
+              }
               hint={perLine((one) => one.unreal)}
             />
           </>
@@ -851,11 +987,13 @@ export function ConsoleTab({ openRun }: Props) {
                  어느 돈을 보고 있는지 헷갈린다 (사용자 지적 2026-09-05). 총액을 거래소가 말하면 그 출처를,
                  아니면 계산식을 적는다. */
               hint={
-                effMkt === "GATE" && body?.account.testnet === "true"
-                  ? <Faucet />
-                  : body?.balance.total
-                    ? (body.balance.broker ?? "—")
-                    : "available + 포지션 증거금 합"
+                effMkt === "GATE" && body?.account.testnet === "true" ? (
+                  <Faucet />
+                ) : body?.balance.total ? (
+                  (body.balance.broker ?? "—")
+                ) : (
+                  "available + 포지션 증거금 합"
+                )
               }
             />
             {/* ⭐ **대기 주문이 잡은 증거금** (사용자 요청 2026-09-05). available 이 줄어든 이유가
@@ -864,7 +1002,11 @@ export function ConsoleTab({ openRun }: Props) {
             {effMkt === "GATE" || body?.balance.order_margin !== undefined ? (
               <Card
                 name="주문 대기 증거금"
-                value={body?.balance.order_margin ? `${num(body.balance.order_margin)} USDT` : "—"}
+                value={
+                  body?.balance.order_margin
+                    ? `${num(body.balance.order_margin)} USDT`
+                    : "—"
+                }
                 hint={
                   orderMargin > 0
                     ? "대기 지정가가 잡아 둔 돈 · 체결되면 포지션 증거금으로, 취소되면 잔액으로"
@@ -874,7 +1016,11 @@ export function ConsoleTab({ openRun }: Props) {
             ) : null}
             <Card
               name="포지션"
-              value={all.count ? `${all.count}종목 · ${num(all.contracts, 0)} 계약` : "없음"}
+              value={
+                all.count
+                  ? `${all.count}종목 · ${num(all.contracts, 0)} 계약`
+                  : "없음"
+              }
               hint={allHint("열린 포지션이 없다 — 전 종목")}
             />
             <Card
@@ -888,7 +1034,11 @@ export function ConsoleTab({ openRun }: Props) {
               name="미실현 손익 (합)"
               value={allPnlText}
               tone={all.count ? (all.pnl >= 0 ? "gain" : "loss") : undefined}
-              hint={all.count ? "계좌 총액 대비 % (오늘 손익과 같은 자) · 종목별은 아래 포지션 표" : "포지션 없음"}
+              hint={
+                all.count
+                  ? "계좌 총액 대비 % (오늘 손익과 같은 자) · 종목별은 아래 포지션 표"
+                  : "포지션 없음"
+              }
             />
             {effMkt === "GATE" || body?.account.ip_whitelist ? (
               <Card
@@ -903,7 +1053,6 @@ export function ConsoleTab({ openRun }: Props) {
             입구를 하나로). 판 고르기·미리보기·확인 단계가 거기 있다. */}
       </div>
 
-
       {open ? (
         <div className="row">
           {confirming ? (
@@ -914,7 +1063,9 @@ export function ConsoleTab({ openRun }: Props) {
               <button
                 className="btn primary"
                 disabled={busy !== ""}
-                onClick={() => act("close", () => closePosition(body?.symbol, effMkt))}
+                onClick={() =>
+                  act("close", () => closePosition(body?.symbol, effMkt))
+                }
               >
                 {busy === "close" ? "닫는 중…" : "정말 닫는다"}
               </button>
@@ -955,18 +1106,27 @@ export function ConsoleTab({ openRun }: Props) {
           첫 시장만 넘기던 때는 NYSE 종목이 적재돼 있어도 안 보였다 (2026-09-10). */}
       {group === "stock"
         ? (() => {
-            const withFacts = allMarkets.filter((m) => m.fundamentals).map((m) => m.name);
+            const withFacts = allMarkets
+              .filter((m) => m.fundamentals)
+              .map((m) => m.name);
             return withFacts.length ? (
               <ValueRanking markets={withFacts} />
             ) : (
-              <p className="faint text-xs">저평가 후보는 재무 출처가 있는 시장(미국주식 · EDGAR)에서만 뜬다 — 이 묶음엔 아직 없다.</p>
+              <p className="faint text-xs">
+                저평가 후보는 재무 출처가 있는 시장(미국주식 · EDGAR)에서만 뜬다
+                — 이 묶음엔 아직 없다.
+              </p>
             );
           })()
         : null}
       {/* ⭐ 주식 주문 창(T250) — 카드의 "주문" 단추가 여기로 종목을 채운다. 팝업 없음. */}
-      {group === "stock" && allMarkets.length ? <StockOrder markets={allMarkets} who={me.who ?? null} /> : null}
+      {group === "stock" && allMarkets.length ? (
+        <StockOrder markets={allMarkets} who={me.who ?? null} />
+      ) : null}
       {/* ⭐ AI 차트 주문(T273) — 종목·갈래 → 구조·계획. 주문은 주식 주문 창으로 넘긴다(코인 연결은 2단계). */}
-      {allMarkets.length ? <AiChartOrder markets={allMarkets} who={me.who ?? null} /> : null}
+      {allMarkets.length ? (
+        <AiChartOrder markets={allMarkets} who={me.who ?? null} />
+      ) : null}
 
       {/* 🔴 **판은 여기서 연다.** 판 화면을 홈으로 두면 판이 없을 때 빈 화면이 뜨고,
           여럿일 때 화면이 임의로 하나를 고른다. */}
@@ -979,10 +1139,19 @@ export function ConsoleTab({ openRun }: Props) {
           🔴 소리 자체는 접혀 있어도 울린다: 컴포넌트가 이력을 심는 것은 마운트 때이고, Fold 는 접히면 언마운트하므로
           여기서는 늘 마운트하고 **화면만** 접는다 (아래 hidden). */}
       <section className="fold">
-        <button type="button" className="fold-head" onClick={toggleSound} aria-expanded={soundOpen}>
+        <button
+          type="button"
+          className="fold-head"
+          onClick={toggleSound}
+          aria-expanded={soundOpen}
+        >
           <span className="fold-mark">{soundOpen ? "▾" : "▸"}</span>
           <span className="card-name">알림 소리</span>
-          {soundOpen ? null : <span className="faint">체결·손절·경보 소리와 야간 음소거 설정</span>}
+          {soundOpen ? null : (
+            <span className="faint">
+              체결·손절·경보 소리와 야간 음소거 설정
+            </span>
+          )}
         </button>
       </section>
       <div hidden={!soundOpen}>
@@ -992,7 +1161,8 @@ export function ConsoleTab({ openRun }: Props) {
             거래소는 답이 없으므로 답한 것으로 친다. `scope` 는 모드·거래소가 바뀌면 기억을 비우게 한다. */}
         <Sound
           history={
-            marketList.length > 0 && marketList.every((name) => name in bodies || keyless[name])
+            marketList.length > 0 &&
+            marketList.every((name) => name in bodies || keyless[name])
               ? marketList.flatMap((name) => bodies[name]?.history ?? [])
               : null
           }
@@ -1012,72 +1182,77 @@ export function ConsoleTab({ openRun }: Props) {
           한 범위를 공유한다. 전체 = 두 거래소 병합, 줄마다 GT/BN 표식. */}
       <div className="row" style={{ marginBottom: 4 }}>
         {marketList.length > 1 && <span className="card-name">범위</span>}
-        {marketList.length > 1 && ["전체", ...marketList].map((name) => (
-          <button
-            key={name}
-            type="button"
-            className={`chip${boxMkt === name ? " live" : ""}`}
-            onClick={() => setBoxMkt(name)}
-          >
-            {name}
-          </button>
-        ))}
+        {marketList.length > 1 &&
+          ["전체", ...marketList].map((name) => (
+            <button
+              key={name}
+              type="button"
+              className={`chip${boxMkt === name ? " live" : ""}`}
+              onClick={() => setBoxMkt(name)}
+            >
+              {name}
+            </button>
+          ))}
       </div>
 
       {/* ── 체결 이력 (접을 수 있다 · 사용자 요청 2026-08-24) ─── */}
-      <Fold name="체결 이력" summary={`${shown.length}건`} keep="console-history">
-      {/* 🧹 설명 문구 둘은 제거 (사용자 지적 2026-08-26: 제목에 붙어 지저분) —
+      <Fold
+        name="체결 이력"
+        summary={`${shown.length}건`}
+        keep="console-history"
+      >
+        {/* 🧹 설명 문구 둘은 제거 (사용자 지적 2026-08-26: 제목에 붙어 지저분) —
           "접었다"는 사실은 "지난 판 N개…" 단추가 스스로 말한다. */}
-      {/* 🔴 **어느 판의 주문인가** (T18 ⑤ · 사용자 요구 2026-08-19). 판을 여럿 돌리면
+        {/* 🔴 **어느 판의 주문인가** (T18 ⑤ · 사용자 요구 2026-08-19). 판을 여럿 돌리면
           콘솔의 이력이 한 줄기로 섞여, 어느 판이 무엇을 냈는지 알 수 없다. */}
-      {runs.length > 1 ? (
-        <div className="row" style={{ marginBottom: "12px" }}>
-          <span className="card-name">판</span>
-          {[
-            "전체",
-            ...runs.filter((tag) => !past.includes(tag)),
-            ...(showPast ? past : []),
-          ].map((tag) => (
-            <button
-              key={tag}
-              type="button"
-              className={`chip${pick === tag ? " live" : ""}`}
-              onClick={() => setPick(tag)}
-              // ⚠️ 지난 판임을 이름으로 말한다 — 색만으로는 왜 비어 보이는지 모른다.
-              title={
-                past.includes(tag)
-                  ? "지난 판 — 지금은 안 도는 판이다"
-                  : undefined
-              }
-            >
-              {past.includes(tag) ? `${tag} (지난 판)` : tag}
-            </button>
-          ))}
-          {past.length ? (
-            <button
-              type="button"
-              className="chip"
-              onClick={() => {
-                // 접을 때 지난 판이 선택돼 있으면 전체로 돌린다 — 숨은 칩이
-                // 거르개를 쥐고 있으면 목록이 왜 비었는지 알 수 없다.
-                if (showPast && past.includes(pick)) setPick("전체");
-                setShowPast(!showPast);
-              }}
-              title="지금은 안 도는 판들의 이력 칩을 펼친다/접는다"
-            >
-              {showPast ? "지난 판 접기" : `지난 판 ${past.length}개…`}
-            </button>
-          ) : null}
+        {runs.length > 1 ? (
+          <div className="row" style={{ marginBottom: "12px" }}>
+            <span className="card-name">판</span>
+            {[
+              "전체",
+              ...runs.filter((tag) => !past.includes(tag)),
+              ...(showPast ? past : []),
+            ].map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                className={`chip${pick === tag ? " live" : ""}`}
+                onClick={() => setPick(tag)}
+                // ⚠️ 지난 판임을 이름으로 말한다 — 색만으로는 왜 비어 보이는지 모른다.
+                title={
+                  past.includes(tag)
+                    ? "지난 판 — 지금은 안 도는 판이다"
+                    : undefined
+                }
+              >
+                {past.includes(tag) ? `${tag} (지난 판)` : tag}
+              </button>
+            ))}
+            {past.length ? (
+              <button
+                type="button"
+                className="chip"
+                onClick={() => {
+                  // 접을 때 지난 판이 선택돼 있으면 전체로 돌린다 — 숨은 칩이
+                  // 거르개를 쥐고 있으면 목록이 왜 비었는지 알 수 없다.
+                  if (showPast && past.includes(pick)) setPick("전체");
+                  setShowPast(!showPast);
+                }}
+                title="지금은 안 도는 판들의 이력 칩을 펼친다/접는다"
+              >
+                {showPast ? "지난 판 접기" : `지난 판 ${past.length}개…`}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="table-wrap">
+          <History
+            rows={shown}
+            plans={boxPlans}
+            runs={boxRuns}
+            positions={boxPositions}
+          />
         </div>
-      ) : null}
-      <div className="table-wrap">
-        <History
-          rows={shown}
-          plans={boxPlans}
-          runs={boxRuns}
-          positions={boxPositions}
-        />
-      </div>
       </Fold>
 
       {/* ── 열려 있는 포지션 (접을 수 있다) ──────────────
@@ -1089,48 +1264,54 @@ export function ConsoleTab({ openRun }: Props) {
         summary={`${boxPositions.length}건`}
         keep="console-positions"
       >
-      <div className="table-wrap">
-        {boxPositions.length ? (
-          <table>
-
-            <thead>
-              <tr>
-                <th>종목</th>
-                <th className="num">계약</th>
-                <th className="num">진입</th>
-                <th className="num">표시가</th>
-                <th className="num">미실현</th>
-                <th className="num">증거금</th>
-                {liqHere ? <th className="num">청산가</th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {boxPositions.map((row) => {
-                const pnl = Number(row.unrealised_pnl ?? "0");
-                return (
-                  <tr key={`${row.market}:${row.symbol}`}>
-                    <td className="mono">
-                      <BrokerMark broker={brokerOfName(allMarkets, String(row.market ?? ""))} />{" "}
-                      {row.symbol}
-                    </td>
-                    <td className="num">{row.size}</td>
-                    <td className="num">{num(row.entry_price, 2)}</td>
-                    <td className="num">{num(row.mark_price, 2)}</td>
-                    <td className={pnl < 0 ? "num loss" : "num gain"}>
-                      {num(row.unrealised_pnl, 2)}
-                    </td>
-                    <td className="num">{num(row.margin, 2)}</td>
-                    {/* 🔴 청산가가 있어야 배율의 뜻이 읽힌다 — 20배면 5% 다. 배율 없는 시장(주식)은 열 자체가 없다. */}
-                    {liqHere ? <td className="num loss">{num(row.liq_price, 2)}</td> : null}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        ) : (
-          <p className="empty">열려 있는 포지션이 없다 (전 종목)</p>
-        )}
-      </div>
+        <div className="table-wrap">
+          {boxPositions.length ? (
+            <table>
+              <thead>
+                <tr>
+                  <th>종목</th>
+                  <th className="num">계약</th>
+                  <th className="num">진입</th>
+                  <th className="num">표시가</th>
+                  <th className="num">미실현</th>
+                  <th className="num">증거금</th>
+                  {liqHere ? <th className="num">청산가</th> : null}
+                </tr>
+              </thead>
+              <tbody>
+                {boxPositions.map((row) => {
+                  const pnl = Number(row.unrealised_pnl ?? "0");
+                  return (
+                    <tr key={`${row.market}:${row.symbol}`}>
+                      <td className="mono">
+                        <BrokerMark
+                          broker={brokerOfName(
+                            allMarkets,
+                            String(row.market ?? ""),
+                          )}
+                        />{" "}
+                        {row.symbol}
+                      </td>
+                      <td className="num">{row.size}</td>
+                      <td className="num">{num(row.entry_price, 2)}</td>
+                      <td className="num">{num(row.mark_price, 2)}</td>
+                      <td className={pnl < 0 ? "num loss" : "num gain"}>
+                        {num(row.unrealised_pnl, 2)}
+                      </td>
+                      <td className="num">{num(row.margin, 2)}</td>
+                      {/* 🔴 청산가가 있어야 배율의 뜻이 읽힌다 — 20배면 5% 다. 배율 없는 시장(주식)은 열 자체가 없다. */}
+                      {liqHere ? (
+                        <td className="num loss">{num(row.liq_price, 2)}</td>
+                      ) : null}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <p className="empty">열려 있는 포지션이 없다 (전 종목)</p>
+          )}
+        </div>
       </Fold>
 
       {/* ── 미결 주문 (접을 수 있다) ────────────────────── */}
@@ -1139,59 +1320,64 @@ export function ConsoleTab({ openRun }: Props) {
         summary={`${boxOrders.length}건`}
         keep="console-orders"
       >
-      <div className="table-wrap">
-        {boxOrders.length ? (
-          <table>
-            <thead>
-              <tr>
-                <th>종목</th>
-                <th>주문</th>
-                <th>수량</th>
-                <th className="num">지정가</th>
-                <th>멱등키</th>
-                <th>시각</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {boxOrders.map((row) => (
-                <tr key={`${row.market}:${row.id}`}>
-                  <td className="mono">
-                    {row.market === "BINANCE" ? (
-                    <span style={{ color: "#d29922", marginRight: 4 }}>BN</span>
-                  ) : (
-                    <span className="faint" style={{ marginRight: 4 }}>GT</span>
-                  )}
-                    {row.symbol ?? "—"}
-                  </td>
-                  <td className="mono faint">{row.id.slice(-8)}</td>
-                  <td>
-                    {row.size} <span className="faint">(남음 {row.left})</span>
-                  </td>
-                  <td className="num">{num(row.price, 1)}</td>
-                  <td className="mono faint">{row.text || "—"}</td>
-                  <td className="faint">{whenSec(row.create_time)}</td>
-                  <td>
-                    <button
-                      className="btn small"
-                      disabled={busy !== ""}
-                      onClick={() =>
-                        act(row.id, () =>
-                          cancelOrder(row.id, row.symbol, row.market),
-                        )
-                      }
-                    >
-                      {busy === row.id ? "…" : "취소"}
-                    </button>
-                  </td>
+        <div className="table-wrap">
+          {boxOrders.length ? (
+            <table>
+              <thead>
+                <tr>
+                  <th>종목</th>
+                  <th>주문</th>
+                  <th>수량</th>
+                  <th className="num">지정가</th>
+                  <th>멱등키</th>
+                  <th>시각</th>
+                  <th />
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="empty">미결 주문이 없다</p>
-        )}
-      </div>
+              </thead>
+              <tbody>
+                {boxOrders.map((row) => (
+                  <tr key={`${row.market}:${row.id}`}>
+                    <td className="mono">
+                      {row.market === "BINANCE" ? (
+                        <span style={{ color: "#d29922", marginRight: 4 }}>
+                          BN
+                        </span>
+                      ) : (
+                        <span className="faint" style={{ marginRight: 4 }}>
+                          GT
+                        </span>
+                      )}
+                      {row.symbol ?? "—"}
+                    </td>
+                    <td className="mono faint">{row.id.slice(-8)}</td>
+                    <td>
+                      {row.size}{" "}
+                      <span className="faint">(남음 {row.left})</span>
+                    </td>
+                    <td className="num">{num(row.price, 1)}</td>
+                    <td className="mono faint">{row.text || "—"}</td>
+                    <td className="faint">{whenSec(row.create_time)}</td>
+                    <td>
+                      <button
+                        className="btn small"
+                        disabled={busy !== ""}
+                        onClick={() =>
+                          act(row.id, () =>
+                            cancelOrder(row.id, row.symbol, row.market),
+                          )
+                        }
+                      >
+                        {busy === row.id ? "…" : "취소"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="empty">미결 주문이 없다</p>
+          )}
+        </div>
       </Fold>
 
       {/* ── 조건부 주문 (접을 수 있다) ──────────────────── */}
@@ -1200,64 +1386,68 @@ export function ConsoleTab({ openRun }: Props) {
         summary={`${boxStops.length}건`}
         keep="console-stops"
       >
-      <div className="table-wrap">
-        {boxStops.length ? (
-          <table>
-            <thead>
-              <tr>
-                <th>종목</th>
-                <th>주문</th>
-                <th className="num">발동가</th>
-                <th>만료</th>
-                <th>시각</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {boxStops.map((row) => (
-                <tr key={`${row.market}:${row.id}`}>
-                  {/* 🔴 **어느 계약을 지키는가.** 이것이 없어서 BTC 만 보고 "조건부
-                      0건" = 무방비로 읽었다 — 화면이 낼 수 있는 가장 나쁜 거짓말이다. */}
-                  <td className="mono">
-                    {row.market === "BINANCE" ? (
-                    <span style={{ color: "#d29922", marginRight: 4 }}>BN</span>
-                  ) : (
-                    <span className="faint" style={{ marginRight: 4 }}>GT</span>
-                  )}
-                    {row.symbol ?? "—"}
-                  </td>
-                  <td className="mono faint">{row.id.slice(-8)}</td>
-                  <td className="num">{num(row.trigger_price, 2)}</td>
-                  {/* 🔴 만료를 띄운다 — 조건부는 조용히 사라지고, 걸었다는 기억은
-                      만료를 모른다. */}
-                  <td className="loss">{expiry(row.expiration)}</td>
-                  <td className="faint">{whenSec(row.create_time)}</td>
-                  <td>
-                    <button
-                      className="btn small"
-                      disabled={busy !== ""}
-                      onClick={() =>
-                        act(row.id, () =>
-                          cancelStop(row.id, row.symbol, row.market),
-                        )
-                      }
-                      title={
-                        open
-                          ? "포지션을 들고 있다 — 거두면 손절 없는 상태가 된다"
-                          : "조건부 주문을 거둔다"
-                      }
-                    >
-                      {busy === row.id ? "…" : "취소"}
-                    </button>
-                  </td>
+        <div className="table-wrap">
+          {boxStops.length ? (
+            <table>
+              <thead>
+                <tr>
+                  <th>종목</th>
+                  <th>주문</th>
+                  <th className="num">발동가</th>
+                  <th>만료</th>
+                  <th>시각</th>
+                  <th />
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="empty">조건부 주문이 없다</p>
-        )}
-      </div>
+              </thead>
+              <tbody>
+                {boxStops.map((row) => (
+                  <tr key={`${row.market}:${row.id}`}>
+                    {/* 🔴 **어느 계약을 지키는가.** 이것이 없어서 BTC 만 보고 "조건부
+                      0건" = 무방비로 읽었다 — 화면이 낼 수 있는 가장 나쁜 거짓말이다. */}
+                    <td className="mono">
+                      {row.market === "BINANCE" ? (
+                        <span style={{ color: "#d29922", marginRight: 4 }}>
+                          BN
+                        </span>
+                      ) : (
+                        <span className="faint" style={{ marginRight: 4 }}>
+                          GT
+                        </span>
+                      )}
+                      {row.symbol ?? "—"}
+                    </td>
+                    <td className="mono faint">{row.id.slice(-8)}</td>
+                    <td className="num">{num(row.trigger_price, 2)}</td>
+                    {/* 🔴 만료를 띄운다 — 조건부는 조용히 사라지고, 걸었다는 기억은
+                      만료를 모른다. */}
+                    <td className="loss">{expiry(row.expiration)}</td>
+                    <td className="faint">{whenSec(row.create_time)}</td>
+                    <td>
+                      <button
+                        className="btn small"
+                        disabled={busy !== ""}
+                        onClick={() =>
+                          act(row.id, () =>
+                            cancelStop(row.id, row.symbol, row.market),
+                          )
+                        }
+                        title={
+                          open
+                            ? "포지션을 들고 있다 — 거두면 손절 없는 상태가 된다"
+                            : "조건부 주문을 거둔다"
+                        }
+                      >
+                        {busy === row.id ? "…" : "취소"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="empty">조건부 주문이 없다</p>
+          )}
+        </div>
       </Fold>
     </div>
   );

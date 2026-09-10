@@ -190,7 +190,10 @@ export type Who = {
   exchanges?: string[];
   may_trade?: boolean;
   /** 시장 갈래별 권한 (T242) — 화면이 스위치·판 시작 칸을 잠근다. 옛 서버는 없다(잠그지 않는다). */
-  markets?: Record<string, { view: boolean; backtest: boolean; trade: boolean }>;
+  markets?: Record<
+    string,
+    { view: boolean; backtest: boolean; trade: boolean }
+  >;
   /** 기능별 권한 (2026-09-07) — 묶음 ∪ 개별. 화면은 이것으로 단추를 켜고 끄고, 판정은 서버가 다시 한다. */
   caps?: string[];
   /** 권한 묶음 이름 (`guest` · `viewer` · `trader` · `admin` · `super_admin` · 관리자가 만든 것). */
@@ -565,12 +568,19 @@ export function setAccountMarket(
 ): Promise<AccountRow> {
   return request(
     `/auth/users/${encodeURIComponent(email)}/markets/${encodeURIComponent(group)}`,
-    { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(grant) },
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(grant),
+    },
   );
 }
 
 /** 시장 덮어쓰기를 지워 묶음 기본값으로 돌린다 (T242). */
-export function clearAccountMarket(email: string, group: string): Promise<AccountRow> {
+export function clearAccountMarket(
+  email: string,
+  group: string,
+): Promise<AccountRow> {
   return request(
     `/auth/users/${encodeURIComponent(email)}/markets/${encodeURIComponent(group)}`,
     { method: "DELETE" },
@@ -665,6 +675,10 @@ export type Watch = {
   /** 고아 배너에만 실린다 — *이어받기* 단추가 쓴다 (2026-09-01). */
   market?: string;
   symbol?: string;
+  /** 감시자의 되살리기 결과 — `부활 실패 n/5 — 이유` · `N초 뒤 다시` · `되살렸다 → id`. 이유가 여기 있다. */
+  revive?: string;
+  /** 거래소 대조 결과 — 포지션·조건부 손절 유무 (죽은 판에만). */
+  guard?: string;
 };
 
 export function sessions(): Promise<{
@@ -1730,10 +1744,20 @@ export type FundamentalsView = {
     value: number | null;
     percentile: number | null;
     higher_is_cheaper: boolean | null;
-    sources: Array<{ accession: string; form: string | null; filed_at: string | null; url: string | null }>;
+    sources: Array<{
+      accession: string;
+      form: string | null;
+      filed_at: string | null;
+      url: string | null;
+    }>;
     note: string;
   }>;
-  flags: Array<{ key: string; label: string; value: number | null; threshold: number | null }>;
+  flags: Array<{
+    key: string;
+    label: string;
+    value: number | null;
+    threshold: number | null;
+  }>;
   score: {
     score: number | null;
     cheapness: number | null;
@@ -1742,7 +1766,12 @@ export type FundamentalsView = {
     penalty: number | null;
     note: string;
   };
-  filings: Array<{ accession: string; form: string; filed_at: string; url: string | null }>;
+  filings: Array<{
+    accession: string;
+    form: string;
+    filed_at: string;
+    url: string | null;
+  }>;
 };
 
 /** 개인 API 토큰 한 줄 (T263 MCP) — 값은 없다. */
@@ -1759,12 +1788,22 @@ export function apiTokens(): Promise<{ tokens: ApiTokenRow[] }> {
 }
 
 /** 만든 직후 한 번만 값이 온다. */
-export function apiTokenCreate(name: string): Promise<ApiTokenRow & { token: string }> {
-  return request("/auth/tokens", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+export function apiTokenCreate(
+  name: string,
+): Promise<ApiTokenRow & { token: string }> {
+  return request("/auth/tokens", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
 }
 
-export function apiTokenRevoke(id: string): Promise<{ revoked: boolean; id: string }> {
-  return request(`/auth/tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
+export function apiTokenRevoke(
+  id: string,
+): Promise<{ revoked: boolean; id: string }> {
+  return request(`/auth/tokens/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
 
 /** 거시 지표 한 줄 (T262). */
@@ -1795,7 +1834,10 @@ export function macro(): Promise<MacroView> {
 }
 
 export type ValueScreenView = {
-  rows: (ValueRow & { stage?: "history" | "quick" | "none"; periods?: Record<string, string> })[];
+  rows: (ValueRow & {
+    stage?: "history" | "quick" | "none";
+    periods?: Record<string, string>;
+  })[];
   page: number;
   pages: number;
   size: number;
@@ -1817,12 +1859,22 @@ export type ValueScreenView = {
 /** 스크리닝 표 (T255) — 서버가 거르고 정렬해 쪽으로 준다. 창이 안 늘어난다. */
 export function valueScreen(
   market: string,
-  p: { sort?: string; order?: string; min_score?: number | null; no_flags?: boolean; has_facts?: boolean; q?: string; page?: number; size?: number },
+  p: {
+    sort?: string;
+    order?: string;
+    min_score?: number | null;
+    no_flags?: boolean;
+    has_facts?: boolean;
+    q?: string;
+    page?: number;
+    size?: number;
+  },
 ): Promise<ValueScreenView> {
   const qs = new URLSearchParams({ market });
   if (p.sort) qs.set("sort", p.sort);
   if (p.order) qs.set("order", p.order);
-  if (p.min_score !== null && p.min_score !== undefined) qs.set("min_score", String(p.min_score));
+  if (p.min_score !== null && p.min_score !== undefined)
+    qs.set("min_score", String(p.min_score));
   if (p.no_flags) qs.set("no_flags", "true");
   if (p.has_facts) qs.set("has_facts", "true");
   if (p.q) qs.set("q", p.q);
@@ -1832,13 +1884,26 @@ export function valueScreen(
 }
 
 /** 2단계로 올리기 — companyfacts 이력을 받는다 (T255 "이력 받기"). */
-export function fundamentalsRefresh(symbol: string, market: string): Promise<Record<string, unknown>> {
-  return request(`/fundamentals/${encodeURIComponent(symbol)}/refresh?market=${encodeURIComponent(market)}`, { method: "POST" }, 300_000);
+export function fundamentalsRefresh(
+  symbol: string,
+  market: string,
+): Promise<Record<string, unknown>> {
+  return request(
+    `/fundamentals/${encodeURIComponent(symbol)}/refresh?market=${encodeURIComponent(market)}`,
+    { method: "POST" },
+    300_000,
+  );
 }
 
-export function fundamentals(symbol: string, market: string, asOf?: string): Promise<FundamentalsView> {
+export function fundamentals(
+  symbol: string,
+  market: string,
+  asOf?: string,
+): Promise<FundamentalsView> {
   const tail = asOf ? `&as_of=${encodeURIComponent(asOf)}` : "";
-  return request(`/fundamentals/${encodeURIComponent(symbol)}?market=${encodeURIComponent(market)}${tail}`);
+  return request(
+    `/fundamentals/${encodeURIComponent(symbol)}?market=${encodeURIComponent(market)}${tail}`,
+  );
 }
 
 /** 온보딩 위저드 초안 (T247 · `/assistant/draft`). */
@@ -1868,7 +1933,11 @@ export function assistantSaveDraft(body: {
   answers: Record<string, unknown>;
   consent_version?: string;
 }): Promise<{ persisted: boolean; draft: AssistantDraft | null }> {
-  return request("/assistant/draft", { method: "PUT", headers: JSON_POST, body: JSON.stringify(body) });
+  return request("/assistant/draft", {
+    method: "PUT",
+    headers: JSON_POST,
+    body: JSON.stringify(body),
+  });
 }
 
 /** 성향에 맞는 후보와 과거 창 실측 (`/assistant/preview`). 손익은 백테스트 권한이 없으면 null(`redacted`). */
@@ -1902,14 +1971,26 @@ export type AssistantPreview = {
       redacted?: boolean;
       windows?: Record<
         string,
-        { days: number; total_pct: number | null; mdd_pct: number; underwater_pct: number; trades: number; liquidations: number } | null
+        {
+          days: number;
+          total_pct: number | null;
+          mdd_pct: number;
+          underwater_pct: number;
+          trades: number;
+          liquidations: number;
+        } | null
       >;
     } | null;
   }>;
 };
 
-export function assistantPreview(group: string, tier: string): Promise<AssistantPreview> {
-  return request(`/assistant/preview?group=${encodeURIComponent(group)}&tier=${encodeURIComponent(tier)}`);
+export function assistantPreview(
+  group: string,
+  tier: string,
+): Promise<AssistantPreview> {
+  return request(
+    `/assistant/preview?group=${encodeURIComponent(group)}&tier=${encodeURIComponent(tier)}`,
+  );
 }
 
 export function assistantCreate(body: {
@@ -1917,7 +1998,11 @@ export function assistantCreate(body: {
   consent_version: string;
   label?: string;
 }): Promise<FundStatus & { draft: AssistantDraft }> {
-  return request("/assistant/create", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) }, 180_000);
+  return request(
+    "/assistant/create",
+    { method: "POST", headers: JSON_POST, body: JSON.stringify(body) },
+    180_000,
+  );
 }
 
 /** AI 채팅 대화 (T248 · `/ai/chat/threads`). 메시지는 저장 모양 그대로 — `chat/chat.ts` 가 고른다. */
@@ -1959,15 +2044,27 @@ export function chatThreads(): Promise<{ threads: ChatThreadView[] }> {
 export function chatThread(id: string): Promise<ChatThreadView> {
   return request(`/ai/chat/threads/${encodeURIComponent(id)}`);
 }
-export function chatCreateThread(body: { title?: string; model?: string }): Promise<ChatThreadView> {
-  return request("/ai/chat/threads", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) });
+export function chatCreateThread(body: {
+  title?: string;
+  model?: string;
+}): Promise<ChatThreadView> {
+  return request("/ai/chat/threads", {
+    method: "POST",
+    headers: JSON_POST,
+    body: JSON.stringify(body),
+  });
 }
 /** 대화 삭제 (T257) — 내 것만. */
 export function chatDeleteThread(id: string): Promise<{ deleted: string }> {
-  return request(`/ai/chat/threads/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return request(`/ai/chat/threads/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
 
-export function chatAsk(id: string, body: { text: string; model?: string }): Promise<{ job_id: string; thread_id: string }> {
+export function chatAsk(
+  id: string,
+  body: { text: string; model?: string },
+): Promise<{ job_id: string; thread_id: string }> {
   return request(`/ai/chat/threads/${encodeURIComponent(id)}/messages`, {
     method: "POST",
     headers: JSON_POST,
@@ -1979,8 +2076,15 @@ export function chatAsk(id: string, body: { text: string; model?: string }): Pro
 export function chatWizard(
   id: string,
   body: { action: string; step: string; answers?: Record<string, unknown> },
-): Promise<{ card: Record<string, unknown>; messages: Array<Record<string, unknown> & { role: string; content: string }> }> {
-  return request(`/ai/chat/threads/${encodeURIComponent(id)}/wizard`, { method: "POST", headers: JSON_POST, body: JSON.stringify(body) }, 120_000);
+): Promise<{
+  card: Record<string, unknown>;
+  messages: Array<Record<string, unknown> & { role: string; content: string }>;
+}> {
+  return request(
+    `/ai/chat/threads/${encodeURIComponent(id)}/wizard`,
+    { method: "POST", headers: JSON_POST, body: JSON.stringify(body) },
+    120_000,
+  );
 }
 
 export function chatSetAuto(body: {
@@ -1991,7 +2095,11 @@ export function chatSetAuto(body: {
   max_per_day?: number;
   max_exposure_pct?: number;
 }): Promise<Record<string, unknown>> {
-  return request("/ai/chat/auto", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) });
+  return request("/ai/chat/auto", {
+    method: "POST",
+    headers: JSON_POST,
+    body: JSON.stringify(body),
+  });
 }
 export function chatPlaceOrder(body: {
   thread_id: string;
@@ -1999,8 +2107,16 @@ export function chatPlaceOrder(body: {
   shares?: number;
   margin?: string;
   model?: string;
-}): Promise<{ session_id: string; order_id: string; confirm?: { moved: boolean; stop: string } }> {
-  return request("/ai/chat/orders", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) }, 180_000);
+}): Promise<{
+  session_id: string;
+  order_id: string;
+  confirm?: { moved: boolean; stop: string };
+}> {
+  return request(
+    "/ai/chat/orders",
+    { method: "POST", headers: JSON_POST, body: JSON.stringify(body) },
+    180_000,
+  );
 }
 
 export type AiParticipantView = {
@@ -2024,7 +2140,12 @@ export type AiParticipantView = {
 };
 
 export type AiReportView = {
-  started: { at: string; by?: string | null; models?: string[]; participants?: string[] } | null;
+  started: {
+    at: string;
+    by?: string | null;
+    models?: string[];
+    participants?: string[];
+  } | null;
   prompt: { version: string; hash: string };
   snapshot: { bars: number; ohlc: number; frames: string[] };
   min_sample: number;
@@ -2035,7 +2156,12 @@ export type AiReportView = {
   /** 마지막 채팅 시험 묶음 (T258) — 없으면 null. */
   eval?: AiEvalView | null;
   tools?: string[];
-  reason_hits: { reason: string; n: number; wins: number; hit_rate: string | null }[];
+  reason_hits: {
+    reason: string;
+    n: number;
+    wins: number;
+    hit_rate: string | null;
+  }[];
   generated_at: string;
 };
 
@@ -2093,12 +2219,21 @@ export function aiReportEval(): Promise<{ job_id: string }> {
   return request("/ai/report/eval", { method: "POST" }, 60_000);
 }
 
-export function aiReportStart(body: { confirm: string; models?: string[] }): Promise<{ started: AiReportView["started"]; participants: string[] }> {
-  return request("/ai/report/start", { method: "POST", headers: JSON_POST, body: JSON.stringify(body) });
+export function aiReportStart(body: {
+  confirm: string;
+  models?: string[];
+}): Promise<{ started: AiReportView["started"]; participants: string[] }> {
+  return request("/ai/report/start", {
+    method: "POST",
+    headers: JSON_POST,
+    body: JSON.stringify(body),
+  });
 }
 
 export function marketStatus(market: string): Promise<MarketStatusView> {
-  return request(`/exchange/market-status?market=${encodeURIComponent(market)}`);
+  return request(
+    `/exchange/market-status?market=${encodeURIComponent(market)}`,
+  );
 }
 export function exchangeMarkets(): Promise<{
   markets: string[];
@@ -2130,12 +2265,31 @@ export type FundMember = FundLeg & {
   last?: string | null;
   change_1d_pct?: string | null;
   change_5d_pct?: string | null;
-  bars: { time: number; open: string; high: string; low: string; close: string; volume: string }[];
+  bars: {
+    time: number;
+    open: string;
+    high: string;
+    low: string;
+    close: string;
+    volume: string;
+  }[];
   bars_error?: string;
 };
 
-export function fundMembers(id: string, bars = 90): Promise<{ fund_id: string; market: string; at: string; members: FundMember[] }> {
-  return request(`/rebalancer/${encodeURIComponent(id)}/members?bars=${bars}`, undefined, 120_000);
+export function fundMembers(
+  id: string,
+  bars = 90,
+): Promise<{
+  fund_id: string;
+  market: string;
+  at: string;
+  members: FundMember[];
+}> {
+  return request(
+    `/rebalancer/${encodeURIComponent(id)}/members?bars=${bars}`,
+    undefined,
+    120_000,
+  );
 }
 
 export function fundList(): Promise<{ funds: FundStatus[] }> {
@@ -2388,7 +2542,14 @@ export interface Confirmed {
  * 남으면 화면에서 진짜 판과 구별되지 않는다.
  */
 /** AI 차트 주문 (T273) — 갈래 · 분석 응답. 숫자는 서버 문자열 그대로(지어내지 않는다). */
-export type ChartBucket = { key: string; label: string; entry: string; context: string[]; valid_bars: number; rr: string };
+export type ChartBucket = {
+  key: string;
+  label: string;
+  entry: string;
+  context: string[];
+  valid_bars: number;
+  rr: string;
+};
 export type ChartPlanSide = {
   side: "long" | "short";
   ok: boolean;
@@ -2403,7 +2564,13 @@ export type ChartPlanSide = {
   blocked: string[];
   warnings?: string[];
   basis: string;
-  distance?: { to_entry_pct: string; to_stop_pct: string; to_target_pct: string; risk_pct: string; reward_pct: string };
+  distance?: {
+    to_entry_pct: string;
+    to_stop_pct: string;
+    to_target_pct: string;
+    risk_pct: string;
+    reward_pct: string;
+  };
   market?: string;
 };
 export type ChartAnalysis = {
@@ -2411,7 +2578,13 @@ export type ChartAnalysis = {
   at: string;
   symbol: string;
   market: string;
-  bucket: { key: string; label: string; entry: string; context: string[]; valid_bars: number };
+  bucket: {
+    key: string;
+    label: string;
+    entry: string;
+    context: string[];
+    valid_bars: number;
+  };
   frame: AnalysisFrame;
   structure: {
     last: string;
@@ -2419,7 +2592,10 @@ export type ChartAnalysis = {
     nearest_support: AnalysisFrame["levels"][number] | null;
     nearest_resistance: AnalysisFrame["levels"][number] | null;
     levels_raw: string;
-    swings: { swing_high: { price: number; away_pct: number | null; ts: string } | null; swing_low: { price: number; away_pct: number | null; ts: string } | null };
+    swings: {
+      swing_high: { price: number; away_pct: number | null; ts: string } | null;
+      swing_low: { price: number; away_pct: number | null; ts: string } | null;
+    };
     rule_plan: AnalysisFrame["plan"];
     note: string;
   };
@@ -2444,7 +2620,13 @@ export type ChartParticipant = {
   trigger: string;
   detail: string;
   latency_ms: number;
-  judgement?: { entered: boolean; outcome: string | null; net_r: string | null; bars_to_entry: number | null; bars_held: number | null } | null;
+  judgement?: {
+    entered: boolean;
+    outcome: string | null;
+    net_r: string | null;
+    bars_to_entry: number | null;
+    bars_held: number | null;
+  } | null;
 };
 export type ChartRun = {
   run_id: string;
@@ -2474,7 +2656,14 @@ export type ScoreRow = {
   grey: boolean;
 };
 
-export function chartOrderScoreboard(params: { market?: string; bucket?: string } = {}): Promise<{ rows: ScoreRow[]; min_sample: number; cycles: number; judged: number }> {
+export function chartOrderScoreboard(
+  params: { market?: string; bucket?: string } = {},
+): Promise<{
+  rows: ScoreRow[];
+  min_sample: number;
+  cycles: number;
+  judged: number;
+}> {
   const query = new URLSearchParams();
   if (params.market) query.set("market", params.market);
   if (params.bucket) query.set("bucket", params.bucket);
@@ -2482,17 +2671,28 @@ export function chartOrderScoreboard(params: { market?: string; bucket?: string 
 }
 
 /** `job_id` 가 null 이면 `reuse_minutes` 안의 지난 회차를 그대로 준 것 — 모델을 안 불렀다. */
-export function chartOrderRun(payload: { symbol: string; market: string; bucket: string; side?: string }): Promise<{
+export function chartOrderRun(payload: {
+  symbol: string;
+  market: string;
+  bucket: string;
+  side?: string;
+}): Promise<{
   job_id: string | null;
   reused?: boolean;
   run_id?: string;
   participants?: ChartParticipant[];
   note?: string;
 }> {
-  return request("/chart-order/run", { method: "POST", headers: JSON_POST, body: JSON.stringify(payload) });
+  return request("/chart-order/run", {
+    method: "POST",
+    headers: JSON_POST,
+    body: JSON.stringify(payload),
+  });
 }
 
-export function chartOrderRuns(params: { symbol?: string; market?: string; limit?: number } = {}): Promise<{ runs: ChartRun[] }> {
+export function chartOrderRuns(
+  params: { symbol?: string; market?: string; limit?: number } = {},
+): Promise<{ runs: ChartRun[] }> {
   const query = new URLSearchParams();
   if (params.symbol) query.set("symbol", params.symbol);
   if (params.market) query.set("market", params.market);
@@ -2501,14 +2701,22 @@ export function chartOrderRuns(params: { symbol?: string; market?: string; limit
 }
 
 export function chartOrderResolve(): Promise<{ job_id: string }> {
-  return request("/chart-order/resolve", { method: "POST", headers: JSON_POST, body: "{}" });
+  return request("/chart-order/resolve", {
+    method: "POST",
+    headers: JSON_POST,
+    body: "{}",
+  });
 }
 
 export function chartOrderBuckets(): Promise<{ buckets: ChartBucket[] }> {
   return request("/chart-order/buckets");
 }
 
-export function chartOrderAnalyze(params: { symbol: string; market: string; bucket: string }): Promise<ChartAnalysis> {
+export function chartOrderAnalyze(params: {
+  symbol: string;
+  market: string;
+  bucket: string;
+}): Promise<ChartAnalysis> {
   const query = new URLSearchParams(params);
   return request(`/chart-order/analyze?${query.toString()}`);
 }
