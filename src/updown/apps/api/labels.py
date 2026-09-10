@@ -142,6 +142,61 @@ async def save(name: str, payload: Annotated[dict[str, Any], Body()]) -> dict[st
     return {"name": name, "marks": len(marks), "saved_at": body["saved_at"]}
 
 
+def _free_copy_name(name: str) -> str:
+    """`<이름>-copy` · `-copy2` … 중 비어 있는 첫 이름."""
+    base = f"{name}-copy"
+    if not _NAME.fullmatch(base):
+        base = base[:64]
+    candidate = base
+    n = 1
+    while (LABEL_ROOT / f"{candidate}.json").exists():
+        n += 1
+        candidate = f"{base}{n}"
+    return candidate
+
+
+@router.post("/{name}/duplicate")
+async def duplicate(
+    name: str, payload: Annotated[dict[str, Any] | None, Body()] = None
+) -> dict[str, Any]:
+    """표시 세션을 복제한다 — 같은 종목·시간축·표시를 새 이름으로 (사용자 요청 2026-09-10).
+
+    Args:
+        name: 원본 세션 이름.
+        payload: `{to?}`. 비면 `<이름>-copy`(있으면 `-copy2` …).
+
+    Returns:
+        `{name, to, marks, saved_at}`.
+
+    Raises:
+        HTTPException: 404 원본 없음 · 409 대상이 이미 있음 · 422 이름 형식.
+
+    Note:
+        덮어쓰지 않는다 — 복제의 목적이 "원본을 두고 가설을 갈라 보는 것" 이라 대상이 있으면 409 다.
+    """
+    source = _path(name)
+    if not source.exists():
+        raise HTTPException(404, f"{name} 세션이 없다")
+    wanted = str((payload or {}).get("to") or "").strip()
+    target_name = wanted or _free_copy_name(name)
+    target = _path(target_name)
+    if target.exists():
+        raise HTTPException(409, f"{target_name} 세션이 이미 있다 — 다른 이름으로")
+    try:
+        body = cast("dict[str, Any]", json.loads(source.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(422, f"{name} 파일을 읽을 수 없다: {exc}") from exc
+    body["name"] = target_name
+    body["saved_at"] = datetime.now(UTC).isoformat()
+    body["copied_from"] = name
+    target.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
+    marks = cast("list[Any]", body.get("marks") or [])
+    _logger.info(
+        "labels_duplicated", payload={"from": name, "to": target_name, "marks": len(marks)}
+    )
+    return {"name": name, "to": target_name, "marks": len(marks), "saved_at": body["saved_at"]}
+
+
 @router.delete("/{name}")
 async def drop(name: str) -> dict[str, str]:
     """표시 세션을 지운다.

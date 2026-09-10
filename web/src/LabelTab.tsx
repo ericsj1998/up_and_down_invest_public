@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { analysisFrame, labelLoad, labelSave } from "./api";
+import { analysisFrame, labelDuplicate, labelLoad, labelSave } from "./api";
 import type { Candle } from "./chartTypes";
 
 type Kind = "long" | "short" | "swap" | "evidence" | "level";
@@ -66,6 +66,17 @@ export function LabelTab() {
   const [busy, setBusy] = useState(false);
   const box = useRef<SVGSVGElement | null>(null);
   const [width, setWidth] = useState(1100);
+
+  const duplicate = () => {
+    setBusy(true);
+    labelDuplicate(name)
+      .then((r) => {
+        setName(r.to);
+        setMsg(`복제됨 — ${r.name} → ${r.to} (${r.marks}표시)`);
+      })
+      .catch((exc: unknown) => setMsg(`복제 실패 — ${String(exc)}`))
+      .finally(() => setBusy(false));
+  };
 
   const pull = useCallback(() => {
     setBusy(true);
@@ -177,6 +188,9 @@ export function LabelTab() {
         </button>
         <button className="btn primary" onClick={save} disabled={busy || marks.length === 0}>
           저장 ({marks.length})
+        </button>
+        <button className="btn" onClick={duplicate} disabled={busy} title="이 세션을 새 이름으로 복제하고 그쪽으로 옮긴다 — 원본은 그대로">
+          복제
         </button>
         <button className="btn" onClick={undo} disabled={marks.length === 0}>
           되돌리기

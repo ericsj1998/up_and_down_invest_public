@@ -2445,3 +2445,15 @@ export function labelList(): Promise<{
 }> {
   return request("/labels");
 }
+
+/** 세션 복제 — 원본은 그대로, 새 이름(비우면 `<이름>-copy`)으로 표시를 갈라 본다 (2026-09-10). */
+export function labelDuplicate(
+  name: string,
+  to?: string,
+): Promise<{ name: string; to: string; marks: number; saved_at: string }> {
+  return request(`/labels/${encodeURIComponent(name)}/duplicate`, {
+    method: "POST",
+    headers: JSON_POST,
+    body: JSON.stringify(to ? { to } : {}),
+  });
+}
