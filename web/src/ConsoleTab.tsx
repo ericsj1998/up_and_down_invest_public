@@ -34,7 +34,6 @@ import { Ranking } from "./Ranking";
 import { MacroPanel } from "./MacroPanel";
 import { ValueRanking } from "./ValueRanking";
 import { StockOrder } from "./StockOrder";
-import { AiChartOrder } from "./AiChartOrder";
 import { FundPanel } from "./FundPanel";
 import { Runs } from "./Runs";
 import { Sound } from "./Sound";
@@ -1123,10 +1122,8 @@ export function ConsoleTab({ openRun }: Props) {
       {group === "stock" && allMarkets.length ? (
         <StockOrder markets={allMarkets} who={me.who ?? null} />
       ) : null}
-      {/* ⭐ AI 차트 주문(T273) — 종목·갈래 → 구조·계획. 주문은 주식 주문 창으로 넘긴다(코인 연결은 2단계). */}
-      {allMarkets.length ? (
-        <AiChartOrder markets={allMarkets} who={me.who ?? null} />
-      ) : null}
+      {/* ⭐ AI 차트 분석 주문(T273)은 사이드바의 제 화면(`/chart-order`)으로 옮겼다 (사용자 2026-09-11). 주식 계획은
+          거기서 "이 계획으로 주문" → 콘솔의 주식 주문 창이 집어 간다(`stashStockOrder`). */}
 
       {/* 🔴 **판은 여기서 연다.** 판 화면을 홈으로 두면 판이 없을 때 빈 화면이 뜨고,
           여럿일 때 화면이 임의로 하나를 고른다. */}

@@ -1,5 +1,5 @@
 /**
- * AI 차트 주문 (T273 1단계 · 사용자 2026-09-11) — 종목 · 갈래(단기/스윙/장투) → 갈래의 진입 축 차트 + 구조(전고/전저 ·
+ * AI 차트 분석 주문 (T273 · 사용자 2026-09-11 · 이름 확정) — 종목 · 갈래(단기/스윙/장투) → 갈래의 진입 축 차트 + 구조(전고/전저 ·
  * 지지/저항 · 오더블록 · 추세) + 재무(주식) + VIX + 롱/숏 계획(진입·익절·손절 · 현재가 대비 거리).
  *
  * ⛔ 여기서 주문은 나가지 않는다. "이 계획으로 주문" 은 주식 주문 창(`StockOrder`)에 초안으로 넘긴다 — 사람이 보고
@@ -8,21 +8,48 @@
  * 숫자는 전부 서버가 준 문자열이다 — 화면은 계산하지 않는다(규칙 #2 정신 · 대시보드와 같은 원칙).
  */
 import { useEffect, useState } from "react";
-import { chartOrderAnalyze, chartOrderBuckets, chartOrderResolve, chartOrderRun, chartOrderRuns, chartOrderScoreboard, consoleBalances, orderCustom, validatePlan } from "./api";
-import type { ChartAnalysis, ChartBucket, ChartParticipant, ChartPlanSide, ChartRun, MarketInfo, ScoreRow, Who } from "./api";
+import { useNavigate } from "react-router-dom";
+import {
+  chartOrderAnalyze,
+  chartOrderBuckets,
+  chartOrderResolve,
+  chartOrderRun,
+  chartOrderRuns,
+  chartOrderScoreboard,
+  consoleBalances,
+  exchangeMarkets,
+  orderCustom,
+  validatePlan,
+} from "./api";
+import type {
+  ChartAnalysis,
+  ChartBucket,
+  ChartParticipant,
+  ChartPlanSide,
+  ChartRun,
+  MarketInfo,
+  ScoreRow,
+  Who,
+} from "./api";
 import { Chart } from "./Chart";
 import { useJobEvents } from "./chat/useJobEvents";
 import { BrokerMark } from "./shell/BrokerMark";
 import { brokerOfName } from "./shell/marketGroup";
-import { requestStockOrder } from "./StockOrder";
+import { requestStockOrder, stashStockOrder } from "./StockOrder";
 import { ErrorCard, useFold } from "./ui";
 
 const SLOT = "ai-chart-order:last";
 
-function remembered(): { symbol: string; market: string; bucket: string } | null {
+function remembered(): {
+  symbol: string;
+  market: string;
+  bucket: string;
+} | null {
   try {
     const raw = localStorage.getItem(SLOT);
-    return raw ? (JSON.parse(raw) as { symbol: string; market: string; bucket: string }) : null;
+    return raw
+      ? (JSON.parse(raw) as { symbol: string; market: string; bucket: string })
+      : null;
   } catch {
     return null;
   }
@@ -35,12 +62,23 @@ function pctText(raw: string | undefined): string {
   return `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
-function PlanCard({ plan, label, onOrder }: { plan: ChartPlanSide | null; label: string; onOrder?: () => void }) {
+function PlanCard({
+  plan,
+  label,
+  onOrder,
+}: {
+  plan: ChartPlanSide | null;
+  label: string;
+  onOrder?: () => void;
+}) {
   if (plan === null) {
     return (
       <div className="card" style={{ flex: 1, minWidth: 260 }}>
         <b>{label}</b>
-        <p className="faint text-xs">구조에서 후보가 안 나왔다 — 그 방향의 지지/저항이 없거나 이 시장은 그 방향이 없다.</p>
+        <p className="faint text-xs">
+          구조에서 후보가 안 나왔다 — 그 방향의 지지/저항이 없거나 이 시장은 그
+          방향이 없다.
+        </p>
       </div>
     );
   }
@@ -52,7 +90,12 @@ function PlanCard({ plan, label, onOrder }: { plan: ChartPlanSide | null; label:
           {label} {plan.ok ? "" : "· 막힘"}
         </b>
         {plan.ok && onOrder ? (
-          <button type="button" className="btn small primary" onClick={onOrder} title="주식 주문 창에 초안으로 넘긴다 — 보내기 전에 고칠 수 있다">
+          <button
+            type="button"
+            className="btn small primary"
+            onClick={onOrder}
+            title="주식 주문 창에 초안으로 넘긴다 — 보내기 전에 고칠 수 있다"
+          >
             이 계획으로 주문
           </button>
         ) : null}
@@ -60,21 +103,30 @@ function PlanCard({ plan, label, onOrder }: { plan: ChartPlanSide | null; label:
       <ul className="text-sm">
         <li>
           진입 {plan.entry} · 손절 {plan.stop}
-          {plan.stop_moved ? " (RiskManager 가 옮김)" : ""} · 1차 {plan.first} · 목표 {plan.target}
+          {plan.stop_moved ? " (RiskManager 가 옮김)" : ""} · 1차 {plan.first} ·
+          목표 {plan.target}
         </li>
         {d ? (
           <li>
-            현재가 대비 진입 {pctText(d.to_entry_pct)} · 손절 {pctText(d.to_stop_pct)} · 목표 {pctText(d.to_target_pct)} · 리스크 {d.risk_pct}% ·
-            보상 {d.reward_pct}%
+            현재가 대비 진입 {pctText(d.to_entry_pct)} · 손절{" "}
+            {pctText(d.to_stop_pct)} · 목표 {pctText(d.to_target_pct)} · 리스크{" "}
+            {d.risk_pct}% · 보상 {d.reward_pct}%
           </li>
         ) : null}
         <li className="faint text-xs">
-          1차 손익비 {plan.rr ?? "—"} · 필요 승률 {plan.need_pct ? `${Number(plan.need_pct).toFixed(1)}%` : "—"} · 손절폭{" "}
-          {plan.stop_pct ? `${Number(plan.stop_pct).toFixed(2)}%` : "—"}
+          1차 손익비 {plan.rr ?? "—"} · 필요 승률{" "}
+          {plan.need_pct ? `${Number(plan.need_pct).toFixed(1)}%` : "—"} ·
+          손절폭 {plan.stop_pct ? `${Number(plan.stop_pct).toFixed(2)}%` : "—"}
         </li>
         <li className="faint text-xs">근거: {plan.basis}</li>
-        {plan.blocked.length ? <li className="text-xs" style={{ color: "#b91c1c" }}>막은 이유: {plan.blocked.join(" · ")}</li> : null}
-        {plan.warnings?.length ? <li className="faint text-xs">주의: {plan.warnings.join(" · ")}</li> : null}
+        {plan.blocked.length ? (
+          <li className="text-xs" style={{ color: "#b91c1c" }}>
+            막은 이유: {plan.blocked.join(" · ")}
+          </li>
+        ) : null}
+        {plan.warnings?.length ? (
+          <li className="faint text-xs">주의: {plan.warnings.join(" · ")}</li>
+        ) : null}
       </ul>
     </div>
   );
@@ -118,7 +170,13 @@ function ParticipantsTable({ rows }: { rows: ChartParticipant[] }) {
               <td>
                 <b>{r.participant}</b> <span className="faint">{r.kind}</span>
               </td>
-              <td>{r.stance === "PROPOSED" ? "제안" : r.stance === "ABSTAINED" ? "관망" : "실패"}</td>
+              <td>
+                {r.stance === "PROPOSED"
+                  ? "제안"
+                  : r.stance === "ABSTAINED"
+                    ? "관망"
+                    : "실패"}
+              </td>
               <td>{r.entry ?? "—"}</td>
               <td>{r.stop ?? "—"}</td>
               <td>{r.first ?? "—"}</td>
@@ -126,7 +184,9 @@ function ParticipantsTable({ rows }: { rows: ChartParticipant[] }) {
               <td>{r.conviction ?? "—"}</td>
               <td className="faint">
                 {r.detail}
-                {r.judgement !== undefined ? <div>{judgementText(r.judgement)}</div> : null}
+                {r.judgement !== undefined ? (
+                  <div>{judgementText(r.judgement)}</div>
+                ) : null}
               </td>
             </tr>
           ))}
@@ -140,20 +200,49 @@ function ParticipantsTable({ rows }: { rows: ChartParticipant[] }) {
  * 코인 주문 — 계획을 **그대로** 차트 주문 경로(`live_custom`)로 보낸다. 팝업 없이 행 안 확인 패널:
  * 예산(USDT)·배율을 적고 RiskManager 미리보기(`validatePlan`)를 본 뒤 "주문". 재인증은 서버가 요구한다(401 → 로그인).
  */
-function CoinOrderPanel({ symbol, market, frame, plan, onClose }: { symbol: string; market: string; frame: string; plan: ChartPlanSide; onClose: () => void }) {
+function CoinOrderPanel({
+  symbol,
+  market,
+  frame,
+  plan,
+  onClose,
+}: {
+  symbol: string;
+  market: string;
+  frame: string;
+  plan: ChartPlanSide;
+  onClose: () => void;
+}) {
   const [margin, setMargin] = useState(50);
   const [leverage, setLeverage] = useState(1);
   const [available, setAvailable] = useState<number | null>(null);
-  const [risk, setRisk] = useState<Awaited<ReturnType<typeof validatePlan>> | null>(null);
+  const [risk, setRisk] = useState<Awaited<
+    ReturnType<typeof validatePlan>
+  > | null>(null);
   const [sending, setSending] = useState(false);
-  const [placed, setPlaced] = useState<{ key: string; moved: boolean; stop: string } | null>(null);
+  const [placed, setPlaced] = useState<{
+    key: string;
+    moved: boolean;
+    stop: string;
+  } | null>(null);
   const [error, setError] = useState("");
   const short = plan.side === "short";
-  const draft = { entry: Number(plan.entry), stop: Number(plan.stop), first: Number(plan.first), target: Number(plan.target) };
+  const draft = {
+    entry: Number(plan.entry),
+    stop: Number(plan.stop),
+    first: Number(plan.first),
+    target: Number(plan.target),
+  };
 
   useEffect(() => {
     consoleBalances()
-      .then((body) => setAvailable(body.balances[market] ? Number(body.balances[market].available) : null))
+      .then((body) =>
+        setAvailable(
+          body.balances[market]
+            ? Number(body.balances[market].available)
+            : null,
+        ),
+      )
       .catch(() => setAvailable(null));
   }, [market]);
 
@@ -182,7 +271,13 @@ function CoinOrderPanel({ symbol, market, frame, plan, onClose }: { symbol: stri
       timeframe: frame,
       price_frame: "1m",
     })
-      .then((got) => setPlaced({ key: got.session_id, moved: got.confirm.moved, stop: got.confirm.stop }))
+      .then((got) =>
+        setPlaced({
+          key: got.session_id,
+          moved: got.confirm.moved,
+          stop: got.confirm.stop,
+        }),
+      )
       .catch((exc: unknown) => setError(String(exc)))
       .finally(() => setSending(false));
   };
@@ -201,43 +296,94 @@ function CoinOrderPanel({ symbol, market, frame, plan, onClose }: { symbol: stri
       </div>
       <p className="faint text-xs">
         진입 {plan.entry} · 손절 {risk ? risk.stop : plan.stop}
-        {risk?.moved ? " (RiskManager 가 옮김)" : ""} · 1차 {plan.first} · 목표 {plan.target}. 판(RUN)이 하나 생기고 러너가 진입 대기 → 체결 → 손절/익절을 맡는다.
+        {risk?.moved ? " (RiskManager 가 옮김)" : ""} · 1차 {plan.first} · 목표{" "}
+        {plan.target}. 판(RUN)이 하나 생기고 러너가 진입 대기 → 체결 →
+        손절/익절을 맡는다.
       </p>
-      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <div
+        className="row"
+        style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}
+      >
         <label className="field">
-          <span className="faint text-xs">예산 (USDT){available !== null ? ` · 가용 ${available.toFixed(2)}` : ""}</span>
-          <input type="number" min={1} value={margin} onChange={(e) => setMargin(Number(e.target.value) || 0)} style={{ width: 110 }} />
+          <span className="faint text-xs">
+            예산 (USDT)
+            {available !== null ? ` · 가용 ${available.toFixed(2)}` : ""}
+          </span>
+          <input
+            type="number"
+            min={1}
+            value={margin}
+            onChange={(e) => setMargin(Number(e.target.value) || 0)}
+            style={{ width: 110 }}
+          />
         </label>
         <label className="field">
           <span className="faint text-xs">배율</span>
-          <input type="number" min={1} max={20} value={leverage} onChange={(e) => setLeverage(Number(e.target.value) || 1)} style={{ width: 70 }} />
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={leverage}
+            onChange={(e) => setLeverage(Number(e.target.value) || 1)}
+            style={{ width: 70 }}
+          />
         </label>
-        <button type="button" className="btn small primary" disabled={sending || Boolean(placed) || !risk?.ok || over || margin <= 0} onClick={send} title={over ? "가용 잔고를 넘는다" : undefined}>
+        <button
+          type="button"
+          className="btn small primary"
+          disabled={
+            sending || Boolean(placed) || !risk?.ok || over || margin <= 0
+          }
+          onClick={send}
+          title={over ? "가용 잔고를 넘는다" : undefined}
+        >
           {sending ? "보내는 중…" : placed ? "보냈다" : "주문"}
         </button>
       </div>
       {risk ? (
         <p className="faint text-xs">
-          손익비 {risk.rr} · 필요 승률 {Number(risk.need_pct).toFixed(1)}% · 손절폭 {Number(risk.stop_pct).toFixed(2)}%
-          {risk.ok && risk.reasons.length ? ` · 주의: ${risk.reasons.join(" · ")}` : ""}
+          손익비 {risk.rr} · 필요 승률 {Number(risk.need_pct).toFixed(1)}% ·
+          손절폭 {Number(risk.stop_pct).toFixed(2)}%
+          {risk.ok && risk.reasons.length
+            ? ` · 주의: ${risk.reasons.join(" · ")}`
+            : ""}
         </p>
       ) : null}
-      {blocked.length ? <ErrorCard message={`막힘: ${blocked.join(" · ")}`} /> : null}
-      {over ? <p className="text-xs" style={{ color: "#b4423a" }}>예산이 가용 잔고보다 크다.</p> : null}
+      {blocked.length ? (
+        <ErrorCard message={`막힘: ${blocked.join(" · ")}`} />
+      ) : null}
+      {over ? (
+        <p className="text-xs" style={{ color: "#b4423a" }}>
+          예산이 가용 잔고보다 크다.
+        </p>
+      ) : null}
       {error ? <ErrorCard message={error} /> : null}
       {placed ? (
         <p className="text-xs">
-          판 <b>{placed.key}</b> 가 떴다{placed.moved ? ` · 손절은 ${placed.stop} 로 확정됐다` : ""} — 콘솔의 판 목록에서 본다.
+          판 <b>{placed.key}</b> 가 떴다
+          {placed.moved ? ` · 손절은 ${placed.stop} 로 확정됐다` : ""} — 콘솔의
+          판 목록에서 본다.
         </p>
       ) : null}
     </div>
   );
 }
 
-export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who | null }) {
+export function AiChartOrder({
+  markets,
+  who,
+  page = false,
+}: {
+  markets: MarketInfo[];
+  who: Who | null;
+  page?: boolean;
+}) {
   const [open, toggle] = useFold("ai-chart-order", false);
+  const navigate = useNavigate();
   const last = remembered();
-  const [market, setMarket] = useState(last?.market ?? markets[0]?.name ?? "NASDAQ");
+  const [market, setMarket] = useState(
+    last?.market ?? markets[0]?.name ?? "NASDAQ",
+  );
   const [symbol, setSymbol] = useState(last?.symbol ?? "AAPL");
   const [bucket, setBucket] = useState(last?.bucket ?? "swing");
   const [buckets, setBuckets] = useState<ChartBucket[]>([]);
@@ -249,7 +395,9 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
   // 2단계 — AI 비교 작업 · 3단계 — 이력·채점
   const [jobId, setJobId] = useState<string | null>(null);
   const job = useJobEvents(jobId);
-  const [participants, setParticipants] = useState<ChartParticipant[] | null>(null);
+  const [participants, setParticipants] = useState<ChartParticipant[] | null>(
+    null,
+  );
   const [runId, setRunId] = useState<string | null>(null);
   const [history, setHistory] = useState<ChartRun[] | null>(null);
   const [resolveId, setResolveId] = useState<string | null>(null);
@@ -263,7 +411,11 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
       setError(job.error);
       return;
     }
-    const got = job.result as { analysis?: ChartAnalysis; participants?: ChartParticipant[]; run_id?: string } | null;
+    const got = job.result as {
+      analysis?: ChartAnalysis;
+      participants?: ChartParticipant[];
+      run_id?: string;
+    } | null;
     if (got?.analysis) setBody(got.analysis);
     setParticipants(got?.participants ?? []);
     setRunId(got?.run_id ?? null);
@@ -283,7 +435,12 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
   }, [resolveJob.done, resolveJob.error, body]);
 
   const [reusedNote, setReusedNote] = useState("");
-  const [scores, setScores] = useState<{ rows: ScoreRow[]; min_sample: number; cycles: number; judged: number } | null>(null);
+  const [scores, setScores] = useState<{
+    rows: ScoreRow[];
+    min_sample: number;
+    cycles: number;
+    judged: number;
+  } | null>(null);
 
   const compare = (side?: string) => {
     if (!symbol.trim() || jobId) return;
@@ -332,7 +489,10 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
       .then((got) => {
         setBody(got);
         try {
-          localStorage.setItem(SLOT, JSON.stringify({ symbol: got.symbol, market: got.market, bucket }));
+          localStorage.setItem(
+            SLOT,
+            JSON.stringify({ symbol: got.symbol, market: got.market, bucket }),
+          );
         } catch {
           // 기억만 못 한다.
         }
@@ -342,18 +502,49 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
   };
 
   const order = (plan: ChartPlanSide) => {
-    if (!body || !plan.entry || !plan.stop || !plan.first || !plan.target) return;
-    requestStockOrder(body.symbol, body.market, {
+    if (!body || !plan.entry || !plan.stop || !plan.first || !plan.target)
+      return;
+    const req = {
+      symbol: body.symbol,
+      market: body.market,
       frame: body.bucket.entry,
-      plan: { long: plan.side === "long", entry: Number(plan.entry), stop: Number(plan.stop), first: Number(plan.first), target: Number(plan.target) },
+      plan: {
+        long: plan.side === "long",
+        entry: Number(plan.entry),
+        stop: Number(plan.stop),
+        first: Number(plan.first),
+        target: Number(plan.target),
+      },
+    };
+    if (page) {
+      // 제 화면에서는 주식 주문 창이 안 떠 있다 — 두고 콘솔로 간다. 콘솔의 주문 창이 집어 간다.
+      stashStockOrder(req);
+      navigate("/console");
+      return;
+    }
+    requestStockOrder(req.symbol, req.market, {
+      frame: req.frame,
+      plan: req.plan,
     });
   };
 
   const s = body?.structure;
   const [shown, setShown] = useState<"long" | "short">("long");
   const [coinOrder, setCoinOrder] = useState<ChartPlanSide | null>(null);
-  const chosen = body ? (shown === "long" ? body.plans.long ?? body.plans.short : body.plans.short ?? body.plans.long) : null;
-  const chartPlan = chosen && chosen.ok ? { entry: chosen.entry, stop: chosen.stop, first: chosen.first, target: chosen.target } : null;
+  const chosen = body
+    ? shown === "long"
+      ? (body.plans.long ?? body.plans.short)
+      : (body.plans.short ?? body.plans.long)
+    : null;
+  const chartPlan =
+    chosen && chosen.ok
+      ? {
+          entry: chosen.entry,
+          stop: chosen.stop,
+          first: chosen.first,
+          target: chosen.target,
+        }
+      : null;
   // ⭐ 계산에 쓴 근거를 차트에 전부 얹는다 — 손절은 붉은 박스 · 익절은 초록 박스(진입~손절 / 진입~목표) ·
   //    아래 첫 지지·위 첫 저항 띠 · 전고/전저 점. 숫자는 서버 것 그대로.
   const zones: { low: number; high: number; kind: string }[] = [];
@@ -361,34 +552,106 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
     const e = Number(chosen.entry);
     const st = Number(chosen.stop);
     const tg = Number(chosen.target);
-    zones.push({ low: Math.min(e, st), high: Math.max(e, st), kind: "resistance" }); // 붉은 = 손절 구간
-    zones.push({ low: Math.min(e, tg), high: Math.max(e, tg), kind: "support" }); // 초록 = 익절 구간
+    zones.push({
+      low: Math.min(e, st),
+      high: Math.max(e, st),
+      kind: "resistance",
+    }); // 붉은 = 손절 구간
+    zones.push({
+      low: Math.min(e, tg),
+      high: Math.max(e, tg),
+      kind: "support",
+    }); // 초록 = 익절 구간
   }
-  if (s?.nearest_support) zones.push({ low: Number(s.nearest_support.low), high: Number(s.nearest_support.high), kind: "support" });
-  if (s?.nearest_resistance) zones.push({ low: Number(s.nearest_resistance.low), high: Number(s.nearest_resistance.high), kind: "resistance" });
-  const marks: { at: string; label: string; tone: "entry" | "gain" | "loss" }[] = [];
-  if (s?.swings.swing_high) marks.push({ at: s.swings.swing_high.ts, label: `전고 ${s.swings.swing_high.price}`, tone: "loss" });
-  if (s?.swings.swing_low) marks.push({ at: s.swings.swing_low.ts, label: `전저 ${s.swings.swing_low.price}`, tone: "gain" });
+  if (s?.nearest_support)
+    zones.push({
+      low: Number(s.nearest_support.low),
+      high: Number(s.nearest_support.high),
+      kind: "support",
+    });
+  if (s?.nearest_resistance)
+    zones.push({
+      low: Number(s.nearest_resistance.low),
+      high: Number(s.nearest_resistance.high),
+      kind: "resistance",
+    });
+  const marks: {
+    at: string;
+    label: string;
+    tone: "entry" | "gain" | "loss";
+  }[] = [];
+  if (s?.swings.swing_high)
+    marks.push({
+      at: s.swings.swing_high.ts,
+      label: `전고 ${s.swings.swing_high.price}`,
+      tone: "loss",
+    });
+  if (s?.swings.swing_low)
+    marks.push({
+      at: s.swings.swing_low.ts,
+      label: `전저 ${s.swings.swing_low.price}`,
+      tone: "gain",
+    });
   // `/fundamentals/snapshot` 은 점수를 `score: {score, cheapness, flags}` 로 감싼다 — 그 안을 읽는다.
-  const valRaw = body?.valuation as { score?: number | { score?: number; cheapness?: number; flags?: string[] } } | null | undefined;
-  const val = valRaw && typeof valRaw.score === "object" && valRaw.score !== null ? valRaw.score : null;
-  const ex = body?.extremes as { to_high_52w_pct?: number | null; to_low_52w_pct?: number | null; to_sma200_pct?: number | null; rsi14?: number | null } | undefined;
+  const valRaw = body?.valuation as
+    | {
+        score?:
+          number | { score?: number; cheapness?: number; flags?: string[] };
+      }
+    | null
+    | undefined;
+  const val =
+    valRaw && typeof valRaw.score === "object" && valRaw.score !== null
+      ? valRaw.score
+      : null;
+  const ex = body?.extremes as
+    | {
+        to_high_52w_pct?: number | null;
+        to_low_52w_pct?: number | null;
+        to_sma200_pct?: number | null;
+        rsi14?: number | null;
+      }
+    | undefined;
 
   return (
-    <section className="fold">
-      <button type="button" className="fold-head" onClick={toggle} aria-expanded={open}>
-        <span className="fold-mark">{open ? "▾" : "▸"}</span>
-        <span className="card-name">AI 차트 주문</span>
-        {open ? null : <span className="faint">{body ? `${body.symbol} · ${body.bucket.label}` : "종목 · 갈래 → 구조 · 롱/숏 계획"}</span>}
-      </button>
-      {open ? (
+    <section className={page ? "" : "fold"}>
+      {page ? (
+        <h1>AI 차트 분석 주문</h1>
+      ) : (
+        <button
+          type="button"
+          className="fold-head"
+          onClick={toggle}
+          aria-expanded={open}
+        >
+          <span className="fold-mark">{open ? "▾" : "▸"}</span>
+          <span className="card-name">AI 차트 분석 주문</span>
+          {open ? null : (
+            <span className="faint">
+              {body
+                ? `${body.symbol} · ${body.bucket.label}`
+                : "종목 · 갈래 → 구조 · 롱/숏 계획"}
+            </span>
+          )}
+        </button>
+      )}
+      {open || page ? (
         <div>
           <p className="card-hint">
-            종목과 갈래(단기 / 스윙 / 장투)를 고르면 <b>그 갈래의 축</b>으로 구조를 읽고 롱/숏 계획을 낸다. 손절·익절은 RiskManager 가
-            확정한 값이고, 주문은 <b>사람이</b> 주식 주문 창에서 보고 보낸다. 예측은 없다.
+            종목과 갈래(단기 / 스윙 / 장투)를 고르면 <b>그 갈래의 축</b>으로
+            구조를 읽고 롱/숏 계획을 낸다. 손절·익절은 RiskManager 가 확정한
+            값이고, 주문은 <b>사람이</b> 주식 주문 창에서 보고 보낸다. 예측은
+            없다.
           </p>
-          <div className="row" style={{ flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-            <select value={market} onChange={(e) => setMarket(e.target.value)} title="시장">
+          <div
+            className="row"
+            style={{ flexWrap: "wrap", gap: 8, alignItems: "center" }}
+          >
+            <select
+              value={market}
+              onChange={(e) => setMarket(e.target.value)}
+              title="시장"
+            >
               {markets.map((m) => (
                 <option key={m.name} value={m.name}>
                   {m.name}
@@ -419,7 +682,12 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
                 </button>
               ))}
             </div>
-            <button type="button" className="btn small primary" disabled={busy || !symbol.trim()} onClick={run}>
+            <button
+              type="button"
+              className="btn small primary"
+              disabled={busy || !symbol.trim()}
+              onClick={run}
+            >
               {busy ? "읽는 중…" : "분석"}
             </button>
             <button
@@ -427,7 +695,11 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
               className="btn small"
               disabled={Boolean(jobId) || !symbol.trim() || guest}
               onClick={() => compare()}
-              title={guest ? "게스트는 AI 비교를 돌릴 수 없다(토큰)" : "같은 스냅샷을 AI 단독 · AI+우리 근거 · 우리-구조 셋으로 기록한다 — 모델 호출 2회"}
+              title={
+                guest
+                  ? "게스트는 AI 비교를 돌릴 수 없다(토큰)"
+                  : "같은 스냅샷을 AI 단독 · AI+우리 근거 · 우리-구조 셋으로 기록한다 — 모델 호출 2회"
+              }
             >
               {jobId ? "AI 비교 중…" : "AI 비교"}
             </button>
@@ -440,53 +712,104 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
             >
               이력
             </button>
-            <button type="button" className="btn small" onClick={loadScores} title="참가자 x 갈래 x 시장 — 판정된 회차만 · 표본 30 미만은 회색">
+            <button
+              type="button"
+              className="btn small"
+              onClick={loadScores}
+              title="참가자 x 갈래 x 시장 — 판정된 회차만 · 표본 30 미만은 회색"
+            >
               성적표
             </button>
           </div>
           {reusedNote ? <p className="faint text-xs">{reusedNote}</p> : null}
           {jobId ? (
             <p className="faint text-xs" style={{ marginTop: 6 }}>
-              {job.lines.length ? job.lines[job.lines.length - 1] : "AI 비교를 띄우는 중"}
+              {job.lines.length
+                ? job.lines[job.lines.length - 1]
+                : "AI 비교를 띄우는 중"}
             </p>
           ) : null}
           {error ? <ErrorCard message={error} /> : null}
           {body && s ? (
             <>
               <p className="faint text-xs" style={{ marginTop: 6 }}>
-                {body.symbol} · {body.market} · {body.bucket.label}(진입 {body.bucket.entry} · 맥락 {body.bucket.context.join("/")}) · {body.note}
+                {body.symbol} · {body.market} · {body.bucket.label}(진입{" "}
+                {body.bucket.entry} · 맥락 {body.bucket.context.join("/")}) ·{" "}
+                {body.note}
               </p>
               <div className="row" style={{ gap: 6, alignItems: "center" }}>
                 <span className="faint text-xs">차트에 그릴 계획</span>
-                <button type="button" className={`chip${shown === "long" ? " gain" : ""}`} disabled={!body.plans.long} onClick={() => setShown("long")}>
+                <button
+                  type="button"
+                  className={`chip${shown === "long" ? " gain" : ""}`}
+                  disabled={!body.plans.long}
+                  onClick={() => setShown("long")}
+                >
                   롱
                 </button>
-                <button type="button" className={`chip${shown === "short" ? " gain" : ""}`} disabled={!body.plans.short} onClick={() => setShown("short")}>
+                <button
+                  type="button"
+                  className={`chip${shown === "short" ? " gain" : ""}`}
+                  disabled={!body.plans.short}
+                  onClick={() => setShown("short")}
+                >
                   숏
                 </button>
-                <span className="faint text-xs">붉은 박스 = 진입~손절 · 초록 박스 = 진입~목표 · 띠 = 첫 지지/저항 · 점 = 전고/전저 · 선·구간 = 켜진 규칙의 레벨·오더블록·추세선</span>
+                <span className="faint text-xs">
+                  붉은 박스 = 진입~손절 · 초록 박스 = 진입~목표 · 띠 = 첫
+                  지지/저항 · 점 = 전고/전저 · 선·구간 = 켜진 규칙의
+                  레벨·오더블록·추세선
+                </span>
               </div>
-              <Chart frame={body.frame} plan={chartPlan} zones={zones} marks={marks} />
-              <div className="row" style={{ flexWrap: "wrap", gap: 8, alignItems: "stretch" }}>
+              <Chart
+                frame={body.frame}
+                plan={chartPlan}
+                zones={zones}
+                marks={marks}
+              />
+              <div
+                className="row"
+                style={{ flexWrap: "wrap", gap: 8, alignItems: "stretch" }}
+              >
                 <div className="card" style={{ flex: 1, minWidth: 260 }}>
                   <b>구조 · {body.bucket.entry}</b>
                   <ul className="text-sm">
-                    <li>현재가 {s.last} · ATR {s.atr || "—"}</li>
                     <li>
-                      전고 {s.swings.swing_high ? `${s.swings.swing_high.price} (${pctText(String(s.swings.swing_high.away_pct ?? ""))})` : "—"} · 전저{" "}
-                      {s.swings.swing_low ? `${s.swings.swing_low.price} (${pctText(String(s.swings.swing_low.away_pct ?? ""))})` : "—"}
+                      현재가 {s.last} · ATR {s.atr || "—"}
                     </li>
                     <li>
-                      아래 첫 지지 {s.nearest_support ? `${s.nearest_support.low}~${s.nearest_support.high} (접점 ${s.nearest_support.touches})` : "없음"} · 위 첫 저항{" "}
-                      {s.nearest_resistance ? `${s.nearest_resistance.low}~${s.nearest_resistance.high} (접점 ${s.nearest_resistance.touches})` : "없음"}
+                      전고{" "}
+                      {s.swings.swing_high
+                        ? `${s.swings.swing_high.price} (${pctText(String(s.swings.swing_high.away_pct ?? ""))})`
+                        : "—"}{" "}
+                      · 전저{" "}
+                      {s.swings.swing_low
+                        ? `${s.swings.swing_low.price} (${pctText(String(s.swings.swing_low.away_pct ?? ""))})`
+                        : "—"}
+                    </li>
+                    <li>
+                      아래 첫 지지{" "}
+                      {s.nearest_support
+                        ? `${s.nearest_support.low}~${s.nearest_support.high} (접점 ${s.nearest_support.touches})`
+                        : "없음"}{" "}
+                      · 위 첫 저항{" "}
+                      {s.nearest_resistance
+                        ? `${s.nearest_resistance.low}~${s.nearest_resistance.high} (접점 ${s.nearest_resistance.touches})`
+                        : "없음"}
                     </li>
                     <li className="faint text-xs">
-                      레벨 원본 {s.levels_raw}개 · 규칙 계획선 {s.rule_plan ? `${s.rule_plan.long ? "롱" : "숏"} ${s.rule_plan.entry}/${s.rule_plan.stop}/${s.rule_plan.target}` : "없음(비용을 못 갚는 자리)"}
+                      레벨 원본 {s.levels_raw}개 · 규칙 계획선{" "}
+                      {s.rule_plan
+                        ? `${s.rule_plan.long ? "롱" : "숏"} ${s.rule_plan.entry}/${s.rule_plan.stop}/${s.rule_plan.target}`
+                        : "없음(비용을 못 갚는 자리)"}
                     </li>
                     {ex ? (
                       <li className="faint text-xs">
-                        52주 고가 대비 {pctText(String(ex.to_high_52w_pct ?? ""))} · 저가 대비 {pctText(String(ex.to_low_52w_pct ?? ""))} · SMA200 이격{" "}
-                        {pctText(String(ex.to_sma200_pct ?? ""))} · RSI {ex.rsi14 ?? "—"}
+                        52주 고가 대비{" "}
+                        {pctText(String(ex.to_high_52w_pct ?? ""))} · 저가 대비{" "}
+                        {pctText(String(ex.to_low_52w_pct ?? ""))} · SMA200 이격{" "}
+                        {pctText(String(ex.to_sma200_pct ?? ""))} · RSI{" "}
+                        {ex.rsi14 ?? "—"}
                       </li>
                     ) : null}
                   </ul>
@@ -496,47 +819,92 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
                   <ul className="text-sm">
                     {val ? (
                       <li>
-                        저평가 점수 {val.score ?? "—"} · 싼 정도 {val.cheapness ?? "—"}
-                        {val.flags?.length ? ` · 깃발 ${val.flags.join(", ")}` : ""}
+                        저평가 점수 {val.score ?? "—"} · 싼 정도{" "}
+                        {val.cheapness ?? "—"}
+                        {val.flags?.length
+                          ? ` · 깃발 ${val.flags.join(", ")}`
+                          : ""}
                       </li>
                     ) : (
-                      <li className="faint">{body.valuation_note || "재무 없음"}</li>
+                      <li className="faint">
+                        {body.valuation_note || "재무 없음"}
+                      </li>
                     )}
                     <li>
-                      VIX {body.vix?.value ?? "—"} {body.vix?.band ? `· ${body.vix.band}` : ""}
-                      {body.vix?.note ? <span className="faint text-xs"> — {body.vix.note}</span> : null}
+                      VIX {body.vix?.value ?? "—"}{" "}
+                      {body.vix?.band ? `· ${body.vix.band}` : ""}
+                      {body.vix?.note ? (
+                        <span className="faint text-xs">
+                          {" "}
+                          — {body.vix.note}
+                        </span>
+                      ) : null}
                     </li>
-                    <li className="faint text-xs">재무·VIX 는 방아쇠가 아니라 맥락이다 — 급락을 예측하지 않는다.</li>
+                    <li className="faint text-xs">
+                      재무·VIX 는 방아쇠가 아니라 맥락이다 — 급락을 예측하지
+                      않는다.
+                    </li>
                   </ul>
                 </div>
               </div>
-              <div className="row" style={{ flexWrap: "wrap", gap: 8, alignItems: "stretch", marginTop: 8 }}>
+              <div
+                className="row"
+                style={{
+                  flexWrap: "wrap",
+                  gap: 8,
+                  alignItems: "stretch",
+                  marginTop: 8,
+                }}
+              >
                 <PlanCard
                   plan={body.plans.long}
                   label="롱"
-                  onOrder={who && !guest && body.plans.long ? () => (stock ? order(body.plans.long as ChartPlanSide) : setCoinOrder(body.plans.long)) : undefined}
+                  onOrder={
+                    who && !guest && body.plans.long
+                      ? () =>
+                          stock
+                            ? order(body.plans.long as ChartPlanSide)
+                            : setCoinOrder(body.plans.long)
+                      : undefined
+                  }
                 />
                 <PlanCard
                   plan={body.plans.short}
                   label="숏"
-                  onOrder={who && !guest && body.plans.short ? () => (stock ? order(body.plans.short as ChartPlanSide) : setCoinOrder(body.plans.short)) : undefined}
+                  onOrder={
+                    who && !guest && body.plans.short
+                      ? () =>
+                          stock
+                            ? order(body.plans.short as ChartPlanSide)
+                            : setCoinOrder(body.plans.short)
+                      : undefined
+                  }
                 />
               </div>
               {coinOrder && !stock ? (
-                <CoinOrderPanel symbol={body.symbol} market={body.market} frame={body.bucket.entry} plan={coinOrder} onClose={() => setCoinOrder(null)} />
+                <CoinOrderPanel
+                  symbol={body.symbol}
+                  market={body.market}
+                  frame={body.bucket.entry}
+                  plan={coinOrder}
+                  onClose={() => setCoinOrder(null)}
+                />
               ) : null}
               {participants ? (
                 <div className="card" style={{ marginTop: 8 }}>
                   <b>세 참가자 비교</b>
                   <p className="faint text-xs">
-                    같은 봉을 보고 낸 계획 — AI 계획은 표시·기록·채점 전용이고 주문이 되지 않는다. 채점은 익절·손절에 실제로 닿은 봉으로 한다
+                    같은 봉을 보고 낸 계획 — AI 계획은 표시·기록·채점 전용이고
+                    주문이 되지 않는다. 채점은 익절·손절에 실제로 닿은 봉으로
+                    한다
                     {runId ? ` · 회차 ${runId}` : ""}.
                   </p>
                   <ParticipantsTable rows={participants} />
                 </div>
               ) : null}
               <p className="faint text-xs">
-                분석 id {body.analysis_id} — 기록돼 나중에 익절/손절에 실제로 닿았는지로 채점한다.
+                분석 id {body.analysis_id} — 기록돼 나중에 익절/손절에 실제로
+                닿았는지로 채점한다.
               </p>
             </>
           ) : null}
@@ -544,11 +912,16 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
             <div className="card" style={{ marginTop: 8 }}>
               <b>성적표</b>
               <p className="faint text-xs">
-                판정된 회차 {scores.judged} / 기록 {scores.cycles} · 익절률 = 익절 먼저 ÷ (익절+손절+만료) · 표본 {scores.min_sample} 미만은 회색(믿지 말라는 표시).
-                제안했지만 진입가에 안 닿은 것은 "진입 안 됨" 으로 따로 센다.
+                판정된 회차 {scores.judged} / 기록 {scores.cycles} · 익절률 =
+                익절 먼저 ÷ (익절+손절+만료) · 표본 {scores.min_sample} 미만은
+                회색(믿지 말라는 표시). 제안했지만 진입가에 안 닿은 것은 "진입
+                안 됨" 으로 따로 센다.
               </p>
               {scores.rows.length === 0 ? (
-                <p className="faint text-xs">아직 판정된 회차가 없다 — 회차가 익으면(진입 유효 봉 + 보유 기한) 한 시간마다 자동 채점된다.</p>
+                <p className="faint text-xs">
+                  아직 판정된 회차가 없다 — 회차가 익으면(진입 유효 봉 + 보유
+                  기한) 한 시간마다 자동 채점된다.
+                </p>
               ) : (
                 <div style={{ overflowX: "auto" }}>
                   <table className="table text-xs">
@@ -570,7 +943,15 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
                     </thead>
                     <tbody>
                       {scores.rows.map((r) => (
-                        <tr key={`${r.participant}|${r.bucket}|${r.market}`} className={r.grey ? "faint" : ""} title={r.grey ? `표본 ${r.entered} < ${scores.min_sample}` : undefined}>
+                        <tr
+                          key={`${r.participant}|${r.bucket}|${r.market}`}
+                          className={r.grey ? "faint" : ""}
+                          title={
+                            r.grey
+                              ? `표본 ${r.entered} < ${scores.min_sample}`
+                              : undefined
+                          }
+                        >
                           <td>
                             <b>{r.participant}</b>
                           </td>
@@ -583,7 +964,9 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
                           <td>{r.followed}</td>
                           <td>{r.not_followed}</td>
                           <td>{r.expired}</td>
-                          <td>{r.follow_pct === null ? "—" : `${r.follow_pct}%`}</td>
+                          <td>
+                            {r.follow_pct === null ? "—" : `${r.follow_pct}%`}
+                          </td>
                           <td>{r.avg_net_r ?? "—"}</td>
                         </tr>
                       ))}
@@ -597,24 +980,83 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
             <div className="card" style={{ marginTop: 8 }}>
               <div className="row" style={{ justifyContent: "space-between" }}>
                 <b>이력 · 판정</b>
-                <button type="button" className="btn small" disabled={Boolean(resolveId) || guest} onClick={resolveNow} title="익은 회차를 채점한다(원장 전체)">
+                <button
+                  type="button"
+                  className="btn small"
+                  disabled={Boolean(resolveId) || guest}
+                  onClick={resolveNow}
+                  title="익은 회차를 채점한다(원장 전체)"
+                >
                   {resolveId ? "채점 중…" : "채점 실행"}
                 </button>
               </div>
-              {history.length === 0 ? <p className="faint text-xs">아직 없다 — "AI 비교" 를 누르면 여기 쌓인다.</p> : null}
+              {history.length === 0 ? (
+                <p className="faint text-xs">
+                  아직 없다 — "AI 비교" 를 누르면 여기 쌓인다.
+                </p>
+              ) : null}
               {history.map((h) => (
                 <div key={h.run_id} style={{ marginTop: 6 }}>
                   <div className="text-xs">
-                    <b>{h.run_id}</b> · 현재가 {h.entry} · 기한 {h.hold_bars}봉 · {h.judged ? "판정됨" : `판정 가능 ${h.matures_at.slice(0, 16).replace("T", " ")}Z 이후`}
+                    <b>{h.run_id}</b> · 현재가 {h.entry} · 기한 {h.hold_bars}봉
+                    ·{" "}
+                    {h.judged
+                      ? "판정됨"
+                      : `판정 가능 ${h.matures_at.slice(0, 16).replace("T", " ")}Z 이후`}
                   </div>
                   <ParticipantsTable rows={h.participants} />
                 </div>
               ))}
-              {resolveId ? <p className="faint text-xs">{resolveJob.lines[resolveJob.lines.length - 1] ?? "채점 중"}</p> : null}
+              {resolveId ? (
+                <p className="faint text-xs">
+                  {resolveJob.lines[resolveJob.lines.length - 1] ?? "채점 중"}
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>
       ) : null}
     </section>
   );
+}
+
+/**
+ * 사이드바 화면 `/chart-order` (사용자 2026-09-11 "좌측 사이드바 · 거래 콘솔과 AI 투자 어시스턴트 사이").
+ * 시장 목록은 콘솔과 같은 곳(`/exchange/markets`)에서 받고, 코인·주식 구분 없이 연결된 시장 전부를 고를 수 있다.
+ */
+export function AiChartOrderPage({ who }: { who: Who | null }) {
+  const [markets, setMarkets] = useState<MarketInfo[] | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    exchangeMarkets()
+      .then(
+        (r) =>
+          alive &&
+          setMarkets(
+            (
+              r.all ??
+              r.markets.map((name) => ({ name, ready: true, scoped: true }))
+            ).filter((m) => m.ready && m.scoped),
+          ),
+      )
+      .catch((exc: unknown) => alive && setError(String(exc)));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  if (error)
+    return <ErrorCard title="시장 목록을 받지 못했다" message={error} />;
+  if (markets === null) return <p className="faint">시장 목록을 받는 중…</p>;
+  if (markets.length === 0)
+    return (
+      <>
+        <h1>AI 차트 분석 주문</h1>
+        <p className="notice warn">
+          이 API 에 연결된 시장이 없다 — 관리자가 시장을 연결하면 여기서 종목을
+          고를 수 있다.
+        </p>
+      </>
+    );
+  return <AiChartOrder markets={markets} who={who} page />;
 }

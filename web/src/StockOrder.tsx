@@ -15,15 +15,34 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { GROUPS, pickSegments, readSegments } from "./analysis";
-import { analysisFrame, consoleBalances, marketStatus, orderCustom, validatePlan } from "./api";
+import {
+  analysisFrame,
+  consoleBalances,
+  marketStatus,
+  orderCustom,
+  validatePlan,
+} from "./api";
 import type { AnalysisFrame, MarketInfo, Who } from "./api";
 import { Chart } from "./Chart";
 import { Live } from "./Live";
-import { MIN_STOP_PCT, blockers, move, recompute, warnings, type Plan } from "./proposal";
+import {
+  MIN_STOP_PCT,
+  blockers,
+  move,
+  recompute,
+  warnings,
+  type Plan,
+} from "./proposal";
 import { BrokerMark } from "./shell/BrokerMark";
 import { MarketHours } from "./shell/MarketHours";
 import { brokerOfName, marketTradeAllowed } from "./shell/marketGroup";
-import { symbolForMarket, cashNeeded, defaultDraft, maxShares, orderBlockers } from "./stockOrder";
+import {
+  symbolForMarket,
+  cashNeeded,
+  defaultDraft,
+  maxShares,
+  orderBlockers,
+} from "./stockOrder";
 import { ErrorCard, frameSeconds, num, useFold } from "./ui";
 import { useAnalysisForming } from "./useForming";
 import { pick, useStream } from "./useStream";
@@ -55,15 +74,62 @@ function remembered(): string[] {
 export type OrderRequest = {
   symbol: string;
   market: string;
-  plan?: { long: boolean; entry: number; stop: number; first: number; target: number };
+  plan?: {
+    long: boolean;
+    entry: number;
+    stop: number;
+    first: number;
+    target: number;
+  };
   frame?: string;
 };
 
-export function requestStockOrder(symbol: string, market: string, extra: Omit<OrderRequest, "symbol" | "market"> = {}): void {
-  window.dispatchEvent(new CustomEvent<OrderRequest>(ORDER_EVENT, { detail: { symbol, market, ...extra } }));
+export function requestStockOrder(
+  symbol: string,
+  market: string,
+  extra: Omit<OrderRequest, "symbol" | "market"> = {},
+): void {
+  window.dispatchEvent(
+    new CustomEvent<OrderRequest>(ORDER_EVENT, {
+      detail: { symbol, market, ...extra },
+    }),
+  );
 }
 
-export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who | null }) {
+const STASH = "updown:stock-order:stash";
+
+/** 다른 화면(AI 차트 분석 주문)에서 넘길 때 — 이 창이 아직 안 떠 있으니 두고 간다. 콘솔이 뜨면 집어 간다. */
+export function stashStockOrder(req: OrderRequest): void {
+  try {
+    sessionStorage.setItem(STASH, JSON.stringify(req));
+  } catch {
+    /* 저장이 막힌 브라우저 — 콘솔에서 직접 고른다 */
+  }
+}
+
+function takeStash(): OrderRequest | null {
+  try {
+    const raw = sessionStorage.getItem(STASH);
+    if (!raw) return null;
+    sessionStorage.removeItem(STASH);
+    const kept: unknown = JSON.parse(raw);
+    if (!kept || typeof kept !== "object") return null;
+    const row = kept as Partial<OrderRequest>;
+    return typeof row.symbol === "string" && typeof row.market === "string"
+      ? (row as OrderRequest)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function StockOrder({
+  markets,
+  who,
+}: {
+  markets: MarketInfo[];
+  who: Who | null;
+}) {
   const [open, toggle] = useFold("stock-order", true);
   const [market, setMarket] = useState(markets[0]?.name ?? "NASDAQ");
   const [symbol, setSymbol] = useState("AAPL");
@@ -80,8 +146,14 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
   const [nextOpen, setNextOpen] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
-  const [placed, setPlaced] = useState<{ key: string; moved: boolean; stop: string } | null>(null);
-  const [risk, setRisk] = useState<Awaited<ReturnType<typeof validatePlan>> | null>(null);
+  const [placed, setPlaced] = useState<{
+    key: string;
+    moved: boolean;
+    stop: string;
+  } | null>(null);
+  const [risk, setRisk] = useState<Awaited<
+    ReturnType<typeof validatePlan>
+  > | null>(null);
 
   const allowed = marketTradeAllowed(who, "stock");
   const info = markets.find((m) => m.name === market);
@@ -101,13 +173,18 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
       const detail = (event as CustomEvent<OrderRequest>).detail;
       if (!detail) return;
       setSymbol(detail.symbol);
-      if (markets.some((m) => m.name === detail.market)) setMarket(detail.market);
+      if (markets.some((m) => m.name === detail.market))
+        setMarket(detail.market);
       if (detail.frame) setFrame(detail.frame);
       // ⭐ T273 — 분석 화면의 계획을 그대로 초안으로. 사람이 보고 고친 뒤 보낸다(팝업 없음 · 재인증 문은 서버).
       if (detail.plan) setDraft(detail.plan);
       if (!open) toggle();
     };
     window.addEventListener(ORDER_EVENT, onEvent);
+    // ⭐ 다른 화면이 두고 간 요청 — 이 창이 뜨는 순간 한 번 집어 간다 (AI 차트 분석 주문 → 콘솔).
+    const stashed = takeStash();
+    if (stashed)
+      onEvent(new CustomEvent<OrderRequest>(ORDER_EVENT, { detail: stashed }));
     return () => window.removeEventListener(ORDER_EVENT, onEvent);
   }, [markets, open, toggle]);
 
@@ -145,10 +222,17 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
 
   const pull = useCallback(
     (fresh = true) => {
-      const flags = GROUPS.filter((item) => on.includes(item.id)).flatMap((item) => item.flags);
+      const flags = GROUPS.filter((item) => on.includes(item.id)).flatMap(
+        (item) => item.flags,
+      );
       if (fresh) setBusy(true);
       setError("");
-      analysisFrame({ symbol, market, flags: flags.length ? flags : ["trend.structure"], timeframe: frame })
+      analysisFrame({
+        symbol,
+        market,
+        flags: flags.length ? flags : ["trend.structure"],
+        timeframe: frame,
+      })
         .then((first) => {
           setBody(first);
           if (first.frames && first.frames.length > 0) setServed(first.frames);
@@ -168,7 +252,10 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
                 : defaultDraft(last ? Number(last.close) : NaN),
             );
           }
-          if (first.candles.length === 0) setError(`${symbol} 의 ${frame} 봉이 없다 — 적재된 축인지 확인한다`);
+          if (first.candles.length === 0)
+            setError(
+              `${symbol} 의 ${frame} 봉이 없다 — 적재된 축인지 확인한다`,
+            );
         })
         .catch((exc: unknown) => {
           if (fresh) setBody(null);
@@ -218,7 +305,9 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
     if (draft === null) return;
     setSending(true);
     setError("");
-    const flags = GROUPS.filter((item) => on.includes(item.id)).flatMap((item) => item.flags);
+    const flags = GROUPS.filter((item) => on.includes(item.id)).flatMap(
+      (item) => item.flags,
+    );
     orderCustom({
       symbol,
       market,
@@ -234,19 +323,31 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
       timeframe: frame,
       price_frame: FAST.includes(frame) ? frame : "1m",
     })
-      .then((got) => setPlaced({ key: got.session_id, moved: got.confirm.moved, stop: got.confirm.stop }))
+      .then((got) =>
+        setPlaced({
+          key: got.session_id,
+          moved: got.confirm.moved,
+          stop: got.confirm.stop,
+        }),
+      )
       .catch((exc: unknown) => setError(String(exc)))
       .finally(() => setSending(false));
   }, [draft, symbol, market, shares, on, frame]);
 
-  const layer = (flag: string) => body?.layers.find((item) => item.flag === flag);
+  const layer = (flag: string) =>
+    body?.layers.find((item) => item.flag === flag);
   const zones = (body?.levels ?? []).map((item) => ({
     low: Number(item.low),
     high: Number(item.high),
     kind: item.support ? "support" : "resistance",
   }));
   const segments = pickSegments(
-    readSegments((layer("structure.swing_trendline")?.shapes ?? []) as Record<string, unknown>[]),
+    readSegments(
+      (layer("structure.swing_trendline")?.shapes ?? []) as Record<
+        string,
+        unknown
+      >[],
+    ),
   );
   const streamed = useStream(open ? symbol : "", market, frame);
   const polled = useAnalysisForming(open ? symbol : "", market, frame);
@@ -256,24 +357,43 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
   const planBlocks = draft ? blockers(draft, cost) : [];
   const careful = draft ? warnings(draft, cost) : [];
   const gate = draft
-    ? orderBlockers({ shares, entry: draft.entry, cash, marketState: state, allowed })
+    ? orderBlockers({
+        shares,
+        entry: draft.entry,
+        cash,
+        marketState: state,
+        allowed,
+      })
     : ["계획이 없다"];
   const stuck = [...planBlocks, ...gate];
   const summary = `${symbol} · ${frame} · ${state === "open" ? "장중" : "장 마감"}`;
 
   return (
     <section className="fold">
-      <button type="button" className="fold-head" onClick={toggle} aria-expanded={open}>
+      <button
+        type="button"
+        className="fold-head"
+        onClick={toggle}
+        aria-expanded={open}
+      >
         <span className="fold-mark">{open ? "▾" : "▸"}</span>
         <span className="card-name">주식 주문</span>
         {open ? null : <span className="faint">{summary}</span>}
-        {!allowed ? <span className="chip" title="이 시장에서 거래할 권한이 없다 (관리자에게)">🔒</span> : null}
+        {!allowed ? (
+          <span
+            className="chip"
+            title="이 시장에서 거래할 권한이 없다 (관리자에게)"
+          >
+            🔒
+          </span>
+        ) : null}
       </button>
       {open ? (
         <>
           <p className="card-hint">
-            차트를 보고 <b>사람이</b> 산다 — 정수 주 · 배율 없음 · 매수만 · 장중만. 판(RUN)이 하나 생기고 러너는
-            집행·감시·기록만 한다. 손절·익절 선은 차트에서 <b>끌어서</b> 고칠 수 있다.
+            차트를 보고 <b>사람이</b> 산다 — 정수 주 · 배율 없음 · 매수만 ·
+            장중만. 판(RUN)이 하나 생기고 러너는 집행·감시·기록만 한다.
+            손절·익절 선은 차트에서 <b>끌어서</b> 고칠 수 있다.
           </p>
           <div className="row">
             <BrokerMark broker={brokerOfName(markets, market)} />
@@ -304,14 +424,22 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
                   key={item}
                   className={item === frame ? "btn small primary" : "btn small"}
                   disabled={!has}
-                  title={has ? `${item} 봉으로 본다` : `${market} 는 ${item} 봉을 주지 않는다`}
+                  title={
+                    has
+                      ? `${item} 봉으로 본다`
+                      : `${market} 는 ${item} 봉을 주지 않는다`
+                  }
                   onClick={() => setFrame(item)}
                 >
                   {item}
                 </button>
               );
             })}
-            <button className="btn small" onClick={() => pull(true)} disabled={busy}>
+            <button
+              className="btn small"
+              onClick={() => pull(true)}
+              disabled={busy}
+            >
               {busy ? "보는 중…" : "다시 본다"}
             </button>
             <Live on={liveOn} onToggle={() => setLiveOn((was) => !was)} />
@@ -325,7 +453,11 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
                 title={item.hint}
                 style={{ cursor: "pointer", font: "inherit" }}
                 onClick={() =>
-                  setOn((was) => (was.includes(item.id) ? was.filter((one) => one !== item.id) : [...was, item.id]))
+                  setOn((was) =>
+                    was.includes(item.id)
+                      ? was.filter((one) => one !== item.id)
+                      : [...was, item.id],
+                  )
                 }
               >
                 {on.includes(item.id) ? "● " : "○ "}
@@ -343,7 +475,9 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
                 판 {placed.key} 로 간다
               </a>
               {placed.moved ? (
-                <span className="chip loss">손절이 {placed.stop} 로 당겨졌다</span>
+                <span className="chip loss">
+                  손절이 {placed.stop} 로 당겨졌다
+                </span>
               ) : (
                 <span className="chip faint">손절은 낸 값 그대로다</span>
               )}
@@ -356,11 +490,16 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
                 <b>계획</b>
                 <span className="chip gain">매수</span>
                 {body.plan && body.plan.long ? (
-                  <span className="chip faint" title="서버가 레벨에서 잡았다 — 사람이 고칠 수 있다">
+                  <span
+                    className="chip faint"
+                    title="서버가 레벨에서 잡았다 — 사람이 고칠 수 있다"
+                  >
                     {body.plan.why}
                   </span>
                 ) : (
-                  <span className="chip faint">서버 제안 없음 — 마지막 종가 기준 초안</span>
+                  <span className="chip faint">
+                    서버 제안 없음 — 마지막 종가 기준 초안
+                  </span>
                 )}
               </div>
               <div className="row" style={{ marginTop: 8 }}>
@@ -372,7 +511,10 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
                     ["target", "익절"],
                   ] as const
                 ).map(([key, label]) => (
-                  <label key={key} style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <label
+                    key={key}
+                    style={{ display: "flex", gap: 4, alignItems: "center" }}
+                  >
                     <span className="faint">{label}</span>
                     <input
                       className="mono"
@@ -382,12 +524,16 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
                       style={{ width: 110 }}
                       onChange={(event) => {
                         const got = Number(event.target.value);
-                        if (Number.isFinite(got)) setDraft((was) => (was ? move(was, key, got) : was));
+                        if (Number.isFinite(got))
+                          setDraft((was) => (was ? move(was, key, got) : was));
                       }}
                     />
                   </label>
                 ))}
-                <label style={{ display: "flex", gap: 4, alignItems: "center" }} title="정수 주. 현금 한도 안에서">
+                <label
+                  style={{ display: "flex", gap: 4, alignItems: "center" }}
+                  title="정수 주. 현금 한도 안에서"
+                >
                   <span className="faint">주수</span>
                   <input
                     className="mono"
@@ -396,29 +542,50 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
                     step={1}
                     value={shares}
                     style={{ width: 80 }}
-                    onChange={(e) => setShares(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+                    onChange={(e) =>
+                      setShares(
+                        Math.max(1, Math.floor(Number(e.target.value) || 1)),
+                      )
+                    }
                   />
                 </label>
-                <span className="chip" title="주수 x 진입가 / 0.99(러너 여유) — 서버는 이 값을 판 예산으로 받는다">
+                <span
+                  className="chip"
+                  title="주수 x 진입가 / 0.99(러너 여유) — 서버는 이 값을 판 예산으로 받는다"
+                >
                   필요 예산 {num(cashNeeded(shares, draft.entry), 2)}
                 </span>
                 <span className="chip faint" title="페이퍼 계좌 가용 현금">
                   가용 {cash === null ? "—" : num(cash, 2)}
-                  {cash !== null ? ` · 최대 ${maxShares(cash, draft.entry)}주` : ""}
+                  {cash !== null
+                    ? ` · 최대 ${maxShares(cash, draft.entry)}주`
+                    : ""}
                 </span>
               </div>
               {math ? (
                 <div className="row" style={{ marginTop: 8 }}>
                   <span className="chip">RR {math.rr.toFixed(2)}</span>
-                  <span className={math.needPct >= 100 ? "chip loss" : "chip"} title="P > (1+c)/(1+RR)">
+                  <span
+                    className={math.needPct >= 100 ? "chip loss" : "chip"}
+                    title="P > (1+c)/(1+RR)"
+                  >
                     필요 승률 {math.needPct.toFixed(1)}%
                   </span>
-                  <span className={math.stopPct < MIN_STOP_PCT ? "chip loss" : "chip"}>
+                  <span
+                    className={
+                      math.stopPct < MIN_STOP_PCT ? "chip loss" : "chip"
+                    }
+                  >
                     손절폭 {math.stopPct.toFixed(2)}%
                   </span>
-                  <span className="chip faint">왕복 비용 {cost.toFixed(3)}%</span>
+                  <span className="chip faint">
+                    왕복 비용 {cost.toFixed(3)}%
+                  </span>
                   {risk ? (
-                    <span className={risk.moved ? "chip loss" : "chip"} title="RiskManager 가 확정한 손절가">
+                    <span
+                      className={risk.moved ? "chip loss" : "chip"}
+                      title="RiskManager 가 확정한 손절가"
+                    >
                       확정 손절 {num(Number(risk.stop), 2)}
                       {risk.moved ? " (당겨졌다)" : ""}
                     </span>
@@ -448,13 +615,19 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
                   className="btn primary"
                   disabled={stuck.length > 0 || sending}
                   onClick={order}
-                  title={stuck.length > 0 ? stuck.join(" · ") : "이 값 그대로 판을 띄우고 산다"}
+                  title={
+                    stuck.length > 0
+                      ? stuck.join(" · ")
+                      : "이 값 그대로 판을 띄우고 산다"
+                  }
                 >
                   {sending ? "보내는 중…" : `${shares}주 산다`}
                 </button>
                 {state !== "open" && nextOpen ? (
                   <span className="faint">
-                    장이 열려 있지 않다 — 다음 개장 {new Date(nextOpen).toLocaleString("ko-KR")} · 예약 주문 없음
+                    장이 열려 있지 않다 — 다음 개장{" "}
+                    {new Date(nextOpen).toLocaleString("ko-KR")} · 예약 주문
+                    없음
                   </span>
                 ) : null}
               </div>
@@ -471,7 +644,9 @@ export function StockOrder({ markets, who }: { markets: MarketInfo[]; who: Who |
               zones={zones}
               segments={segments}
               draft={draft}
-              onDrag={(which, price) => setDraft((was) => (was ? move(was, which, price) : was))}
+              onDrag={(which, price) =>
+                setDraft((was) => (was ? move(was, which, price) : was))
+              }
             />
           ) : null}
         </>

@@ -21,6 +21,7 @@ import {
 } from "react-router-dom";
 import { Accounts } from "./Accounts";
 import { ApiTokens } from "./ApiTokens";
+import { AiChartOrderPage } from "./AiChartOrder";
 import { AiReport } from "./AiReport";
 import { assistantDraft, type Who } from "./api";
 import { AssistantPage } from "./AssistantPage";
@@ -43,7 +44,6 @@ import { AuthFrame, Layout } from "./shell/Layout";
 import { pageTitle } from "./shell/nav";
 import { OpenRunsProvider, useOpenRuns } from "./shell/openRuns";
 import { ToTop } from "./ui";
-
 
 export function App() {
   return (
@@ -68,7 +68,9 @@ function Home({ who }: { who: Who | null }) {
       .then((got) => {
         if (!alive) return;
         const local = got.persisted ? null : readLocal();
-        const first = got.persisted ? got.first : !(local && local.step === "done");
+        const first = got.persisted
+          ? got.first
+          : !(local && local.step === "done");
         setTo(first ? "/assistant" : "/console");
       })
       .catch(() => alive && setTo("/console"));
@@ -106,6 +108,11 @@ function Shell() {
             <Route path="/" element={<Home who={who} />} />
             <Route path="/assistant" element={<AssistantPage who={who} />} />
             <Route path="/console" element={<ConsolePage />} />
+            {/* ⭐ T273 — AI 차트 분석 주문. 콘솔 안 접이식이던 것을 화면으로 (사용자 2026-09-11). */}
+            <Route
+              path="/chart-order"
+              element={<AiChartOrderPage who={who} />}
+            />
             <Route
               path="/report"
               element={
