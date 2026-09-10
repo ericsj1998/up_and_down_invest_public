@@ -208,6 +208,8 @@ class ChatThread(Base):
     title: Mapped[str] = mapped_column(default="", server_default="")
     model: Mapped[str] = mapped_column(default="", server_default="")
     messages: Mapped[JsonList] = mapped_column(default=list, server_default=sa.text("'[]'::jsonb"))
+    deleted_at: Mapped[datetime | None] = mapped_column(default=None)
+    """소프트 삭제 시각 (T266 · 0127). 목록·열기에서만 숨긴다 — 원가·감사가 대화에 묶여 있다."""
     created_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())
     updated_at: Mapped[datetime] = mapped_column(
         server_default=sa.func.now(), onupdate=sa.func.now()

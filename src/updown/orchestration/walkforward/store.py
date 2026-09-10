@@ -41,13 +41,15 @@ from typing import TYPE_CHECKING, Any, cast
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
 
-from updown.common.db.models.ops import AppSetting
+from updown.common.db.models.enums import LogLevel
+from updown.common.db.models.ops import AppSetting, EventLog
 from updown.common.db.models.walkforward import (
     WalkforwardCalibration,
     WalkforwardOrder,
     WalkforwardRun,
     WalkforwardTrade,
 )
+from updown.common.logging.context import get_trace_id, new_trace_id
 from updown.common.logging.setup import get_logger
 from updown.orchestration.walkforward.ledger import (
     Actor,
@@ -171,12 +173,13 @@ class SettingsStore:
             return None
         return None if found is None else str(found)
 
-    async def put(self, key: str, value: str) -> None:
+    async def put(self, key: str, value: str, *, by: str = "") -> None:
         """설정 하나를 적는다.
 
         Args:
             key: 설정 이름.
-            value: 값. 빈 문자열이면 지운다 (= 제한 없음).
+            value: 값. 빈 문자열이면 지운다 (= 제한 없음) — 그 사실을 `event_logs` 에 남긴다.
+            by: 바꾼 사람(이메일). 모르면 빈 문자열.
 
         Raises:
             RunStoreError: DB 에 닿을 수 없는 경우.
@@ -188,7 +191,22 @@ class SettingsStore:
         try:
             async with self._factory() as session:
                 if not value:
+                    # ⭐ 한도 해제는 리스크 **증가** 행동이다 — `event_logs` 에 누가 언제 풀었는지
+                    #    남긴다 (T266-4). 앱 로그만으로는 회전 뒤 사라진다.
+                    before = await session.scalar(
+                        sa.select(AppSetting.value).where(AppSetting.key == key)
+                    )
                     await session.execute(sa.delete(AppSetting).where(AppSetting.key == key))
+                    session.add(
+                        EventLog(
+                            trace_id=get_trace_id() or new_trace_id(),
+                            actor=by or "?",
+                            module="orchestration.walkforward.store",
+                            level=LogLevel.INFO,
+                            event_type="setting_cleared",
+                            payload_json={"key": key, "before": before, "by": by or "?"},
+                        )
+                    )
                 else:
                     statement = insert(AppSetting).values(key=key, value=value)
                     await session.execute(

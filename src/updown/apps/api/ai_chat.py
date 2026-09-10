@@ -148,7 +148,7 @@ async def list_threads(request: Request) -> dict[str, Any]:
     async with factory() as session:
         rows = await session.scalars(
             sa.select(ChatThread)
-            .where(ChatThread.email == who.email)
+            .where(ChatThread.email == who.email, ChatThread.deleted_at.is_(None))
             .order_by(ChatThread.updated_at.desc())
             .limit(50)
         )
@@ -186,7 +186,10 @@ async def create_thread(
 
 @router.delete("/threads/{thread_id}")
 async def delete_thread(request: Request, thread_id: str) -> dict[str, Any]:
-    """대화를 지운다 — 내 것만. 도구 호출 감사 기록(`event_logs.ai_chat_turn`)은 남는다(추가만).
+    """대화를 지운다 — 내 것만 · **소프트**(`deleted_at` · T266). 감사 기록도 대화 행도 남는다.
+
+    사람에게는 "지움" 이고 목록·열기에서 사라진다. 모델 원가·시험 이력이 대화에 묶여 있어 행을
+    지우면 리포트 합계가 바뀐다 — 진짜 삭제는 별도 관리자 경로로.
 
     Args:
         request: 요청.
@@ -202,10 +205,24 @@ async def delete_thread(request: Request, thread_id: str) -> dict[str, Any]:
     factory = auth._store()  # pyright: ignore[reportPrivateUsage]
     async with factory() as session, session.begin():
         row = await session.get(ChatThread, thread_id)
-        if row is None or row.email != who.email:
+        if not _mine(row, who.email):
             raise HTTPException(404, "대화가 없다")
-        await session.delete(row)
+        assert row is not None  # `_mine` 이 걸렀다 — 타입 좁히기
+        row.deleted_at = datetime.now(UTC)
     return {"deleted": thread_id}
+
+
+def _mine(row: ChatThread | None, email: str) -> bool:
+    """내 대화이고 지우지 않은 것인가 — 목록 밖 조회 4곳이 같은 판정을 쓴다 (T266).
+
+    Args:
+        row: 대화 행. 없으면 None.
+        email: 요청한 사람.
+
+    Returns:
+        보여 줘도 되면 True. 지운 대화는 없는 것과 같다.
+    """
+    return row is not None and row.email == email and row.deleted_at is None
 
 
 @router.get("/threads/{thread_id}")
@@ -226,8 +243,9 @@ async def read_thread(request: Request, thread_id: str) -> dict[str, Any]:
     factory = auth._store()  # pyright: ignore[reportPrivateUsage]
     async with factory() as session:
         row = await session.get(ChatThread, thread_id)
-        if row is None or row.email != who.email:
+        if not _mine(row, who.email):
             raise HTTPException(404, "대화가 없다")
+        assert row is not None
         return _thread_json(row, with_messages=True)
 
 
@@ -395,8 +413,9 @@ async def ask(
     factory = auth._store()  # pyright: ignore[reportPrivateUsage]
     async with factory() as session:
         row = await session.get(ChatThread, thread_id)
-        if row is None or row.email != who.email:
+        if not _mine(row, who.email):
             raise HTTPException(404, "대화가 없다")
+        assert row is not None
         history = _history_of(list(row.messages))
         model = str(
             payload.get("model")
@@ -475,7 +494,7 @@ async def _persist(
     stored.append(assistant)
     async with factory() as session, session.begin():
         row = await session.get(ChatThread, thread_id)
-        if row is None:
+        if row is None or row.deleted_at is not None:
             return
         messages = [*list(row.messages), *stored]
         row.messages = messages

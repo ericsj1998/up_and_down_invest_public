@@ -287,9 +287,40 @@ def _save_fund(fund: Fund) -> None:
         _logger.warning("fund_save_failed: %s %s", fund.fund_id, exc)
 
 
-def _delete_fund_file(fund_id: str) -> None:
-    """저장 파일을 지운다 — 펀드를 접을 때."""
-    (FUNDS_ROOT / f"{fund_id}.json").unlink(missing_ok=True)
+def _archive_fund_file(fund_id: str, *, root: Path | None = None) -> Path | None:
+    """접은 펀드의 정의를 **보관**한다 — 지우지 않는다 (T266 · 2026-09-10).
+
+    Args:
+        fund_id: 펀드 id.
+        root: 펀드 저장 루트. None 이면 `FUNDS_ROOT`.
+
+    Returns:
+        보관 파일 경로. 원본이 없었으면 None.
+
+    Note:
+        판·체결(`wf_runs`·`wf_trades`)은 펀드 id 로 남는데 정의 파일(이름·바스켓·비중·전략)을
+        지우면 리포트·매매일지가 "펀드 ?" 가 된다. `archive/` 로 옮기고 `dropped_at` 을 적는다 —
+        기동 복원은 루트의 `*.json` 만 읽으므로 목록에서만 사라진다.
+    """
+    base = root or FUNDS_ROOT
+    source = base / f"{fund_id}.json"
+    if not source.exists():
+        return None
+    try:
+        data = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {"fund_id": fund_id}
+    if isinstance(data, dict):
+        payload = cast("dict[str, Any]", data)
+        payload["dropped_at"] = datetime.now(UTC).isoformat()
+    else:
+        payload = {"fund_id": fund_id, "dropped_at": datetime.now(UTC).isoformat()}
+    archive = base / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    target = archive / f"{fund_id}.json"
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    source.unlink(missing_ok=True)
+    return target
 
 
 RETRY_EVERY = 120.0
@@ -1052,7 +1083,7 @@ async def tick(fund_id: str) -> dict[str, Any]:
 
 @router.delete("/{fund_id}")
 async def drop(fund_id: str) -> dict[str, Any]:
-    """펀드를 접는다 — 소유한 세션을 전부 청산·정리하고 펀드를 지운다.
+    """펀드를 접는다 — 세션을 전부 청산·정리하고 정의 파일은 `archive/` 로 **보관** (T266).
 
     Args:
         fund_id: 펀드 id.
@@ -1071,7 +1102,7 @@ async def drop(fund_id: str) -> dict[str, Any]:
     for handle in fund.handles.values():
         await _close_live_position(handle)
         await _drop_one(handle)
-    _delete_fund_file(fund_id)
+    _archive_fund_file(fund_id)
     return {"dropped": fund_id, "sessions": list(fund.handles.values())}
 
 

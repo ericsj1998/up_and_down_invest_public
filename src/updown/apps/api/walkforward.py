@@ -2856,10 +2856,11 @@ async def vault_settings() -> dict[str, Any]:
 
 
 @router.put("/vault")
-async def set_vault(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def set_vault(request: Request, payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     """금고 전역 설정을 바꾼다 (T21 ⑦).
 
     Args:
+        request: 요청 — 한도를 푼 사람을 `event_logs` 에 적는다 (T266-4).
         payload: `{refill_cap}`. `"300"` 은 금액, `"30%"` 는 **잔액 비율**,
             빈 값이면 **제한을 푼다**.
 
@@ -2884,7 +2885,9 @@ async def set_vault(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any
         raise HTTPException(503, "저장소가 없다 — 한도를 걸 수 없다")
     text = cap_text(payload.get("refill_cap", ""))
     try:
-        await _settings.put(REFILL_CAP_KEY, text)
+        who = getattr(request.state, "caller", None)
+        # 한도 해제(빈 값)는 `event_logs` 에 누가 풀었는지 남는다 (T266-4).
+        await _settings.put(REFILL_CAP_KEY, text, by=str(getattr(who, "email", "") or ""))
     except RunStoreError as exc:
         raise HTTPException(503, str(exc)) from exc
     _logger.info(
