@@ -89,6 +89,12 @@ STOCK_PAPER_TABLE_COUNT = 1
 #: `financial_facts`(T243 · 0120 · 공시 사실 원자료 — 지표가 아니라 사실). §9 밖.
 FUNDAMENTALS_TABLE_COUNT = 1
 
+#: 0129(1.7.0 · T269 #4 · 사용자 결정 2026-09-11)가 지운 죽은 표 — §9 파이프라인 6표
+#: (`trade_proposals` · `approved_orders` · `orders` · `positions` · `transitions` ·
+#: `risk_plan_revisions`) + `users` 와 그것을 참조하던 7표. 전부 0행·코드 참조 0 이었다.
+#: 모델은 지웠는데 이 합을 안 내려 CI 가 붉었다(2026-09-11 · `assert 22 == 36`).
+DROPPED_DEAD_TABLE_COUNT = 14
+
 EXPECTED_TABLE_COUNT = (
     SPEC_9_TABLE_COUNT
     + WALKFORWARD_TABLE_COUNT
@@ -96,4 +102,5 @@ EXPECTED_TABLE_COUNT = (
     + ACCOUNTS_TABLE_COUNT
     + STOCK_PAPER_TABLE_COUNT
     + FUNDAMENTALS_TABLE_COUNT
+    - DROPPED_DEAD_TABLE_COUNT
 )

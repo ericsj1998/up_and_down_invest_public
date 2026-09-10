@@ -47,11 +47,16 @@ def _base_tables(conn: sa.Connection) -> set[str]:
 
 
 def test_upgrade_head_creates_all_spec_9_tables(migrated_engine: Engine) -> None:
-    """DoD 1·2 — 빈 DB 에서 upgrade 성공 + §9 20개 테이블 전부."""
+    """DoD 1·2 — 빈 DB 에서 upgrade 성공 + 살아 있는 표 전부 (0129 가 죽은 표를 지운 뒤).
+
+    `orders` · `risk_plan_revisions` 등 14표는 1.7.0(0129)에서 **없어진 것이 맞다** —
+    있으면 마이그레이션이 되돌아간 것이다.
+    """
     with migrated_engine.connect() as conn:
         tables = _base_tables(conn)
     assert len(tables) == EXPECTED_TABLE_COUNT, sorted(tables)
-    assert {"risk_plan_revisions", "candle_quality_issues", "orders"} <= tables
+    assert {"candle_quality_issues", "event_logs", "wf_orders", "accounts"} <= tables
+    assert not ({"risk_plan_revisions", "orders", "users"} & tables), sorted(tables)
 
 
 def test_candles_is_range_partitioned_by_ts(migrated_engine: Engine) -> None:
@@ -95,24 +100,29 @@ def test_all_timestamp_columns_are_timezone_aware(migrated_engine: Engine) -> No
     assert list(naive) == []
 
 
-def test_orders_idempotency_key_is_unique(migrated_engine: Engine) -> None:
-    """spec §4.10 · 절대 규칙 #6 — 중복 주문의 마지막 방어선."""
+def test_wf_orders_role_key_is_unique(migrated_engine: Engine) -> None:
+    """spec §4.10 · 절대 규칙 #6 — 중복 주문의 마지막 방어선.
+
+    실제 주문 원장은 `wf_orders` 다(옛 `orders` 는 0129 에서 지웠다). 한 판·한 매매·한 역할
+    (진입/손절/익절)에 행이 둘이면 같은 주문이 두 번 나간 것이다 —
+    `uq_wf_orders_run_trade_role` 이 그것을 막는다.
+    """
     with migrated_engine.connect() as conn:
         constraints = conn.execute(
             sa.text("""
-                SELECT pg_get_constraintdef(oid) FROM pg_constraint
-                WHERE conrelid = 'orders'::regclass AND contype = 'u'
+                SELECT conname FROM pg_constraint
+                WHERE conrelid = 'wf_orders'::regclass AND contype = 'u'
             """)
         ).scalars()
-    assert any("idempotency_key" in c for c in constraints)
+    assert "uq_wf_orders_run_trade_role" in set(constraints)
 
 
-@pytest.mark.parametrize("table", ["event_logs", "risk_plan_revisions"])
+@pytest.mark.parametrize("table", ["event_logs"])
 def test_append_only_tables_reject_update_and_delete(migrated_engine: Engine, table: str) -> None:
     """spec §1.2.1 · §6.9 — 애플리케이션 롤은 감사 증거를 고칠 수 없다.
 
-    `risk_plan_revisions` 는 스탑 하향 금지(절대 규칙 #3)의 증거다. 조작 가능하면
-    "상향만 했다"는 증명이 무의미해진다.
+    `risk_plan_revisions`(스탑 하향 금지의 증거 표)는 0129 에서 지웠다 — 그 증거는 지금
+    `event_logs` 의 스탑 상향 사건이 진다. 남은 append-only 표는 `event_logs` 하나다.
     """
     with migrated_engine.connect() as conn:
         granted = set(
@@ -229,28 +239,29 @@ def test_partition_boundary_routes_to_correct_month(migrated_engine: Engine) -> 
         conn.execute(sa.text("DELETE FROM instruments WHERE symbol = 'KRW-BOUND'"))
 
 
-def test_downgrade_base_then_upgrade_head_round_trip(
+def test_downgrade_past_0129_is_refused_and_schema_stays_head(
     migrated_engine: Engine, test_database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """DoD 5 — 왕복 성공.
+    """DoD 5 개정 — 0129(죽은 표 드롭)는 **되돌리지 않는다**: 시도하면 소리 내어 멈추고
+    스키마는 head 그대로다.
 
-    naming_convention 이 없으면 여기서 깨진다. DB 가 자동 명명한 제약을 Alembic 이
-    재현하지 못해 downgrade 가 이름을 못 찾기 때문이다.
+    옛 왕복(`downgrade base` → `upgrade head`)은 1.7.0 부터 성립하지 않는다 — 빈 표를
+    되살릴 이유가 없어 0129 의 downgrade 가 `RuntimeError` 를 낸다(모듈 docstring). 그 결정을
+    여기서 고정한다: 조용히 통과하거나 표가 반쯤 지워진 채 남으면 안 된다.
 
     Note:
-        이 테스트는 전 테이블을 지우므로 **가장 마지막**에 둔다. 끝난 뒤 상태는
-        다시 head 다.
-
         `DATABASE_URL` 은 `monkeypatch` 로 덮어 **테스트가 끝나면 되돌린다.** 그냥
         `os.environ` 에 넣으면 이후 모듈이 테스트 DB 를 dev DB 로 착각한다.
     """
     monkeypatch.setenv("DATABASE_URL", test_database_url)
     cfg = Config(str(REPO_ROOT / "alembic.ini"))
 
-    command.downgrade(cfg, "base")
+    with pytest.raises(RuntimeError, match="0129"):
+        command.downgrade(cfg, "base")
     with migrated_engine.connect() as conn:
-        assert _base_tables(conn) == set()
+        assert len(_base_tables(conn)) == EXPECTED_TABLE_COUNT
 
+    # head 로의 upgrade 는 할 일이 없어야 한다 (이미 head).
     command.upgrade(cfg, "head")
     with migrated_engine.connect() as conn:
         assert len(_base_tables(conn)) == EXPECTED_TABLE_COUNT
