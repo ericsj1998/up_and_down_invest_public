@@ -689,7 +689,8 @@ class StockPaperAdapter:
         status = await self._market_status(instrument)
         if status is not None and not status.is_order_allowed:
             raise StockPaperRejectedError(
-                f"{instrument.market.value} 장이 닫혀 있다 — 주문을 받지 않는다"
+                f"{instrument.market.value} 장이 닫혀 있다({status.session.value}) — "
+                "주문을 받지 않는다"
             )
         book.seq += 1
         made = _Order(

@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -903,6 +904,105 @@ async def listing() -> dict[str, Any]:
         `{funds: [펀드 현황...]}`.
     """
     return {"funds": [await _status(fund) for fund in FUNDS.values()]}
+
+
+MEMBER_BARS = 90
+"""상세보기가 그리는 일봉 수 (기본)."""
+MEMBERS_TTL_S = 300.0
+"""상세 응답 기억 시간 — 종목마다 브로커 일봉이라 폴링마다 부르지 않는다."""
+_MEMBERS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def bar_changes(closes: Sequence[Decimal]) -> dict[str, str | None]:
+    """마지막 종가 기준 1일·5일 등락(%) — 상세 카드의 상태 한 줄 (순수 · T261).
+
+    Args:
+        closes: 일봉 종가 오름차순.
+
+    Returns:
+        `{last, change_1d_pct, change_5d_pct}` — 봉이 모자라면 그 칸은 None.
+    """
+
+    def _pct(back: int) -> str | None:
+        if len(closes) <= back or closes[-1 - back] == 0:
+            return None
+        return str(((closes[-1] / closes[-1 - back]) - 1) * 100)
+
+    return {
+        "last": str(closes[-1]) if closes else None,
+        "change_1d_pct": _pct(1),
+        "change_5d_pct": _pct(5),
+    }
+
+
+@router.get("/{fund_id}/members")
+async def members(fund_id: str, bars: int = MEMBER_BARS) -> dict[str, Any]:
+    """펀드 종목 상세 — 종목마다 마감 일봉과 간단한 상태 (사용자 요구 2026-09-10 "상세보기").
+
+    Args:
+        fund_id: 펀드 id.
+        bars: 일봉 수 (10~250).
+
+    Returns:
+        `{fund_id, market, at, members: [{symbol, weight, equity, holding, position, unrealized,
+        last, change_1d_pct, change_5d_pct, bars: [{time, open, high, low, close, volume}]}]}`.
+        봉을 못 받은 종목은 `bars` 가 비고 `bars_error` 에 이유가 있다.
+
+    Raises:
+        HTTPException: 404 — 펀드가 없다.
+    """
+    fund = _fund_or_404(fund_id)
+    wanted = max(10, min(int(bars), 250))
+    key = f"{fund_id}:{wanted}"
+    cached = _MEMBERS_CACHE.get(key)
+    if cached is not None and time.monotonic() - cached[0] < MEMBERS_TTL_S:
+        return cached[1]
+    market = Market(fund.market)
+    end = datetime.now(UTC)
+    start = end - timedelta(days=int(wanted * 1.6) + 7)
+    span = interval(Timeframe.D1)
+    rows: list[dict[str, Any]] = []
+    async with MarketDataProvider() as provider:
+        adapter = provider.adapter_for(market)
+        for sym in fund.coordinator.engine.basket.symbols:
+            leg = await _per_symbol(fund, sym)
+            candles: list[Any] = []
+            try:
+                candles = list(
+                    await adapter.get_candles(instrument_of(sym, market), Timeframe.D1, start, end)
+                )
+            except Exception as exc:
+                leg["bars_error"] = str(exc)[:120]
+            # 마지막 봉이 아직 진행 중이면 뺀다 — 형성 중인 봉을 마감처럼 그리지 않는다.
+            if candles and candles[-1].ts + span > end:
+                candles = candles[:-1]
+            closed = candles[-wanted:]
+            rows.append(
+                {
+                    **leg,
+                    "symbol": sym,
+                    **bar_changes([c.close for c in closed]),
+                    "bars": [
+                        {
+                            "time": int(c.ts.timestamp()),
+                            "open": str(c.open),
+                            "high": str(c.high),
+                            "low": str(c.low),
+                            "close": str(c.close),
+                            "volume": str(c.volume),
+                        }
+                        for c in closed
+                    ],
+                }
+            )
+    body: dict[str, Any] = {
+        "fund_id": fund.fund_id,
+        "market": market.value,
+        "at": end.isoformat(),
+        "members": rows,
+    }
+    _MEMBERS_CACHE[key] = (time.monotonic(), body)
+    return body
 
 
 @router.get("/{fund_id}")

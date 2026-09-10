@@ -2059,6 +2059,20 @@ export function consoleBalances(): Promise<{
   return request("/exchange/balances");
 }
 
+/** 펀드 종목 상세 한 줄 (T261) — 원장 몫 + 마감 일봉 + 등락. */
+export type FundMember = FundLeg & {
+  symbol: string;
+  last?: string | null;
+  change_1d_pct?: string | null;
+  change_5d_pct?: string | null;
+  bars: { time: number; open: string; high: string; low: string; close: string; volume: string }[];
+  bars_error?: string;
+};
+
+export function fundMembers(id: string, bars = 90): Promise<{ fund_id: string; market: string; at: string; members: FundMember[] }> {
+  return request(`/rebalancer/${encodeURIComponent(id)}/members?bars=${bars}`, undefined, 120_000);
+}
+
 export function fundList(): Promise<{ funds: FundStatus[] }> {
   return request("/rebalancer");
 }

@@ -20,15 +20,17 @@
 으로 읽는다. 3년 백테스트가 그 가짜 신호로 오염된다.
 """
 
-from collections.abc import Sequence
+import time
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Market, Timeframe
-from updown.common.domain.market import Balance, MarketStatus, OrderBook, Quote
+from updown.common.domain.market import Balance, MarketSession, MarketStatus, OrderBook, Quote
 from updown.common.domain.order import OrderRequest, OrderResult, OrderStatus
 from updown.common.domain.session import (
     MarketCalendar,
@@ -68,6 +70,12 @@ MINUTE = timedelta(minutes=1)
 #: 별도 그룹"이라고 밝힌다. 3년치 백필이 현재가·호가 조회 예산을 잡아먹지 않는 이유다.
 CHART_GROUP = "MARKET_DATA_CHART"
 MARKET_DATA_GROUP = "MARKET_DATA"
+STOCK_GROUP = "STOCK"
+"""종목 기본 정보 · 유의사항의 요율 그룹 (`/api/v1/stocks`)."""
+LIVE_SESSION_TTL_S = 60.0
+"""장중 제약(거래정지·VI) 조회 기억 시간 — 걸음마다 물으면 요율만 쓴다 (T259)."""
+INFO_BATCH = 200
+"""`/api/v1/stocks` · `/api/v1/prices` 가 한 번에 받는 심볼 수 상한."""
 
 #: 미국 주식 호가단위 — $1 이상은 $0.01 (능력표 `tick: broker` · 1달러 미만 종목은 안 다룬다).
 US_TICK = Decimal("0.01")
@@ -128,6 +136,24 @@ class MarketCalendarRequiredError(NotImplementedError):
     """
 
 
+def _warning_active(row: Mapping[str, Any], today: date) -> bool:
+    """유의사항이 오늘 유효한가 — `startDate <= 오늘 <= endDate`, 없는 쪽은 열린 구간."""
+    start, end = row.get("startDate"), row.get("endDate")
+    try:
+        if isinstance(start, str) and start and date.fromisoformat(start) > today:
+            return False
+        if isinstance(end, str) and end and date.fromisoformat(end) < today:
+            return False
+    except ValueError:
+        return False
+    return True
+
+
+def _kst_today() -> date:
+    """오늘(KST) — 토스 유의사항 날짜의 기준."""
+    return datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
 class TossAdapter:
     """토스증권 시세 조회 어댑터 (`BrokerAdapter` 구현 중 조회 부분).
 
@@ -145,6 +171,8 @@ class TossAdapter:
         """
         self._client = client
         self._calendar = calendar
+        self._live: dict[str, tuple[float, MarketSession | None]] = {}
+        """종목 → (잰 시각, 장중 제약). None 은 "제약 없음" 이고 항목이 없으면 "안 물어봄" 이다."""
 
     @property
     def capabilities(self) -> frozenset[Capability]:
@@ -323,14 +351,148 @@ class TossAdapter:
         calendar = self._calendar_or_raise()
         state, _why = calendar.tradability(instrument.market, now)
         next_open, next_close = calendar.next_events(instrument.market, now)
+        session = calendar.session_at(instrument.market, now)
+        allowed = state is Tradability.OPEN
+        if allowed:
+            # ⭐ T259 — 달력이 "열림" 이라도 **종목**은 거래정지·정리매매·VI 일 수 있다. 브로커에
+            # 묻는다(60초 기억). 못 물으면 달력 답을 그대로 둔다 — 계측 실패가 조회를 막지
+            #    않는다.
+            live = await self._live_session(to_symbol(instrument))
+            if live is not None:
+                session, allowed = live, False
         return MarketStatus(
             instrument=instrument,
-            session=calendar.session_at(instrument.market, now),
-            is_order_allowed=state is Tradability.OPEN,
+            session=session,
+            is_order_allowed=allowed,
             as_of=now,
             next_open=next_open,
             next_close=next_close,
         )
+
+    # ------------------------------------------------------------------
+    # 종목 정보 · 유의사항 (T259 · T260)
+    # ------------------------------------------------------------------
+
+    async def stock_info(self, symbols: Sequence[str]) -> list[dict[str, Any]]:
+        """종목 기본 정보 — 상장 시장·상태·발행주식수·거래정지 (`/api/v1/stocks`).
+
+        Args:
+            symbols: 토스 심볼들. 200개씩 나눠 부른다.
+
+        Returns:
+            스펙 `StockInfo` 행 그대로(`symbol` · `market` · `status` · `securityType` ·
+            `sharesOutstanding` · `koreanMarketDetail`…). 모르는 심볼은 빠진다.
+
+        Raises:
+            TossApiError: API 실패.
+        """
+        out: list[dict[str, Any]] = []
+        for i in range(0, len(symbols), INFO_BATCH):
+            chunk = ",".join(symbols[i : i + INFO_BATCH])
+            result = await self._client.get_result(
+                "/api/v1/stocks", group=STOCK_GROUP, params={"symbols": chunk}
+            )
+            out.extend(self._as_list(result, "/api/v1/stocks"))
+        return out
+
+    async def last_prices(self, symbols: Sequence[str]) -> dict[str, Decimal]:
+        """현재가 묶음 (`/api/v1/prices` · 200개씩).
+
+        Args:
+            symbols: 토스 심볼들.
+
+        Returns:
+            심볼 → 현재가. 응답에 없는 심볼은 빠진다.
+
+        Raises:
+            TossApiError: API 실패.
+        """
+        out: dict[str, Decimal] = {}
+        for i in range(0, len(symbols), INFO_BATCH):
+            chunk = ",".join(symbols[i : i + INFO_BATCH])
+            result = await self._client.get_result(
+                "/api/v1/prices", group=MARKET_DATA_GROUP, params={"symbols": chunk}
+            )
+            for row in self._as_list(result, "/api/v1/prices"):
+                symbol, price = row.get("symbol"), row.get("lastPrice")
+                if isinstance(symbol, str) and isinstance(price, str) and price:
+                    out[symbol] = Decimal(price)
+        return out
+
+    async def warnings_of(self, symbol: str) -> list[dict[str, Any]]:
+        """매수 유의사항 — 정리매매·투자경고·VI (`/api/v1/stocks/{symbol}/warnings`).
+
+        Args:
+            symbol: 토스 심볼.
+
+        Returns:
+            스펙 `StockWarning` 행 그대로(`warningType` · `startDate` · `endDate`…).
+
+        Raises:
+            TossApiError: API 실패.
+        """
+        path = f"/api/v1/stocks/{symbol}/warnings"
+        result = await self._client.get_result(path, group=STOCK_GROUP, params={})
+        return self._as_list(result, path)
+
+    @staticmethod
+    def live_session_of(
+        info: Mapping[str, Any], warnings: Sequence[Mapping[str, Any]], today: date
+    ) -> MarketSession | None:
+        """종목 정보 + 유의사항 → 장중 제약 (순수 · T259).
+
+        Args:
+            info: `StockInfo` 행.
+            warnings: `StockWarning` 행들.
+            today: 오늘(KST 날짜 — 스펙의 `startDate`/`endDate` 기준).
+
+        Returns:
+            상장 상태가 ACTIVE 가 아니거나 거래정지·정리매매면 `HALTED`, 활성 VI 가 있으면 `VI`,
+            아니면 None(제약 없음).
+        """
+        status = info.get("status")
+        detail = info.get("koreanMarketDetail")
+        detail_map: Mapping[str, Any] = (
+            cast("Mapping[str, Any]", detail) if isinstance(detail, Mapping) else {}
+        )
+        if status not in (None, "ACTIVE"):
+            return MarketSession.HALTED
+        if detail_map.get("krxTradingSuspended") or detail_map.get("liquidationTrading"):
+            return MarketSession.HALTED
+        for row in warnings:
+            kind = str(row.get("warningType") or "")
+            if kind == "LIQUIDATION_TRADING" and _warning_active(row, today):
+                return MarketSession.HALTED
+            if kind.startswith("VI_") and _warning_active(row, today):
+                return MarketSession.VI
+        return None
+
+    async def _live_session(self, symbol: str) -> MarketSession | None:
+        """장중 실시간 제약 — 60초 기억. 못 물으면 None(제약 모름 = 달력대로).
+
+        Note:
+            ⚠️ 유의사항(VI)은 국내 종목에만 있다 — `koreanMarketDetail` 이 없는 종목은 정보만 본다.
+        """
+        now = time.monotonic()
+        cached = self._live.get(symbol)
+        if cached is not None and now - cached[0] < LIVE_SESSION_TTL_S:
+            return cached[1]
+        try:
+            rows = await self.stock_info([symbol])
+            info: Mapping[str, Any] = rows[0] if rows else {}
+            warnings: list[dict[str, Any]] = []
+            if isinstance(info.get("koreanMarketDetail"), Mapping):
+                warnings = await self.warnings_of(symbol)
+            found = self.live_session_of(info, warnings, _kst_today())
+        except Exception as exc:
+            _logger.warning(
+                "toss_live_session_failed", payload={"symbol": symbol, "detail": str(exc)[:120]}
+            )
+            return None
+        self._live[symbol] = (now, found)
+        if found is not None:
+            _logger.warning("toss_live_session", payload={"symbol": symbol, "session": found.value})
+        return found
 
     # ------------------------------------------------------------------
     # 라이브 러너 계약 (QuoteAdapter · T240)

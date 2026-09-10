@@ -65,7 +65,9 @@ from updown.common.domain.instrument import (
     MarketGroup,
     Timeframe,
 )
+from updown.common.domain.session import load_calendar
 from updown.common.logging.setup import get_logger
+from updown.marketdata.adapter import QuoteAdapter
 from updown.marketdata.fundamentals.adapter import (
     FundamentalsAdapter,
     FundamentalsError,
@@ -73,7 +75,9 @@ from updown.marketdata.fundamentals.adapter import (
 )
 from updown.marketdata.fundamentals.edgar import EdgarAdapter, filings_of
 from updown.marketdata.fundamentals.repository import FundamentalsRepository
+from updown.marketdata.ingest.repository import CandleRepository
 from updown.marketdata.provider import MarketDataProvider, fundamentals_adapter
+from updown.orchestration.walkforward.stored_candles import StoredCandles
 
 _logger = get_logger("api.fundamentals")
 
@@ -108,8 +112,9 @@ def attach_fundamentals(
         엔진을 여기서 만들지 않는다 — 판 저장소와 같은 풀을 쓴다 (`walkforward.attach_store` 와
         같은 이유).
     """
-    global _repo, _settings, _adapter
+    global _repo, _settings, _adapter, _candles
     _repo = None if factory is None else FundamentalsRepository(factory)
+    _candles = None if factory is None else CandleRepository(factory)
     _settings = settings
     _adapter = None
     _RANKING_CACHE.clear()
@@ -175,29 +180,55 @@ async def _snapshot_of(
     """한 종목의 표 + 공시 + 종가 + 사실 유무 — 표와 순위가 같은 길로 만든다."""
     facts = await repo.facts_for(symbol, filed_until=when)
     years = config.score.percentile_years + 1
-    closes = await repo.daily_closes(market, symbol, when - timedelta(days=365 * years), when)
-    if not closes and facts:
-        # ⭐ T255 2차 — 유니버스 종목은 `instruments` 밖이라 DB 에 봉이 없다. 브로커 일봉으로
-        #    대신한다 — 없으면 가격 지표가 전부 비어 "점수 없음" 이 되고 이력을 받은 뜻이 없다.
-        closes = await _broker_closes(market, symbol, when - timedelta(days=365 * years), when)
+    closes = await _closes(
+        repo, market, symbol, when - timedelta(days=365 * years), when, facts=bool(facts)
+    )
     made = build_snapshot(
         facts, symbol=symbol, as_of=when, price_at=price_lookup(closes), config=config
     )
     return made, filings_of(facts), closes, bool(facts)
 
 
-async def _broker_closes(
-    market: Market, symbol: str, start: datetime, end: datetime
+async def _closes(
+    repo: FundamentalsRepository,
+    market: Market,
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    *,
+    facts: bool,
 ) -> list[tuple[date, Decimal]]:
-    """브로커 일봉 종가 — DB 봉이 없는 종목의 가격 역사. 못 받으면 빈 목록(지어내지 않는다)."""
-    try:
-        quotes = MarketDataProvider().adapter_for(market)
-        instrument = Instrument(market, symbol, symbol, AssetType.STOCK, Currency.USD)
-        candles = await quotes.get_candles(instrument, Timeframe.D1, start, end)
-    except Exception as exc:
-        _logger.info("ranking_price_missing", payload={"symbol": symbol, "detail": str(exc)[:80]})
-        return []
-    return closes_from_candles(candles)
+    """가격 역사 — DB 봉을 먼저 쓰고, 비거나 꼬리가 낡았으면 브로커에서 받아 **저장**한다.
+
+    Args:
+        repo: 재무 저장소(DB 종가 조회).
+        market: 시장.
+        symbol: 종목.
+        start: 시작.
+        end: 끝(지금).
+        facts: 사실이 있는 종목인가 — 없으면 브로커를 부를 이유가 없다(DB 만).
+
+    Returns:
+        `(날짜, 종가)` 오름차순. 못 받으면 DB 값(없으면 빈 목록 — 지어내지 않는다).
+
+    Note:
+        ⭐ T260 — 유니버스 종목은 주기 수집(`backfill.yml`) 밖이라 DB 봉이 없거나 낡는다. 판이 쓰는
+        같은 캐시(`StoredCandles`)로 채우면 처음엔 브로커 일봉 전 구간, 다음부턴 꼬리만 받고 DB 에
+        남는다 — 종목 행(`instruments`)도 그때 생긴다.
+    """
+    if _candles is not None and facts:
+        try:
+            quotes = MarketDataProvider().adapter_for(market)
+            stored = StoredCandles(cast("QuoteAdapter", quotes), _candles, calendar=load_calendar())
+            instrument = Instrument(market, symbol, symbol, AssetType.STOCK, Currency.USD)
+            return closes_from_candles(
+                await stored.get_candles(instrument, Timeframe.D1, start, end)
+            )
+        except Exception as exc:
+            _logger.info(
+                "ranking_price_missing", payload={"symbol": symbol, "detail": str(exc)[:80]}
+            )
+    return await repo.daily_closes(market, symbol, start, end)
 
 
 def _forget_quick(symbol: str) -> None:
@@ -291,6 +322,12 @@ QUICK_TTL_S = 6 * 3600
 """frames 값은 공시 때만 바뀐다 — 6시간 기억."""
 _QUICK_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
 _QUICK_LOCK = asyncio.Lock()
+_candles: CandleRepository | None = None
+"""봉 저장소 — 순위의 가격 역사를 판과 같은 캐시로 채운다 (T260). `attach_fundamentals` 가
+붙인다."""
+_candles: CandleRepository | None = None
+"""봉 저장소 — 순위의 가격 역사를 판과 같은 캐시로 채운다 (T260). `attach_fundamentals` 가
+붙인다."""
 
 
 def universe_of(market: Market) -> list[str]:

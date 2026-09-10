@@ -12,6 +12,7 @@ import * as api from "./api";
 import type { FundStatus, MarketInfo } from "./api";
 import { useMe } from "./Gate";
 import { bookInGroup, groupOfName, marketTradeAllowed, useMarketGroup } from "./shell/marketGroup";
+import { FundMembers } from "./FundMembers";
 import { ErrorCard, SelectField } from "./ui";
 
 // ⭐ 기본 바스켓·전략은 서버가 준다 (/rebalancer/defaults · SSoT = config/baskets.yml).
@@ -130,6 +131,8 @@ export function FundPanel() {
   >([]);
   const [playbook, setPlaybook] = useState("");
   const [market, setMarket] = useState("GATE");
+  // ⭐ T261 — 펀드 하나의 상세(종목마다 일봉 + 상태). 한 번에 하나만 편다.
+  const [detail, setDetail] = useState<string | null>(null);
   const [members, setMembers] = useState<{ symbol: string; weight: string }[]>(
     [],
   );
@@ -519,6 +522,16 @@ export function FundPanel() {
               ))}
             </tbody>
           </table>
+          <div className="row" style={{ marginTop: 6 }}>
+            <button
+              className="btn small"
+              onClick={() => setDetail(detail === f.fund_id ? null : f.fund_id)}
+              title="종목마다 마감 일봉 차트와 몫·포지션·등락을 한눈에"
+            >
+              {detail === f.fund_id ? "상세 접기" : "상세보기"}
+            </button>
+          </div>
+          {detail === f.fund_id ? <FundMembers fundId={f.fund_id} /> : null}
 
           {editing === f.fund_id ? (
             <div

@@ -1,47 +1,107 @@
-# 스크리닝 유니버스 (T255) — "시장 전체를 훑어 순위" 의 대상. 봉·재무 이력이 없는 종목도 여기 있으면
-# 1단계(EDGAR frames · 지금 값)로 표에 오르고, "이력 받기" 로 2단계(companyfacts · 5년 백분위 · 점수)로 올라간다.
-#
-# ⚠️ 이 목록은 "큰 회사 몇 십 개" 이지 지수 구성이 아니다. `www.sec.gov` 의 전체 티커 표가 이 회선에서 403 이라
-#    시장 전체를 자동으로 받지 못한다(T243 실측 2026-09-10). 종목을 더하려면 여기 한 줄.
-# 🔴 순위·점수는 "추천" 이 아니다 (규칙 #12 · OOS 판정 전).
+# 스크리닝 유니버스 (T255 · T260) — `scripts/runtime/seed_universe.py` 가 만든다.
+# 손으로 고쳐도 되지만 다음 실행이 덮어쓴다.
+# 기준: S&P 500 후보 중 토스 시총(발행주식수 x 현재가) 상위 100 · 2026-09-10.
+# 시장은 토스 `/api/v1/stocks` 의 상장 시장이다 — 코드에 종목을 박지 않는다.
+
 NASDAQ:
   - AAPL
-  - MSFT
-  - NVDA
-  - AMZN
-  - META
-  - GOOGL
-  - TSLA
-  - AVGO
-  - COST
-  - NFLX
-  - AMD
-  - PEP
-  - ADBE
-  - CSCO
-  - TMUS
-  - INTC
-  - QCOM
-  - TXN
-  - AMGN
-  - INTU
-  - ISRG
-  - BKNG
-  - HON
-  - AMAT
-  - SBUX
-  - ADP
-  - MU
-  - LRCX
-  - PANW
-  - GILD
   - ADI
-  - REGN
-  - VRTX
-  - KLAC
-  - MDLZ
+  - AMAT
+  - AMD
+  - AMGN
+  - AMZN
+  - AVGO
+  - BKNG
+  - COST
   - CRWD
-  - MAR
-  - CTAS
-  - ORLY
-  - PYPL
+  - CSCO
+  - GILD
+  - GOOG
+  - GOOGL
+  - IBKR
+  - INTC
+  - ISRG
+  - KLAC
+  - LIN
+  - LRCX
+  - META
+  - MRVL
+  - MSFT
+  - MU
+  - NFLX
+  - NVDA
+  - PANW
+  - PEP
+  - PLTR
+  - QCOM
+  - SNDK
+  - STX
+  - TMUS
+  - TSLA
+  - TXN
+  - VRTX
+  - WDC
+  - WMT
+NYSE:
+  - ABBV
+  - ABT
+  - ANET
+  - APH
+  - AXP
+  - BA
+  - BAC
+  - BLK
+  - BMY
+  - BRK.B
+  - BX
+  - C
+  - CAT
+  - CB
+  - COF
+  - COP
+  - CRM
+  - CVS
+  - CVX
+  - DE
+  - DELL
+  - DHR
+  - DIS
+  - ETN
+  - GE
+  - GEV
+  - GLW
+  - GS
+  - HD
+  - IBM
+  - JNJ
+  - JPM
+  - KO
+  - LLY
+  - LMT
+  - MA
+  - MCD
+  - MRK
+  - MS
+  - NEE
+  - NEM
+  - NOW
+  - ORCL
+  - PFE
+  - PG
+  - PGR
+  - PLD
+  - PM
+  - RTX
+  - SCHW
+  - SPGI
+  - T
+  - TJX
+  - TMO
+  - UBER
+  - UNH
+  - UNP
+  - V
+  - VZ
+  - WELL
+  - WFC
+  - XOM
