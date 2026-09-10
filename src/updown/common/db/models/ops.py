@@ -7,7 +7,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from updown.common.db.base import Base, JsonDict, enum_column
-from updown.common.db.models.enums import LogLevel, NotificationStatus
+from updown.common.db.models.enums import LogLevel
 
 
 class AppSetting(Base):
@@ -95,43 +95,3 @@ class EventLog(Base):
     event_type: Mapped[str] = mapped_column(index=True)
     payload_json: Mapped[JsonDict]
     ts: Mapped[datetime] = mapped_column(server_default=sa.func.now(), index=True)
-
-
-class Notification(Base):
-    """알림 발송 기록 (spec §9 `notifications`, §4.12).
-
-    Note:
-        `FAILED` 행이 재시도 큐의 입력이다. 심각도별 채널 라우팅은 발송 계층의
-        책임이며(손절 집행 = 즉시 푸시+메일, 일간 리포트 = 메일만), 여기는
-        결과만 남긴다.
-    """
-
-    __tablename__ = "notifications"
-
-    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, sa.ForeignKey("users.id"))
-    type: Mapped[str]
-    channel: Mapped[str]
-    payload: Mapped[JsonDict]
-    status: Mapped[NotificationStatus] = mapped_column(
-        enum_column(NotificationStatus, "status"), default=NotificationStatus.PENDING
-    )
-    ts: Mapped[datetime] = mapped_column(server_default=sa.func.now())
-
-
-class BacktestRun(Base):
-    """백테스트 실행 기록 (spec §9 `backtest_runs`, §4.11).
-
-    Note:
-        `config_json` 에 소스/검증 기간과 파라미터가 통째로 남아야 walk-forward
-        결과를 재현할 수 있다 (spec §4.11, §12.9). 재현 불가능한 백테스트는
-        전략 채택 근거가 될 수 없다.
-    """
-
-    __tablename__ = "backtest_runs"
-
-    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, sa.ForeignKey("users.id"))
-    config_json: Mapped[JsonDict]
-    report_json: Mapped[JsonDict]
-    created_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())

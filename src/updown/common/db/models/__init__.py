@@ -20,28 +20,8 @@ from updown.common.db.models.accounts import (
 from updown.common.db.models.analysis import AnalysisReport, Structure
 from updown.common.db.models.fundamentals import FinancialFactRow
 from updown.common.db.models.market import Candle, CandleQualityIssue
-from updown.common.db.models.master import BrokerCredential, Instrument, User
-from updown.common.db.models.ops import (
-    AppSetting,
-    BacktestRun,
-    EventLog,
-    Notification,
-    StockPaperAccount,
-)
-from updown.common.db.models.portfolio import (
-    AccountBalance,
-    AllocationLedgerEntry,
-    PortfolioSnapshot,
-)
-from updown.common.db.models.trading import (
-    ApprovedOrder,
-    Order,
-    Position,
-    RiskPlanRevision,
-    RiskPolicy,
-    TradeProposal,
-    Transition,
-)
+from updown.common.db.models.master import Instrument
+from updown.common.db.models.ops import AppSetting, EventLog, StockPaperAccount
 from updown.common.db.models.walkforward import (
     WalkforwardCalibration,
     WalkforwardOrder,
@@ -51,17 +31,12 @@ from updown.common.db.models.walkforward import (
 
 __all__ = [
     "Account",
-    "AccountBalance",
     "AccountContact",
     "AiParticipant",
-    "AllocationLedgerEntry",
     "AnalysisReport",
     "ApiToken",
     "AppSetting",
-    "ApprovedOrder",
     "AssistantDraft",
-    "BacktestRun",
-    "BrokerCredential",
     "Candle",
     "CandleQualityIssue",
     "ChatThread",
@@ -69,19 +44,10 @@ __all__ = [
     "FinancialFactRow",
     "Instrument",
     "MarketGrantRow",
-    "Notification",
-    "Order",
     "PlaybookGrantRow",
-    "PortfolioSnapshot",
-    "Position",
-    "RiskPlanRevision",
-    "RiskPolicy",
     "RoleCollection",
     "StockPaperAccount",
     "Structure",
-    "TradeProposal",
-    "Transition",
-    "User",
     "WalkforwardCalibration",
     "WalkforwardOrder",
     "WalkforwardRun",

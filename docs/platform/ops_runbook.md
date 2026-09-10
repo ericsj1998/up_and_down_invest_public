@@ -40,7 +40,7 @@ bash scripts/deploy/ship.sh                 # main 에서만 · 태그 = v<버�
 `depends_on: migrate` 가 **돌지 않았다** — 2026-09-06 에 0108(`accounts.audit`)이 빠져 구글 로그인이 500 을 냈다.
 손으로 돌릴 때: `bash scripts/ops/remote.sh scripts/ops/migrate_live.sh` · 확인: `scripts/ops/check_accounts_audit.py`.
 
-**배포 전 확인 세 가지**
+**배포 전 확인 세 가지** (판마다 다른 것은 [T272 체크리스트](../planning/tasks/T272_release_1_7_0.md) 꼴로 태스크에 둔다)
 1. `uv run ruff check .` — E501 하나로 pre-commit 이 커밋을 막고 ship 이 "커밋 안 된 변경" 으로 거절한다 (오늘 4번).
 2. `bash scripts/ops/remote.sh scripts/ops/probe_gate.py` 의 `OPEN_ORDERS` 를 본다. **T218(v2026.09.05 이후)**
    부터 대기 진입 지정가는 입양이 **이어받는다**(`live_pending_restored`). 배포 뒤 그 수가 같은지 확인한다 —
