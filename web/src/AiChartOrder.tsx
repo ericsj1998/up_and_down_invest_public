@@ -8,7 +8,7 @@
  * 숫자는 전부 서버가 준 문자열이다 — 화면은 계산하지 않는다(규칙 #2 정신 · 대시보드와 같은 원칙).
  */
 import { useEffect, useState } from "react";
-import { chartOrderAnalyze, chartOrderBuckets, chartOrderResolve, chartOrderRun, chartOrderRuns } from "./api";
+import { chartOrderAnalyze, chartOrderBuckets, chartOrderResolve, chartOrderRun, chartOrderRuns, consoleBalances, orderCustom, validatePlan } from "./api";
 import type { ChartAnalysis, ChartBucket, ChartParticipant, ChartPlanSide, ChartRun, MarketInfo, Who } from "./api";
 import { Chart } from "./Chart";
 import { useJobEvents } from "./chat/useJobEvents";
@@ -136,6 +136,104 @@ function ParticipantsTable({ rows }: { rows: ChartParticipant[] }) {
   );
 }
 
+/**
+ * 코인 주문 — 계획을 **그대로** 차트 주문 경로(`live_custom`)로 보낸다. 팝업 없이 행 안 확인 패널:
+ * 예산(USDT)·배율을 적고 RiskManager 미리보기(`validatePlan`)를 본 뒤 "주문". 재인증은 서버가 요구한다(401 → 로그인).
+ */
+function CoinOrderPanel({ symbol, market, frame, plan, onClose }: { symbol: string; market: string; frame: string; plan: ChartPlanSide; onClose: () => void }) {
+  const [margin, setMargin] = useState(50);
+  const [leverage, setLeverage] = useState(1);
+  const [available, setAvailable] = useState<number | null>(null);
+  const [risk, setRisk] = useState<Awaited<ReturnType<typeof validatePlan>> | null>(null);
+  const [sending, setSending] = useState(false);
+  const [placed, setPlaced] = useState<{ key: string; moved: boolean; stop: string } | null>(null);
+  const [error, setError] = useState("");
+  const short = plan.side === "short";
+  const draft = { entry: Number(plan.entry), stop: Number(plan.stop), first: Number(plan.first), target: Number(plan.target) };
+
+  useEffect(() => {
+    consoleBalances()
+      .then((body) => setAvailable(body.balances[market] ? Number(body.balances[market].available) : null))
+      .catch(() => setAvailable(null));
+  }, [market]);
+
+  useEffect(() => {
+    let alive = true;
+    validatePlan({ ...draft, leverage, market, short })
+      .then((got) => alive && setRisk(got))
+      .catch((exc: unknown) => alive && setError(String(exc)));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leverage, market, short, plan.entry, plan.stop, plan.first, plan.target]);
+
+  const send = () => {
+    setSending(true);
+    setError("");
+    orderCustom({
+      symbol,
+      market,
+      margin,
+      leverage,
+      short,
+      ...draft,
+      flags: [],
+      timeframe: frame,
+      price_frame: "1m",
+    })
+      .then((got) => setPlaced({ key: got.session_id, moved: got.confirm.moved, stop: got.confirm.stop }))
+      .catch((exc: unknown) => setError(String(exc)))
+      .finally(() => setSending(false));
+  };
+
+  const blocked = risk && !risk.ok ? risk.reasons : [];
+  const over = available !== null && margin > available;
+  return (
+    <div className="card" style={{ marginTop: 8, borderColor: "#0f7b6c" }}>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <b>
+          {short ? "숏" : "롱"} 주문 — {symbol} · {market} · 판정 축 {frame}
+        </b>
+        <button type="button" className="btn small" onClick={onClose}>
+          닫기
+        </button>
+      </div>
+      <p className="faint text-xs">
+        진입 {plan.entry} · 손절 {risk ? risk.stop : plan.stop}
+        {risk?.moved ? " (RiskManager 가 옮김)" : ""} · 1차 {plan.first} · 목표 {plan.target}. 판(RUN)이 하나 생기고 러너가 진입 대기 → 체결 → 손절/익절을 맡는다.
+      </p>
+      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <label className="field">
+          <span className="faint text-xs">예산 (USDT){available !== null ? ` · 가용 ${available.toFixed(2)}` : ""}</span>
+          <input type="number" min={1} value={margin} onChange={(e) => setMargin(Number(e.target.value) || 0)} style={{ width: 110 }} />
+        </label>
+        <label className="field">
+          <span className="faint text-xs">배율</span>
+          <input type="number" min={1} max={20} value={leverage} onChange={(e) => setLeverage(Number(e.target.value) || 1)} style={{ width: 70 }} />
+        </label>
+        <button type="button" className="btn small primary" disabled={sending || Boolean(placed) || !risk?.ok || over || margin <= 0} onClick={send} title={over ? "가용 잔고를 넘는다" : undefined}>
+          {sending ? "보내는 중…" : placed ? "보냈다" : "주문"}
+        </button>
+      </div>
+      {risk ? (
+        <p className="faint text-xs">
+          손익비 {risk.rr} · 필요 승률 {Number(risk.need_pct).toFixed(1)}% · 손절폭 {Number(risk.stop_pct).toFixed(2)}%
+          {risk.ok && risk.reasons.length ? ` · 주의: ${risk.reasons.join(" · ")}` : ""}
+        </p>
+      ) : null}
+      {blocked.length ? <ErrorCard message={`막힘: ${blocked.join(" · ")}`} /> : null}
+      {over ? <p className="text-xs" style={{ color: "#b4423a" }}>예산이 가용 잔고보다 크다.</p> : null}
+      {error ? <ErrorCard message={error} /> : null}
+      {placed ? (
+        <p className="text-xs">
+          판 <b>{placed.key}</b> 가 떴다{placed.moved ? ` · 손절은 ${placed.stop} 로 확정됐다` : ""} — 콘솔의 판 목록에서 본다.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who | null }) {
   const [open, toggle] = useFold("ai-chart-order", false);
   const last = remembered();
@@ -233,8 +331,25 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
   };
 
   const s = body?.structure;
-  const chosen = body?.plans.long ?? body?.plans.short ?? null;
+  const [shown, setShown] = useState<"long" | "short">("long");
+  const [coinOrder, setCoinOrder] = useState<ChartPlanSide | null>(null);
+  const chosen = body ? (shown === "long" ? body.plans.long ?? body.plans.short : body.plans.short ?? body.plans.long) : null;
   const chartPlan = chosen && chosen.ok ? { entry: chosen.entry, stop: chosen.stop, first: chosen.first, target: chosen.target } : null;
+  // ⭐ 계산에 쓴 근거를 차트에 전부 얹는다 — 손절은 붉은 박스 · 익절은 초록 박스(진입~손절 / 진입~목표) ·
+  //    아래 첫 지지·위 첫 저항 띠 · 전고/전저 점. 숫자는 서버 것 그대로.
+  const zones: { low: number; high: number; kind: string }[] = [];
+  if (chosen && chosen.ok && chosen.entry && chosen.stop && chosen.target) {
+    const e = Number(chosen.entry);
+    const st = Number(chosen.stop);
+    const tg = Number(chosen.target);
+    zones.push({ low: Math.min(e, st), high: Math.max(e, st), kind: "resistance" }); // 붉은 = 손절 구간
+    zones.push({ low: Math.min(e, tg), high: Math.max(e, tg), kind: "support" }); // 초록 = 익절 구간
+  }
+  if (s?.nearest_support) zones.push({ low: Number(s.nearest_support.low), high: Number(s.nearest_support.high), kind: "support" });
+  if (s?.nearest_resistance) zones.push({ low: Number(s.nearest_resistance.low), high: Number(s.nearest_resistance.high), kind: "resistance" });
+  const marks: { at: string; label: string; tone: "entry" | "gain" | "loss" }[] = [];
+  if (s?.swings.swing_high) marks.push({ at: s.swings.swing_high.ts, label: `전고 ${s.swings.swing_high.price}`, tone: "loss" });
+  if (s?.swings.swing_low) marks.push({ at: s.swings.swing_low.ts, label: `전저 ${s.swings.swing_low.price}`, tone: "gain" });
   // `/fundamentals/snapshot` 은 점수를 `score: {score, cheapness, flags}` 로 감싼다 — 그 안을 읽는다.
   const valRaw = body?.valuation as { score?: number | { score?: number; cheapness?: number; flags?: string[] } } | null | undefined;
   const val = valRaw && typeof valRaw.score === "object" && valRaw.score !== null ? valRaw.score : null;
@@ -318,7 +433,17 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
               <p className="faint text-xs" style={{ marginTop: 6 }}>
                 {body.symbol} · {body.market} · {body.bucket.label}(진입 {body.bucket.entry} · 맥락 {body.bucket.context.join("/")}) · {body.note}
               </p>
-              <Chart frame={body.frame} plan={chartPlan} />
+              <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                <span className="faint text-xs">차트에 그릴 계획</span>
+                <button type="button" className={`chip${shown === "long" ? " gain" : ""}`} disabled={!body.plans.long} onClick={() => setShown("long")}>
+                  롱
+                </button>
+                <button type="button" className={`chip${shown === "short" ? " gain" : ""}`} disabled={!body.plans.short} onClick={() => setShown("short")}>
+                  숏
+                </button>
+                <span className="faint text-xs">붉은 박스 = 진입~손절 · 초록 박스 = 진입~목표 · 띠 = 첫 지지/저항 · 점 = 전고/전저 · 선·구간 = 켜진 규칙의 레벨·오더블록·추세선</span>
+              </div>
+              <Chart frame={body.frame} plan={chartPlan} zones={zones} marks={marks} />
               <div className="row" style={{ flexWrap: "wrap", gap: 8, alignItems: "stretch" }}>
                 <div className="card" style={{ flex: 1, minWidth: 260 }}>
                   <b>구조 · {body.bucket.entry}</b>
@@ -363,9 +488,20 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
                 </div>
               </div>
               <div className="row" style={{ flexWrap: "wrap", gap: 8, alignItems: "stretch", marginTop: 8 }}>
-                <PlanCard plan={body.plans.long} label="롱" onOrder={stock && who && body.plans.long ? () => order(body.plans.long as ChartPlanSide) : undefined} />
-                <PlanCard plan={body.plans.short} label="숏" onOrder={stock && who && body.plans.short ? () => order(body.plans.short as ChartPlanSide) : undefined} />
+                <PlanCard
+                  plan={body.plans.long}
+                  label="롱"
+                  onOrder={who && !guest && body.plans.long ? () => (stock ? order(body.plans.long as ChartPlanSide) : setCoinOrder(body.plans.long)) : undefined}
+                />
+                <PlanCard
+                  plan={body.plans.short}
+                  label="숏"
+                  onOrder={who && !guest && body.plans.short ? () => (stock ? order(body.plans.short as ChartPlanSide) : setCoinOrder(body.plans.short)) : undefined}
+                />
               </div>
+              {coinOrder && !stock ? (
+                <CoinOrderPanel symbol={body.symbol} market={body.market} frame={body.bucket.entry} plan={coinOrder} onClose={() => setCoinOrder(null)} />
+              ) : null}
               {participants ? (
                 <div className="card" style={{ marginTop: 8 }}>
                   <b>세 참가자 비교</b>
@@ -377,7 +513,7 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
                 </div>
               ) : null}
               <p className="faint text-xs">
-                분석 id {body.analysis_id} — 기록돼 나중에 익절/손절에 실제로 닿았는지로 채점한다. 코인 주문 연결은 다음 단계.
+                분석 id {body.analysis_id} — 기록돼 나중에 익절/손절에 실제로 닿았는지로 채점한다.
               </p>
             </>
           ) : null}
