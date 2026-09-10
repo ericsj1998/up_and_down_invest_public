@@ -194,7 +194,7 @@ def card_for(
     card: dict[str, Any] = {
         "kind": "wizard",
         "step": step,
-        "index": index + 1,
+        "index": min(index + 1, len(STEPS) - 1),  # 완료는 5/5 — 6/5 로 보이지 않게
         "total": len(STEPS) - 1,
         "title": STEP_TITLE.get(step, step),
         "answers": dict(answers),

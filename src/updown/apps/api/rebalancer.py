@@ -46,6 +46,7 @@ from updown.apps.api.walkforward import (
     _live_start,
 )
 from updown.common.cache import TtlCache
+from updown.common.domain.capabilities import capabilities_of
 from updown.common.domain.instrument import Market, MarketGroup, Timeframe
 from updown.decision.allocation import Basket, BasketError, BasketMember, as_members, rank_members
 from updown.marketdata.ingest.timeframes import interval
@@ -859,6 +860,22 @@ async def defaults(market: str = "GATE") -> dict[str, Any]:
     }
 
 
+def fallback_leverage(market: Market) -> str:
+    """선언도 페이로드도 없을 때의 펀드 배율.
+
+    옛 판들의 값 3 을 유지하되, 능력표가 배율을 막는 시장(주식 현물)은 1 이다 — 3 이면
+    원장이 거절해 펀드 생성이 "일부 롤백됨" 으로 끝난다 (T271 실측 2026-09-10 · 채팅
+    위저드로 NASDAQ 펀드를 만들다 발견).
+
+    Args:
+        market: 펀드가 나갈 시장.
+
+    Returns:
+        배율 문자열 — `Decimal` 로 바로 읽는다.
+    """
+    return "3" if capabilities_of(market).leverage_allowed else "1"
+
+
 @router.post("")
 async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     """펀드를 만든다 — 바스켓·시작자본·레버리지.
@@ -898,6 +915,7 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
     declared_mode = None if declared_book is None else declared_book.weight_mode
     declared_alt = None if declared_book is None else declared_book.alt_leverage
     raw_alt = payload.get("alt_leverage")
+    fallback = fallback_leverage(Market(str(payload.get("market") or Market.GATE.value)))
     try:
         # 🔴 **브라우저가 끊어도 생성은 끝까지 간다** (2026-09-05 실측). 느린 서버에서 종목당
         #    15초라 6종목이 20초 시한을 넘겼고, 클라이언트가 연결을 닫자(nginx 499) 요청 태스크가
@@ -908,7 +926,7 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
             _create_fund(
                 basket=basket,
                 total_cash=total,
-                leverage=Decimal(str(payload.get("leverage") or declared or "3")),
+                leverage=Decimal(str(payload.get("leverage") or declared or fallback)),
                 playbook=book,
                 label=str(payload.get("label", "리밸런싱 펀드")),
                 market=str(payload.get("market", "GATE")),

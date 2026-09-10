@@ -80,7 +80,10 @@ async def _who_or_403(request: Request) -> Caller:
         # ⚠️ 시험 우회(AUTH_TEST_BYPASS · 127.0.0.1)는 호출자가 없다 — 대화를 저장하려면
         #    이메일이 있어야 하므로 고정 계정을 쓴다. 실계좌 API 는 우회가 꺼져 있어 여기 안 온다.
         if os.environ.get("AUTH_TEST_BYPASS") == "1":
-            return Caller(email="bypass@local", role=Role.TRADER, fresh=True)
+            who = Caller(email="bypass@local", role=Role.TRADER, fresh=True)
+            # 같은 요청 안에서 부르는 `assistant.create`·`require_fresh` 도 이 사람을 본다.
+            request.state.caller = who
+            return who
         raise HTTPException(403, "로그인이 필요하다 — AI 채팅은 토큰이 든다")
     if who.role is Role.GUEST:
         raise HTTPException(403, "게스트는 AI 채팅을 쓸 수 없다 — 구글 로그인 뒤에")
@@ -556,8 +559,16 @@ async def wizard_step(
         step_next = wizard.prev_step(step)
         await assistant_api.apply_draft(who, step_next, answers, None)
     elif action == "create":
-        await assistant_api.create(request, {"answers": answers})
-        step_next = "done"
+        try:
+            await assistant_api.create(request, {"answers": answers})
+            step_next = "done"
+        except HTTPException as exc:
+            # 400(관문 · 증거금 · 열린 시장 없음)·409(종목을 다른 판이 돌림)는 검토 카드에
+            # 이유를 적어 고치게 한다. 401(재인증)·403 은 그대로 — 화면이 로그인으로 보낸다.
+            if exc.status_code not in (400, 409):
+                raise
+            error = str(exc.detail)
+            step_next = "review"
     else:
         blocked = wizard.blockers(step, answers, consented=consented)
         if blocked:
