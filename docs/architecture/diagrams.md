@@ -575,7 +575,7 @@ Mermaid 에는 스윔레인 전용 문법이 없어 `flowchart` 의 `subgraph` �
 ```mermaid
 flowchart LR
     subgraph H[사람 · 화면]
-        h1[펀드/판 만들기<br/>코인: 거래소 · 배율 / 주식: 시장 · 정수 주 · 장중만] --> h2[콘솔에서 본다<br/>포지션 · 손절 · 대조 배너 · 걸음 눈금]
+        h1[펀드/판 만들기<br/>코인: 거래소 · 배율 / 주식: 시장 · 정수 주 · 장중만] --> h2["콘솔에서 본다<br/>포지션 · 손절 · 대조 배너 · 걸음 눈금"]
         h2 --> h3{"대조 경보?"}
         h3 -->|잔재| h4[거두기]
         h3 -->|무주공산| h5[이어받기 / 닫기]
@@ -583,7 +583,7 @@ flowchart LR
         h7[AI 채팅 · MCP<br/>positions · propose_order 제안까지]
     end
     subgraph A[api 리더]
-        a1[_live_start<br/>연결 거래소 · 달력(휴장·조기마감) · 유동성 · 1계약/1주 예산 · 중복 판 · 잔재 회수 · 요청 예산 300] --> a2[RunStore.open<br/>닻으로 열린 판 있으면 이어받기]
+        a1["_live_start<br/>연결 거래소 · 달력(휴장·조기마감) · 유동성 · 1계약/1주 예산 · 중복 판 · 잔재 회수 · 요청 예산 300"] --> a2[RunStore.open<br/>닻으로 열린 판 있으면 이어받기]
         a2 --> a3[LiveRunner 시작]
         a7[watchdog 60s<br/>DB 의 열린 판 vs 러너] --> a8[revive · 실패 시 경보]
         a9[reconcile_loop 120s<br/>4축 대조 · 진입 차단]
@@ -697,7 +697,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph DATA[데이터 — marketdata · 모든 바깥 호출은 common/http 한 층]
-        c1[봉 수집<br/>코인 WS · 주식 토스 폴링(정규장만)<br/>DB 우선 · 브로커는 꼬리만] --> c2{무결성 검사<br/>빈 봉 · 중복 · 시각}
+        c1["봉 수집<br/>코인 WS · 주식 토스 폴링(정규장만)<br/>DB 우선 · 브로커는 꼬리만"] --> c2{무결성 검사<br/>빈 봉 · 중복 · 시각}
         c2 -->|통과| c3[(PostgreSQL candles<br/>월 파티션)]
         c2 -->|이상| c4[(candle_quality_issues)]
         c5[EDGAR 재무<br/>frames 1단계 · companyfacts 2단계] --> c6[(financial_facts)]
