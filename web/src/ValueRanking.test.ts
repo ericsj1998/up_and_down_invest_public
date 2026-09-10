@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { pctLabel, scoreTone } from "./ValueRanking";
+import { pctLabel, scopeOptions, scoreTone } from "./ValueRanking";
 import { DISCLAIMER_TEXT, DISCLAIMER_VERSION } from "./shell/disclaimer";
 
 describe("pctLabel — 자기 5년 백분위를 말로", () => {
@@ -30,5 +30,16 @@ describe("면책 문구", () => {
   it("문장과 버전이 있다 — T247 동의가 같은 것을 쓴다", () => {
     expect(DISCLAIMER_TEXT).toContain("투자 권유가 아닙니다");
     expect(DISCLAIMER_VERSION).toMatch(/^\d{4}-\d{2}-\d{2}\.\d+$/);
+  });
+});
+
+describe("scopeOptions", () => {
+  it("시장이 둘 이상이면 전체·SP 500 을 앞에 둔다 (사용자 요청 2026-09-10)", () => {
+    expect(scopeOptions(["NASDAQ", "NYSE"]).map((s) => s.value)).toEqual(["ALL", "SP500", "NASDAQ", "NYSE"]);
+    expect(scopeOptions(["NASDAQ", "NYSE"])[0]?.label).toBe("전체");
+  });
+  it("시장이 하나뿐이면 그 시장만 — 합산할 것이 없다", () => {
+    expect(scopeOptions(["NASDAQ"])).toEqual([{ label: "NASDAQ", value: "NASDAQ" }]);
+    expect(scopeOptions([])).toEqual([]);
   });
 });

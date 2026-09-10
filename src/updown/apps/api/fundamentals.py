@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -318,10 +318,103 @@ async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
 
 
 UNIVERSE_CONFIG = Path(__file__).resolve().parents[4] / "config" / "fundamentals" / "universe.yml"
+CANDIDATES_CONFIG = UNIVERSE_CONFIG.with_name("sp500_candidates.txt")
+"""S&P 500 후보 전부(503) — `SP500` 범위가 읽는다 (T260)."""
+NAMES_CONFIG = UNIVERSE_CONFIG.with_name("universe_names.yml")
+"""후보의 한글·영문 이름 + 상장 시장 (T260 후속 · `seed_universe.py` 생성)."""
+ALL_SCOPE = "ALL"
+"""필터 없음 — 재무 시장 전부(NASDAQ + NYSE)의 적재 종목 + 후보 503 중 아직 적재 안 된 것(1단계).
+사용자 정의(2026-09-10): "탭에 상관없이 아는 종목이 다 뜨는 전체".
+1단계는 **백그라운드**로 준비한다."""
+SP500_SCOPE = "SP500"
+"""`ALL` 과 같은 행에서 S&P 500 후보 목록에 든 종목만."""
+NAME_MARKETS = {"NASDAQ": Market.NASDAQ, "NYSE": Market.NYSE}
+"""이름표의 토스 시장 → 우리 시장. AMEX 는 능력표·비용표가 없어 시장 없음(시세 없이 값만)."""
 QUICK_TTL_S = 6 * 3600
 """frames 값은 공시 때만 바뀐다 — 6시간 기억."""
 _QUICK_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
-_QUICK_LOCK = asyncio.Lock()
+_QUICK_LOCKS: dict[str, asyncio.Lock] = {}
+_QUICK_TASKS: dict[str, asyncio.Task[Any]] = {}
+"""범위별 백그라운드 준비 — 참조를 들고 있어야 GC 가 안 거둔다(`jobs.py` 와 같은 함정)."""
+_YAML_CACHE: dict[str, tuple[float, object]] = {}
+
+
+def _yaml_cached(path: Path) -> object:
+    """YAML 파일을 mtime 으로 기억해 읽는다 — 요청마다 파싱하지 않는다 (T265 #3)."""
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        return None
+    hit = _YAML_CACHE.get(str(path))
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    try:
+        raw: object = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    _YAML_CACHE[str(path)] = (stamp, raw)
+    return raw
+
+
+def names_of() -> dict[str, dict[str, str]]:
+    """이름표 — `{SYM: {ko, en, market}}`. 없으면 빈 표.
+
+    Returns:
+        대문자 종목 → 이름·시장.
+    """
+    raw = _yaml_cached(NAMES_CONFIG)
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for symbol, row in cast("dict[object, object]", raw).items():
+        if isinstance(row, dict):
+            item = cast("dict[str, object]", row)
+            out[str(symbol).upper()] = {k: str(item.get(k) or "") for k in ("ko", "en", "market")}
+    return out
+
+
+def candidates_of() -> list[str]:
+    """S&P 500 후보 파일 — 주석·빈 줄 제외, 대문자.
+
+    Returns:
+        종목 코드들. 파일이 없으면 빈 목록.
+    """
+    try:
+        lines = CANDIDATES_CONFIG.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return [s.strip().upper() for s in lines if s.strip() and not s.startswith("#")]
+
+
+def fundamentals_markets() -> list[Market]:
+    """재무 출처(EDGAR)가 있는 시장 — 해외주식 갈래 전부.
+
+    Returns:
+        시장 목록 (선언 순서).
+    """
+    return [m for m in Market if MarketGroup.of(m) is MarketGroup.FOREIGN_STOCK]
+
+
+def scope_of(raw: str) -> tuple[str, list[Market], bool]:
+    """스크린 범위 — 시장 하나 · `ALL`(필터 없음) · `SP500`(후보 목록만).
+
+    Args:
+        raw: 요청의 `market`.
+
+    Returns:
+        `(범위 이름, 시장들, 후보 503 포함 여부)`. `ALL` 과 `SP500` 은 둘 다 후보를 포함하고,
+        `SP500` 은 그 뒤에 후보 목록으로 **거른다**.
+
+    Raises:
+        HTTPException: 400 — 모르는 시장 · 재무 출처 없는 시장.
+    """
+    key = raw.strip().upper()
+    if key in (ALL_SCOPE, SP500_SCOPE):
+        return key, fundamentals_markets(), True
+    found = _market_or_400(raw)
+    return found.value, [found], False
+
+
 _candles: CandleRepository | None = None
 """봉 저장소 — 순위의 가격 역사를 판과 같은 캐시로 채운다 (T260). `attach_fundamentals` 가
 붙인다."""
@@ -339,10 +432,7 @@ def universe_of(market: Market) -> list[str]:
     Returns:
         종목 코드들(대문자).
     """
-    try:
-        raw: object = yaml.safe_load(UNIVERSE_CONFIG.read_text(encoding="utf-8"))
-    except OSError:
-        return []
+    raw = _yaml_cached(UNIVERSE_CONFIG)
     if not isinstance(raw, dict):
         return []
     rows = cast("dict[str, Any]", raw).get(market.value)
@@ -351,32 +441,45 @@ def universe_of(market: Market) -> list[str]:
     return [str(s).upper() for s in cast("list[object]", rows)]
 
 
-async def _quick_rows(market: Market, symbols: Sequence[str]) -> dict[str, dict[str, Any]]:
+async def _quick_rows(key: str, symbols: Mapping[str, Market | None]) -> dict[str, dict[str, Any]]:
     """1단계 — 이력 없는 종목의 "지금 값" (frames 몇 번 + 종가).
 
-    실패한 종목은 빠진다(조용히 0 아님).
+    Args:
+        key: 캐시 키 — 시장 이름 또는 `SP500`.
+        symbols: 종목 → 시세를 물을 시장. None 이면 시세 없이 값만(AMEX 등).
+
+    Returns:
+        종목 → 표 행. 실패한 종목은 빠진다(조용히 0 아님).
     """
     if not symbols:
         return {}
     now = time.monotonic()
-    cached = _QUICK_CACHE.get(market.value)
+    cached = _QUICK_CACHE.get(key)
     if cached is not None and now - cached[0] < QUICK_TTL_S and set(symbols) <= set(cached[1]):
         return {s: cached[1][s] for s in symbols if s in cached[1]}
-    async with _QUICK_LOCK:
+    lock = _QUICK_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
         adapter = _adapter_or_503()
         if not isinstance(adapter, EdgarAdapter):
             return {}  # frames · efts 검색은 EDGAR 만 안다
         client = adapter.client
         today = datetime.now(UTC).date()
-        # CIK — efts 검색(캐시됨). 못 푸는 종목은 뺀다.
+        # CIK — efts 검색(캐시됨). 못 푸는 종목은 뺀다. 첫 하나는 홀로(티커 표 시도가 한 번만 나게),
+        # 나머지는 동시에 — 스로틀(8/s)이 속도를 정한다(503 종이면 직렬 2분 → 동시 1분).
         ciks: dict[str, str] = {}
-        for symbol in symbols:
+        wanted_symbols = list(symbols)
+
+        async def one(symbol: str) -> None:
+            """종목 하나의 CIK 를 채운다 — 못 풀면 로그만 남기고 뺀다."""
             try:
                 ciks[symbol] = await adapter.cik_of(symbol)
             except Exception as exc:
                 _logger.info(
                     "screen_cik_missing", payload={"symbol": symbol, "detail": str(exc)[:80]}
                 )
+
+        await one(wanted_symbols[0])
+        await asyncio.gather(*(one(s) for s in wanted_symbols[1:]))
         if not ciks:
             return {}
         # frames — 개념마다 폴백 태그 · 기간 순서대로, 빈 CIK 만 다음 것으로 채운다.
@@ -405,16 +508,19 @@ async def _quick_rows(market: Market, symbols: Sequence[str]) -> dict[str, dict[
                             used.setdefault(cik, {})[name] = f"{tag}@{period}"
             for cik, value in got.items():
                 picked.setdefault(cik, {})[name] = value
-        # 종가 — 봉이 없는 종목은 브로커 일봉 하나.
+        # 종가 — 봉이 없는 종목은 브로커 일봉 하나. 시장을 모르면(AMEX) 값만.
         provider = MarketDataProvider()
-        broker = provider.broker_of(market)
-        quotes = provider.adapter_for(market)
         out: dict[str, dict[str, Any]] = {}
         for symbol, cik in ciks.items():
+            market = symbols.get(symbol)
+            broker = None if market is None else provider.broker_of(market)
             values = picked.get(cik, {})
             price: Decimal | None = None
             price_date: date | None = None
             try:
+                if market is None:
+                    raise ValueError("시장을 모른다 — 시세 없이 값만")
+                quotes = provider.adapter_for(market)
                 instrument = Instrument(market, symbol, symbol, AssetType.STOCK, Currency.USD)
                 end = datetime.now(UTC)
                 candles = await quotes.get_candles(
@@ -438,6 +544,7 @@ async def _quick_rows(market: Market, symbols: Sequence[str]) -> dict[str, dict[
             payload = made.as_json()
             out[symbol] = {
                 "symbol": symbol,
+                "market": None if market is None else market.value,
                 "broker": broker,
                 "has_facts": False,
                 "stage": "quick",
@@ -455,8 +562,48 @@ async def _quick_rows(market: Market, symbols: Sequence[str]) -> dict[str, dict[
                 "periods": payload["periods"],
             }
         merged = {**(cached[1] if cached else {}), **out}
-        _QUICK_CACHE[market.value] = (time.monotonic(), merged)
+        _QUICK_CACHE[key] = (time.monotonic(), merged)
         return out
+
+
+def _quick_or_warm(
+    key: str, symbols: Mapping[str, Market | None]
+) -> tuple[dict[str, dict[str, Any]], int]:
+    """캐시에 있으면 주고, 없으면 **백그라운드로** 준비를 띄운다 (SP500 범위).
+
+    Args:
+        key: 캐시 키.
+        symbols: 종목 → 시장.
+
+    Returns:
+        `(지금 줄 수 있는 행, 준비 중인 종목 수)`. 준비가 끝나면 다음 요청부터 채워진다.
+
+    Note:
+        후보 400여 종의 CIK·frames·시세를 요청 안에서 기다리면 화면이 몇 분을 멈춘다. 첫 요청은
+        2단계 행만 주고 "준비 중 N종" 을 적는다 — 캐시가 차면(6시간 기억) 그때부터 전부.
+    """
+    if not symbols:
+        return {}, 0
+    cached = _QUICK_CACHE.get(key)
+    fresh = cached is not None and time.monotonic() - cached[0] < QUICK_TTL_S
+    if fresh and cached is not None:
+        # 준비가 끝난 뒤 빠진 종목은 실패(CIK 없음 등)다 — 다시 띄우지 않는다.
+        return {s: cached[1][s] for s in symbols if s in cached[1]}, 0
+    task = _QUICK_TASKS.get(key)
+    if task is None or task.done():
+        made: asyncio.Task[Any] = asyncio.create_task(_quick_rows(key, dict(symbols)))
+        made.add_done_callback(_warm_finished)
+        _QUICK_TASKS[key] = made
+        _logger.info("screen_warm_started", payload={"key": key, "symbols": len(symbols)})
+    return {}, len(symbols)
+
+
+def _warm_finished(task: asyncio.Task[Any]) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _logger.warning("screen_warm_failed", payload={"detail": str(exc)[:160]})
 
 
 @router.get("/screen")
@@ -477,7 +624,8 @@ async def screen(
     쪽으로 낸다.
 
     Args:
-        market: 시장.
+        market: 시장 — `NASDAQ` · `NYSE` · `ALL`(필터 없음 · 후보 503 포함) ·
+            `SP500`(후보 목록만).
         sort: 정렬 키 (`SORTS`).
         order: `desc` · `asc`.
         min_score: 최소 점수.
@@ -488,21 +636,56 @@ async def screen(
         size: 쪽 크기 (≤ 50).
 
     Returns:
-        `{rows, page, pages, size, total, sort, order, sorts, at, market, note}`.
+        `{rows, page, pages, size, total, sort, order, sorts, at, market, markets, pending, note}` —
+        행마다 `market`(시장 모르면 null) · `name`(한글 이름).
 
     Raises:
         HTTPException: 400 시장 · 503 저장소/설정 없음.
     """
-    ranked = await ranking(market)
-    found = _market_or_400(market)
-    rows = [
-        {**cast("dict[str, Any]", r), "stage": "history" if r.get("has_facts") else "none"}
-        for r in cast("list[Any]", ranked["rows"])
-    ]
-    have = {str(r["symbol"]) for r in rows}
-    extra = [s for s in universe_of(found) if s not in have]
-    quick = await _quick_rows(found, extra)
-    rows.extend(quick[s] for s in extra if s in quick)
+    scope, markets, with_candidates = scope_of(market)
+    names = names_of()
+    rows: list[dict[str, Any]] = []
+    have: set[str] = set()
+    at = ""
+    note = ""
+    for found in markets:
+        ranked = await ranking(found.value)
+        at = str(ranked["at"])
+        note = str(ranked["note"])
+        for r in cast("list[Any]", ranked["rows"]):
+            row = cast("dict[str, Any]", r)
+            rows.append(
+                {
+                    **row,
+                    "market": found.value,
+                    "stage": "history" if row.get("has_facts") else "none",
+                }
+            )
+            have.add(str(row["symbol"]))
+        extra = [s for s in universe_of(found) if s not in have]
+        quick = await _quick_rows(found.value, dict.fromkeys(extra, found))
+        rows.extend(quick[s] for s in extra if s in quick)
+        have.update(s for s in extra if s in quick)
+    pending = 0
+    if with_candidates:
+        # ⭐ 후보 503 중 아직 적재 안 된 것 — 시장은 이름표에서(AMEX 는 시장 없음 · 값만).
+        candidates = candidates_of()
+        leftovers = {
+            s: NAME_MARKETS.get(names.get(s, {}).get("market", ""))
+            for s in candidates
+            if s not in have
+        }
+        quick, pending = _quick_or_warm(SP500_SCOPE, leftovers)
+        rows.extend(quick.values())
+        if scope == SP500_SCOPE:
+            # `전체` 는 필터가 없고, `SP 500` 은 같은 행을 후보 목록으로 거른다
+            # (사용자 정의 2026-09-10).
+            members = set(candidates)
+            rows = [r for r in rows if str(r["symbol"]) in members]
+    for row in rows:
+        row.setdefault("name", names.get(str(row["symbol"]), {}).get("ko") or None)
+    if pending:
+        note = f"S&P 500 1단계 {pending}종을 준비하는 중 — 몇 분 뒤 다시 읽으면 채워진다. {note}"
     body = screen_rows(
         rows,
         ScreenQuery(
@@ -519,11 +702,13 @@ async def screen(
     return {
         **body,
         "sorts": list(SORTS),
-        "at": ranked["at"],
-        "market": found.value,
+        "at": at,
+        "market": scope,
+        "markets": [m.value for m in markets],
+        "pending": pending,
         "label": CARD_LABEL,
         "recommended": RECOMMENDED,
-        "note": ranked["note"],
+        "note": note,
     }
 
 

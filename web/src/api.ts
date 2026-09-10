@@ -1678,6 +1678,10 @@ export type MarketStatusView = {
 /** 저평가 후보 줄 (T244 · `/fundamentals/ranking`). 가격·시총은 문자열, 비율·점수는 숫자. */
 export type ValueRow = {
   symbol: string;
+  /** 상장 시장. 전체·SP 500 범위에서 행마다 다르다 — 시장을 모르면(AMEX) null · 주문·이력 받기 불가. */
+  market?: string | null;
+  /** 한글 이름(토스 이름표). 없으면 null. */
+  name?: string | null;
   broker?: string | null;
   /** 공시를 받았나. 거짓이면 점수 없이 뒤에 선다 — 0점이 아니다. */
   has_facts: boolean;
@@ -1801,6 +1805,10 @@ export type ValueScreenView = {
   sorts: string[];
   at: string;
   market: string;
+  /** 범위에 든 시장들 (`ALL`·`SP500` 이면 둘). */
+  markets?: string[];
+  /** 전체·SP 500 범위 — 백그라운드로 준비 중인 1단계 종목 수. 0 이면 다 찼다. */
+  pending?: number;
   label: string;
   recommended: boolean;
   note: string;

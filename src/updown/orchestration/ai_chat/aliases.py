@@ -16,6 +16,18 @@ from typing import cast
 import yaml
 
 DEFAULT_ALIASES_PATH = Path(__file__).resolve().parents[4] / "config" / "ai_aliases.yml"
+DEFAULT_NAMES_PATH = (
+    Path(__file__).resolve().parents[4] / "config" / "fundamentals" / "universe_names.yml"
+)
+"""토스가 준 한글·영문 이름표 (T260 후속 · `seed_universe.py` 생성). 손 별칭이 우선한다."""
+NAME_GROUPS = {
+    "NASDAQ": "foreign",
+    "NYSE": "foreign",
+    "AMEX": "foreign",
+    "KOSPI": "domestic",
+    "KOSDAQ": "domestic",
+    "KRX": "domestic",
+}
 FUZZY_CUTOFF = 0.75
 
 
@@ -103,22 +115,69 @@ def parse_aliases(raw: Mapping[str, object]) -> AliasBook:
     return AliasBook(entries)
 
 
-def load_aliases(path: Path | None = None) -> AliasBook:
-    """사전을 파일에서 읽는다.
+def parse_names(raw: Mapping[str, object]) -> dict[str, tuple[str, str, str]]:
+    """이름표(`universe_names.yml`) → 사전 항목.
 
     Args:
-        path: 경로. None 이면 `config/ai_aliases.yml`.
+        raw: `{SYM: {ko, en, market}}`.
+
+    Returns:
+        소문자 별칭 → (symbol, group, 대표 이름). 대표 이름은 한글(`ko`) · 없으면 영문 ·
+        없으면 코드.
+        시장을 모르는 행은 해외로 본다(후보 파일이 미국주식이다).
+
+    Note:
+        "오라클" 처럼 사람이 부르는 이름은 토스가 이미 갖고 있다 — 손 별칭(`ai_aliases.yml`)에 없어
+        모델이 되묻던 것(2026-09-10 사용자 신고)을 여기서 푼다.
+    """
+    entries: dict[str, tuple[str, str, str]] = {}
+    for symbol, row in raw.items():
+        if not isinstance(row, dict):
+            continue
+        item = cast("Mapping[str, object]", row)
+        code = str(symbol).upper()
+        ko = str(item.get("ko") or "").strip()
+        en = str(item.get("en") or "").strip()
+        group = NAME_GROUPS.get(str(item.get("market") or ""), "foreign")
+        title = ko or en or code
+        entries[code.lower()] = (code, group, title)
+        for alias in (ko, en):
+            if alias:
+                entries[alias.lower()] = (code, group, title)
+    return entries
+
+
+def load_aliases(path: Path | None = None, names_path: Path | None = None) -> AliasBook:
+    """사전을 파일에서 읽는다 — 손 별칭 + 토스 이름표.
+
+    Args:
+        path: 손 별칭 경로. None 이면 `config/ai_aliases.yml`.
+        names_path: 이름표 경로. None 이면 `config/fundamentals/universe_names.yml`.
 
     Returns:
         사전. 파일이 없으면 빈 사전 — 별칭은 편의라 없어도 종목 코드 그대로는 풀린다.
+        같은 이름이 둘 다에 있으면 **손 별칭이 이긴다**(사람이 고른 대표 이름 · 갈래).
     """
+    entries: dict[str, tuple[str, str, str]] = {}
+    names = names_path or DEFAULT_NAMES_PATH
+    if names.exists():
+        raw_names = yaml.safe_load(names.read_text(encoding="utf-8"))
+        if isinstance(raw_names, dict):
+            entries.update(parse_names(cast("Mapping[str, object]", raw_names)))
     target = path or DEFAULT_ALIASES_PATH
-    if not target.exists():
-        return AliasBook({})
-    raw = yaml.safe_load(target.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        return AliasBook({})
-    return parse_aliases(cast("Mapping[str, object]", raw))
+    if target.exists():
+        raw = yaml.safe_load(target.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            entries.update(parse_aliases(cast("Mapping[str, object]", raw)).entries)
+    return AliasBook(entries)
 
 
-__all__ = ["DEFAULT_ALIASES_PATH", "AliasBook", "Resolved", "load_aliases", "parse_aliases"]
+__all__ = [
+    "DEFAULT_ALIASES_PATH",
+    "DEFAULT_NAMES_PATH",
+    "AliasBook",
+    "Resolved",
+    "load_aliases",
+    "parse_aliases",
+    "parse_names",
+]

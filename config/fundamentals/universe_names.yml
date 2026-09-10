@@ -1,0 +1,2015 @@
+# 종목 이름표 (T260 후속 · 2026-09-10) — `scripts/runtime/seed_universe.py` 가 토스 `/api/v1/stocks` 로 만든다.
+# 후보(`sp500_candidates.txt`) 전부의 한글 이름(`ko`) · 영문 이름(`en`) · 상장 시장. 손으로 고쳐도 다음 실행이 덮어쓴다.
+# 쓰는 곳: 채팅 `symbol_resolve`("오라클" → ORCL · 손 별칭 `ai_aliases.yml` 이 우선) · 저평가 후보 화면(이름 · SP 500 범위의 시장).
+A:
+  en: AGILENT TECHNOLOGIES INC
+  ko: 애질런트 테크놀로지스
+  market: NYSE
+AAPL:
+  en: Apple
+  ko: 애플
+  market: NASDAQ
+ABBV:
+  en: Abbvie
+  ko: 애브비
+  market: NYSE
+ABNB:
+  en: Airbnb
+  ko: 에어비앤비
+  market: NASDAQ
+ABT:
+  en: Abbott Laboratories
+  ko: 애보트 래버러토리스
+  market: NYSE
+ACGL:
+  en: ARCH CAPITAL GROUP
+  ko: 아치 캐피탈 그룹
+  market: NASDAQ
+ACN:
+  en: Accenture
+  ko: 액센츄어
+  market: NYSE
+ADBE:
+  en: Adobe
+  ko: 어도비
+  market: NASDAQ
+ADI:
+  en: ANALOG DEVICES INC
+  ko: 아날로그 디바이스
+  market: NASDAQ
+ADM:
+  en: ARCHER-DANIELS-MIDLAND CO
+  ko: 아처 대니얼스 미들랜드
+  market: NYSE
+ADP:
+  en: AUTOMATIC DATA PROCESSING INC
+  ko: 오토매틱 데이터 프로세싱
+  market: NASDAQ
+ADSK:
+  en: Autodesk
+  ko: 오토데스크
+  market: NASDAQ
+AEE:
+  en: AMEREN CORP
+  ko: 애머런
+  market: NYSE
+AEP:
+  en: American Electric Power
+  ko: 아메리칸 일렉트릭 파워
+  market: NASDAQ
+AES:
+  en: AES CORP
+  ko: AES
+  market: NYSE
+AFL:
+  en: AFLAC INC
+  ko: 애플랙
+  market: NYSE
+AIG:
+  en: American International Group
+  ko: 아메리칸 인터내셔널 그룹
+  market: NYSE
+AIZ:
+  en: ASSURANT INC
+  ko: 어슈런트
+  market: NYSE
+AJG:
+  en: GALLAGHER(ARTHUR J.)& CO
+  ko: 아서 J 갤러거
+  market: NYSE
+AKAM:
+  en: Akamai Technologies
+  ko: 아카마이 테크놀로지
+  market: NASDAQ
+ALB:
+  en: Albemarle Corporation
+  ko: 알버말
+  market: NYSE
+ALGN:
+  en: Align Technology
+  ko: 얼라인 테크놀로지
+  market: NASDAQ
+ALL:
+  en: Allstate
+  ko: 올스테이트
+  market: NYSE
+ALLE:
+  en: ALLEGION PLC
+  ko: 얼리젼
+  market: NYSE
+AMAT:
+  en: Applied Materials
+  ko: 어플라이드 머티리얼즈
+  market: NASDAQ
+AMCR:
+  en: AMCOR PLC
+  ko: 앰코
+  market: NYSE
+AMD:
+  en: Advanced Micro Devices
+  ko: AMD
+  market: NASDAQ
+AME:
+  en: AMETEK INC
+  ko: 아메텍
+  market: NYSE
+AMGN:
+  en: Amgen
+  ko: 암젠
+  market: NASDAQ
+AMP:
+  en: AMERIPRISE FINANCIAL INC
+  ko: 아메리프라이즈 파이낸셜
+  market: NYSE
+AMT:
+  en: American Tower
+  ko: 아메리칸 타워
+  market: NYSE
+AMZN:
+  en: Amazon.com
+  ko: 아마존
+  market: NASDAQ
+ANET:
+  en: ARISTA NETWORKS INC
+  ko: 아리스타 네트웍스
+  market: NYSE
+AON:
+  en: AON PLC (IE)
+  ko: 에이온
+  market: NYSE
+AOS:
+  en: SMITH A O CORP
+  ko: A O 스미스
+  market: NYSE
+APA:
+  en: Apache
+  ko: APA
+  market: NASDAQ
+APD:
+  en: AIR PRODUCTS & CHEMICALS INC
+  ko: 에어 프로덕츠 앤 케미컬스
+  market: NYSE
+APH:
+  en: AMPHENOL CORP
+  ko: 암페놀
+  market: NYSE
+APO:
+  en: APOLLO GLOBAL MANAGEMENT
+  ko: 아폴로 글로벌 매니지먼트
+  market: NYSE
+APP:
+  en: APPLOVIN CORP
+  ko: 앱러빈
+  market: NASDAQ
+APTV:
+  en: APTIV PLC
+  ko: 앱티브
+  market: NYSE
+ARE:
+  en: ALEXANDRIA REAL ESTATE EQUITIES
+  ko: 알렉산드리아 리얼 에스테이트 에퀴티스
+  market: NYSE
+ARES:
+  en: ARES MANAGEMENT CORPORATION
+  ko: 아레스 매니지먼트
+  market: NYSE
+ATO:
+  en: Atmos Energy
+  ko: 애트모스 에너지
+  market: NYSE
+AVGO:
+  en: Broadcom
+  ko: 브로드컴
+  market: NASDAQ
+AVY:
+  en: AVERY DENNISON CORP
+  ko: 에이버리 데니슨
+  market: NYSE
+AWK:
+  en: AMERICAN WATER WORKS COMPANY INC
+  ko: 아메리칸 워터 웍스
+  market: NYSE
+AXON:
+  en: AXON ENTERPRISE INC
+  ko: 액손 엔터프라이즈
+  market: NASDAQ
+AXP:
+  en: American Express
+  ko: 아메리칸 익스프레스
+  market: NYSE
+AZO:
+  en: AUTOZONE INC
+  ko: 오토존
+  market: NYSE
+BA:
+  en: Boeing
+  ko: 보잉
+  market: NYSE
+BAC:
+  en: Bank of America
+  ko: 뱅크오브아메리카
+  market: NYSE
+BALL:
+  en: BALL CORP
+  ko: 볼
+  market: NYSE
+BAX:
+  en: Baxter International
+  ko: 박스터 인터내셔널
+  market: NYSE
+BBY:
+  en: Best Buy
+  ko: 베스트 바이
+  market: NYSE
+BDX:
+  en: Becton Dickinson
+  ko: 벡톤 디킨슨
+  market: NYSE
+BEN:
+  en: FRANKLIN RESOURCES INC
+  ko: 프랭클린 리소시스
+  market: NYSE
+BF.B:
+  en: Brown-Forman
+  ko: 브라운 포먼 B
+  market: NYSE
+BG:
+  en: BUNGE GLOBAL SA
+  ko: 번지 글로벌
+  market: NYSE
+BIIB:
+  en: Biogen
+  ko: 바이오젠
+  market: NASDAQ
+BKNG:
+  en: Booking Holdings
+  ko: 부킹 홀딩스
+  market: NASDAQ
+BKR:
+  en: BAKER HUGHES COMPANY
+  ko: 베이커 휴즈
+  market: NASDAQ
+BLDR:
+  en: BUILDERS FIRSTSOURCE INC
+  ko: 빌더스 퍼스트소스
+  market: NYSE
+BLK:
+  en: BLACKROCK INC
+  ko: 블랙록
+  market: NYSE
+BMY:
+  en: Bristol-Myers Squibb
+  ko: 브리스톨 마이어스 스큅
+  market: NYSE
+BNY:
+  en: BANK OF NEW YORK MELLON CORP
+  ko: 뉴욕멜론은행
+  market: NYSE
+BR:
+  en: BROADRIDGE FINANCIAL SOLUTION INC
+  ko: 브로드리지 파이낸셜 솔루션
+  market: NYSE
+BRK.B:
+  en: Berkshire Hathaway B
+  ko: 버크셔 해서웨이 B
+  market: NYSE
+BRO:
+  en: BROWN & BROWN INC
+  ko: 브라운 앤 브라운
+  market: NYSE
+BSX:
+  en: BOSTON SCIENTIFIC CORP
+  ko: 보스턴 사이언티픽
+  market: NYSE
+BX:
+  en: Blackstone Group
+  ko: 블랙스톤
+  market: NYSE
+BXP:
+  en: Boston Properties
+  ko: 보스턴 프로퍼티스
+  market: NYSE
+C:
+  en: Citigroup
+  ko: 씨티그룹
+  market: NYSE
+CAH:
+  en: CARDINAL HEALTH INC
+  ko: 카디널 헬스
+  market: NYSE
+CARR:
+  en: CARRIER GLOBAL CORPORATION
+  ko: 캐리어
+  market: NYSE
+CASY:
+  en: CASEY S GENERAL STORES INC
+  ko: 케이시스 제너럴 스토어스
+  market: NASDAQ
+CAT:
+  en: Caterpillar
+  ko: 캐터필러
+  market: NYSE
+CB:
+  en: CHUBB LIMITED
+  ko: 처브
+  market: NYSE
+CBOE:
+  en: CBOE GLOBAL MARKETS INC
+  ko: CBOE 글로벌 마켓
+  market: AMEX
+CBRE:
+  en: CBRE Group
+  ko: CBRE 그룹
+  market: NYSE
+CCI:
+  en: Crown Castle
+  ko: 크라운 캐슬
+  market: NYSE
+CCL:
+  en: CARNIVAL CORPORATION LTD
+  ko: 카니발
+  market: NYSE
+CDNS:
+  en: CADENCE DESIGN SYSTEMS INC
+  ko: 케이던스 디자인 시스템즈
+  market: NASDAQ
+CDW:
+  en: CDW CORP
+  ko: CDW
+  market: NASDAQ
+CEG:
+  en: CONSTELLATION ENERGY CORPORATION
+  ko: 컨스털레이션 에너지
+  market: NASDAQ
+CF:
+  en: CF INDUSTRIES HOLDINGS INC
+  ko: CF 인더스트리스 홀딩스
+  market: NYSE
+CFG:
+  en: CITIZENS FINANCIAL GROUP INC
+  ko: 시티즌스 파이낸셜 그룹
+  market: NYSE
+CHD:
+  en: CHURCH & DWIGHT
+  ko: 처치 앤 드와이트
+  market: NYSE
+CHRW:
+  en: CH ROBINSON WORLDWIDE INC
+  ko: CH 로빈슨 월드와이드
+  market: NASDAQ
+CHTR:
+  en: Charter Communications
+  ko: 차터 커뮤니케이션스
+  market: NASDAQ
+CI:
+  en: Cigna
+  ko: 시그나 그룹
+  market: NYSE
+CIEN:
+  en: CIENA CORP
+  ko: 시에나
+  market: NYSE
+CINF:
+  en: CINCINNATI FINANCIAL
+  ko: 신시내티 파이낸셜
+  market: NASDAQ
+CL:
+  en: Colgate-Palmolive
+  ko: 콜게이트 팜올리브
+  market: NYSE
+CLX:
+  en: CLOROX CO
+  ko: 크로락스
+  market: NYSE
+CMCSA:
+  en: Comcast
+  ko: 컴캐스트
+  market: NASDAQ
+CME:
+  en: CME Group
+  ko: CME 그룹
+  market: NASDAQ
+CMG:
+  en: CHIPOTLE MEXICAN GRILL
+  ko: 치폴레 멕시칸 그릴
+  market: NYSE
+CMI:
+  en: CUMMINS INC
+  ko: 커민스
+  market: NYSE
+CMS:
+  en: CMS ENERGY CORP
+  ko: CMS 에너지
+  market: NYSE
+CNC:
+  en: CENTENE CORPORATION
+  ko: 센틴
+  market: NYSE
+CNP:
+  en: CENTERPOINT ENERGY INC
+  ko: 센터포인트 에너지
+  market: NYSE
+COF:
+  en: Capital One Financial
+  ko: 캐피탈 원 파이낸셜
+  market: NYSE
+COHR:
+  en: COHERENT CORP
+  ko: 코히런트
+  market: NYSE
+COIN:
+  en: Coinbase
+  ko: 코인베이스
+  market: NASDAQ
+COO:
+  en: COOPER COS INC
+  ko: 쿠퍼
+  market: NASDAQ
+COP:
+  en: Conocophillips
+  ko: 코노코필립스
+  market: NYSE
+COR:
+  en: CENCORA INC
+  ko: 센코라
+  market: NYSE
+COST:
+  en: Costco Wholesale
+  ko: 코스트코
+  market: NASDAQ
+CPAY:
+  en: CORPAY INC
+  ko: 코페이
+  market: NYSE
+CPRT:
+  en: COPART INC
+  ko: 코파트
+  market: NASDAQ
+CPT:
+  en: CAMDEN PROPERTY TRUST
+  ko: 캠든 프로퍼티
+  market: NYSE
+CRH:
+  en: CRH
+  ko: CRH(ADR)
+  market: NYSE
+CRL:
+  en: CHARLES RIVER LABORATORIES
+  ko: 찰스 리버 래버러토리스 인터내셔널
+  market: NYSE
+CRM:
+  en: Salesforce
+  ko: 세일즈포스
+  market: NYSE
+CRWD:
+  en: Crowdstrike Holdings
+  ko: 크라우드스트라이크 홀딩스
+  market: NASDAQ
+CSCO:
+  en: Cisco Systems
+  ko: 시스코 시스템즈
+  market: NASDAQ
+CSGP:
+  en: COSTAR GROUP INC
+  ko: 코스타 그룹
+  market: NASDAQ
+CSX:
+  en: CSX
+  ko: CSX
+  market: NASDAQ
+CTAS:
+  en: CINTAS CORP
+  ko: 신타스
+  market: NASDAQ
+CTSH:
+  en: COGNIZANT TECHNOLOGY SOLUTIONS CORP
+  ko: 코그니전트 테크놀로지 솔루션즈
+  market: NASDAQ
+CTVA:
+  en: Corteva
+  ko: 코르테바
+  market: NYSE
+CVNA:
+  en: CARVANA CO
+  ko: 카바나
+  market: NYSE
+CVS:
+  en: CVS Health
+  ko: CVS 헬스
+  market: NYSE
+CVX:
+  en: Chevron
+  ko: 셰브론
+  market: NYSE
+D:
+  en: DOMINION ENERGY INC
+  ko: 도미니언 에너지
+  market: NYSE
+DAL:
+  en: Delta Airlines
+  ko: 델타 항공
+  market: NYSE
+DASH:
+  en: DOORDASH INC
+  ko: 도어대시
+  market: NASDAQ
+DD:
+  en: DUPONT DE NEMOURS INC
+  ko: 듀폰
+  market: NYSE
+DDOG:
+  en: Datadog
+  ko: 데이터독
+  market: NASDAQ
+DE:
+  en: Deere
+  ko: 디어
+  market: NYSE
+DECK:
+  en: DECKERS OUTDOOR CORP
+  ko: 데커스 아웃도어
+  market: NYSE
+DELL:
+  en: Dell Technologies
+  ko: 델 테크놀로지스
+  market: NYSE
+DG:
+  en: Dollar General
+  ko: 달러 제너럴
+  market: NYSE
+DGX:
+  en: QUEST DIAGNOSTICS INC
+  ko: 퀘스트 다이아그노스틱스
+  market: NYSE
+DHI:
+  en: D.R. Horton
+  ko: D R 호튼
+  market: NYSE
+DHR:
+  en: Danaher
+  ko: 다나허
+  market: NYSE
+DIS:
+  en: The Walt Disney Company
+  ko: 디즈니
+  market: NYSE
+DLR:
+  en: DIGITAL REALTY TRUST INC
+  ko: 디지털 리얼티 트러스트
+  market: NYSE
+DLTR:
+  en: DOLLAR TREE INC
+  ko: 달러 트리
+  market: NASDAQ
+DOC:
+  en: HEALTHPEAK PROPERTIES INC
+  ko: 헬스피크 프로퍼티스
+  market: NYSE
+DOV:
+  en: DOVER CORP
+  ko: 도버
+  market: NYSE
+DOW:
+  en: Dow
+  ko: 다우
+  market: NYSE
+DPZ:
+  en: DOMINO S PIZZA INC
+  ko: 도미노 피자
+  market: NASDAQ
+DRI:
+  en: DARDEN RESTAURANTS INC
+  ko: 다든 레스토랑
+  market: NYSE
+DTE:
+  en: DTE ENERGY CO
+  ko: DTE 에너지
+  market: NYSE
+DUK:
+  en: Duke Energy
+  ko: 듀크 에너지
+  market: NYSE
+DVA:
+  en: DAVITA INC
+  ko: 다비타
+  market: NYSE
+DVN:
+  en: Devon Energy
+  ko: 데번 에너지
+  market: NYSE
+DXCM:
+  en: DEXCOM INC
+  ko: 덱스콤
+  market: NASDAQ
+EBAY:
+  en: Ebay
+  ko: 이베이
+  market: NASDAQ
+ECHO:
+  en: ECHOSTAR CORPORATION
+  ko: 에코스타
+  market: NASDAQ
+ECL:
+  en: Ecolab
+  ko: 에코랩
+  market: NYSE
+ED:
+  en: CONSOLIDATED EDISON INC
+  ko: 컨솔리데이티드 에디슨
+  market: NYSE
+EFX:
+  en: Equifax
+  ko: 에퀴팩스
+  market: NYSE
+EG:
+  en: EVEREST GROUP LTD
+  ko: 에베레스트 그룹
+  market: NYSE
+EIX:
+  en: EDISON INTERNATIONAL
+  ko: 에디슨 인터내셔널
+  market: NYSE
+EL:
+  en: Estee Lauder
+  ko: 에스티 로더
+  market: NYSE
+ELV:
+  en: ELEVANCE HEALTH INC
+  ko: 엘리번스 헬스
+  market: NYSE
+EME:
+  en: EMCOR GROUP INC
+  ko: 엠코 그룹
+  market: NYSE
+EMR:
+  en: Emerson Electric
+  ko: 에머슨 일렉트릭
+  market: NYSE
+EOG:
+  en: EOG RESOURCES INC
+  ko: EOG 리소시스
+  market: NYSE
+EQIX:
+  en: Equinix
+  ko: 에퀴닉스
+  market: NASDAQ
+EQT:
+  en: EQT CORPORATION
+  ko: EQT
+  market: NYSE
+ERIE:
+  en: ERIE INDEMNITY CO
+  ko: 이리 인뎀너티
+  market: NASDAQ
+ES:
+  en: EVERSOURCE ENERGY
+  ko: 에버소스 에너지
+  market: NYSE
+ESS:
+  en: ESSEX PROPERTY TRUST INC
+  ko: 에섹스 프라퍼티 트러스트
+  market: NYSE
+ETN:
+  en: EATON CORPORATION PLC
+  ko: 이튼
+  market: NYSE
+ETR:
+  en: ENTERGY CORP
+  ko: 엔터지
+  market: NYSE
+EVRG:
+  en: EVERGY INC
+  ko: 에버지
+  market: NASDAQ
+EW:
+  en: EDWARDS LIFESCIENCES CORP
+  ko: 에드워즈 라이프사이언시스
+  market: NYSE
+EXC:
+  en: EXELON CORP
+  ko: 엑셀론
+  market: NASDAQ
+EXE:
+  en: EXPAND ENERGY CORPORATION
+  ko: 익스팬드 에너지
+  market: NASDAQ
+EXPD:
+  en: EXPEDITORS INTERN OF WASHINGTON INC
+  ko: 익스피다이터스 인터내셔널 오브 워싱턴
+  market: NYSE
+EXPE:
+  en: Expedia
+  ko: 익스피디아
+  market: NASDAQ
+EXR:
+  en: EXTRA SPACE STORAGE INC
+  ko: 엑스트라 스페이스 스토리지
+  market: NYSE
+F:
+  en: Ford Motor
+  ko: 포드
+  market: NYSE
+FANG:
+  en: DIAMONDBACK ENERGY INC
+  ko: 다이아몬드백 에너지
+  market: NASDAQ
+FAST:
+  en: FASTENAL
+  ko: 패스널
+  market: NASDAQ
+FCX:
+  en: FREEPORT-MCMORAN INC
+  ko: 프리포트 맥모란
+  market: NYSE
+FDS:
+  en: FACTSET RESEARCH SYSTEMS
+  ko: 팩트셋 리서치 시스템즈
+  market: NYSE
+FDX:
+  en: Fedex
+  ko: 페덱스
+  market: NYSE
+FDXF:
+  en: FEDEX FREIGHT HOLDING CO INC
+  ko: 페덱스 프레이트 홀딩
+  market: NYSE
+FE:
+  en: FIRSTENERGY CORP
+  ko: 퍼스트에너지
+  market: NYSE
+FERG:
+  en: FERGUSON ENTERPRISES INC
+  ko: 퍼거슨
+  market: NYSE
+FFIV:
+  en: F5 INC
+  ko: F5
+  market: NASDAQ
+FICO:
+  en: FAIR ISAAC CORP
+  ko: 페어 아이작
+  market: NYSE
+FIS:
+  en: Fidelity National Information
+  ko: 피델리티 내셔널 인포메이션 서비시스
+  market: NYSE
+FISV:
+  en: FISERV INC
+  ko: 파이서브
+  market: NASDAQ
+FITB:
+  en: FIFTH THIRD BANCORP
+  ko: 피프스 서드 뱅코프
+  market: NYSE
+FIX:
+  en: COMFORT SYSTEMS USA
+  ko: 컴포트 시스템즈 USA
+  market: NYSE
+FLEX:
+  en: FLEX LTD
+  ko: 플렉스
+  market: NASDAQ
+FOX:
+  en: FOX CORPORATION
+  ko: 폭스 B
+  market: NASDAQ
+FOXA:
+  en: FOX CORPORATION
+  ko: 폭스 A
+  market: NASDAQ
+FRT:
+  en: FEDERAL REALTY INVESTMENT
+  ko: 페더럴 리얼티 인베스트먼트
+  market: NYSE
+FSLR:
+  en: FIRST SOLAR INC
+  ko: 퍼스트 솔라
+  market: NASDAQ
+FTNT:
+  en: FORTINET INC
+  ko: 포티넷
+  market: NASDAQ
+FTV:
+  en: FORTIVE CORP
+  ko: 포티브
+  market: NYSE
+GD:
+  en: GENERAL DYNAMICS CORP
+  ko: 제너럴 다이내믹스
+  market: NYSE
+GDDY:
+  en: GODADDY INC
+  ko: 고대디
+  market: NYSE
+GE:
+  en: General Electric
+  ko: 제너럴 일렉트릭 (에어로스페이스)
+  market: NYSE
+GEHC:
+  en: GE HEALTHCARE TECHNOLOGIES INC
+  ko: GE 헬스케어
+  market: NASDAQ
+GEN:
+  en: GEN DIGITAL INC
+  ko: 젠 디지털
+  market: NASDAQ
+GEV:
+  en: GE VERNOVA LLC
+  ko: GE 버노바
+  market: NYSE
+GILD:
+  en: Gilead Sciences
+  ko: 길리어드 사이언스
+  market: NASDAQ
+GIS:
+  en: General Mills
+  ko: 제너럴 밀스
+  market: NYSE
+GL:
+  en: GLOBE LIFE INC
+  ko: 글로브 라이프
+  market: NYSE
+GLW:
+  en: Corning
+  ko: 코닝
+  market: NYSE
+GM:
+  en: General Motors
+  ko: 제너럴 모터스
+  market: NYSE
+GNRC:
+  en: GENERAC HLDGS INC
+  ko: 제네락 홀딩스
+  market: NYSE
+GOOG:
+  en: Alphabet C
+  ko: 알파벳 C
+  market: NASDAQ
+GOOGL:
+  en: Alphabet A
+  ko: 알파벳 A
+  market: NASDAQ
+GPC:
+  en: GENUINE PARTS
+  ko: 제뉴인 파츠
+  market: NYSE
+GPN:
+  en: GLOBAL PAYMENTS INC
+  ko: 글로벌 페이먼츠
+  market: NYSE
+GRMN:
+  en: GARMIN LTD
+  ko: 가민
+  market: NYSE
+GS:
+  en: Goldman Sachs
+  ko: 골드만삭스
+  market: NYSE
+GWW:
+  en: GRAINGER W W INC
+  ko: W W 그레인저
+  market: NYSE
+HAL:
+  en: Halliburton
+  ko: 할리버턴
+  market: NYSE
+HAS:
+  en: Hasbro
+  ko: 해즈브로
+  market: NASDAQ
+HBAN:
+  en: HUNTINGTON BANCSHARES INC
+  ko: 헌팅턴 뱅크셰어스
+  market: NASDAQ
+HCA:
+  en: HCA HEALTHCARE INC
+  ko: HCA 헬스케어
+  market: NYSE
+HD:
+  en: Home Depot
+  ko: 홈 디포
+  market: NYSE
+HIG:
+  en: HARTFORD FINANCIAL SERVICES GRP INC
+  ko: 하트포드 파이낸셜 서비시스 그룹
+  market: NYSE
+HII:
+  en: HUNTINGTON INGALLS INDUSTRIES
+  ko: 헌팅턴 잉걸스 인더스트리스
+  market: NYSE
+HLT:
+  en: Hilton Worldwide
+  ko: 힐튼 월드와이드 홀딩스
+  market: NYSE
+HON:
+  en: HONEYWELL INTERNATIONAL INC
+  ko: 허니웰 인터내셔널
+  market: NASDAQ
+HONA:
+  en: HONEYWELL AEROSPACE INC
+  ko: 허니웰 에어로스페이스
+  market: NASDAQ
+HOOD:
+  en: Robinhood Markets
+  ko: 로빈후드
+  market: NASDAQ
+HPE:
+  en: HEWLETT PACKARD ENTERPRISE CO
+  ko: 휴렛 패커드 엔터프라이즈
+  market: NYSE
+HPQ:
+  en: HP
+  ko: HP
+  market: NYSE
+HRL:
+  en: Hormel Foods
+  ko: 호멜 푸즈
+  market: NYSE
+HSIC:
+  en: HENRY SCHEIN INC
+  ko: 헨리 셰인
+  market: NASDAQ
+HST:
+  en: Host Hotels & Resorts
+  ko: 호스트 호텔 앤 리조트
+  market: NASDAQ
+HSY:
+  en: Hershey
+  ko: 허쉬
+  market: NYSE
+HUBB:
+  en: HUBBELL INC
+  ko: 허벨
+  market: NYSE
+HUM:
+  en: HUMANA INC
+  ko: 휴매나
+  market: NYSE
+HWM:
+  en: HOWMET AEROSPACE INC
+  ko: 하우멧 에어로스페이스
+  market: NYSE
+IBKR:
+  en: INTERACTIVE BROKERS GROUP INC
+  ko: 인터랙티브 브로커스
+  market: NASDAQ
+IBM:
+  en: International Business Machines Corp
+  ko: IBM
+  market: NYSE
+ICE:
+  en: Intercontinental Exchange
+  ko: 인터컨티넨탈 익스체인지
+  market: NYSE
+IDXX:
+  en: IDEXX LABORATORIES INC
+  ko: 아이덱스 래버러토리스
+  market: NASDAQ
+IEX:
+  en: IDEX CORP
+  ko: 아이덱스
+  market: NYSE
+IFF:
+  en: INTERNATIONAL FLAVORS & FRAGRANCES
+  ko: 인터내셔널 플레이버스 앤 프레그런스
+  market: NYSE
+INCY:
+  en: INCYTE CORPORATION
+  ko: 인사이트
+  market: NASDAQ
+INTC:
+  en: Intel
+  ko: 인텔
+  market: NASDAQ
+INTU:
+  en: Intuit
+  ko: 인튜이트
+  market: NASDAQ
+INVH:
+  en: INVITATION HOMES INC
+  ko: 인비테이션 홈즈
+  market: NYSE
+IP:
+  en: International Paper
+  ko: 인터내셔널 페이퍼
+  market: NYSE
+IQV:
+  en: IQVIA HOLDINGS INC
+  ko: 아이큐비아 홀딩스
+  market: NYSE
+IR:
+  en: INGERSOLL RAND INC
+  ko: 잉가솔 랜드
+  market: NYSE
+IRM:
+  en: Iron Mountain
+  ko: 아이언 마운틴
+  market: NYSE
+ISRG:
+  en: Intuitive Surgical
+  ko: 인튜이티브 서지컬
+  market: NASDAQ
+IT:
+  en: Gartner
+  ko: 가트너
+  market: NYSE
+ITW:
+  en: ILLINOIS TOOL WORKS INC
+  ko: 일리노이 툴 웍스
+  market: NYSE
+IVZ:
+  en: INVESCO LTD
+  ko: 인베스코
+  market: NYSE
+J:
+  en: JACOBS SOLUTIONS INC
+  ko: 제이콥스 솔루션즈
+  market: NYSE
+JBHT:
+  en: HUNT(J.B.)TRANSPORT SERVICES INC
+  ko: JB 헌트 트랜스포트 서비시스
+  market: NASDAQ
+JBL:
+  en: JABIL INC
+  ko: 자빌
+  market: NYSE
+JCI:
+  en: JOHNSON CONTROLS INTERNATIONAL PLC
+  ko: 존슨 콘트롤즈 인터내셔널
+  market: NYSE
+JKHY:
+  en: HENRY JACK & ASSOCIATES INC
+  ko: 잭 헨리 앤 어소시에이츠
+  market: NASDAQ
+JNJ:
+  en: Johnson & Johnson
+  ko: 존슨 앤 존슨
+  market: NYSE
+JPM:
+  en: Jpmorgan Chase
+  ko: 제이피모건 체이스
+  market: NYSE
+KDP:
+  en: Keurig Dr Pepper
+  ko: 큐리그 닥터페퍼
+  market: NASDAQ
+KEY:
+  en: KEYCORP
+  ko: 키코프
+  market: NYSE
+KEYS:
+  en: KEYSIGHT TECHNOLOGIES INC
+  ko: 키사이트 테크놀로지스
+  market: NYSE
+KHC:
+  en: Kraft Heinz
+  ko: 크래프트 하인즈
+  market: NASDAQ
+KIM:
+  en: KIMCO REALTY CORP
+  ko: 킴코 리얼티
+  market: NYSE
+KKR:
+  en: KKR
+  ko: KKR & CO
+  market: NYSE
+KLAC:
+  en: KLA
+  ko: KLA
+  market: NASDAQ
+KMB:
+  en: KIMBERLY-CLARK CORPORATION
+  ko: 킴벌리클라크
+  market: NASDAQ
+KMI:
+  en: Kinder Morgan
+  ko: 킨더 모건
+  market: NYSE
+KO:
+  en: Coca-Cola
+  ko: 코카콜라
+  market: NYSE
+KR:
+  en: Kroger
+  ko: 크로거
+  market: NYSE
+KVUE:
+  en: KENVUE INC
+  ko: 켄뷰
+  market: NYSE
+L:
+  en: LOEWS CORP
+  ko: 로우스
+  market: NYSE
+LDOS:
+  en: LEIDOS HOLDINGS INC
+  ko: 레이도스 홀딩스
+  market: NYSE
+LEN:
+  en: Lennar
+  ko: 레나
+  market: NYSE
+LH:
+  en: LABCORP HOLDINGS INC
+  ko: 랩코프 홀딩스
+  market: NYSE
+LHX:
+  en: L3 HARRIS TECHNOLOGIES INC
+  ko: L3 해리스
+  market: NYSE
+LII:
+  en: LENNOX INTERNATIONAL INC
+  ko: 레녹스 인터내셔널
+  market: NYSE
+LIN:
+  en: LINDE PLC
+  ko: 린데
+  market: NASDAQ
+LITE:
+  en: LUMENTUM HLDGS INC
+  ko: 루멘텀 홀딩스
+  market: NASDAQ
+LLY:
+  en: Eli Lilly
+  ko: 일라이 릴리
+  market: NYSE
+LMT:
+  en: Lockheed Martin
+  ko: 록히드 마틴
+  market: NYSE
+LNT:
+  en: ALLIANT ENERGY CORP
+  ko: 얼라이언트 에너지
+  market: NASDAQ
+LOW:
+  en: Lowe's
+  ko: 로우스
+  market: NYSE
+LRCX:
+  en: LAM RESEARCH CORP
+  ko: 램 리서치
+  market: NASDAQ
+LULU:
+  en: Lululemon Athletica
+  ko: 룰루레몬
+  market: NASDAQ
+LUV:
+  en: Southwest Airlines
+  ko: 사우스웨스트 항공
+  market: NYSE
+LVS:
+  en: Las Vegas Sands
+  ko: 라스베이거스 샌즈
+  market: NYSE
+LYB:
+  en: LYONDELLBASELL INDUSTRIES N V
+  ko: 라이온델바젤 인더스트리스
+  market: NYSE
+LYV:
+  en: Live Nation Entertainment
+  ko: 라이브 네이션 엔터테인먼트
+  market: NYSE
+MA:
+  en: Mastercard
+  ko: 마스터카드
+  market: NYSE
+MAA:
+  en: MID-AMERICA APARTMENT COMMUNITIES
+  ko: 미드아메리카 아파트 커뮤니티
+  market: NYSE
+MAR:
+  en: Marriott International
+  ko: 메리어트
+  market: NASDAQ
+MAS:
+  en: MASCO CORP
+  ko: 매스코
+  market: NYSE
+MCD:
+  en: Mcdonald's
+  ko: 맥도날드
+  market: NYSE
+MCHP:
+  en: MICROCHIP TECHNOLOGY
+  ko: 마이크로칩 테크놀로지
+  market: NASDAQ
+MCK:
+  en: MCKESSON CORPORATION
+  ko: 매케슨
+  market: NYSE
+MCO:
+  en: MOODYS CORP
+  ko: 무디스
+  market: NYSE
+MDLZ:
+  en: Mondelez
+  ko: 몬덜리즈 인터내셔널
+  market: NASDAQ
+MDT:
+  en: Medtronic
+  ko: 메드트로닉
+  market: NYSE
+MET:
+  en: Metlife
+  ko: 메트라이프
+  market: NYSE
+META:
+  en: META PLATFORMS INC
+  ko: 메타
+  market: NASDAQ
+MGM:
+  en: MGM Resorts International
+  ko: MGM 리조트 인터내셔널
+  market: NYSE
+MKC:
+  en: MCCORMICK & COMPANY INC
+  ko: 매코믹 앤 컴퍼니
+  market: NYSE
+MLM:
+  en: MARTIN MARIETTA MATERIALS INC
+  ko: 마틴 마리에타 머티리얼스
+  market: NYSE
+MMM:
+  en: 3M
+  ko: 3M
+  market: NYSE
+MNST:
+  en: Monster Beverage
+  ko: 몬스터 베버리지
+  market: NASDAQ
+MO:
+  en: Altria
+  ko: 알트리아 그룹
+  market: NYSE
+MOS:
+  en: MOSAIC CO
+  ko: 모자이크
+  market: NYSE
+MPC:
+  en: MARATHON PETROLEUM CORP
+  ko: 마라톤 페트롤리움
+  market: NYSE
+MPWR:
+  en: MONOLITHIC POWER SYSTEM INC
+  ko: 모놀리식 파워 시스템
+  market: NASDAQ
+MRK:
+  en: Merck
+  ko: 머크
+  market: NYSE
+MRNA:
+  en: Moderna
+  ko: 모더나
+  market: NASDAQ
+MRSH:
+  en: MARSH
+  ko: 마시
+  market: NYSE
+MRVL:
+  en: MARVELL TECHNOLOGY INC
+  ko: 마벨 테크놀로지
+  market: NASDAQ
+MS:
+  en: Morgan Stanley
+  ko: 모건스탠리
+  market: NYSE
+MSCI:
+  en: MSCI INC
+  ko: MSCI
+  market: NYSE
+MSFT:
+  en: Microsoft
+  ko: 마이크로소프트
+  market: NASDAQ
+MSI:
+  en: Motorola Solutions
+  ko: 모토로라
+  market: NYSE
+MTB:
+  en: M & T BANK
+  ko: M&T 뱅크
+  market: NYSE
+MTD:
+  en: Mettler-Toledo
+  ko: 메틀러 톨레도 인터내셔널
+  market: NYSE
+MU:
+  en: Micron Technology
+  ko: 마이크론 테크놀로지
+  market: NASDAQ
+NCLH:
+  en: NORWEGIAN CRUISE LINE HLDGS
+  ko: 노르웨이지언 크루즈 라인 홀딩스
+  market: NYSE
+NDAQ:
+  en: Nasdaq
+  ko: 나스닥
+  market: NASDAQ
+NDSN:
+  en: NORDSON CORP
+  ko: 노드슨
+  market: NASDAQ
+NEE:
+  en: Nextera Energy
+  ko: 넥스트에라 에너지
+  market: NYSE
+NEM:
+  en: Newmont
+  ko: 뉴몬트
+  market: NYSE
+NFLX:
+  en: Netflix
+  ko: 넷플릭스
+  market: NASDAQ
+NI:
+  en: NISOURCE INC
+  ko: 나이소스
+  market: NYSE
+NKE:
+  en: Nike
+  ko: 나이키
+  market: NYSE
+NOC:
+  en: NORTHROP GRUMMAN CORP
+  ko: 노스롭 그루먼
+  market: NYSE
+NOW:
+  en: Servicenow
+  ko: 서비스나우
+  market: NYSE
+NRG:
+  en: NRG ENERGY INC
+  ko: NRG 에너지
+  market: NYSE
+NSC:
+  en: NORFOLK SOUTHERN CORP
+  ko: 노퍽서던
+  market: NYSE
+NTAP:
+  en: NETAPP INC
+  ko: 넷앱
+  market: NASDAQ
+NTRS:
+  en: NORTHERN TRUST CORP
+  ko: 노던 트러스트
+  market: NASDAQ
+NUE:
+  en: NUCOR CORP
+  ko: 뉴코
+  market: NYSE
+NVDA:
+  en: Nvidia
+  ko: 엔비디아
+  market: NASDAQ
+NVR:
+  en: NVR INC
+  ko: NVR
+  market: NYSE
+NWS:
+  en: NEWS CORP NEW
+  ko: 뉴스 코퍼레이션 B
+  market: NASDAQ
+NWSA:
+  en: NEWS CORP NEW
+  ko: 뉴스 코퍼레이션 A
+  market: NASDAQ
+NXPI:
+  en: NXP SEMICONDUCTORS N V
+  ko: NXP 세미컨덕터스
+  market: NASDAQ
+O:
+  en: Realty Income
+  ko: 리얼티 인컴
+  market: NYSE
+ODFL:
+  en: OLD DOMINION FREIGHT LINE INC
+  ko: 올드 도미니언 프레이트 라인
+  market: NASDAQ
+OKE:
+  en: ONEOK INC
+  ko: 원오크
+  market: NYSE
+OMC:
+  en: Omnicom Group
+  ko: 옴니콤 그룹
+  market: NYSE
+'ON':
+  en: ON SEMICONDUCTOR CORP
+  ko: 온 세미컨덕터
+  market: NASDAQ
+ORCL:
+  en: Oracle
+  ko: 오라클
+  market: NYSE
+ORLY:
+  en: OREILLY AUTOMOTIVE INC NEW
+  ko: 오릴리 오토모티브
+  market: NASDAQ
+OTIS:
+  en: OTIS WORLDWIDE CORP
+  ko: 오티스 월드와이드
+  market: NYSE
+OXY:
+  en: Occidental Petroleum
+  ko: 옥시덴탈 페트롤리움
+  market: NYSE
+PANW:
+  en: PALO ALTO NETWORKS INC
+  ko: 팰로 앨토 네트웍스
+  market: NASDAQ
+PAYX:
+  en: PAYCHEX INC
+  ko: 페이첵스
+  market: NASDAQ
+PCAR:
+  en: Paccar
+  ko: 파카
+  market: NASDAQ
+PCG:
+  en: PG&E CORP
+  ko: PG&E
+  market: NYSE
+PEG:
+  en: PUBLIC SERVICE ENTERPRISE GROUP INC
+  ko: 퍼블릭 서비스 엔터프라이즈
+  market: NYSE
+PEP:
+  en: Pepsico
+  ko: 펩시코
+  market: NASDAQ
+PFE:
+  en: Pfizer
+  ko: 화이자
+  market: NYSE
+PFG:
+  en: PRINCIPAL FINANCIAL GROUP
+  ko: 프린시펄 파이낸셜 그룹
+  market: NASDAQ
+PG:
+  en: Procter & Gamble
+  ko: P&G
+  market: NYSE
+PGR:
+  en: Progressive
+  ko: 프로그레시브
+  market: NYSE
+PH:
+  en: Parker-Hannifin
+  ko: 파카 하니핀
+  market: NYSE
+PHM:
+  en: PULTE GROUP INC
+  ko: 풀티 그룹
+  market: NYSE
+PKG:
+  en: PACKAGING CORP OF AMERICA
+  ko: 패키징 코퍼레이션 오브 아메리카
+  market: NYSE
+PLD:
+  en: Prologis
+  ko: 프로로지스
+  market: NYSE
+PLTR:
+  en: PALANTIR TECHNOLOGIES INC
+  ko: 팔란티어
+  market: NASDAQ
+PM:
+  en: PHILIP MORRIS INTERNATIONAL INC
+  ko: 필립 모리스 인터내셔널
+  market: NYSE
+PNC:
+  en: PNC FINANCIAL SERVICES GROUP
+  ko: PNC 파이낸셜 서비시스
+  market: NYSE
+PNR:
+  en: PENTAIR PLC
+  ko: 펜테어
+  market: NYSE
+PNW:
+  en: PINNACLE WEST CAPITAL CORP
+  ko: 피너클 웨스트 캐피탈
+  market: NYSE
+PODD:
+  en: INSULET CORPORATION
+  ko: 인슐릿
+  market: NASDAQ
+PPG:
+  en: PPG Industries
+  ko: PPG 인더스트리스
+  market: NYSE
+PPL:
+  en: PPL CORP
+  ko: PPL
+  market: NYSE
+PRU:
+  en: PRUDENTIAL FINANCIAL INC
+  ko: 푸르덴셜 파이낸셜
+  market: NYSE
+PSA:
+  en: Public Storage
+  ko: 퍼블릭 스토리지
+  market: NYSE
+PSKY:
+  en: PARAMOUNT SKYDANCE CORPORATION
+  ko: 파라마운트 스카이댄스 코퍼레이션
+  market: NASDAQ
+PSX:
+  en: PHILLIPS 66
+  ko: 필립스 66
+  market: NYSE
+PTC:
+  en: PTC INC
+  ko: PTC
+  market: NASDAQ
+PWR:
+  en: QUANTA SERVICES
+  ko: 콴타 서비시스
+  market: NYSE
+PYPL:
+  en: Paypal Holdings
+  ko: 페이팔
+  market: NASDAQ
+Q:
+  en: QNITY ELECTRONICS INC
+  ko: 큐니티 일렉트로닉스
+  market: NYSE
+QCOM:
+  en: Qualcomm
+  ko: 퀄컴
+  market: NASDAQ
+RCL:
+  en: Royal Caribbean
+  ko: 로열 캐리비안 크루즈
+  market: NYSE
+RDDT:
+  en: REDDIT INC
+  ko: 레딧
+  market: NYSE
+REG:
+  en: REGENCY CENTERS CORP
+  ko: 리젠시 센터스
+  market: NASDAQ
+REGN:
+  en: REGENERON PHARMACEUTICALS INC
+  ko: 리제네론 파마슈티컬스
+  market: NASDAQ
+RF:
+  en: REGIONS FINANCIAL CORP
+  ko: 리전스 파이낸셜
+  market: NYSE
+RJF:
+  en: RAYMOND JAMES FINANCIAL INC
+  ko: 레이먼드 제임스 파이낸셜
+  market: NYSE
+RL:
+  en: Ralph Lauren
+  ko: 랄프 로렌
+  market: NYSE
+RMD:
+  en: RESMED INC
+  ko: 레즈메드
+  market: NYSE
+ROK:
+  en: Rockwell Automation
+  ko: 로크웰 오토메이션
+  market: NYSE
+ROL:
+  en: ROLLINS INC
+  ko: 롤린스
+  market: NYSE
+ROP:
+  en: ROPER TECHNOLOGIES INC
+  ko: 로퍼 테크놀로지스
+  market: NASDAQ
+ROST:
+  en: Ross Stores
+  ko: 로스 스토어스
+  market: NASDAQ
+RSG:
+  en: REPUBLIC SERVICES INC
+  ko: 리퍼블릭 서비스
+  market: NYSE
+RTX:
+  en: RTX Corporation
+  ko: RTX
+  market: NYSE
+RVTY:
+  en: REVVITY INC
+  ko: 레비티
+  market: NYSE
+SBAC:
+  en: SBA COMMUNICATIONS CORP
+  ko: SBA 커뮤니케이션스
+  market: NASDAQ
+SBUX:
+  en: Starbucks
+  ko: 스타벅스
+  market: NASDAQ
+SCHW:
+  en: Schwab Charles
+  ko: 찰스 슈왑
+  market: NYSE
+SHW:
+  en: Sherwin-Williams
+  ko: 셔윈 윌리엄스
+  market: NYSE
+SJM:
+  en: JM Smucker
+  ko: JM스머커
+  market: NYSE
+SLB:
+  en: Schlumberger
+  ko: 슐럼버거
+  market: NYSE
+SMCI:
+  en: SUPER MICRO COMPUTER INC
+  ko: 슈퍼 마이크로 컴퓨터
+  market: NASDAQ
+SNA:
+  en: SNAP-ON INC
+  ko: 스냅 온
+  market: NYSE
+SNDK:
+  en: SANDISK CORP
+  ko: 샌디스크
+  market: NASDAQ
+SNPS:
+  en: Synopsys
+  ko: 시놉시스
+  market: NASDAQ
+SO:
+  en: SOUTHERN CO.
+  ko: 서던
+  market: NYSE
+SOLV:
+  en: SOLVENTUM CORP
+  ko: 솔벤텀
+  market: NYSE
+SPG:
+  en: SIMON PROPERTY GROUP INC
+  ko: 사이먼 프로퍼티 그룹
+  market: NYSE
+SPGI:
+  en: S&P Global
+  ko: S&P 글로벌
+  market: NYSE
+SRE:
+  en: SEMPRA
+  ko: 셈프라
+  market: NYSE
+STE:
+  en: STERIS PLC
+  ko: 스테리스
+  market: NYSE
+STLD:
+  en: STEEL DYNAMICS INC
+  ko: 스틸 다이내믹스
+  market: NASDAQ
+STT:
+  en: STATE STREET CORPORATION
+  ko: 스테이트 스트리트
+  market: NYSE
+STX:
+  en: Seagate Technology Holdings
+  ko: 씨게이트
+  market: NASDAQ
+STZ:
+  en: Constellation Brands
+  ko: 콘스텔레이션 브랜즈
+  market: NYSE
+SW:
+  en: SMURFIT WESTROCK PLC
+  ko: 스머핏 웨스트록
+  market: NYSE
+SWK:
+  en: STANLEY BLACK & DECKER INC
+  ko: 스탠리 블랙 앤 데커
+  market: NYSE
+SWKS:
+  en: SKYWORKS SOLUTIONS INC
+  ko: 스카이웍스 솔루션즈
+  market: NASDAQ
+SYF:
+  en: SYNCHRONY FINANCIAL
+  ko: 싱크로니 파이낸셜
+  market: NYSE
+SYK:
+  en: STRYKER CORP
+  ko: 스트라이커
+  market: NYSE
+SYY:
+  en: Sysco
+  ko: 시스코
+  market: NYSE
+T:
+  en: AT&T
+  ko: AT&T
+  market: NYSE
+TAP:
+  en: Molson Coors Beverage
+  ko: 몰슨 쿠어스 베버리지
+  market: NYSE
+TDG:
+  en: TRANSDIGM GROUP INC
+  ko: 트랜스다임 그룹
+  market: NYSE
+TDY:
+  en: Teledyne Technologies
+  ko: 텔레다인 테크놀로지스
+  market: NYSE
+TECH:
+  en: BIO-TECHNE CORP
+  ko: 바이오 테크네
+  market: NASDAQ
+TEL:
+  en: TE CONNECTIVITY LTD
+  ko: TE 커넥티비티
+  market: NYSE
+TER:
+  en: Teradyne
+  ko: 테라다인
+  market: NASDAQ
+TFC:
+  en: TRUIST FINANCIAL CORPORATION
+  ko: 트루이스트 파이낸셜
+  market: NYSE
+TGT:
+  en: Target
+  ko: 타겟
+  market: NYSE
+TJX:
+  en: TJX Companies
+  ko: TJX
+  market: NYSE
+TKO:
+  en: TKO GROUP HLDGS INC
+  ko: TKO 그룹 홀딩스
+  market: NYSE
+TMO:
+  en: Thermo Fisher Scientific
+  ko: 써모 피셔 사이언티픽
+  market: NYSE
+TMUS:
+  en: T Mobile USA
+  ko: T 모바일
+  market: NASDAQ
+TPL:
+  en: TEXAS PACIFIC LAND CORPORATION
+  ko: 텍사스 퍼시픽 랜드
+  market: NYSE
+TPR:
+  en: Tapestry
+  ko: 태피스트리
+  market: NYSE
+TRGP:
+  en: TARGA RESOURCES CORPORATION
+  ko: 타르가 리소시스
+  market: NYSE
+TRMB:
+  en: TRIMBLE INC
+  ko: 트림블
+  market: NASDAQ
+TROW:
+  en: PRICE T ROWE GROUPS
+  ko: 티 로웨 프라이스 그룹
+  market: NASDAQ
+TRV:
+  en: TRAVELERS COMPANIES INC
+  ko: 트래블러스 컴퍼니스
+  market: NYSE
+TSCO:
+  en: TRACTOR SUPPLY CO
+  ko: 트랙터 서플라이
+  market: NASDAQ
+TSLA:
+  en: Tesla
+  ko: 테슬라
+  market: NASDAQ
+TSN:
+  en: Tyson Foods
+  ko: 타이슨 푸드
+  market: NYSE
+TT:
+  en: TRANE TECHNOLOGIES PLC
+  ko: 트레인 테크놀로지
+  market: NYSE
+TTD:
+  en: THE TRADE DESK INC
+  ko: 트레이드 데스크
+  market: NASDAQ
+TTWO:
+  en: Take Two Interactive Software
+  ko: 테이크 투 인터랙티브 소프트웨어
+  market: NASDAQ
+TXN:
+  en: Texas Instruments
+  ko: 텍사스 인스트루먼츠
+  market: NASDAQ
+TXT:
+  en: TEXTRON INC
+  ko: 텍스트론
+  market: NYSE
+TYL:
+  en: TYLER TECHNOLOGIES INC
+  ko: 타일러 테크놀로지스
+  market: NYSE
+UAL:
+  en: United Airlines
+  ko: 유나이티드 항공
+  market: NASDAQ
+UBER:
+  en: Uber Technologies
+  ko: 우버
+  market: NYSE
+UDR:
+  en: UDR INC
+  ko: UDR
+  market: NYSE
+UHS:
+  en: UNIVERSAL HEALTH SERVICES INC.
+  ko: 유니버설 헬스 서비시스
+  market: NYSE
+ULTA:
+  en: Ulta Beauty
+  ko: 울타 뷰티
+  market: NASDAQ
+UNH:
+  en: Unitedhealth Group
+  ko: 유나이티드헬스 그룹
+  market: NYSE
+UNP:
+  en: Union Pacific
+  ko: 유니온 퍼시픽
+  market: NYSE
+UPS:
+  en: United Parcel Service
+  ko: 유나이티드 파셀 서비스
+  market: NYSE
+URI:
+  en: United Rentals
+  ko: 유나이티드 렌탈스
+  market: NYSE
+USB:
+  en: US BANCORP
+  ko: US 뱅코프
+  market: NYSE
+V:
+  en: Visa
+  ko: 비자
+  market: NYSE
+VEEV:
+  en: VEEVA SYSTEMS INC
+  ko: 비바 시스템즈
+  market: NYSE
+VICI:
+  en: VICI PROPERTIES INC
+  ko: 비치 프라퍼티스
+  market: NYSE
+VLO:
+  en: VALERO ENERGY CORP
+  ko: 발레로 에너지
+  market: NYSE
+VLTO:
+  en: VERALTO CORPORATION
+  ko: 버럴토
+  market: NYSE
+VMC:
+  en: VULCAN MATERIALS CO
+  ko: 벌칸 머티리얼스
+  market: NYSE
+VMRK:
+  en: VIVMARK RESIDENTIAL
+  ko: 비브마크 레지덴셜
+  market: NYSE
+VRSK:
+  en: VERISK ANALYTICS INC
+  ko: 베리스크 애널리틱스
+  market: NASDAQ
+VRSN:
+  en: Verisign
+  ko: 베리사인
+  market: NASDAQ
+VRT:
+  en: VERTIV HOLDINGS CO
+  ko: 버티브 홀딩스
+  market: NYSE
+VRTX:
+  en: Vertex Pharmaceutica
+  ko: 버텍스 파마슈티컬
+  market: NASDAQ
+VST:
+  en: VISTRA CORP
+  ko: 비스트라 에너지
+  market: NYSE
+VTR:
+  en: VENTAS INC
+  ko: 벤타스
+  market: NYSE
+VTRS:
+  en: Viatris
+  ko: 비아트리스
+  market: NASDAQ
+VZ:
+  en: Verizon Communications
+  ko: 버라이즌
+  market: NYSE
+WAB:
+  en: WESTINGHOUSE AIR BRAKE TECH CORP
+  ko: 웨스팅하우스 에어 브레이크 테크놀로지
+  market: NYSE
+WAT:
+  en: WATERS CORP
+  ko: 워터스
+  market: NYSE
+WBD:
+  en: WARNER BROS DISCOVERY INC
+  ko: 워너 브로스 디스커버리
+  market: NASDAQ
+WDAY:
+  en: WORKDAY INC
+  ko: 워크데이
+  market: NASDAQ
+WDC:
+  en: Western Digital
+  ko: 웨스턴 디지털
+  market: NASDAQ
+WEC:
+  en: WEC ENERGY GROUP INC
+  ko: WEC 에너지 그룹
+  market: NYSE
+WELL:
+  en: Welltower
+  ko: 웰타워
+  market: NYSE
+WFC:
+  en: Wells Fargo
+  ko: 웰스파고
+  market: NYSE
+WM:
+  en: Waste Management
+  ko: 웨이스트 매니지먼트
+  market: NYSE
+WMB:
+  en: WILLIAMS COMPANIES INC
+  ko: 윌리엄스 컴퍼니스
+  market: NYSE
+WMT:
+  en: WALMART INC
+  ko: 월마트
+  market: NASDAQ
+WRB:
+  en: BERKLEY(W.R.)CORP
+  ko: WR 버클리
+  market: NYSE
+WSM:
+  en: WILLIAMS-SONOMA INC
+  ko: 윌리엄스 소노마
+  market: NYSE
+WST:
+  en: WEST PHARMACEUTICAL SERVICES INC
+  ko: 웨스트 파마슈티컬 서비시스
+  market: NYSE
+WTW:
+  en: WILLIS TOWERS WATSON PLC
+  ko: 윌리스 타워스 왓슨
+  market: NASDAQ
+WY:
+  en: WEYERHAEUSER COMPANY
+  ko: 와이어하우저
+  market: NYSE
+WYNN:
+  en: Wynn Resorts
+  ko: 윈 리조트
+  market: NASDAQ
+XEL:
+  en: XCEL ENERGY INC
+  ko: 엑셀 에너지
+  market: NASDAQ
+XOM:
+  en: EXXONMOBIL HOLDINGS CORPORATION
+  ko: 엑슨 모빌
+  market: NYSE
+XYL:
+  en: XYLEM INC
+  ko: 자일럼
+  market: NYSE
+XYZ:
+  en: BLOCK INC
+  ko: 블록
+  market: NYSE
+YUM:
+  en: Yum! Brands
+  ko: 염 브랜즈
+  market: NYSE
+ZBH:
+  en: ZIMMER BIOMET HOLDINGS INC
+  ko: 짐머 바이오멧 홀딩스
+  market: NYSE
+ZBRA:
+  en: ZEBRA TECHNOLOGIES
+  ko: 지브라 테크놀로지스
+  market: NASDAQ
+ZTS:
+  en: Zoetis
+  ko: 조에티스
+  market: NYSE

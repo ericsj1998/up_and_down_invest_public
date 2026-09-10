@@ -27,6 +27,9 @@ import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from updown.common.config import load_settings
 from updown.common.db.session import create_engine, create_session_factory
@@ -46,6 +49,8 @@ _logger = get_logger("scripts.seed_universe")
 ROOT = Path(__file__).resolve().parents[2]
 CANDIDATES = ROOT / "config" / "fundamentals" / "sp500_candidates.txt"
 UNIVERSE = ROOT / "config" / "fundamentals" / "universe.yml"
+NAMES = ROOT / "config" / "fundamentals" / "universe_names.yml"
+"""후보 전부의 한글·영문 이름 + 상장 시장 — 채팅 별칭(`symbol_resolve`) · 저평가 화면이 읽는다."""
 MARKETS = {"NASDAQ": Market.NASDAQ, "NYSE": Market.NYSE}
 """토스 `market` → 우리 시장. AMEX · US_ETC 는 능력표·비용표가 없어 뺀다."""
 
@@ -106,6 +111,41 @@ def write_universe(path: Path, picked: list[tuple[str, Market, str, Decimal]], t
         lines.append(f"{market}:")
         lines.extend(f"  - {symbol}" for symbol in sorted(by_market[market]))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_names(path: Path, infos: list[dict[str, Any]]) -> int:
+    """토스 종목 정보 → 이름표 yaml.
+
+    Args:
+        path: 출력 경로.
+        infos: `stock_info` 응답 행들.
+
+    Returns:
+        쓴 행 수.
+    """
+    rows: dict[str, dict[str, str]] = {}
+    for info in infos:
+        symbol = str(info.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        rows[symbol] = {
+            "ko": str(info.get("name") or "").strip(),
+            "en": str(info.get("englishName") or "").strip(),
+            "market": str(info.get("market") or ""),
+        }
+    header = (
+        "# 종목 이름표 (T260 후속 · 2026-09-10) — `scripts/runtime/seed_universe.py` 가 토스 "
+        "`/api/v1/stocks` 로 만든다.\n"
+        "# 후보(`sp500_candidates.txt`) 전부의 한글 이름(`ko`) · 영문 이름(`en`) · 상장 시장. "
+        "손으로 고쳐도 다음 실행이 덮어쓴다.\n"
+        '# 쓰는 곳: 채팅 `symbol_resolve`("오라클" → ORCL · 손 별칭 `ai_aliases.yml` 이 우선) · '
+        "저평가 후보 화면(이름 · SP 500 범위의 시장).\n"
+    )
+    path.write_text(
+        header + yaml.safe_dump(rows, allow_unicode=True, sort_keys=True, width=120),
+        encoding="utf-8",
+    )
+    return len(rows)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -198,6 +238,7 @@ async def main() -> None:
         if args.write_universe:
             write_universe(UNIVERSE, picked, args.top)
             print(f"universe.yml 갱신: {UNIVERSE}")
+            print(f"universe_names.yml 갱신: {write_names(NAMES, infos)}행")
 
         engine = create_engine(settings.database_url)
         factory = create_session_factory(engine)

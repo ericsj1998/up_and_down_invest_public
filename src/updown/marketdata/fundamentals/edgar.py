@@ -98,7 +98,14 @@ class EdgarAdapter:
             return cik
         if self._table_ok:
             raise UnknownEntityError(f"EDGAR 티커 표에 {symbol} 이 없다")
-        cik = await self._client.cik_by_search(wanted)
+        try:
+            cik = await self._client.cik_by_search(wanted)
+        except UnknownEntityError:
+            # ⭐ 종류주 표기가 다르다 — 토스·후보 파일은 `BRK.B`, EDGAR 는 `BRK-B` (2026-09-10 실측:
+            #    NYSE 상위 100 중 사실이 없던 유일한 종목). 점을 하이픈으로 바꿔 한 번 더.
+            if "." not in wanted:
+                raise
+            cik = await self._client.cik_by_search(wanted.replace(".", "-"))
         self._tickers[wanted] = cik
         return cik
 

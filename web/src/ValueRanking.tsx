@@ -140,13 +140,25 @@ const SORT_LABEL: Record<string, string> = {
   market_cap: "시가총액",
 };
 
+/** 범위 칩 — 시장이 둘 이상이면 `전체`(합산) · `SP 500`(후보 503 전부)을 앞에 둔다 (사용자 요청 2026-09-10). */
+export function scopeOptions(markets: string[]): Array<{ label: string; value: string }> {
+  const own = markets.map((m) => ({ label: m, value: m }));
+  if (markets.length < 2) return own;
+  return [
+    { label: "전체", value: "ALL" },
+    { label: "SP 500", value: "SP500" },
+    ...own,
+  ];
+}
+
 export function ValueRanking({ markets }: { markets: string[] }) {
   // 🔴 재무가 있는 시장이 **둘 이상**이다(NASDAQ · NYSE). 첫 시장만 보이면 NYSE 62종(ORCL · JPM · V …)이
-  //    적재돼 있어도 화면에 영영 안 뜬다 (사용자 신고 2026-09-10 "ORCL 이 왜 없나"). 시장은 칩으로 고른다.
-  const [market, setMarket] = useState(markets[0] ?? "");
+  //    적재돼 있어도 화면에 영영 안 뜬다 (사용자 신고 2026-09-10 "ORCL 이 왜 없나"). 범위는 칩으로 고른다.
+  const scopes = scopeOptions(markets);
+  const [market, setMarket] = useState(scopes[0]?.value ?? "");
   useEffect(() => {
-    if (!markets.includes(market)) setMarket(markets[0] ?? "");
-  }, [markets, market]);
+    if (!scopes.some((s) => s.value === market)) setMarket(scopes[0]?.value ?? "");
+  }, [scopes, market]);
   const [view, setView] = useState<ValueScreenView | null>(null);
   const [error, setError] = useState("");
   const [open, setOpen] = useState<string | null>(null);
@@ -208,26 +220,33 @@ export function ValueRanking({ markets }: { markets: string[] }) {
   return (
     <Fold name={title} summary={summary} keep="value-ranking" initialShut>
       <p className="card-hint">
-        {market} 종목을 <b>재무제표 대비 싼 순</b>으로 — 자기 5년 백분위(쌀수록 100)의 평균에서 부채 깃발마다 감점.
+        {scopes.find((s) => s.value === market)?.label ?? market} 종목을 <b>재무제표 대비 싼 순</b>으로 — 자기 5년 백분위(쌀수록 100)의 평균에서 부채 깃발마다 감점.
         {view?.note ? ` ${view.note}` : ""} 1단계(지금 값 · frames)는 점수 없이 값만 보이고, "이력 받기" 로 2단계(5년 백분위 · 점수)가 된다.
       </p>
-      {markets.length > 1 ? (
-        <div className="row" style={{ gap: 6, marginBottom: 8 }}>
-          {markets.map((name) => (
+      {scopes.length > 1 ? (
+        <div className="row" style={{ gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+          {scopes.map((s) => (
             <button
-              key={name}
+              key={s.value}
               type="button"
-              className={`chip${market === name ? " live" : ""}`}
-              title={`${name} 저평가 후보`}
+              className={`chip${market === s.value ? " live" : ""}`}
+              title={
+                s.value === "ALL"
+                  ? "필터 없음 — 아는 종목 전부(적재분 + S&P 500 후보). 적재 안 된 종목은 1단계(지금 값), 처음엔 몇 분 준비"
+                  : s.value === "SP500"
+                    ? "S&P 500 목록에 든 종목만"
+                    : `${s.label} 상장 종목만`
+              }
               onClick={() => {
-                setMarket(name);
+                setMarket(s.value);
                 setPage(1);
                 setOpen(null);
               }}
             >
-              {name}
+              {s.label}
             </button>
           ))}
+          {view?.pending ? <span className="faint text-xs">1단계 {view.pending}종 준비 중…</span> : null}
         </div>
       ) : null}
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -353,11 +372,14 @@ function RowPair({
   const tone = scoreTone(row.score);
   const [busy, setBusy] = useState(false);
   const [promoteError, setPromoteError] = useState("");
+  // ⭐ 전체·SP 500 범위에서는 행마다 시장이 다르다 — 서버가 준 것을 쓰고, 없으면(AMEX) 주문·이력 받기를 막는다.
+  const rowMarket = row.market ?? (["ALL", "SP500"].includes(market) ? null : market);
   const promote = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!rowMarket) return;
     setBusy(true);
     setPromoteError("");
-    fundamentalsRefresh(row.symbol, market)
+    fundamentalsRefresh(row.symbol, rowMarket)
       .then(() => onPromoted?.())
       .catch((exc: unknown) => setPromoteError(String(exc)))
       .finally(() => setBusy(false));
@@ -373,6 +395,10 @@ function RowPair({
           <span className="inline-flex items-center gap-1">
             <BrokerMark broker={row.broker ?? undefined} />
             {row.symbol}
+            {row.name ? <span className="faint text-xs">{row.name}</span> : null}
+            {["ALL", "SP500"].includes(market) && rowMarket ? (
+              <span className="faint text-xs">{rowMarket}</span>
+            ) : null}
           </span>
         </td>
         <td className="num">{num(row.price ?? null, 2)}</td>
@@ -383,7 +409,7 @@ function RowPair({
                 <span className="chip" title="1단계 — frames 지금 값 · 백분위·점수 없음">
                   1단계
                 </span>
-                <button type="button" className="btn small" disabled={busy} onClick={promote} title="companyfacts 이력을 받아 2단계(5년 백분위 · 점수)로 올린다">
+                <button type="button" className="btn small" disabled={busy || !rowMarket} onClick={promote} title={rowMarket ? "companyfacts 이력을 받아 2단계(5년 백분위 · 점수)로 올린다" : "시장을 모르는 종목이다(AMEX 등)"}>
                   {busy ? "받는 중…" : "이력 받기"}
                 </button>
                 {promoteError ? <span className="loss text-xs">{promoteError}</span> : null}
@@ -450,11 +476,11 @@ function RowPair({
           <button
             type="button"
             className="btn small"
-            disabled={!row.price}
-            title={row.price ? "주식 주문 창에 이 종목을 채운다" : "시세가 없다"}
+            disabled={!row.price || !rowMarket}
+            title={!rowMarket ? "시장을 모르는 종목이다(AMEX 등)" : row.price ? "주식 주문 창에 이 종목을 채운다" : "시세가 없다"}
             onClick={(e) => {
               e.stopPropagation();
-              requestStockOrder(row.symbol, market);
+              if (rowMarket) requestStockOrder(row.symbol, rowMarket);
             }}
           >
             주문
@@ -464,7 +490,7 @@ function RowPair({
       {shown ? (
         <tr className="why-row">
           <td colSpan={11}>
-            <Detail symbol={row.symbol} market={market} />
+            <Detail symbol={row.symbol} market={rowMarket ?? market} />
           </td>
         </tr>
       ) : null}
