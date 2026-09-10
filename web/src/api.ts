@@ -2718,7 +2718,13 @@ export function chartOrderAnalyze(params: {
   bucket: string;
 }): Promise<ChartAnalysis> {
   const query = new URLSearchParams(params);
-  return request(`/chart-order/analyze?${query.toString()}`);
+  // ⏳ 토스 시장의 분봉은 1m 원봉 합성이라 **처음 한 번**은 1~2분이 든다(다음부터 DB 꼬리만). 기본 20초면 화면이
+  //    먼저 포기해 499 가 나고 서버는 계속 받는다(실계좌 실측 2026-09-11 · SPY 1h). 3분을 준다.
+  return request(
+    `/chart-order/analyze?${query.toString()}`,
+    undefined,
+    180_000,
+  );
 }
 
 export function orderCustom(payload: {

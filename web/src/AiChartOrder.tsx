@@ -831,6 +831,13 @@ export function AiChartOrder({
                 : "AI 비교를 띄우는 중"}
             </p>
           ) : null}
+          {busy && stock ? (
+            <p className="faint text-xs">
+              ⏳ 토스 시장의 분봉은 1분 원봉을 합쳐 만든다 — 이 종목·축은{" "}
+              <b>처음 한 번</b>만 1~2분이 들고, 그 뒤로는 DB 에 남아 몇 초면
+              된다. 그대로 두면 된다.
+            </p>
+          ) : null}
           {error ? <ErrorCard message={error} /> : null}
           {body && s ? (
             <>
