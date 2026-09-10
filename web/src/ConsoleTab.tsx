@@ -650,8 +650,13 @@ export function ConsoleTab({ openRun }: Props) {
         // ⭐ 되살리기가 왜 안 됐는지는 `revive` 에 있다 — 숨기면 "실패했다" 만 보고 겁만 먹는다
         //    (2026-09-11: 로컬 데모가 BINANCE 만 연결한 뒤 NASDAQ 페이퍼 판 셋이 이 문구로만 떴다).
         //    이 API 가 연결하지 않은 시장이면 거래소 포지션 경고 대신 그 사실을 말한다.
+        //    ⚠️ 이유는 `revive` 에만 있는 게 아니다 — 재시도 대기 중이면 `revive` 는 "N초 뒤 다시" 뿐이고
+        //    `guard`(거래소 대조)가 "UPDOWN_MARKETS 에 … 없다" 를 든다. 둘 다 본다 (2026-09-11 실측: 단추가 안 떴다).
+        const why = `${row.guard ?? ""} ${row.revive ?? ""}`;
         const notConnected =
-          !!row.revive && row.revive.includes("연결하지 않은 거래소");
+          why.includes("연결하지 않은 거래소") ||
+          why.includes("UPDOWN_MARKETS") ||
+          why.includes("토스를 부르지 않는다");
         return (
           <p key={row.run} className="notice bad">
             🔴 {row.run} — {row.detail}
