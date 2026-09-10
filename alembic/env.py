@@ -21,7 +21,10 @@ import updown.common.db.models  # noqa: F401  isort:skip
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # ⚠️ `disable_existing_loggers` 기본값(True)은 이미 만들어진 로거를 전부 끈다 — 앱이 import 한
+    #    라이브러리(uvicorn 등)의 로거가 죽어 파일 싱크에 안 실린다(T263 실측 2026-09-10: `mcp` 가
+    #    uvicorn 을 import 하자 `uvicorn.error` 가 미리 생겨 알렘빅 뒤 disabled 가 됐다).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

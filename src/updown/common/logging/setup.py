@@ -238,6 +238,12 @@ def configure_logging(
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
     root.setLevel(numeric_level)
+    # 🔴 누군가 `logging.config.fileConfig/dictConfig` 를 기본값으로 불렀으면 그 전에 있던 로거가
+    #    전부 `disabled` 다 — 그러면 라이브러리(uvicorn·SQLAlchemy) 줄이 조용히 사라진다(규칙 #8).
+    #    여기가 로깅의 주인이므로 되살린다.
+    for known in list(logging.root.manager.loggerDict.values()):
+        if isinstance(known, logging.Logger) and known.disabled:
+            known.disabled = False
 
 
 def get_logger(module: str) -> structlog.stdlib.BoundLogger:
