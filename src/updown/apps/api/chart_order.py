@@ -29,6 +29,7 @@ from updown.apps.api import fundamentals as fundamentals_api
 from updown.apps.api import macro as macro_api
 from updown.apps.api.auth import caller_of
 from updown.apps.api.jobs import Reporter, registry
+from updown.apps.api.quotes import stored_quotes
 from updown.common.cache import TtlCache
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.domain.capabilities import capabilities_of
@@ -202,7 +203,7 @@ async def _assemble(
     )
     now = datetime.now(UTC)
     async with MarketDataProvider() as provider:
-        adapter = provider.adapter_for(mk)
+        adapter = stored_quotes(provider, mk)  # DB 먼저 · 토스 1m 합성은 빈 곳만
         entry_rows = await adapter.get_candles(
             instrument,
             chosen.entry,
@@ -467,6 +468,7 @@ async def run(request: Request, payload: Annotated[dict[str, Any], Body()]) -> d
                 client,
                 pool,
                 on_progress=report,
+                quotes=stored_quotes(provider, mk),
             )
             report(f"AI+근거 — {model}{EVIDENCE_SUFFIX} (같은 스냅샷)")
             with_note = await llm_analyze(

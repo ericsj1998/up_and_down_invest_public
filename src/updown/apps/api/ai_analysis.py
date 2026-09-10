@@ -37,6 +37,7 @@ from updown.analysis.structures.balance import (
 )
 from updown.analysis.trend.service import evaluate as trend_evaluate
 from updown.apps.api.jobs import Reporter, registry
+from updown.apps.api.quotes import stored_quotes
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import (
     AssetType,
@@ -259,6 +260,7 @@ async def analyze_start(body: AnalyzeBody) -> dict[str, Any]:
                 client,
                 pool,
                 on_progress=report,
+                quotes=stored_quotes(provider, instrument.market),
             )
             if body.save:
                 # 🔴 저장은 **스케줄러와 같은 함수**를 탄다. 경로가 갈라지면 회차

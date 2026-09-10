@@ -58,6 +58,7 @@ from updown.apps.api.logs_admin import router as logs_admin_router
 from updown.apps.api.macro import router as macro_router
 from updown.apps.api.mcp_server import McpEndpoint, build_manager, build_server
 from updown.apps.api.middleware import trace_id_middleware
+from updown.apps.api.quotes import attach_candles
 from updown.apps.api.rebalancer import router as rebalancer_router
 from updown.apps.api.report import router as report_router
 from updown.apps.api.resources_admin import router as resources_admin_router
@@ -208,6 +209,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         attach_state_store(DbStateStore(resolved_state.session_factory))
         # ⭐ 재무 사실(T243) — 같은 풀. 설정은 EDGAR User-Agent 때문에 넘긴다.
         attach_fundamentals(resolved_state.session_factory, resolved_state.settings)
+        # ⭐ AI 분석·AI 차트 주문의 봉은 DB 먼저(`StoredCandles`) — 토스 1m 합성 2.5분을 한 번만.
+        attach_candles(resolved_state.session_factory)
         # 🔴 계정 저장소 — 미들웨어가 **매 요청** 등급을 여기서 읽는다. 안 붙으면
         #    아무도 로그인할 수 없다 (조용히 통과시키지 않는다 · 규칙 #8).
         # ⭐ `ACCOUNTS_DATABASE_URL` 이 있으면 계정·문의·관리자 설정만 **그 DB** 에서 연다
@@ -289,6 +292,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
             attach_store(None)
             attach_state_store(None)
             attach_fundamentals(None)
+            attach_candles(None)
             attach_accounts(None)
             if accounts_engine is not None:
                 with contextlib.suppress(Exception):

@@ -25,6 +25,7 @@ from updown.common.logging.setup import get_logger
 from updown.llm.pool import PoolConfig, fan_out
 from updown.llm.port import FailureKind, LlmClient, LlmFailure, LlmSuccess
 from updown.llm.schema import ChartAnalysis, SchemaError, parse_analysis
+from updown.marketdata.adapter import QuoteAdapter
 from updown.marketdata.ingest.calendar_span import CalendarSpan, SpanBar, aggregate_calendar
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_analysis.prompt import (
@@ -165,6 +166,8 @@ async def fetch_snapshot(
     instrument: Instrument,
     provider: MarketDataProvider,
     on_progress: ProgressFn | None = None,
+    *,
+    quotes: QuoteAdapter | None = None,
 ) -> Snapshot:
     """실시간 멀티 타임프레임 스냅샷을 받는다.
 
@@ -172,6 +175,9 @@ async def fetch_snapshot(
         instrument: 대상.
         provider: 조회 경로 (절대 규칙 #0).
         on_progress: 진행 로그 콜백.
+        quotes: 봉을 댈 어댑터를 바꿔 끼울 때 — DB 를 먼저 보는 `StoredCandles` 등. 없으면
+            `provider.adapter_for`. 토스 시장은 브로커 직접 조회가 한 번에 2.5분이라(1m 합성)
+            API 는 저장소를 덮어 넘긴다(`apps/api/quotes.stored_quotes`).
 
     Returns:
         고정된 스냅샷.
@@ -181,7 +187,7 @@ async def fetch_snapshot(
     """
     started = time.perf_counter()
     timings: dict[str, int] = {}
-    adapter = provider.adapter_for(instrument.market)
+    adapter = quotes if quotes is not None else provider.adapter_for(instrument.market)
     now = datetime.now(UTC)
     frames: dict[str, list[Candle]] = {}
 
@@ -258,6 +264,7 @@ async def analyze(
     config: PoolConfig,
     on_progress: ProgressFn | None = None,
     snapshot: Snapshot | None = None,
+    quotes: QuoteAdapter | None = None,
 ) -> AnalysisResult:
     """스냅샷을 받아 모델들에 던지고 결과를 모은다.
 
@@ -270,6 +277,7 @@ async def analyze(
         snapshot: 이미 고정한 스냅샷 — 같은 봉으로 프롬프트만 바꿔 한 번 더 물을 때(T273 "AI+근거").
             없으면 새로 받는다. 토스 시장은 스냅샷 한 번이 2분이라 두 번 받으면 봉이 달라져 비교가
             아니게 된다(2026-09-11 실측: digest 가 갈렸다).
+        quotes: 스냅샷 봉을 댈 어댑터 (`fetch_snapshot` 참조). `snapshot` 이 있으면 안 쓴다.
 
     Returns:
         회차 결과. **실패한 모델도 들어 있다** (G-AI-4).
@@ -286,7 +294,7 @@ async def analyze(
             on_progress(message)
 
     if snapshot is None:
-        snapshot = await fetch_snapshot(request.instrument, provider, on_progress)
+        snapshot = await fetch_snapshot(request.instrument, provider, on_progress, quotes=quotes)
     note(f"스냅샷 고정 · digest={snapshot.digest} · 현재가 {snapshot.entry}")
 
     user_prompt = build_user_prompt(
