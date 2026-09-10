@@ -476,6 +476,25 @@ class TossAdapter:
         )
         return self._as_list(result, "/api/v1/market-indicators/prices")
 
+    async def market_calendar(self, country: str, day: date | None = None) -> dict[str, Any]:
+        """장 운영 달력 — 전일·당일·익일 영업일의 세션 창 (`/api/v1/market-calendar/{US,KR}`).
+
+        Args:
+            country: `US` 또는 `KR`.
+            day: 기준일(현지 날짜). None 이면 오늘.
+
+        Returns:
+            스펙 `UsMarketCalendarResponse` / `KrMarketCalendarResponse`(`previousBusinessDay` ·
+            `today` · `nextBusinessDay` · 시각은 KST).
+
+        Raises:
+            TossApiError: API 실패.
+        """
+        path = f"/api/v1/market-calendar/{country}"
+        params = {"date": day.isoformat()} if day is not None else {}
+        result = await self._client.get_result(path, group="MARKET_INFO", params=params)
+        return self._as_dict(result, path)
+
     @staticmethod
     def live_session_of(
         info: Mapping[str, Any], warnings: Sequence[Mapping[str, Any]], today: date

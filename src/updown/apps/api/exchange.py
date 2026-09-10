@@ -42,6 +42,12 @@ from updown.common.domain.session import SessionConfigError, load_calendar
 from updown.common.logging.setup import get_logger
 from updown.execution.gateway import OrderGatewayError, order_adapter
 from updown.marketdata.adapter import QuoteAdapter
+from updown.marketdata.calendar_check import (
+    COUNTRY_OF,
+    CalendarSource,
+    compare_day,
+    regular_window_of,
+)
 from updown.marketdata.gate.adapter import GateAdapter
 from updown.marketdata.provider import MarketDataProvider
 from updown.marketdata.ratelimit import meter
@@ -164,6 +170,64 @@ async def market_status(market: str) -> dict[str, Any]:
     except (SessionConfigError, OSError) as exc:
         raise HTTPException(503, f"마켓 캘린더를 읽을 수 없다 — {exc}") from exc
     return market_status_payload(calendar, target, datetime.now(UTC))
+
+
+CALENDAR_CHECK_TTL_S = 3600.0
+_CALENDAR_CHECK: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+@router.get("/calendar-check")
+async def calendar_check(market: str) -> dict[str, Any]:
+    """토스 장 운영 달력과 우리 캘린더 대조 (T259 2차) — 전일·당일·익일 영업일.
+
+    Args:
+        market: 시장 코드 (NASDAQ · NYSE · KRX).
+
+    Returns:
+        `{market, country, at, days: [{date, regular}], findings: [...], ok}` — 한 시간 기억.
+
+    Raises:
+        HTTPException: 모르는/대조 못 하는 시장(400) · 캘린더 없음·토스 자격증명 없음(503) ·
+            토스 실패(502).
+    """
+    try:
+        target = Market(market)
+    except ValueError as exc:
+        raise HTTPException(400, f"모르는 시장이다: {market}") from exc
+    country = COUNTRY_OF.get(target)
+    if country is None:
+        raise HTTPException(400, f"{target.value} 는 토스 달력이 없다(24시간 장)")
+    cached = _CALENDAR_CHECK.get(target.value)
+    if cached is not None and time.monotonic() - cached[0] < CALENDAR_CHECK_TTL_S:
+        return cached[1]
+    try:
+        calendar = load_calendar()
+    except (SessionConfigError, OSError) as exc:
+        raise HTTPException(503, f"마켓 캘린더를 읽을 수 없다 — {exc}") from exc
+    async with MarketDataProvider() as provider:
+        adapter = provider.adapter_for(target)
+        if not isinstance(adapter, CalendarSource):
+            raise HTTPException(503, "토스 조회 자격증명이 없어 달력을 못 받는다")
+        try:
+            body = await adapter.market_calendar(country)
+        except Exception as exc:
+            raise HTTPException(502, f"토스 달력 실패: {str(exc)[:160]}") from exc
+    days: list[dict[str, Any]] = [
+        cast("dict[str, Any]", body[key])
+        for key in ("previousBusinessDay", "today", "nextBusinessDay")
+        if isinstance(body.get(key), dict)
+    ]
+    findings = [f.as_json() for day in days for f in compare_day(calendar, target, day)]
+    made: dict[str, Any] = {
+        "market": target.value,
+        "country": country,
+        "at": datetime.now(UTC).isoformat(),
+        "days": [{"date": str(d.get("date")), "regular": regular_window_of(d)} for d in days],
+        "findings": findings,
+        "ok": not findings,
+    }
+    _CALENDAR_CHECK[target.value] = (time.monotonic(), made)
+    return made
 
 
 @router.get("/balances")

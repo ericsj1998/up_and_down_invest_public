@@ -40,8 +40,9 @@ import structlog
 
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.domain.candle import Candle
-from updown.common.domain.instrument import Instrument, Timeframe
+from updown.common.domain.instrument import Instrument, Market, Timeframe
 from updown.common.domain.order import OrderKind, OrderStatus
+from updown.common.domain.session import MarketCalendar, SessionConfigError, Tradability
 from updown.common.logging.setup import get_logger
 from updown.decision.risk.policy import funding_shortfall
 from updown.decision.risk.policy import load_settings as load_risk_settings
@@ -3334,6 +3335,9 @@ class LiveRunner:
         # 🔴 **진입가를 적는 축도 본다** (T20 ②). 2026-08-19 ① 은 *"10초봉이 15분마다만
         #    갱신된다"* 였는데 **아무 예외도 안 났다** — 값이 있고 갱신만 안 됐기 때문이다.
         #    그 축이 얼면 진입가가 조용히 낡고, 낡은 가격으로 계획이 선다.
+        open_for = open_seconds(
+            getattr(self._session, "calendar", None), self._session.instrument.market, now
+        )
         for frame in {STEP_FRAME, self.entry, self.price_frame}:
             rows = self._feed.observed(frame)
             if not rows:
@@ -3343,6 +3347,13 @@ class LiveRunner:
                 continue
             age = (now - rows[-1].ts).total_seconds()
             span = interval_seconds(frame)
+            # ⭐ T259 2차 — 닫힌 장에서 봉이 멈추는 것은 **정상**이다(휴장 중 AAPL 1h 오탐 실측).
+            #    달력이 열렸다 할 때만 재고, 막 연 뒤에는 개장 뒤 지난 시간으로 잰다 — 전날 마지막
+            #    봉을 기준으로 재면 개장 직후 몇 시간이 전부 "동결" 로 보인다.
+            if open_for is not None:
+                if open_for <= 0:
+                    continue
+                age = min(age, open_for)
             # 세 배를 넘으면 봉 두 개를 통째로 건너뛴 것이다.
             if age > span * 3:
                 found.append(
@@ -5721,6 +5732,36 @@ class LiveRunner:
                     )
             if done:
                 self._ladder_pending.pop(trade_id, None)
+
+
+def open_seconds(calendar: MarketCalendar | None, market: Market, now: datetime) -> float | None:
+    """지금 정규장이 열린 지 몇 초인가 (T259 2차 · 축 동결 감사의 자).
+
+    Args:
+        calendar: 마켓 캘린더. None 이면 모른다.
+        market: 시장.
+        now: 지금(UTC).
+
+    Returns:
+        열려 있으면 개장 뒤 지난 초(0 이상). 닫혀 있거나 판정 불가면 0. 달력이 없거나 24시간
+        장(코인)이면 None — 옛 기준(마지막 봉 나이)을 그대로 쓴다.
+    """
+    if calendar is None:
+        return None
+    try:
+        hours = calendar.hours_for(market)
+    except SessionConfigError:
+        return None
+    if hours.always_open or hours.regular is None:
+        return None
+    state, _why = calendar.tradability(market, now)
+    if state is not Tradability.OPEN:
+        return 0.0
+    local = calendar.local(market, now)
+    start = local.replace(
+        hour=hours.regular.start.hour, minute=hours.regular.start.minute, second=0, microsecond=0
+    )
+    return max(0.0, (local - start).total_seconds())
 
 
 def unsent_open_findings(trade_ids: Iterable[str]) -> list[dict[str, str]]:
