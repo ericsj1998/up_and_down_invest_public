@@ -435,6 +435,47 @@ class TossAdapter:
         result = await self._client.get_result(path, group=STOCK_GROUP, params={})
         return self._as_list(result, path)
 
+    async def exchange_rate(self, base: str = "USD", quote: str = "KRW") -> dict[str, Any]:
+        """환율 (`/api/v1/exchange-rate` · 1분 갱신 · 참고용 표시 환율).
+
+        Args:
+            base: 기준 통화.
+            quote: 표시 통화.
+
+        Returns:
+            스펙 `ExchangeRateResponse`(`rate` · `midRate` · `validFrom` · `validUntil`…).
+
+        Raises:
+            TossApiError: API 실패.
+        """
+        result = await self._client.get_result(
+            "/api/v1/exchange-rate",
+            group="MARKET_INFO",
+            params={"baseCurrency": base, "quoteCurrency": quote},
+        )
+        return self._as_dict(result, "/api/v1/exchange-rate")
+
+    async def indicator_prices(self, symbols: list[str]) -> list[dict[str, Any]]:
+        """시장 지표 현재가 — 카탈로그 8종(코스피·코스닥·한국 국채).
+
+        `/api/v1/market-indicators/prices`.
+
+        Args:
+            symbols: 카탈로그 심볼들 (`KOSPI` · `KOSDAQ` · `KR_BOND_10Y` …).
+
+        Returns:
+            `MarketIndicatorPriceResponse` 행들(`symbol` · `lastPrice` · `timestamp`).
+
+        Raises:
+            TossApiError: API 실패(카탈로그 밖 심볼은 400).
+        """
+        result = await self._client.get_result(
+            "/api/v1/market-indicators/prices",
+            group="MARKET_INDICATOR",
+            params={"symbols": ",".join(symbols)},
+        )
+        return self._as_list(result, "/api/v1/market-indicators/prices")
+
     @staticmethod
     def live_session_of(
         info: Mapping[str, Any], warnings: Sequence[Mapping[str, Any]], today: date

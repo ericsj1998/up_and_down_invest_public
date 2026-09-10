@@ -31,6 +31,7 @@ from updown.apps.api import auth, rebalancer, walkforward
 from updown.apps.api import evidence as ev
 from updown.apps.api import exchange as exchange_api
 from updown.apps.api import fundamentals as fundamentals_api
+from updown.apps.api import macro as macro_api
 from updown.apps.api.auth import Caller, caller_of
 from updown.apps.api.jobs import Reporter, registry
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
@@ -288,6 +289,9 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
             symbol=symbol, flags=FRAME_FLAGS, timeframe=timeframe, market=Market(market), bars=200
         )
 
+    async def _macro(keys: tuple[str, ...] | None) -> dict[str, Any]:
+        return await macro_api.macro_snapshot(keys)
+
     async def _valuation(symbol: str, market: str) -> dict[str, Any]:
         return await fundamentals_api.snapshot(symbol, market=market)
 
@@ -356,6 +360,7 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
         open_runs=_open_runs,
         journal=_journal,
         screen=_screen,
+        macro=_macro,
         candle_repo=walkforward._candles,  # pyright: ignore[reportPrivateUsage]
         calendar=load_calendar(),
         report=report,

@@ -55,6 +55,7 @@ from updown.apps.api.health import (
 from updown.apps.api.labels import router as labels_router
 from updown.apps.api.live_stream import router as live_stream_router
 from updown.apps.api.logs_admin import router as logs_admin_router
+from updown.apps.api.macro import router as macro_router
 from updown.apps.api.middleware import trace_id_middleware
 from updown.apps.api.rebalancer import router as rebalancer_router
 from updown.apps.api.report import router as report_router
@@ -397,6 +398,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     app.include_router(exchange_router)
     # ⭐ 재무 표(T243) — 읽기는 열람자도(`need_for` READ), 새로고침(POST)은 거래자부터.
     app.include_router(fundamentals_router)
+    # ⭐ 거시 지표(T262) — VIX·선물·환율·금리·물가. 시장 공개 값이라 읽기 권한.
+    app.include_router(macro_router)
     # ⭐ 온보딩 위저드(T247) — 초안은 계정 저장소, 생성은 펀드 API 를 그대로 부른다.
     app.include_router(assistant_router)
     # ⭐ AI 채팅(T248) — 작업 레지스트리 + `/ai/jobs/{id}/events` SSE 를 그대로 쓴다.

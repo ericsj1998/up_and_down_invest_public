@@ -1741,6 +1741,33 @@ export type FundamentalsView = {
   filings: Array<{ accession: string; form: string; filed_at: string; url: string | null }>;
 };
 
+/** 거시 지표 한 줄 (T262). */
+export type MacroIndicator = {
+  key: string;
+  label: string;
+  value: string;
+  unit: string;
+  source: string;
+  as_of: string | null;
+  change_pct: string | null;
+  band: string | null;
+  tone: string | null;
+  note: string;
+};
+
+export type MacroView = {
+  at: string;
+  indicators: MacroIndicator[];
+  failures: { key: string; label: string; reason: string }[];
+  vix_bands: { below: string | null; label: string; tone: string }[];
+  vix_note: string;
+  keys: string[];
+};
+
+export function macro(): Promise<MacroView> {
+  return request("/macro", undefined, 60_000);
+}
+
 export type ValueScreenView = {
   rows: (ValueRow & { stage?: "history" | "quick" | "none"; periods?: Record<string, string> })[];
   page: number;

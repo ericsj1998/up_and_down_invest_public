@@ -29,7 +29,7 @@ from updown.orchestration.ai_chat.tools import (
 
 _logger = get_logger("orchestration.ai_chat.agent")
 
-PROMPT_VERSION = "chat-1.3"
+PROMPT_VERSION = "chat-1.4"
 MAX_ROUNDS = 6
 EVIDENCE_CHARS = 6_000
 """근거 세미 창에 저장하는 도구 결과 길이 상한 — 대화 표(JSONB)에 남는다.

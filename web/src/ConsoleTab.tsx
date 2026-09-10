@@ -31,6 +31,7 @@ import { History } from "./History";
 import { Faucet } from "./Faucet";
 import { Leftovers } from "./Leftovers";
 import { Ranking } from "./Ranking";
+import { MacroPanel } from "./MacroPanel";
 import { ValueRanking } from "./ValueRanking";
 import { StockOrder } from "./StockOrder";
 import { FundPanel } from "./FundPanel";
@@ -740,6 +741,7 @@ export function ConsoleTab({ openRun }: Props) {
           <MarketHours market={effMkt} alwaysOpen={capsOfName(allMarkets, effMkt).alwaysOpen} />
         </div>
       ) : null}
+      {group === "stock" ? <MacroPanel /> : null}
       <div className="cards">
         {effMkt !== "전체" && (keyless[effMkt] || !isReady(effMkt)) ? (
           <Card

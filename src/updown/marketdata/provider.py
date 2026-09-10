@@ -44,6 +44,8 @@ from updown.marketdata.fundamentals.client import EdgarClient
 from updown.marketdata.fundamentals.edgar import EdgarAdapter
 from updown.marketdata.gate.adapter import GateAdapter
 from updown.marketdata.gate.client import GateClient
+from updown.marketdata.macro.adapter import MacroAdapter
+from updown.marketdata.macro.client import MacroClient
 from updown.marketdata.toss.adapter import TossAdapter
 from updown.marketdata.toss.client import TossClient
 from updown.marketdata.upbit.adapter import UpbitAdapter
@@ -339,6 +341,28 @@ class MarketDataProvider:
                 failures.append(exc)
         if failures:
             raise BaseExceptionGroup("조회 클라이언트 종료 실패", failures)
+
+
+_macro_shared: MacroAdapter | None = None
+
+
+def macro_adapter() -> MacroAdapter:
+    """거시 지표 어댑터 — **조회 경로의 유일한 획득 지점** (절대 규칙 #0 · T262). 프로세스에 하나.
+
+    Returns:
+        공개 출처(야후·뉴욕연준·BLS·CBOE) + 토스(환율·국내 지표). 토스 자격증명이 없으면 그 지표들만
+        실패 목록으로 간다 — 나머지는 산다.
+    """
+    global _macro_shared
+    if _macro_shared is None:
+        toss: TossAdapter | None = None
+        try:
+            found = MarketDataProvider().adapter_for(Market.NASDAQ)
+            toss = found if isinstance(found, TossAdapter) else None
+        except Exception as exc:
+            _logger.info("macro_toss_unavailable", payload={"detail": str(exc)[:120]})
+        _macro_shared = MacroAdapter(MacroClient(), toss)
+    return _macro_shared
 
 
 def fundamentals_adapter(settings: Settings, config: FundamentalsConfig) -> FundamentalsAdapter:

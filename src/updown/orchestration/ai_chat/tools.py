@@ -71,6 +71,7 @@ class ToolContext:
         journal: `()` → AI 매매일지(끝난 AI 매매 · 근거별 적중).
         screen: `(market, sort, order, min_score, no_flags, limit)` → 스크리닝 표(T255 · 서버가
             거르고 정렬).
+        macro: `(keys | None)` → 거시 지표 묶음(`/macro` 모양 · T262).
         candle_repo: 있으면 봉을 DB 캐시(`StoredCandles`)로 읽는다 — 40초가 수 초로.
         calendar: 캐시가 정규장 봉만 돌려주게 하는 캘린더.
         report: 진행 문장 콜백.
@@ -91,6 +92,7 @@ class ToolContext:
     open_runs: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None
     journal: Callable[[], Awaitable[dict[str, Any]]] | None = None
     screen: Fetch | None = None
+    macro: Callable[[tuple[str, ...] | None], Awaitable[dict[str, Any]]] | None = None
     candle_repo: CandleRepository | None = None
     calendar: MarketCalendar | None = None
     report: Callable[[str], None] = field(default=lambda _: None)
@@ -313,6 +315,17 @@ async def _extremes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 # ── 주입 도구 ─────────────────────────────────────────────────────────────────
+
+
+async def _macro_view(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    if ctx.macro is None:
+        return {"note": "거시 지표 출처가 이 서버에 없다"}
+    raw = args.get("keys")
+    keys: tuple[str, ...] | None = None
+    if isinstance(raw, list):
+        keys = tuple(str(k) for k in cast("list[object]", raw) if str(k))
+    ctx.report("거시 지표: " + (", ".join(keys) if keys else "전부"))
+    return await ctx.macro(keys or None)
 
 
 async def _valuation(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -851,6 +864,31 @@ TOOLS: tuple[Tool, ...] = (
         ),
         _screen,
         starter="미국주식 저평가 순위 상위 10개 보여줘",
+    ),
+    Tool(
+        ToolSpec(
+            "macro_view",
+            "거시 지표 — VIX 공포지수(구간·색·설명) · 나스닥100 선물 · S&P 500 · "
+            "미국 10년물 · 달러 인덱스 · 금 · WTI · 원달러 환율 · "
+            "미국 기준금리(EFFR·목표범위) · 미국 CPI(전년 대비) · "
+            "코스피 · 코스닥 · 한국 10년물. 유사어: 공포지수, VIX, 시장 분위기, 환율, 달러, 금리, "
+            "물가, CPI, 나스닥 선물, 거시, 매크로. 못 받은 지표는 failures 에 이유가 있다.",
+            _obj(
+                {
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "고를 지표 열쇠 (vix · nq · sp500 · us10y · dxy · gold · wti · "
+                            "usdkrw · effr · cpi · kospi · kosdaq · kr10y). 비면 전부"
+                        ),
+                    }
+                },
+                [],
+            ),
+        ),
+        _macro_view,
+        starter="지금 공포지수(VIX) 얼마야?",
     ),
     Tool(
         ToolSpec(
