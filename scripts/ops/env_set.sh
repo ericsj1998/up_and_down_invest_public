@@ -37,7 +37,9 @@ for forbidden in LIVE_ORDERS GATE_API_KEY GATE_API_SECRET; do
 done
 echo "== 바꿀 이름: $(cut -d= -f1 "$tmp" | tr '\n' ' ') → $FILES"
 scp -q -i "$KEY" "$tmp" "$HOST:/tmp/env_set.lines"
-"${SSH[@]}" FILES="$FILES" bash -s <<'REMOTE'
+# ⚠️ ssh 는 원격 명령을 한 문자열로 보낸다 — 따옴표 없이 FILES=".env.live .env.demo" 를 넘기면 원격 셸이
+#    `.env.demo` 를 명령으로 읽는다(2026-09-11 실측 "command not found" · 파일은 안 바뀌었다).
+"${SSH[@]}" "FILES='$FILES' bash -s" <<'REMOTE'
 set -euo pipefail
 cd ~/updown
 umask 077
