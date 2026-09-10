@@ -27,7 +27,7 @@ export type WizardCard = {
   groups: { key: string; label: string; options: { value: string; label: string; hint?: string; selected: boolean }[] }[];
   options: { value: string; label: string; hint: string; recommended: boolean; default: boolean; selected: boolean }[];
   summary: string[];
-  actions: { action: string; label: string; primary?: boolean; confirm?: boolean }[];
+  actions: { action: string; label: string; primary?: boolean; confirm?: boolean; disabled?: boolean }[];
   fund_id?: string | null;
 };
 

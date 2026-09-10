@@ -135,7 +135,14 @@ export function WizardCard({
                 </button>
               )
             ) : (
-              <button key={a.action} type="button" className={`btn small${a.primary ? " primary" : ""}`} disabled={busy} onClick={() => onAct(a.action, draft)}>
+              <button
+                key={a.action}
+                type="button"
+                className={`btn small${a.primary ? " primary" : ""}`}
+                disabled={busy || Boolean(a.disabled)}
+                title={a.disabled ? card.text : undefined}
+                onClick={() => onAct(a.action, draft)}
+              >
                 {a.label}
               </button>
             ),

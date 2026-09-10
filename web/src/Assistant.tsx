@@ -381,11 +381,21 @@ export function Assistant({ who }: { who: Who | null }) {
           {fundId ? (
             <p className="faint">이미 만든 펀드 {fundId} 가 있다 — 다시 만들면 펀드가 하나 더 생긴다.</p>
           ) : null}
+          {!preview?.market ? (
+            <ErrorCard
+              message={`이 서버에는 ${GROUPS.find((g) => g.id === answers.group)?.label ?? "이 갈래"} 시장이 열려 있지 않아 펀드를 만들 수 없다 — 관리자가 서버 UPDOWN_MARKETS 에 시장을 더해야 한다(코인 갈래는 지금도 된다).`}
+            />
+          ) : null}
           <div className="row">
             <button className="btn small" disabled={busy} onClick={() => setStep(prevStep(step))}>
               이전
             </button>
-            <button className="btn primary" disabled={busy || !answers.playbook || !preview?.market} onClick={create}>
+            <button
+              className="btn primary"
+              disabled={busy || !answers.playbook || !preview?.market}
+              title={!preview?.market ? "이 갈래의 시장이 이 서버에 없다" : !answers.playbook ? "매매법을 고른다" : undefined}
+              onClick={create}
+            >
               {busy ? "만드는 중…" : "이 기준으로 생성"}
             </button>
             <button className="btn small" disabled={busy} onClick={() => navigate("/console")}>

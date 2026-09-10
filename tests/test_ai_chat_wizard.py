@@ -127,6 +127,20 @@ class TestCards:
         assert create["confirm"] is True
         assert "[5/5 검토]" in text_for(card)
 
+    def test_review_card_says_why_when_no_market(self) -> None:
+        """서버에 그 갈래의 시장이 없으면 만들기 단추는 꺼지고 이유가 본문에 (2026-09-11 사용자)."""
+        card = card_for(
+            "review",
+            {"group": "foreign", "tier": "balanced", "playbook": "a", "capital": 1_000_000.0},
+            consented=True,
+            disclaimer_text="",
+            disclaimer_version="v3",
+            preview={**PREVIEW, "market": None},
+        )
+        create = next(a for a in card["actions"] if a["action"] == "create")
+        assert create.get("disabled") is True and "confirm" not in create
+        assert "UPDOWN_MARKETS" in card["text"] and "미국주식" in card["text"]
+
     def test_done_card_names_the_fund(self) -> None:
         card = card_for(
             "done",

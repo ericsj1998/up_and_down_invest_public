@@ -286,15 +286,20 @@ def card_for(
             f"갈래 {group_label} · 성향 {tier_label}",
             f"매매법 {playbook}" + (f" · 시장 {market}" if market else ""),
         ]
-        card["text"] = (
-            "이대로 펀드를 만든다 — 만들기는 사람이 누르고, 최근 인증(재인증)을 요구한다. "
-            "만든 뒤 판은 콘솔에서 본다."
-        )
-        card["actions"] = [
-            back,
-            {"action": "restart", "label": "처음부터"},
-            {"action": "create", "label": "펀드 만들기", "primary": True, "confirm": True},
-        ]
+        if market:
+            card["text"] = (
+                "이대로 펀드를 만든다 — 만들기는 사람이 누르고, 최근 인증(재인증)을 요구한다. "
+                "만든 뒤 판은 콘솔에서 본다."
+            )
+            create = {"action": "create", "label": "펀드 만들기", "primary": True, "confirm": True}
+        else:
+            # ⭐ 만들기 단추가 왜 안 먹는지 말한다 (사용자 2026-09-11 "생성이 안 먹히네").
+            card["text"] = (
+                f"이 서버에는 {group_label} 시장이 열려 있지 않아 펀드를 만들 수 없다 — "
+                "관리자가 서버 UPDOWN_MARKETS 에 시장을 더해야 한다. 코인 갈래는 지금도 된다."
+            )
+            create = {"action": "create", "label": "펀드 만들기", "primary": True, "disabled": True}
+        card["actions"] = [back, {"action": "restart", "label": "처음부터"}, create]
     else:  # done
         card["text"] = (
             f"펀드 {fund_id} 가 만들어졌다 — 콘솔에서 판을 본다."
