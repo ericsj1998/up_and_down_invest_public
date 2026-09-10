@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import httpx
 
+from updown.common.http.outbound import Outbound, OutboundError, RetryPolicy
 from updown.common.logging.setup import get_logger
 
 _logger = get_logger("marketdata.macro")
@@ -19,9 +20,15 @@ NYFED_EFFR = "https://markets.newyorkfed.org/api/rates/unsecured/effr/last/1.jso
 BLS_SERIES = "https://api.bls.gov/publicAPI/v1/timeseries/data/{series}"
 CBOE_VIX_CSV = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
 CPI_SERIES = "CUUR0000SA0"
+HTTP_OK = 200
 """BLS CPI-U 전 품목 · 도시 전체 · 계절조정 없음(전년 대비에 쓴다)."""
 BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) UpAndDownInvest/1.0"
 TIMEOUT_S = 12.0
+POLICY = RetryPolicy(max_retries=1, base_delay_s=0.3, jitter_s=0.1)
+"""한 번만 더 — 화면(`/macro`)이 기다리는 경로라 길게 매달리지 않는다.
+
+출처들은 어댑터가 `asyncio.gather` 로 동시에 부르므로 전체 지연은 가장 느린 출처 + 재시도 한 번이다.
+"""
 
 
 class MacroSourceError(RuntimeError):
@@ -37,25 +44,23 @@ class MacroClient:
         Args:
             transport: 시험용 전송 계층. None 이면 실제 네트워크.
         """
-        self._client = httpx.AsyncClient(
-            timeout=TIMEOUT_S, headers={"User-Agent": BROWSER_UA}, transport=transport
+        self._http = Outbound(
+            "MACRO",
+            timeout=TIMEOUT_S,
+            headers={"User-Agent": BROWSER_UA},
+            policy=POLICY,
+            transport=transport,
         )
 
     async def aclose(self) -> None:
         """연결 풀을 닫는다."""
-        await self._client.aclose()
+        await self._http.aclose()
 
     async def _get_json(self, url: str, **params: str) -> dict[str, Any]:
         try:
-            response = await self._client.get(url, params=params or None)
-        except httpx.HTTPError as exc:
-            raise MacroSourceError(f"요청 실패: {exc}"[:160]) from exc
-        if response.status_code != 200:
-            raise MacroSourceError(f"상태 {response.status_code}: {response.text[:120]}")
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise MacroSourceError("JSON 이 아니다") from exc
+            body = await self._http.get_json(url, params=params or None)
+        except OutboundError as exc:
+            raise MacroSourceError(str(exc)[:160]) from exc
         if not isinstance(body, dict):
             raise MacroSourceError("객체가 아니다")
         return cast("dict[str, Any]", body)
@@ -109,10 +114,10 @@ class MacroClient:
             MacroSourceError: 실패.
         """
         try:
-            response = await self._client.get(CBOE_VIX_CSV)
-        except httpx.HTTPError as exc:
-            raise MacroSourceError(f"요청 실패: {exc}"[:160]) from exc
-        if response.status_code != 200:
+            response = await self._http.request("GET", CBOE_VIX_CSV)
+        except OutboundError as exc:
+            raise MacroSourceError(str(exc)[:160]) from exc
+        if response.status_code != HTTP_OK:
             raise MacroSourceError(f"상태 {response.status_code}")
         return response.text
 

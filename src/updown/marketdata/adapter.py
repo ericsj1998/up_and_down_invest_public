@@ -20,6 +20,9 @@ from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Timeframe
 from updown.common.domain.market import Balance, MarketStatus, OrderBook, Quote
 from updown.common.domain.order import OrderRequest, OrderResult, OrderStatus
+from updown.common.http.outbound import (
+    RequestBudgetExceededError as _RequestBudgetExceededError,
+)
 from updown.marketdata.stream import CandleStream
 
 
@@ -392,12 +395,9 @@ class DerivativesAdapter(BrokerAdapter, Protocol):
         ...
 
 
-class RequestBudgetExceededError(RuntimeError):
-    """한 작업의 브로커 요청 수가 예산을 넘었다 (T253).
-
-    `RequestCounting.budget` 블록 안에서 난다. 잡는 쪽은 사람에게 말한다(규칙 #8) —
-    조용히 계속 부르면 요율 한도(토큰 하나)를 다른 판까지 잃는다.
-    """
+# T264(2026-09-10): 본체는 `common.http.outbound` — 아웃바운드 층의 `budget` 이 던진다.
+#   여기 이름은 잡는 쪽(`apps/api/walkforward` · 시험)이 그대로 쓰도록 남긴 재수출이다.
+RequestBudgetExceededError = _RequestBudgetExceededError
 
 
 @runtime_checkable

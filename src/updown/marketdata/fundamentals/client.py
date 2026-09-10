@@ -22,16 +22,15 @@
 
 from __future__ import annotations
 
-import asyncio
-import random
 from types import TracebackType
 from typing import Any, Self, cast
 
 import httpx
 
+from updown.common.http.outbound import Outbound, OutboundError, RetryPolicy
+from updown.common.http.throttle import Throttle
 from updown.common.logging.setup import get_logger
 from updown.marketdata.fundamentals.adapter import FundamentalsError, UnknownEntityError
-from updown.marketdata.throttle import Throttle
 
 _logger = get_logger("marketdata.fundamentals.client")
 
@@ -60,7 +59,8 @@ HTTP_SERVER_ERROR_FLOOR = 500
 
 RATE_PER_SECOND = 10
 """EDGAR 공개 한도 — IP 당."""
-MAX_RETRY_AFTER_SECONDS = 120.0
+RETRIABLE = frozenset({HTTP_TOO_MANY_REQUESTS, HTTP_FORBIDDEN})
+"""429 와 403(한도 차단도 403 으로 온다) — 5xx 는 정책 기본값이 재시도한다."""
 CIK_WIDTH = 10
 """companyfacts 경로의 CIK 는 10자리 0 채움이다."""
 
@@ -145,7 +145,10 @@ class EdgarClient:
                 "EDGAR_USER_AGENT 는 ASCII 만 된다(HTTP 헤더) — 영문 이름·앱 이름 + 이메일로 쓴다"
             )
         self._declared = user_agent.strip()
-        self._client = httpx.AsyncClient(
+        # 한도는 엔드포인트가 아니라 **IP 전체**라 스로틀은 하나다 — 경로와 무관하게 같은 것.
+        throttle = Throttle(rate_per_second)
+        self._http = Outbound(
+            "EDGAR",
             timeout=timeout,
             headers={
                 "User-Agent": BROWSER_UA,
@@ -153,12 +156,12 @@ class EdgarClient:
                 "Accept": "application/json",
                 "Accept-Encoding": "gzip, deflate",
             },
+            policy=RetryPolicy(max_retries=max_retries, retriable=RETRIABLE),
+            throttle_of=lambda _path: throttle,
             transport=transport,
         )
         self._base_url = base_url.rstrip("/")
         self._tickers_url = tickers_url
-        self._max_retries = max_retries
-        self._throttle = Throttle(rate_per_second)
 
     async def __aenter__(self) -> Self:
         """컨텍스트 진입."""
@@ -175,7 +178,7 @@ class EdgarClient:
 
     async def aclose(self) -> None:
         """HTTP 연결 풀을 닫는다."""
-        await self._client.aclose()
+        await self._http.aclose()
 
     # ------------------------------------------------------------------
     # 엔드포인트
@@ -285,7 +288,7 @@ class EdgarClient:
     # ------------------------------------------------------------------
 
     async def get_json(self, url: str) -> object:
-        """GET 하고 JSON 을 돌려준다 — 스로틀 · 재시도.
+        """GET 하고 JSON 을 돌려준다 — 스로틀 · 재시도는 아웃바운드 층(T264).
 
         Args:
             url: 절대 URL.
@@ -295,80 +298,14 @@ class EdgarClient:
 
         Raises:
             UnknownEntityError: 404.
-            EdgarApiError: 재시도 뒤에도 실패.
+            EdgarApiError: 재시도 뒤에도 실패, 또는 JSON 이 아니다.
         """
-        last_error: EdgarApiError | None = None
-        for attempt in range(self._max_retries + 1):
-            await self._throttle.acquire()
-            try:
-                response = await self._client.get(url)
-            except httpx.HTTPError as exc:
-                last_error = EdgarApiError(f"EDGAR 요청 실패({url}): {exc}")
-                if not await self._sleep_before_retry(attempt, url, str(exc)):
-                    break
-                continue
-
-            if response.status_code == HTTP_OK:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise EdgarApiError(
-                        f"EDGAR 응답이 JSON 이 아니다({url})", status_code=HTTP_OK
-                    ) from exc
-
-            if response.status_code == HTTP_NOT_FOUND:
-                raise UnknownEntityError(f"EDGAR 에 없다({url})")
-
-            last_error = EdgarApiError(
-                f"EDGAR 오류 응답({url}): {response.status_code} {response.text[:120]}",
-                status_code=response.status_code,
-            )
-            retriable = (
-                response.status_code in (HTTP_TOO_MANY_REQUESTS, HTTP_FORBIDDEN)
-                or response.status_code >= HTTP_SERVER_ERROR_FLOOR
-            )
-            if not retriable:
-                raise last_error
-            if not await self._sleep_before_retry(
-                attempt, url, f"status={response.status_code}", response
-            ):
-                break
-        raise last_error or EdgarApiError(f"EDGAR 요청 실패({url}): 원인 불명")
-
-    @staticmethod
-    def _retry_after_seconds(response: httpx.Response | None) -> float | None:
-        if response is None:
-            return None
-        raw = response.headers.get("Retry-After")
-        if raw is None:
-            return None
         try:
-            seconds = float(raw.strip())
-        except ValueError:
-            return None
-        return seconds if 0 <= seconds <= MAX_RETRY_AFTER_SECONDS else None
-
-    async def _sleep_before_retry(
-        self, attempt: int, url: str, reason: str, response: httpx.Response | None = None
-    ) -> bool:
-        if attempt >= self._max_retries:
-            _logger.warning(
-                "edgar_request_failed",
-                payload={"url": url, "reason": reason, "attempt": attempt, "giving_up": True},
-            )
-            return False
-        server_delay = self._retry_after_seconds(response)
-        delay = (
-            server_delay
-            if server_delay is not None
-            else (2**attempt) * 0.5 + random.uniform(0, 0.25)  # 지터 — 보안 무관
-        )
-        _logger.warning(
-            "edgar_request_retry",
-            payload={"url": url, "reason": reason, "attempt": attempt, "delay_s": round(delay, 2)},
-        )
-        await asyncio.sleep(delay)
-        return True
+            return await self._http.get_json(url)
+        except OutboundError as exc:
+            if exc.status_code == HTTP_NOT_FOUND:
+                raise UnknownEntityError(f"EDGAR 에 없다({url})") from exc
+            raise EdgarApiError(str(exc), status_code=exc.status_code) from exc
 
 
 __all__ = [
