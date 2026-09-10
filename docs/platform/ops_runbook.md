@@ -85,6 +85,18 @@ bash scripts/ops/remote.sh -- 'docker logs --since 10m updown_live-api-1 | tail 
 
 ## 4. 실계좌 스위치와 env 바꾸기
 
+**값을 안 찍고 바꾸는 명령(2026-09-11 · 사람이 연구 PC 에서 돌린다 · 에이전트는 분류기가 막는다)**
+
+```bash
+bash scripts/ops/env_set.sh live UPDOWN_MARKETS=GATE,NASDAQ                                   # 시크릿 아닌 값은 직접
+bash scripts/ops/env_set.sh both --from-dev TOSS_MARKETDATA_CLIENT_ID TOSS_MARKETDATA_CLIENT_SECRET  # 시크릿은 .env.dev 에서 옮김
+bash scripts/ops/remote.sh scripts/ops/swap_same_image.sh                                     # 같은 이미지 블루그린 → 새 env 적용
+bash scripts/ops/remote.sh scripts/ops/probe_env_names.sh                                     # 이름만 확인
+```
+
+`LIVE_ORDERS` · `GATE_API_*` 는 이 명령이 거절한다 — 아래 절차대로 사람이 서버에서. ⚠️ 토스 조회 토큰은 client 당 하나라
+서버가 쓰는 동안 연구 PC 에서 백필·판을 같은 키로 돌리면 서로 무효화한다(§5-1).
+
 값 변경은 **사람이 서버에서** 한다 (도구 권한 분류기가 실계좌 env 변경 명령을 막는다). 어떤 이름이 있어야 하고 무엇을
 지워도 되는지는 [env_live.md](env_live.md) 가 단일 목록이다 — 정리 제안 파일은 `scripts/ops/env_live_proposed.sh`.
 

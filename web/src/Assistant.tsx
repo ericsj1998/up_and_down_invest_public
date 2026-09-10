@@ -100,7 +100,8 @@ function Windows({ store }: { store: NonNullable<AssistantPreview["candidates"][
 export function Assistant({ who }: { who: Who | null }) {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("consent");
-  const [answers, setAnswers] = useState<Answers>({ capital: 1_000_000, contribution: 0, cadence: "month", years: 1 });
+  // 금액 단위는 USD 로 통일한다 (사용자 2026-09-11 · 국내주식만 원) — 펀드는 그 숫자를 시장 통화로 받는다.
+  const [answers, setAnswers] = useState<Answers>({ capital: 3_000, contribution: 0, cadence: "month", years: 1 });
   const [consented, setConsented] = useState(false);
   const [persisted, setPersisted] = useState(false);
   const [fundId, setFundId] = useState<string | null>(null);
@@ -242,7 +243,7 @@ export function Assistant({ who }: { who: Who | null }) {
         <section className="card">
           <div className="row">
             <label className="field">
-              <span className="faint">시작 금액</span>
+              <span className="faint">시작 금액 (USD · 국내주식만 원)</span>
               <input
                 type="number"
                 min={1}
@@ -371,7 +372,9 @@ export function Assistant({ who }: { who: Who | null }) {
       {step === "review" ? (
         <section className="card">
           <ul>
-            <li>시작 금액 {num(answers.capital ?? 0, 0)} · 추가 납입 {num(answers.contribution ?? 0, 0)}/{answers.cadence ?? "month"} · {answers.years ?? 0}년</li>
+            <li>
+              시작 금액 {num(answers.capital ?? 0, 0)} {answers.group === "domestic" ? "KRW" : "USD"} · 추가 납입 {num(answers.contribution ?? 0, 0)}/{answers.cadence ?? "month"} · {answers.years ?? 0}년
+            </li>
             <li>
               갈래 {GROUPS.find((g) => g.id === answers.group)?.label ?? "—"} · 성향 {TIERS.find((t) => t.id === answers.tier)?.label ?? "—"}
             </li>

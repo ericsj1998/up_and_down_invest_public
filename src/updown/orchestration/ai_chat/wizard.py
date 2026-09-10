@@ -222,7 +222,9 @@ def card_for(
         card["fields"] = [
             {
                 "key": "capital",
-                "label": "시작 금액",
+                # 단위는 USD 로 통일 (사용자 2026-09-11) — 국내주식만 원.
+                # 펀드는 이 숫자를 그 시장 통화로 받는다.
+                "label": "시작 금액 (USD · 국내주식만 원)",
                 "type": "number",
                 "value": answers.get("capital"),
             },
@@ -280,8 +282,9 @@ def card_for(
                 playbook = str(opt["label"])
         market = (preview or {}).get("market")
         cadence = dict(CADENCE_OPTIONS).get(str(answers.get("cadence") or "month"), "월")
+        unit = "KRW" if answers.get("group") == "domestic" else "USD"
         card["summary"] = [
-            f"시작 금액 {answers.get('capital') or 0:,.0f} · 추가 납입 "
+            f"시작 금액 {answers.get('capital') or 0:,.0f} {unit} · 추가 납입 "
             f"{answers.get('contribution') or 0:,.0f}/{cadence} · {answers.get('years') or 0:g}년",
             f"갈래 {group_label} · 성향 {tier_label}",
             f"매매법 {playbook}" + (f" · 시장 {market}" if market else ""),
