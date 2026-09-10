@@ -327,3 +327,51 @@ async def test_health_call_lands_in_event_logs_with_the_trace_id(
 
     assert rows, "event_logs 에 /health 호출 흔적이 없다 (G0-6 미충족)"
     assert rows[0].module == "apps.api.health"
+
+
+def test_5xx_http_exception_is_logged_with_its_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """503 으로 끝나는 HTTPException 은 경로·상태·이유가 로그에 남는다.
+
+    2026-09-11 실측: 펀드 생성 503 이 api 로그에 무기록이었다. 4xx 는 남기지 않는다 —
+    사람의 입력 문제라 로그가 소음이 된다.
+    """
+    from fastapi import HTTPException
+
+    from updown.apps.api import main as main_module
+    from updown.common.security import roles
+
+    seen: list[tuple[str, dict[str, Any] | None]] = []
+
+    class _Recorder:
+        def error(self, event: str, **kw: Any) -> None:
+            seen.append((event, cast("dict[str, Any] | None", kw.get("payload"))))
+
+        def info(self, _event: str, **_kw: Any) -> None:
+            return None
+
+        def warning(self, _event: str, **_kw: Any) -> None:
+            return None
+
+    monkeypatch.setattr(main_module, "_logger", _Recorder())
+    monkeypatch.setattr(roles, "PUBLIC_PATHS", roles.PUBLIC_PATHS | {"/boom", "/nope"})
+
+    async def _boom() -> None:
+        raise HTTPException(503, "자격증명이 없어 판을 띄울 수 없다")
+
+    async def _nope() -> None:
+        raise HTTPException(400, "입력이 틀렸다")
+
+    app = create_app(_StubState(OK_REPORT))
+    app.add_api_route("/boom", _boom, methods=["GET"])
+    app.add_api_route("/nope", _nope, methods=["GET"])
+    client = TestClient(app)
+    with client:
+        got = cast("httpx.Response", client.get("/boom"))  # pyright: ignore[reportUnknownMemberType]
+        assert got.status_code == HTTP_SERVICE_UNAVAILABLE, got.text
+        assert "자격증명" in got.json()["detail"]
+        bad = cast("httpx.Response", client.get("/nope"))  # pyright: ignore[reportUnknownMemberType]
+        assert bad.status_code == 400, bad.text
+    assert [e for e, _ in seen] == ["http_5xx"], seen
+    payload = seen[0][1] or {}
+    assert payload["path"] == "/boom" and payload["status"] == 503
+    assert "자격증명" in payload["detail"]

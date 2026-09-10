@@ -24,10 +24,12 @@ import contextlib
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Route
 
 from updown.apps.api.admin import router as admin_router
@@ -77,6 +79,8 @@ _logger = get_logger("apps.api.main")
 
 HTTP_SERVICE_UNAVAILABLE = 503
 """readiness 실패 응답 코드."""
+HTTP_SERVER_ERROR = 500
+"""이 이상은 서버 쪽 실패 — 이유를 로그에 남긴다."""
 
 
 class ApiState:
@@ -360,6 +364,30 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         tasks.append(asyncio.create_task(equity_snapshot_loop(), name="equity-snapshot"))
 
     app = FastAPI(title="업 앤 다운 API", lifespan=lifespan)
+
+    async def _log_5xx(request: Request, exc: Exception) -> Response:
+        """5xx 로 끝나는 `HTTPException` 은 **이유를 로그에 남긴다** (규칙 #8 · 2026-09-11 실측).
+
+        펀드 생성 POST 가 503 으로 끝났는데 api 로그에 한 줄도 없어 원인을 못 찾았다 — FastAPI 기본
+        처리기는 응답만 만들고 아무것도 적지 않는다. 4xx 는 사람의 입력 문제라 그대로 두고, 5xx(자격
+        증명 없음 · 저장소 없음 · 요청 상한 · 거래소 못 읽음)는 경로·상태·이유를 남긴다.
+        """
+        if not isinstance(exc, StarletteHTTPException):  # pragma: no cover - 등록 조건상 불가
+            raise exc
+        if exc.status_code >= HTTP_SERVER_ERROR:
+            _logger.error(
+                "http_5xx",
+                payload={
+                    "path": request.url.path,
+                    "method": request.method,
+                    "status": exc.status_code,
+                    "detail": str(exc.detail)[:300],
+                },
+            )
+        return await http_exception_handler(request, exc)
+
+    app.add_exception_handler(StarletteHTTPException, _log_5xx)
+
     # ⭐ T263 — MCP 끝점. 문(auth.guard)이 먼저 보고(`/mcp` 는 로그인만), 도구는 호출자로 돈다.
     app.router.routes.append(
         Route("/mcp", McpEndpoint(mcp_manager), methods=["GET", "POST", "DELETE"])
