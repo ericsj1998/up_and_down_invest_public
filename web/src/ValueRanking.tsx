@@ -140,7 +140,13 @@ const SORT_LABEL: Record<string, string> = {
   market_cap: "시가총액",
 };
 
-export function ValueRanking({ market }: { market: string }) {
+export function ValueRanking({ markets }: { markets: string[] }) {
+  // 🔴 재무가 있는 시장이 **둘 이상**이다(NASDAQ · NYSE). 첫 시장만 보이면 NYSE 62종(ORCL · JPM · V …)이
+  //    적재돼 있어도 화면에 영영 안 뜬다 (사용자 신고 2026-09-10 "ORCL 이 왜 없나"). 시장은 칩으로 고른다.
+  const [market, setMarket] = useState(markets[0] ?? "");
+  useEffect(() => {
+    if (!markets.includes(market)) setMarket(markets[0] ?? "");
+  }, [markets, market]);
   const [view, setView] = useState<ValueScreenView | null>(null);
   const [error, setError] = useState("");
   const [open, setOpen] = useState<string | null>(null);
@@ -205,6 +211,25 @@ export function ValueRanking({ market }: { market: string }) {
         {market} 종목을 <b>재무제표 대비 싼 순</b>으로 — 자기 5년 백분위(쌀수록 100)의 평균에서 부채 깃발마다 감점.
         {view?.note ? ` ${view.note}` : ""} 1단계(지금 값 · frames)는 점수 없이 값만 보이고, "이력 받기" 로 2단계(5년 백분위 · 점수)가 된다.
       </p>
+      {markets.length > 1 ? (
+        <div className="row" style={{ gap: 6, marginBottom: 8 }}>
+          {markets.map((name) => (
+            <button
+              key={name}
+              type="button"
+              className={`chip${market === name ? " live" : ""}`}
+              title={`${name} 저평가 후보`}
+              onClick={() => {
+                setMarket(name);
+                setPage(1);
+                setOpen(null);
+              }}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <select value={sort} onChange={(e) => pickSort(e.target.value)} title="정렬 기준">
           {(view?.sorts ?? Object.keys(SORT_LABEL)).map((k) => (
