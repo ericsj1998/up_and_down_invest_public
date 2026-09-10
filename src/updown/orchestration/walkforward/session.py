@@ -152,6 +152,8 @@ def frame_span(frame: Timeframe) -> timedelta:
     return timedelta(seconds=int(text[:-1]) * unit)
 
 
+DEFAULT_FRAME_WINDOW = 2_000
+"""`Session.frame_window` 기본 — 골든 시험이 전 구간 대비 1.3e-10 로 잠근 창 (T252 · 09-11 켬)."""
 STEP_FRAME = Timeframe.M5
 FLIP_STOP_BUFFER = Decimal(1)
 """flip_on_engulf 손절 완충 = ATR x 1 (추격·플립과 같은 값 · 순환 import 피해 값만 복제)."""
@@ -681,13 +683,15 @@ class Session:
     `SealedFiller` 의 진입 판정(`<` 엄격)과 같은 잣대. 라이브는 거래소 체결이 답이므로 꺼 둔다.
     켜면 익절 건수가 줄어 잔고가 내려간다 — 그것이 사실에 가까운 쪽이다.
     """
-    frame_window: int = 0
+    frame_window: int = DEFAULT_FRAME_WINDOW
     """`_frame` 이 지표를 재는 창의 봉 수 (T252). 0 이면 전 구간(봉인 시작부터 지금까지).
 
     🔴 걸음마다 전 구간에 `indicator_snapshot.compute` 를 다시 돌리면 한 판이 O(n²) 다
     (15m 1년 셀 9~40분 실측). 창을 자르면 EMA·RSI 계열이 씨앗에 민감해 값이 미세하게
-    바뀌므로 **기본은 0** 이고, 창 크기의 근거는 전 구간 대비 차이를 잰 골든 시험
-    (`tests/test_frame_window_golden.py`)이다. 켜는 것은 저장소 재생성과 함께 한다(규칙 #5).
+    바뀌므로 창 크기의 근거는 전 구간 대비 차이를 잰 골든 시험
+    (`tests/test_frame_window_golden.py` · 창 2,000 = 1.3e-10)이다.
+    **2026-09-11 사용자 허가로 기본 2,000** — 저장소 18개를 같은 창으로 재생성한다(규칙 #5 ·
+    T252 2단계). 전 구간이 필요하면 0 을 명시한다.
     """
     span_cover: Decimal = SPAN_COVER
     """박스로 인정할 최소 폭 = 왕복 비용 x 이 배수 (T42 ⑤). 룰의 `span_cover` 를 조립층이 넣는다.
