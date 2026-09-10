@@ -22,17 +22,56 @@ import {
   DRAG_PX,
   dockSizeAfterDrag,
   edgeAt,
+  floatAfterResize,
   getShell,
   isDock,
   openPopout,
   persistShell,
+  RESIZE_EDGES,
   setShell,
   setShellTransient,
   useChatShell,
   XL,
   type DockMode,
   type Mode,
+  type ResizeEdge,
 } from "./shell";
+
+/** 손잡이 자리·커서 — 변은 6px 띠, 모서리는 14px 네모. */
+const HANDLE_STYLE: Record<ResizeEdge, React.CSSProperties> = {
+  n: { top: -3, left: 14, right: 14, height: 6, cursor: "ns-resize" },
+  s: { bottom: -3, left: 14, right: 14, height: 6, cursor: "ns-resize" },
+  e: { right: -3, top: 14, bottom: 14, width: 6, cursor: "ew-resize" },
+  w: { left: -3, top: 14, bottom: 14, width: 6, cursor: "ew-resize" },
+  ne: { top: -4, right: -4, width: 14, height: 14, cursor: "nesw-resize" },
+  sw: { bottom: -4, left: -4, width: 14, height: 14, cursor: "nesw-resize" },
+  nw: { top: -4, left: -4, width: 14, height: 14, cursor: "nwse-resize" },
+  se: { bottom: -4, right: -4, width: 14, height: 14, cursor: "nwse-resize" },
+};
+
+/** 뜬 창의 손잡이를 끌어 크기를 바꾼다 — 사용자 요청 2026-09-11 "상하좌우를 클릭해서 늘릴 수도 있게". */
+function beginResize(e: React.PointerEvent, edge: ResizeEdge) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const startX = e.clientX;
+  const startY = e.clientY;
+  const was = getShell().float;
+  const origin = { ...floatBase(was), w: was.w, h: was.h };
+  const move = (ev: PointerEvent) => {
+    const next = floatAfterResize(edge, origin, ev.clientX - startX, ev.clientY - startY, window.innerWidth, window.innerHeight);
+    setShellTransient({ float: next });
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    window.removeEventListener("pointercancel", up);
+    persistShell();
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+  window.addEventListener("pointercancel", up);
+}
 
 const EDGES: Array<{ edge: DockMode; glyph: string; title: string }> = [
   { edge: "left", glyph: "⇤", title: "맨 왼쪽 (사이드바를 오른쪽으로 밀어낸다)" },
@@ -236,6 +275,16 @@ export function ChatShell({ who }: { who: Who | null }) {
           style={{ left: float.x, top: float.y, width: shell.float.w, height: shell.float.h, maxWidth: "96vw", maxHeight: "92vh" }}
         >
           <ChatFrame who={who} mode="float" className="flex-1" />
+          {RESIZE_EDGES.map((edge) => (
+            <div
+              key={edge}
+              className="absolute z-10 touch-none select-none"
+              style={HANDLE_STYLE[edge]}
+              onPointerDown={(e) => beginResize(e, edge)}
+              aria-hidden="true"
+              title="끌어서 크기 조절"
+            />
+          ))}
         </div>
       ) : null}
     </>

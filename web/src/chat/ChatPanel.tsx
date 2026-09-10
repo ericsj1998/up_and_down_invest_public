@@ -166,7 +166,14 @@ export function ChatPanel({
 
   const send = (asked: string) => {
     const question = asked.trim();
-    if (!question || jobId) return;
+    if (!question) return;
+    // 끝난(또는 서버가 잊은) 작업 id 는 막지 않는다 — 추천 질문 첫 클릭이 무시되던 자리 (2026-09-11).
+    if (jobId && !job.done) return;
+    if (jobId) {
+      setJobId(null);
+      writeJob(null);
+    }
+    setListOpen(false);
     setError("");
     setEvidence(null);
     const go = (id: string) =>

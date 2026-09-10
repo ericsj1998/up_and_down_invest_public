@@ -85,6 +85,47 @@ export function dockSizeAfterDrag(edge: DockMode, size: number, delta: number, v
   return clamp(size + grow, MIN_DOCK, Math.max(MIN_DOCK, viewport - 200));
 }
 
+/** 뜬 창의 크기 조절 손잡이 — 네 변 + 네 모서리. */
+export type ResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+export const RESIZE_EDGES: ResizeEdge[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+/** 뜬 창의 최소 크기(px) — 이보다 작으면 입력줄과 머리가 겹친다. */
+export const MIN_FLOAT = { w: 320, h: 360 };
+
+/**
+ * 뜬 창의 손잡이를 끈 뒤의 자리·크기 — 왼쪽·위 손잡이는 반대편을 고정한 채 x/y 도 옮긴다.
+ *
+ * @param edge 잡은 손잡이.
+ * @param start 끌기 시작 때의 창(뷰포트 좌표 · 실제 위치).
+ * @param dx 포인터 이동 x.
+ * @param dy 포인터 이동 y.
+ * @param vw 뷰포트 너비.
+ * @param vh 뷰포트 높이.
+ */
+export function floatAfterResize(
+  edge: ResizeEdge,
+  start: { x: number; y: number; w: number; h: number },
+  dx: number,
+  dy: number,
+  vw: number,
+  vh: number,
+): { x: number; y: number; w: number; h: number } {
+  let { x, y, w, h } = start;
+  const margin = 8;
+  if (edge.includes("e")) w = clamp(start.w + dx, MIN_FLOAT.w, Math.max(MIN_FLOAT.w, vw - start.x - margin));
+  if (edge.includes("w")) {
+    const right = start.x + start.w;
+    w = clamp(start.w - dx, MIN_FLOAT.w, Math.max(MIN_FLOAT.w, right - margin));
+    x = right - w;
+  }
+  if (edge.includes("s")) h = clamp(start.h + dy, MIN_FLOAT.h, Math.max(MIN_FLOAT.h, vh - start.y - margin));
+  if (edge.includes("n")) {
+    const bottom = start.y + start.h;
+    h = clamp(start.h - dy, MIN_FLOAT.h, Math.max(MIN_FLOAT.h, bottom - margin));
+    y = bottom - h;
+  }
+  return { x, y, w, h };
+}
+
 export function readShell(): ShellState {
   try {
     const raw = localStorage.getItem(SHELL_SLOT);

@@ -54,6 +54,13 @@ export function useJobEvents(jobId: string | null): JobState {
           // 아래로
         }
       }
+      // ⭐ 서버가 그 작업을 모르면(재시작 뒤 기억한 옛 id · 404) 브라우저는 다시 붙지 않고 **닫는다**.
+      //    이걸 "연결 오류" 로만 두면 jobId 가 영영 남아 첫 질문이 무시된다 — 추천 질문을 두 번 눌러야
+      //    했던 원인(사용자 2026-09-11). 끝난 것으로 표시해 화면이 jobId 를 비우게 한다.
+      if (source.readyState === EventSource.CLOSED) {
+        setState((was) => ({ ...was, error: was.done ? was.error : "이전 작업을 서버가 잊었다(재시작) — 다시 물어본다", done: true }));
+        return;
+      }
       // 연결 오류 — EventSource 가 스스로 다시 붙는다. 닫지 않는다.
     };
     source.addEventListener("progress", onProgress as EventListener);
