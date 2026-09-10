@@ -8,6 +8,7 @@ URL 을 인자로 받는 이유: 설정 로딩은 P0-5 `common/config.py` 의 �
 환경변수를 직접 읽으면 P0-5 에서 두 경로가 생긴다.
 """
 
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -17,6 +18,34 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+
+DEFAULT_POOL_SIZE = 4
+DEFAULT_MAX_OVERFLOW = 2
+"""풀 기본값 — SQLAlchemy 기본(5+10)은 프로세스 셋(api·api_demo·engine)이 PG
+`max_connections`(100)을 넘본다(T268 #3 · 2026-09-11 점검: 61 > 40).
+`DB_POOL_SIZE`·`DB_MAX_OVERFLOW` 로 프로세스마다 조정한다 (계정 DB·데모는 2/1 을 권한다)."""
+
+
+def pool_kwargs() -> dict[str, int]:
+    """환경변수에서 풀 크기 — 잘못된 값은 조용히 넘기지 않고 예외 (절대 규칙 #8).
+
+    Returns:
+        `{pool_size, max_overflow}`.
+
+    Raises:
+        ValueError: 정수가 아니거나 음수.
+    """
+    out: dict[str, int] = {}
+    for key, name, default in (
+        ("pool_size", "DB_POOL_SIZE", DEFAULT_POOL_SIZE),
+        ("max_overflow", "DB_MAX_OVERFLOW", DEFAULT_MAX_OVERFLOW),
+    ):
+        raw = os.environ.get(name, "").strip()
+        value = int(raw) if raw else default
+        if value < 0:
+            raise ValueError(f"{name} 는 0 이상이어야 한다: {raw!r}")
+        out[key] = value
+    return out
 
 
 def create_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:
@@ -47,6 +76,7 @@ def create_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:
         database_url,
         echo=echo,
         pool_pre_ping=True,  # 유휴 커넥션이 죽은 채로 잡히는 것을 막는다
+        **pool_kwargs(),  # T268 #3 — 프로세스마다 명시한 풀
     )
 
 

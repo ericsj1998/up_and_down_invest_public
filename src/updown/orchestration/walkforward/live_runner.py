@@ -129,6 +129,23 @@ STOP_GUARD_LIMIT = 3
 """
 
 FRESH_TICK = 1.0
+REFRESH_BACKOFF_MAX_S = 60.0
+
+
+def refresh_backoff_s(failures: int) -> float:
+    """연속 실패 n 회 뒤 그 축을 쉬는 시간 — 2^n 초, 최대 60초 (T268 #5).
+
+    Args:
+        failures: 연속 실패 횟수(1 부터).
+
+    Returns:
+        초. 0 이하면 0.
+    """
+    if failures <= 0:
+        return 0.0
+    return min(REFRESH_BACKOFF_MAX_S, float(2 ** min(failures, 16)))
+
+
 """급전 갱신 루프가 도는 간격(초).
 
 ⚠️ 이것이 **조회 주기가 아니다.** 축마다 자기 TTL(`refresh`)이 있어서, 1초마다 훑어도
@@ -734,6 +751,8 @@ class LiveRunner:
             )
         self._session = session
         self._feed = feed
+        self._refresh_state: dict[Timeframe, tuple[int, float]] = {}
+        """축 → (연속 실패 수, 다음 시도 monotonic) — 갱신 백오프 (T268 #5)."""
         self._stream = stream
         self._quotes = quotes
         self._orders = orders
@@ -2320,15 +2339,33 @@ class LiveRunner:
                 #    ⇒ 판정에 필요한 축은 언제나 데우고, **보기용은 누가 볼 때만** 데운다.
                 if not self._needs(frame):
                     continue
+                # ⭐ T268 #5 — 연속 실패한 축은 지수 백오프로 쉰다(≤60s). 로그는 상태가 바뀔 때만:
+                #    첫 실패와 회복. 매 초 같은 경고를 찍으면 밴 중에 로그가 디스크를 먹는다.
+                failures, until = self._refresh_state.get(frame, (0, 0.0))
+                if failures and time.monotonic() < until:
+                    continue
                 try:
                     await self.refresh(frame)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    self._log.warning(
-                        "live_refresh_failed",
-                        payload={"frame": frame.value, "error": str(exc)[:140]},
+                    failures += 1
+                    self._refresh_state[frame] = (
+                        failures,
+                        time.monotonic() + refresh_backoff_s(failures),
                     )
+                    if failures == 1:
+                        self._log.warning(
+                            "live_refresh_failed",
+                            payload={"frame": frame.value, "error": str(exc)[:140]},
+                        )
+                else:
+                    if failures:
+                        self._log.info(
+                            "live_refresh_recovered",
+                            payload={"frame": frame.value, "after": failures},
+                        )
+                    self._refresh_state.pop(frame, None)
 
     async def _chase_trigger(self) -> None:
         """**방아쇠 축을 쫓는다** — 그 축 봉이 마감되면 한 걸음 돈다 (T17).

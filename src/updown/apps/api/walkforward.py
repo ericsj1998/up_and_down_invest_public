@@ -2273,6 +2273,10 @@ async def watch_forever() -> None:
         await asyncio.sleep(WATCH_EVERY)
 
 
+AUTOSTART_STAGGER_S = 1.5
+"""되살리는 판 사이 간격(초) — 시작 폭주 어긋내기 (T268 #4)."""
+
+
 async def autostart_live() -> str | None:
     """API 가 뜰 때 **라이브를 다시 붙인다**.
 
@@ -2352,7 +2356,10 @@ async def autostart_live() -> str | None:
         return None
 
     first: str | None = None
-    for payload in wanted:
+    for index, payload in enumerate(wanted):
+        if index:
+            # ⭐ T268 #4 — 판 여섯이 같은 순간 워밍업(봉·잔고·배율)을 때리면 시작 폭주다.
+            await asyncio.sleep(AUTOSTART_STAGGER_S)
         try:
             # ⭐ **되살리기다** — 신규 생성용 증거금 검사를 받지 않는다 (사고 ⑤).
             body = await _live_start(payload, reviving=True)

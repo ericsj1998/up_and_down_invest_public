@@ -435,6 +435,10 @@ def universe_of(market: Market) -> list[str]:
     return [str(s).upper() for s in cast("list[object]", rows)]
 
 
+QUICK_CONCURRENCY = 8
+"""1단계 CIK 조회 동시성 상한 — EDGAR 스로틀(8/s)과 같은 값 (T268 #6)."""
+
+
 async def _quick_rows(key: str, symbols: Mapping[str, Market | None]) -> dict[str, dict[str, Any]]:
     """1단계 — 이력 없는 종목의 "지금 값" (frames 몇 번 + 종가).
 
@@ -473,7 +477,15 @@ async def _quick_rows(key: str, symbols: Mapping[str, Market | None]) -> dict[st
                 )
 
         await _one(wanted_symbols[0])
-        await asyncio.gather(*(_one(s) for s in wanted_symbols[1:]))
+        # ⭐ T268 #6 — 500 코루틴을 한꺼번에 띄우지 않는다. 스로틀이 속도를 정하지만 대기 중인
+        #    태스크 500 개가 이벤트 루프와 메모리를 먹었다. 동시 8 이면 스로틀(8/s)과 같다.
+        gate = asyncio.Semaphore(QUICK_CONCURRENCY)
+
+        async def _gated(symbol: str) -> None:
+            async with gate:
+                await _one(symbol)
+
+        await asyncio.gather(*(_gated(s) for s in wanted_symbols[1:]))
         if not ciks:
             return {}
         # frames — 개념마다 폴백 태그 · 기간 순서대로, 빈 CIK 만 다음 것으로 채운다.
