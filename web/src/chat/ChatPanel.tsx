@@ -17,6 +17,7 @@ import {
   chatCreateThread,
   chatDeleteThread,
   chatPlaceOrder,
+  chatWizard,
   chatSetAuto,
   chatSettings,
   chatThread,
@@ -39,6 +40,7 @@ import {
   type ChatMessageView,
 } from "./chat";
 import { Dashboard } from "./Dashboard";
+import { WizardCard } from "./WizardCard";
 import { EvidenceView } from "./evidence";
 import { Markdown } from "./markdown";
 import { useJobEvents } from "./useJobEvents";
@@ -191,6 +193,18 @@ export function ChatPanel({
   };
 
   const messages = visibleMessages((thread?.messages ?? []) as ChatMessageView[]);
+  // T271 — 위저드 카드는 마지막 것만 살아 있다(지난 단계는 읽기 전용).
+  const lastWizardIndex = messages.reduce((found, m, i) => (m.wizard ? i : found), -1);
+  const [wizBusy, setWizBusy] = useState(false);
+  const act = (step: string, action: string, answers: Record<string, unknown>) => {
+    if (!thread) return;
+    setWizBusy(true);
+    setError("");
+    chatWizard(thread.id, { action, step, answers })
+      .then((got) => setThread((was) => (was ? { ...was, messages: [...(was.messages ?? []), ...got.messages] } : was)))
+      .catch((exc: unknown) => setError(String(exc)))
+      .finally(() => setWizBusy(false));
+  };
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const suggestions = jobId ? [] : (lastAssistant?.suggestions ?? []);
 
@@ -347,6 +361,7 @@ export function ChatPanel({
                         <div className="min-w-0 flex-1">
                           <Markdown text={m.content} />
                           {m.dashboard && m.dashboard.blocks?.length ? <Dashboard spec={m.dashboard} missing={m.dashboard_missing ?? []} /> : null}
+                          {m.wizard ? <WizardCard key={`w${index}`} card={m.wizard} active={index === lastWizardIndex} busy={wizBusy} onAct={(action, answers) => act(m.wizard?.step ?? "consent", action, answers)} /> : null}
                           {m.failure ? <p className="loss text-xs">{m.failure}</p> : null}
                           {m.auto && typeof m.auto === "object" ? (
                             <p className="faint mt-1 text-xs">

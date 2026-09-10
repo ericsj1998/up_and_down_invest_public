@@ -1975,6 +1975,14 @@ export function chatAsk(id: string, body: { text: string; model?: string }): Pro
   });
 }
 
+/** 온보딩 카드의 단추 (T271) — 모델 없이 초안을 옮기고 다음 카드를 받는다. */
+export function chatWizard(
+  id: string,
+  body: { action: string; step: string; answers?: Record<string, unknown> },
+): Promise<{ card: Record<string, unknown>; messages: Array<Record<string, unknown> & { role: string; content: string }> }> {
+  return request(`/ai/chat/threads/${encodeURIComponent(id)}/wizard`, { method: "POST", headers: JSON_POST, body: JSON.stringify(body) }, 120_000);
+}
+
 export function chatSetAuto(body: {
   enabled: boolean;
   consent_version?: string;

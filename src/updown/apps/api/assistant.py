@@ -123,12 +123,47 @@ async def save_draft(
         HTTPException: 400 모르는 단계 · 동의 버전이 지금 문장이 아님 · 동의 없이 다음 단계.
     """
     step = str(payload.get("step") or "consent")
-    if step not in STEPS:
-        raise HTTPException(400, f"모르는 단계: {step} ({' → '.join(STEPS)})")
     answers_raw = payload.get("answers")
     answers = cast("dict[str, Any]", answers_raw) if isinstance(answers_raw, dict) else {}
     version = payload.get("consent_version")
-    who = await _who(request)
+    return await apply_draft(await _who(request), step, answers, version)
+
+
+async def draft_of(who: Caller | None) -> AssistantDraft | None:
+    """내 초안 행 — 게스트·비로그인은 None (공유 계정은 서버에 초안을 두지 않는다).
+
+    Args:
+        who: 호출자.
+
+    Returns:
+        초안 행 또는 None.
+    """
+    if who is None or who.role is Role.GUEST:
+        return None
+    factory = auth._store()  # pyright: ignore[reportPrivateUsage]
+    async with factory() as session:
+        return await session.get(AssistantDraft, who.email)
+
+
+async def apply_draft(
+    who: Caller | None, step: str, answers: dict[str, Any], version: object
+) -> dict[str, Any]:
+    """초안 저장의 몸통 — `PUT /assistant/draft` 와 채팅 위저드 끝점(T271)이 같이 쓴다.
+
+    Args:
+        who: 호출자.
+        step: 단계.
+        answers: 답.
+        version: 동의 문구 버전(처음 한 번) · None 이면 동의 없이 저장.
+
+    Returns:
+        `{persisted, draft}`.
+
+    Raises:
+        HTTPException: 400 모르는 단계 · 동의 버전이 지금 문장이 아님 · 동의 없이 다음 단계.
+    """
+    if step not in STEPS:
+        raise HTTPException(400, f"모르는 단계: {step} ({' → '.join(STEPS)})")
     if who is None or who.role is Role.GUEST:
         # 게스트 — 문장 버전만 검사하고 저장하지 않는다 (공유 계정).
         if version is not None and not consent_is_current(version):

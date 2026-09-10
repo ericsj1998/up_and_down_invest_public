@@ -42,7 +42,7 @@ from updown.orchestration.ai_chat.tools import TOOLS, Tool, ToolContext, find_to
 
 _logger = get_logger("api.mcp")
 
-HIDDEN: frozenset[str] = frozenset({"render_dashboard"})
+HIDDEN: frozenset[str] = frozenset({"render_dashboard", "profile_wizard"})
 ACCOUNT_TOOLS: frozenset[str] = frozenset(
     {"positions", "portfolio_exposure", "propose_order", "recommend_by_budget"}
 )

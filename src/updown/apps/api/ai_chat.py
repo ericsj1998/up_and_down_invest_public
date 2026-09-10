@@ -45,6 +45,8 @@ from updown.common.logging.setup import get_logger
 from updown.common.security.consent import (
     AUTO_ORDER_CONSENT_TEXT,
     AUTO_ORDER_CONSENT_VERSION,
+    DISCLAIMER_TEXT,
+    DISCLAIMER_VERSION,
     auto_consent_is_current,
 )
 from updown.common.security.redact import redact_pnl
@@ -54,6 +56,7 @@ from updown.llm.nvidia import NvidiaClient
 from updown.llm.pool import PoolConfigError, load_pool
 from updown.llm.port import ChatMessage, ToolCall
 from updown.marketdata.provider import MarketDataProvider
+from updown.orchestration.ai_chat import wizard
 from updown.orchestration.ai_chat.agent import PROMPT_VERSION, ChatResult, run_chat
 from updown.orchestration.ai_chat.aliases import load_aliases
 from updown.orchestration.ai_chat.auto import AutoState, auto_allowed
@@ -333,6 +336,15 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
     async def _candidates(group: str, tier: str) -> dict[str, Any]:
         return assistant_api.preview_for(who, group, tier)
 
+    async def _wizard(action: str) -> dict[str, Any]:
+        # T271 — 카드를 띄우기만 한다. 초안이 중간이면 이어서, 끝났으면 start 는 처음부터.
+        row = await assistant_api.draft_of(who)
+        answers = wizard.merge_answers(dict(row.answers) if row is not None else {}, {})
+        step = "consent" if row is None else row.step
+        if step == "done" and action == "start":
+            step = "consent"
+        return {"card": _wizard_card(who, step, answers, row), "step": step}
+
     async def _ranking(market: str) -> dict[str, Any]:
         return await fundamentals_api.ranking(market)
 
@@ -379,6 +391,7 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
         journal=_journal,
         screen=_screen,
         macro=_macro,
+        wizard=_wizard,
         candle_repo=walkforward._candles,  # pyright: ignore[reportPrivateUsage]
         calendar=load_calendar(),
         report=report,
@@ -469,8 +482,109 @@ def _save_turn(result: ChatResult) -> dict[str, Any]:
         "suggestions": result.suggestions,
         "dashboard": result.dashboard,
         "dashboard_missing": result.dashboard_missing,
+        "wizard": result.wizard,
         "failure": result.failure,
     }
+
+
+def _wizard_card(
+    who: Caller, step: str, answers: dict[str, Any], row: Any, *, error: str = ""
+) -> dict[str, Any]:
+    """단계 하나의 카드 — 미리보기(성향 후보)는 `setup`·`review` 에서만 붙인다."""
+    consented = row is not None and getattr(row, "consent_version", None) is not None
+    preview: dict[str, Any] | None = None
+    group = str(answers.get("group") or "")
+    tier = str(answers.get("tier") or "")
+    if step in {"setup", "review"} and group and tier:
+        try:
+            preview = assistant_api.preview_for(who, group, tier)
+        except HTTPException as exc:
+            error = error or str(exc.detail)
+    return wizard.card_for(
+        step,
+        answers,
+        consented=consented,
+        disclaimer_text=DISCLAIMER_TEXT,
+        disclaimer_version=DISCLAIMER_VERSION,
+        preview=preview,
+        fund_id=None if row is None else getattr(row, "fund_id", None),
+        error=error,
+    )
+
+
+@router.post("/threads/{thread_id}/wizard")
+async def wizard_step(
+    request: Request, thread_id: str, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
+    """온보딩 카드의 단추 — 모델을 거치지 않고 초안을 옮기고 다음 카드를 준다 (T271).
+
+    Args:
+        request: 요청.
+        thread_id: 대화 id.
+        payload: `{action: consent|next|prev|restart|create, step, answers?}`.
+
+    Returns:
+        `{card, messages}` — 대화에 붙인 사용자 줄·assistant 줄(카드 포함).
+
+    Raises:
+        HTTPException: 403 게스트 · 400 동의 없이 다음 단계 · `create` 는 `assistant.create` 의 것
+            (재인증 401 · 관문 403 · 400).
+
+    Note:
+        동의는 `apply_draft(version)` 으로 `event_logs.consent_given` 이 남고, 만들기는 기존
+        `assistant.create` — 채팅이라고 문이 다르지 않다.
+    """
+    who = await _who_or_403(request)
+    action = str(payload.get("action") or "next")
+    step = str(payload.get("step") or "consent")
+    if step not in wizard.STEPS:
+        raise HTTPException(400, f"모르는 단계: {step}")
+    given_raw = payload.get("answers")
+    given = cast("dict[str, Any]", given_raw) if isinstance(given_raw, dict) else {}
+    row = await assistant_api.draft_of(who)
+    answers = wizard.merge_answers(dict(row.answers) if row is not None else {}, given)
+    consented = row is not None and row.consent_version is not None
+    error = ""
+    if action == "consent":
+        await assistant_api.apply_draft(who, "capital", answers, DISCLAIMER_VERSION)
+        step_next = "capital"
+    elif action == "restart":
+        await assistant_api.apply_draft(who, "consent", {}, None)
+        answers = {}
+        step_next = "consent"
+    elif action == "prev":
+        step_next = wizard.prev_step(step)
+        await assistant_api.apply_draft(who, step_next, answers, None)
+    elif action == "create":
+        await assistant_api.create(request, {"answers": answers})
+        step_next = "done"
+    else:
+        blocked = wizard.blockers(step, answers, consented=consented)
+        if blocked:
+            error = " · ".join(blocked)
+            step_next = step
+            if step != "consent":
+                await assistant_api.apply_draft(who, step, answers, None)
+        else:
+            step_next = wizard.next_step(step)
+            await assistant_api.apply_draft(who, step_next, answers, None)
+    row = await assistant_api.draft_of(who)
+    card = _wizard_card(who, step_next, answers, row, error=error)
+    now = datetime.now(UTC).isoformat()
+    user_line = {"role": "user", "content": wizard.action_line(action, step, answers), "at": now}
+    assistant = {"role": "assistant", "content": wizard.text_for(card), "at": now, "wizard": card}
+    factory = auth._store()  # pyright: ignore[reportPrivateUsage]
+    async with factory() as session, session.begin():
+        thread = await session.get(ChatThread, thread_id)
+        if not _mine(thread, who.email):
+            raise HTTPException(404, "대화가 없다")
+        assert thread is not None
+        thread.messages = [*list(thread.messages), user_line, assistant]
+    _logger.info(
+        "ai_wizard_step",
+        payload={"email": who.email, "thread": thread_id, "action": action, "to": step_next},
+    )
+    return {"card": card, "messages": [user_line, assistant]}
 
 
 async def _persist(

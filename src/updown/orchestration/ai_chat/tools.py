@@ -72,6 +72,7 @@ class ToolContext:
         screen: `(market, sort, order, min_score, no_flags, limit)` → 스크리닝 표(T255 · 서버가
             거르고 정렬).
         macro: `(keys | None)` → 거시 지표 묶음(`/macro` 모양 · T262).
+        wizard: `(action)` → 온보딩 카드 — `start` 는 처음/이어서, `status` 는 지금 단계 (T271).
         candle_repo: 있으면 봉을 DB 캐시(`StoredCandles`)로 읽는다 — 40초가 수 초로.
         calendar: 캐시가 정규장 봉만 돌려주게 하는 캘린더.
         report: 진행 문장 콜백.
@@ -93,6 +94,8 @@ class ToolContext:
     journal: Callable[[], Awaitable[dict[str, Any]]] | None = None
     screen: Fetch | None = None
     macro: Callable[[tuple[str, ...] | None], Awaitable[dict[str, Any]]] | None = None
+    wizard: Callable[[str], Awaitable[dict[str, Any]]] | None = None
+    """`(action)` → 온보딩 카드(`wizard.card_for` 모양) — 초안은 API 층이 읽는다 (T271)."""
     candle_repo: CandleRepository | None = None
     calendar: MarketCalendar | None = None
     report: Callable[[str], None] = field(default=lambda _: None)
@@ -679,6 +682,23 @@ async def _propose_order(args: dict[str, Any], ctx: ToolContext) -> dict[str, An
     }
 
 
+async def _profile_wizard(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """온보딩 위저드 카드를 띄운다 — 단계 진행은 카드의 단추가 한다(모델을 거치지 않는다)."""
+    if ctx.wizard is None:
+        return {"note": "이 자리에서는 온보딩 위저드를 쓸 수 없다 — 화면 /assistant 로 안내한다"}
+    action = str(args.get("action") or "start")
+    if action not in {"start", "status"}:
+        action = "start"
+    got = await ctx.wizard(action)
+    return {
+        **got,
+        "note": (
+            "카드가 단계를 진행한다 — 본문은 한 줄로 카드를 보라고만 말한다. "
+            "동의·성향·매매법·만들기는 카드의 단추로만 받는다."
+        ),
+    }
+
+
 TOOLS: tuple[Tool, ...] = (
     Tool(
         ToolSpec(
@@ -728,7 +748,7 @@ TOOLS: tuple[Tool, ...] = (
             "valuation",
             "재무제표 대비 싼가 비싼가 — PER·PBR·PSR·EV/EBITDA·FCF 수익률의 자기 5년 백분위, "
             "부채 위험 깃발, 저평가 점수, 공시 링크. 유사어: 저렴, 싸, 비싸, 고평가, 저평가, "
-            "PER, 밸류, 부채, 재무.",
+            "PER, 밸류, 부채, 재무, 살만 해, 사도 돼, 들어가도 돼, 매수 타이밍, 지금 살까.",
             _obj({"symbol": {"type": "string"}, "market": {"type": "string"}}, ["symbol"]),
         ),
         _valuation,
@@ -864,6 +884,25 @@ TOOLS: tuple[Tool, ...] = (
         ),
         _screen,
         starter="미국주식 저평가 순위 상위 10개 보여줘",
+    ),
+    Tool(
+        ToolSpec(
+            "profile_wizard",
+            "투자 시작 온보딩 — 동의·자본·성향·매매법·검토를 채팅 안 카드로 진행한다. "
+            "카드를 띄우기만 하고 단계는 카드 단추가 넘긴다. "
+            "유사어: 처음, 시작하고 싶어, 투자 시작, 성향 진단, "
+            "온보딩, 어떻게 시작, 셋업, 나한테 맞는 매매법, 펀드 만들기 도와줘.",
+            _obj(
+                {
+                    "action": {
+                        "type": "string",
+                        "description": "start(처음/이어서) · status(지금 단계)",
+                    }
+                }
+            ),
+        ),
+        _profile_wizard,
+        starter="투자 처음인데 성향 진단부터 도와줘",
     ),
     Tool(
         ToolSpec(

@@ -11,6 +11,26 @@ export type DashboardBlock =
 
 export type DashboardSpec = { title: string; blocks: DashboardBlock[] };
 
+/** 온보딩 카드 (T271) — 서버 `wizard.card_for` 가 만든 그대로. */
+export type WizardCard = {
+  kind: "wizard";
+  step: string;
+  index: number;
+  total: number;
+  title: string;
+  text: string;
+  version?: string;
+  answers: Record<string, unknown>;
+  consented: boolean;
+  error: string;
+  fields: { key: string; label: string; type: "number" | "select"; value?: unknown; options?: { value: string; label: string }[] }[];
+  groups: { key: string; label: string; options: { value: string; label: string; hint?: string; selected: boolean }[] }[];
+  options: { value: string; label: string; hint: string; recommended: boolean; default: boolean; selected: boolean }[];
+  summary: string[];
+  actions: { action: string; label: string; primary?: boolean; confirm?: boolean }[];
+  fund_id?: string | null;
+};
+
 export type ChatEvidence = {
   name: string;
   arguments: Record<string, unknown>;
@@ -34,6 +54,8 @@ export type ChatMessageView = {
   /** 대시보드 명세 (T256) — 값은 도구 결과에서 채워져 온다. */
   dashboard?: DashboardSpec | null;
   dashboard_missing?: string[];
+  /** 온보딩 카드 (T271). */
+  wizard?: WizardCard | null;
   failure?: string | null;
   auto?: unknown;
   tool_calls?: Array<{ call_id: string; name: string; arguments: Record<string, unknown> }>;

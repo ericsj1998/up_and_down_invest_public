@@ -58,6 +58,13 @@ CASES: tuple[EvalCase, ...] = (
     EvalCase("trade_journal", "AI 매매일지 보여줘", ("trade_journal",)),
     EvalCase("screen", "미국주식 저평가 순위 상위 10개 보여줘", ("screen",), expect_dashboard=True),
     EvalCase("macro_view", "지금 공포지수(VIX) 얼마야? 환율이랑 미국 금리도", ("macro_view",)),
+    EvalCase("profile_wizard", "투자 처음인데 성향 진단부터 도와줘", ("profile_wizard",)),
+    EvalCase(
+        "buy_question",
+        "구글 주식 지금 살만 해?",
+        ("market_view", "extremes", "valuation"),
+        expect_dashboard=True,
+    ),
     EvalCase(
         "composite",
         "200만원으로 미국주식 시작하려는데 뭐가 좋아? 그리고 내 비중도 봐줘",

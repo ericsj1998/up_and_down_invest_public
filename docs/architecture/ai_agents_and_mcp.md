@@ -21,7 +21,7 @@ flowchart LR
     end
     subgraph AGENT[orchestration/ai_chat — 자체 루프]
         LOOP[agent.py<br/>계획 → 도구 → 종합<br/>최대 6왕복 · 근거 6,000자]
-        REG[tools.py<br/>도구 13개 = 이름·한국어 설명·유사어·JSON 스키마·함수]
+        REG[tools.py<br/>도구 14개 = 이름·한국어 설명·유사어·JSON 스키마·함수]
         DASH[dashboard.py<br/>화면 명세 — 값은 도구 결과 참조만]
         AL[aliases.py<br/>종목 별칭 + 토스 이름표 503]
     end
@@ -78,7 +78,7 @@ flowchart LR
   410(폐기 모델)은 "무효 응답" 이 아니라 **모델 없음**으로 따로 센다 — 실측으로 잡은 구멍이다. HTTP 는 아웃바운드 층 `NO_RETRY` — 재시도가
   실험 표본을 흔든다.
 
-## 4. 도구 13개 — 무엇을 읽고 무엇을 못 하나
+## 4. 도구 14개 — 무엇을 읽고 무엇을 못 하나
 
 | 도구 | 무엇 | 사실의 출처 | 못 하는 것 |
 |---|---|---|---|
@@ -95,6 +95,7 @@ flowchart LR
 | `screen` | 저평가 점수·PER·PBR·모멘텀·시총으로 **서버가 정렬**한 상위 N | 재무 순위(`fundamentals`) | 모델이 순위를 매기는 것 |
 | `macro_view` | VIX(구간·설명) · 나스닥100 선물 · S&P500 · 10년물 · 달러 · 금 · WTI · 원달러 · EFFR · CPI · 코스피 · 코스닥 · 한국 10년물 | 야후 · CBOE · 뉴욕연준 · BLS · 토스 | 실패한 지표는 이유와 함께 `failures` |
 | `render_dashboard` | 카드·표·칩·스파크라인 **명세** | 이번 턴의 도구 결과 참조만 | 리터럴 숫자 — 그 칸은 비운다 (채팅 전용 · MCP 에는 안 내보낸다) |
+| `profile_wizard` | 온보딩 카드(동의 → 자본 → 성향 → 매매 설정 → 검토 → 완료)를 **띄운다** | T247 초안(`assistant_drafts`) · 성향 규칙 · 미리보기 | 단계를 넘기는 것 — 단추가 `POST /threads/{id}/wizard` 로 모델 없이 넘긴다 (채팅 전용 · T271) |
 
 도구 하나 = `Tool(spec, fn)` 한 벌: 영어 스네이크 이름 · **한국어 설명 + 유사어 목록**("저렴/싸/비싸/고평가/PER") · JSON 입력 스키마 · 함수.
 의도 분류는 규칙 매칭이 아니라 모델이 한다(유사어를 다 적을 수 없다). 도구를 더하면 시험 사례도 더해야 한다 — `test_ai_chat_eval` 이 빠짐을 잡는다.
@@ -127,7 +128,7 @@ Claude Desktop / Cursor / ChatGPT ──(Streamable HTTP · JSON · 무상태)�
 
 ## 7. 시험 — 도구마다 사례 하나, 실제 루프로
 
-`orchestration/ai_chat/evaluate.py CASES` 13개(도구 12 + 합성 1)가 **실제 모델·실제 도구**로 돈다(`POST /ai/report/eval` · 작업 큐 · SSE 진행).
+`orchestration/ai_chat/evaluate.py CASES` 15개(도구 13 + 합성 2)가 **실제 모델·실제 도구**로 돈다(`POST /ai/report/eval` · 작업 큐 · SSE 진행).
 판정은 순수 함수 `judge` — 기대 도구가 불렸나 · 도구 오류 없나 · 답이 있나 · 대시보드가 기대될 때 있나 · 환각(`missing`) 0 인가.
 결과는 `event_logs.ai_chat_eval` 에 추가 전용으로 쌓이고 AI 리포트 "도구 시험" 절에 표로 뜬다. 같은 프롬프트로 결과가 갈리면 **모델 편차**이므로
 한 번의 실패로 프롬프트를 고치지 않는다 — 세 번 누적 뒤 판단한다(측정 없이 고치면 표본이 0 부터). 결과 표는 [ai_chat_scenarios.md](ai_chat_scenarios.md).
