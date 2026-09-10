@@ -11,7 +11,12 @@
 flowchart LR
   subgraph Internet
     U[브라우저]
+    MCPC[MCP 클라이언트<br/>Claude Desktop · Cursor · Bearer 토큰]
     GATE[(Gate.io 선물<br/>실계좌 · 테스트넷)]
+    TOSS[(토스증권<br/>KRX·NASDAQ·NYSE 시세 · 달력 · VI)]
+    EDGAR[(SEC EDGAR<br/>재무제표)]
+    MACRO[(야후 · CBOE · 연준 · BLS<br/>거시 지표)]
+    NIM[(NVIDIA NIM<br/>LLM 풀)]
     GOOGLE[(Google OAuth)]
   end
   subgraph Lightsail["Lightsail $7 · 1 vCPU · 1 GB + 스왑 2 GB · Ubuntu 24.04 · Docker Compose"]
@@ -34,11 +39,15 @@ flowchart LR
   DEMO --> PG & RD
   MIG --> PG
   BK --> PG
-  API <-->|REST · 서명| GATE
+  MCPC -->|443 · /api/mcp| CADDY
+  API <-->|common/http 층 · 서명 · NO_RETRY| GATE
+  API <-->|common/http 층| TOSS & EDGAR & MACRO & NIM
   API <-->|OAuth| GOOGLE
   DEMO <-->|테스트넷| GATE
+  DEMO <-->|common/http 층| TOSS & EDGAR & MACRO & NIM
 ```
 
+- **바깥 호출은 전부 `common/http` 한 층**을 지난다(재시도 · 예산 · 스로틀 · 로그 · 주문은 재시도 없음). 주식 실주문 어댑터는 없다 — 주식 판은 DB 페이퍼 계좌.
 - **컨테이너 7개**(live): proxy(Caddy) · web(nginx) · api(+api_b 슬롯) · api_demo · postgres · redis · backup. 일회성 migrate 둘.
   engine 컨테이너는 **없다** — 1 GB 라 리더 api 안에서 돈다(`UPDOWN_ENGINE_INPROC=1` · 프로필 `separate-engine` 뒤로).
 - **이미지는 서버 밖에서** 만든다(빌드 불가 · [deploy.md §12](deploy.md)). `ship.sh` 한 줄 = 빌드 → 전송 → `IMAGE_TAG` → 블루그린 → 태그 push.

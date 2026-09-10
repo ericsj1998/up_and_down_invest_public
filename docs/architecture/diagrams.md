@@ -1,7 +1,8 @@
 # 다이어그램 — 개념 ERD · 기술 ERD · 시퀀스 · 스윔레인 · 플로우차트
 
-> 전부 Mermaid 다 (GitHub 에서 바로 그려진다). 출처는 코드다 — 표·열은 `src/updown/common/db/models/`, 흐름은
-> `apps/api/main.py`(기동) · `apps/api/walkforward.py`(판·대조) · `orchestration/walkforward/live_runner.py`(러너).
+> 전부 Mermaid 다 (GitHub 에서 바로 그려진다). 출처는 코드다 — 표·열은 `src/updown/common/db/models/`(36 표 · 마이그레이션 0127), 흐름은
+> `apps/api/main.py`(기동) · `apps/api/walkforward.py`(판·대조) · `orchestration/walkforward/live_runner.py`(러너) ·
+> `orchestration/ai_chat/`(AI) · `common/http/`(바깥 호출). 2026-09-10 갱신 — 주식 · EDGAR · 거시 · AI/MCP · 아웃바운드 층 · 소프트 삭제 · 눈금 반영.
 
 ---
 
@@ -10,16 +11,21 @@
 ```mermaid
 erDiagram
     ACCOUNT ||--o{ SESSION_COOKIE : "로그인(구글) · 게스트"
+    ACCOUNT ||--o{ API_TOKEN : "MCP · 바깥 AI — 읽기 전용"
+    ACCOUNT ||--o{ CHAT_THREAD : "AI 대화 — 도구 호출 · 대시보드 명세"
     ACCOUNT }o--o{ FUND : "만든다 (관리자·트레이더)"
     FUND ||--|{ RUN : "종목마다 판 하나 (바스켓 비중)"
     RUN ||--o{ TRADE : "원장 — 계획과 실제를 나란히"
     TRADE ||--o{ ORDER_ATTEMPT : "진입·익절·손절 주문 시도 (멱등키)"
     TRADE ||--o{ CALIBRATION : "의도가 vs 체결가 · 수량"
     RUN }o--|| PLAYBOOK : "버전 고정된 매매법"
-    RUN }o--|| INSTRUMENT : "거래소 × 종목"
-    INSTRUMENT ||--o{ CANDLE : "봉 (분석·백테스트용)"
+    RUN }o--|| INSTRUMENT : "시장 × 종목 (코인 · 주식)"
+    INSTRUMENT ||--o{ CANDLE : "봉 — 코인 WS · 주식 토스 폴링 · DB 우선"
+    INSTRUMENT ||--o{ FINANCIAL_FACT : "EDGAR 공시 사실 (재무 2단계)"
+    MARKET ||--o{ INSTRUMENT : "능력표(배율·숏·수량 단위) · 달력(휴장·조기마감)"
     EXCHANGE_ACCOUNT ||--o{ EXCHANGE_POSITION : "거래소가 진실"
     EXCHANGE_ACCOUNT ||--o{ EXCHANGE_ORDER : "조건부 손절 · 지정가 · 이름에 판 표식"
+    STOCK_PAPER_ACCOUNT ||--o{ RUN : "주식 판의 계좌 — DB 가 진실 (시장마다 하나)"
     RUN ||..|| EXCHANGE_POSITION : "대조 (원장 ↔ 사실)"
     ORDER_ATTEMPT ||..o| EXCHANGE_ORDER : "멱등키 = 주문 text"
     RUN ||--o{ EVENT_LOG : "감사 로그 (추가 전용 · trace_id)"
@@ -27,12 +33,21 @@ erDiagram
     ACCOUNT {
         string email
         string role "pending·viewer·trader·admin·guest"
+        datetime deleted_at "소프트 삭제 — 토큰·권한은 같이 비운다"
+    }
+    API_TOKEN {
+        string token_hash "값은 한 번만 · 해시 저장"
+        datetime revoked_at
+    }
+    CHAT_THREAD {
+        json messages "도구 결과 · 대시보드 명세 포함"
+        datetime deleted_at "목록·열기만 숨김 — 원가는 남는다"
     }
     FUND {
         string fund_id
-        string market
+        string market "GATE·BINANCE·NASDAQ·NYSE·KRX"
         string weight_mode
-        decimal leverage
+        datetime dropped_at "접으면 archive/ 로 보관"
     }
     RUN {
         string key
@@ -46,6 +61,16 @@ erDiagram
         decimal planned_stop
         decimal exit_price
     }
+    INSTRUMENT {
+        string market
+        string symbol
+        string name "토스 이름표 — 한글·영문"
+    }
+    FINANCIAL_FACT {
+        string concept "us-gaap 태그"
+        string period_end
+        decimal value
+    }
     EXCHANGE_POSITION {
         int size "0 = 없음"
         decimal entry_price
@@ -57,9 +82,11 @@ erDiagram
 ```
 
 읽는 법:
-- **원장(RUN · TRADE)은 앱의 의도**이고 **거래소(POSITION · ORDER)는 사실**이다. 둘 사이의 점선이 "대조" 다.
+- **원장(RUN · TRADE)은 앱의 의도**이고 **거래소(POSITION · ORDER)는 사실**이다. 둘 사이의 점선이 "대조" 다. 주식 판은 거래소 대신 **DB 의 페이퍼 계좌**가 사실이다(실주문 어댑터 없음).
 - 원장과 거래소를 잇는 유일한 끈은 **주문 이름**이다. 멱등키에 판 표식과 매매 id 가 들어가 있어 재시작 뒤에도 "이 주문은 내 것" 을 증명한다.
-- FUND 는 DB 표가 아니라 JSON 파일(`logs/funds/*.json`)이다. 판(RUN)들을 묶고 예산을 나누는 상위 객체다.
+- FUND 는 DB 표가 아니라 JSON 파일(`logs/funds/*.json`)이다. 접으면 지우지 않고 `archive/` 로 옮긴다(`dropped_at`) — 판이 펀드 이름을 잃지 않게.
+- MARKET 은 표가 아니라 설정이다(`config/markets.yml` 능력표 · `config/market_sessions.yml` 달력). 엔진·러너·화면은 시장 이름으로 분기하지 않고 이것을 읽는다.
+- 계정 · 대화 · 토큰 · 펀드 · 판은 **소프트 삭제**(`*_at`), 권한 · 설정은 하드 + `event_logs` — 원칙은 [cross_cutting_design.md §3](cross_cutting_design.md).
 
 ---
 
@@ -151,7 +178,7 @@ erDiagram
     }
 ```
 
-### 2.2 마스터 · 시장 · 계정 · 운영
+### 2.2 마스터 · 시장 · 재무 · 계정 · AI · 운영
 
 ```mermaid
 erDiagram
@@ -159,84 +186,131 @@ erDiagram
     instruments ||--o{ candle_quality_issues : instrument_id
     instruments ||--o{ structures : instrument_id
     instruments ||--o{ analysis_reports : instrument_id
+    instruments ||..o{ financial_facts : "symbol (FK 없음 · 출처가 EDGAR)"
+    accounts ||..o{ api_tokens : "email (FK 없음)"
+    accounts ||..o{ chat_threads : "email"
+    accounts ||..o{ playbook_grants : "email"
+    accounts ||..o{ market_grants : "email"
+    accounts ||..o{ account_contacts : "email"
+    accounts }o..|| role_collections : "role_collection"
     users ||--o{ broker_credentials : user_id
     users ||--o{ notifications : user_id
     users ||--o{ backtest_runs : user_id
-    users ||--o{ account_balances : user_id
-    users ||--o{ portfolio_snapshots : user_id
-    users ||--o{ allocation_ledger : user_id
 
     instruments {
         bigint id PK
-        enum market
+        enum market "KRX·NASDAQ·NYSE·BINANCE·UPBIT·GATE"
         string symbol
-        string name
+        string name "토스 영문명 (한글은 config 이름표)"
         enum asset_type
         enum currency
     }
     candles {
         bigint instrument_id FK
         enum timeframe
-        datetime ts "RANGE 파티션 (월)"
+        datetime ts "RANGE 파티션 (월) · 2020~"
         numeric open
         numeric high
         numeric low
         numeric close
         numeric volume
     }
-    candle_quality_issues {
-        uuid id PK
-        bigint instrument_id FK
-        enum timeframe
-        enum issue_type
-        enum status
-        datetime detected_at
+    financial_facts {
+        string source PK "edgar"
+        string symbol PK
+        string concept PK
+        string unit PK
+        date period_end PK
+        string accession PK
+        string entity_id "CIK"
+        numeric value
+        string form "10-K · 10-Q"
+        datetime filed_at
+    }
+    stock_paper_accounts {
+        enum market PK "NASDAQ · NYSE · KRX"
+        json state "현금 · 보유 · 주문 — 주식 판의 진실"
+        datetime updated_at
     }
     accounts {
         uuid id PK
         string email UK
         enum role "pending·viewer·trader·admin·guest"
-        datetime approved_at
-        string approved_by
+        string role_collection
+        json extra_caps
+        bool audit "백테스트 손익 열람"
         bool blocked
+        datetime deleted_at "소프트 삭제 (0126)"
+        datetime approved_at
         datetime last_login_at
+    }
+    api_tokens {
+        uuid id PK
+        string email
+        string token_hash UK "SHA-256 · 값은 안 남긴다"
+        datetime last_used_at
+        datetime revoked_at
+    }
+    chat_threads {
+        string id PK
+        string email
+        string model
+        json messages "도구 결과 · 대시보드 명세"
+        datetime deleted_at "소프트 삭제 (0127)"
+        datetime updated_at
+    }
+    ai_participants {
+        string id PK
+        string model
+        string prompt_version "chat-1.4 · 바뀌면 새 참가자"
+        string prompt_hash
+        datetime frozen_at
+    }
+    playbook_grants {
+        string email PK
+        string playbook_id PK
+        bool view
+        bool backtest
+        bool trade
+    }
+    market_grants {
+        string email PK
+        string market_group PK
+        bool view
+        bool backtest
+        bool trade
+    }
+    role_collections {
+        string name PK
+        json caps
+        json playbook_policy
+        json market_policy
     }
     users {
         uuid id PK
         string google_sub UK
         string email UK
         enum role
-        datetime trial_expires_at
-    }
-    broker_credentials {
-        uuid id PK
-        uuid user_id FK
-        string broker
-        string encrypted_ref
     }
     event_logs {
         uuid id PK
         string trace_id
         string actor
         enum level
-        string event_type
-        json payload
+        string event_type "permission_changed · setting_cleared · ai_chat_turn · ai_chat_eval …"
+        json payload_json
         datetime ts "INSERT 만 — UPDATE/DELETE 권한 없음"
     }
     app_settings {
         string key PK
-        string value
+        string value "비우면 삭제 + event_logs.setting_cleared"
         datetime updated_at
-    }
-    notifications {
-        uuid id PK
-        uuid user_id FK
-        enum status
-        datetime ts
     }
 ```
 
 > `accounts` 는 구글 로그인 계정(T220 · 승인 흐름)이고 `users` 는 스펙 시대의 사용자 표다. 둘이 공존하는 것은 [code_quality_review.md](code_quality_review.md) §3.4 의 지적 사항이다.
+> 계정에 매인 표(권한 · 토큰 · 대화 · 문의)는 **이메일로 매이고 FK 가 없다** — 그래서 계정 삭제가 소프트가 됐고, 지우는 트랜잭션이 토큰·권한을 같이 비운다(T266).
+> `financial_facts` 는 종목 코드로 매인다(EDGAR 는 CIK 로, 우리는 티커로 부른다 · `BRK.B`↔`BRK-B` 변환은 어댑터가).
 
 ### 2.3 스펙 시대의 제안 → 승인 → 주문 계열 (지금은 골격만)
 
@@ -319,26 +393,30 @@ erDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    participant X as 거래소 (Gate)
+    participant X as 거래소 (Gate · Binance) / 주식 페이퍼 계좌 (DB)
+    participant O as common/http Outbound (주문은 NO_RETRY)
     participant F as LiveFeed / LiveFiller (우편함)
     participant R as LiveRunner (비동기 조립)
     participant S as Session.step() (동기 · 결정론)
     participant L as Ledger (원장)
     participant DB as PostgreSQL (wf_*)
 
-    X-->>F: 봉 스트림 (마감 봉만 push · 미마감은 pending)
-    R->>S: step()  ※ 진입축 봉 마감에만
+    X-->>F: 봉 스트림 (코인 = 웹소켓 · 주식 = 토스 REST 폴링 · 정규장만 · 마감 봉만 push)
+    Note over R: 주식은 달력(휴장·조기마감)과 토스 유의사항(VI·거래정지)이 닫혀 있으면 걸음을 안 만든다
+    R->>S: step()  ※ 진입축 봉 마감에만 · 소요를 step_ms 로 잰다
     S->>L: 제안 → 계획 (진입가 · planned_stop · first · target)
     S-->>R: Snapshot (Want: 아직 안 보낸 주문)
-    R->>R: 사전 검사 — 연결된 거래소인가 · 유동성(호가 깊이) · 1계약 예산 · 같은 종목 판 중복 · 잔재 회수
-    R->>X: 진입 지정가 · text = t-run6-trade8-en-leg (멱등키)
+    R->>R: 사전 검사 — 연결된 거래소인가 · 유동성(호가 깊이) · 1계약/정수 주 예산 · 같은 종목 판 중복 · 잔재 회수
+    R->>O: 진입 지정가 · text = t-run6-trade8-en-leg (멱등키)
+    O->>X: 서명 · 한 번만 보낸다 (5xx 도 재시도 없음 — 재시도는 체결 조회 뒤 R 이)
     R->>DB: wf_orders 기록 (요청·응답 원문) · pending_entry 를 wf_runs.meta_json 에
     X-->>R: 체결 (폴링)
     R->>F: note(fill)  ← 세션은 다음 걸음에 poll() 로 읽는다
-    R->>X: 조건부 손절 (trigger = planned_stop · size 0 = 전량) · 익절 reduce-only 지정가
+    R->>O: 조건부 손절 (trigger = planned_stop · size 0 = 전량) · 익절 reduce-only 지정가
+    O->>X: 거래소 조건부 / 페이퍼는 갭 손절 규칙
     R->>DB: 원장 통째 저장 (실패해도 매매는 계속 · 로그로 크게)
     loop 30초 점검 (_keep_probing)
-        R->>X: 포지션 스냅샷 · 열린 조건부
+        R->>X: 포지션 스냅샷 · 열린 조건부 (계정 단위 조회는 2초 공유 캐시로 합류)
         alt 포지션 있는데 조건부 없음/부족
             R->>X: 손절 다시 건다 (걸었다고 기억하지 않는다 — 만료는 조용하다)
         else 포지션이 사라졌는데 원장은 보유 중
@@ -375,7 +453,8 @@ sequenceDiagram
             A->>X: 열린 진입 지정가와 대조 → 이어받기 / 다시 부탁 / 체결로 넣기 / 버리기 (표마다)
             A->>X: 대조에 없는 내 접두 지정가 = 좀비 → 취소
         end
-        A->>A: restore_funds (펀드 JSON → 판 핸들 다시 붙임)
+        A->>A: restore_funds (펀드 JSON → 판 핸들 다시 붙임 · archive/ 는 안 읽는다)
+        Note over A,DB: 주식 판의 계좌·보유·주문은 stock_paper_accounts 에 있어 그대로 이어진다 (거래소가 없다)
         A->>W: watch_forever(60s) · reconcile_loop(120s) 시작
     else 락 실패 (팔로워)
         A->>A: 조회만 · 거래 POST 는 503 → nginx 가 리더 슬롯으로 재시도
@@ -432,6 +511,59 @@ sequenceDiagram
     Note over A,D: 실계좌 api 는 @demo 세션을 거른다. 게스트가 실계좌 값을 볼 구조적 경로가 없다
 ```
 
+### 3.5 AI 채팅 한 턴 — 화면과 MCP 가 같은 도구를 부른다
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 사람 (채팅 창) / MCP 클라이언트 (Claude Desktop 등)
+    participant A as api (/ai/chat 작업 큐 · /mcp 무상태)
+    participant G as agent.py (자체 루프 · 최대 6왕복)
+    participant T as tools.py (도구 13 · 사실만)
+    participant P as llm/pool (NVIDIA NIM · 폴백)
+    participant D as dashboard.resolve (참조 → 값)
+    participant DB as chat_threads · event_logs
+
+    U->>A: "오라클 종목 어떻게 생각해" (또는 tools/call symbol_resolve)
+    alt 채팅
+        A->>G: 이력 + 질문 + 도구 명세
+        loop 계획 → 도구 → 종합
+            G->>P: 모델 호출 (Outbound NO_RETRY · 실패는 값으로)
+            P-->>G: 도구 호출 요청 (symbol_resolve → market_view …)
+            G->>T: 실행 — 별칭 사전 · 봉 캐시 · EDGAR · 원장 · RiskManager
+            T-->>G: 결과 (6,000자로 압축 · 오류도 결과)
+        end
+        G->>P: 종합 — 답 + 근거 줄 (+ 숫자가 여럿이면 render_dashboard 명세)
+        G->>D: 명세의 {"from": "도구.키"} 를 이번 턴 결과로 채운다 · 없는 참조는 빈 칸(missing)
+        G->>DB: 메시지·도구 결과·명세 저장 · ai_chat_turn (토큰 · 왕복 · missing)
+        A-->>U: 답 · 근거 · 대시보드 (주문은 propose_order 제안까지 — 확인은 화면에서)
+    else MCP (Bearer 토큰 · 읽기 전용)
+        A->>T: caller 를 컨텍스트로 옮겨 같은 함수 실행
+        T-->>A: 결과 (토큰 없음/되돌림 = 오류 결과 · 주문 경로는 403)
+        A-->>U: JSON 응답 — 생각은 상대 모델이 한다
+    end
+```
+
+### 3.6 바깥 호출 한 층 — 모든 출처가 같은 길을 지난다
+
+```mermaid
+flowchart LR
+    C[클라이언트<br/>토스 · EDGAR · 업비트 · Gate · 바이낸스 · 거시 · NVIDIA · 구글] --> R[Outbound.request<br/>venue · 정책]
+    R --> T{스로틀<br/>throttle_of 키}
+    T --> B{예산<br/>budget cap · 보내기 전에 센다}
+    B -->|초과| E1[RequestBudgetExceededError<br/>판 시작 503]
+    B --> S[httpx 전송<br/>닫힌 풀이면 다시 연다]
+    S --> H[on_response 훅<br/>요율 눈금 · 밴 기록]
+    H --> D{재시도 대상?<br/>429 · 5xx · 전송 오류}
+    D -->|아니오 · 또는 NO_RETRY| OK[응답 그대로 → 클라이언트가 도메인 예외로<br/>404 = 모르는 CIK · 401 = 자격증명]
+    D -->|예 · 남은 횟수| W[대기<br/>Retry-After 우선 · 지수 백오프 + 지터] --> T
+    D -->|예 · 소진| E2[OutboundError<br/>status_code · exc_type]
+    R -.->|debug| LOG[outbound_request<br/>venue · path · status · latency · attempt]
+```
+
+- 주문 클라이언트(Gate · 바이낸스)는 `NO_RETRY` — 어떤 상태도 재시도 대상이 아니라 **응답이 그대로 돌아간다**. 주문이 생겼을 수 있는 5xx 를 층이 삼키면 안 된다(규칙 #6).
+- 원시 `httpx.AsyncClient` 를 만드는 파일은 층 자체와 웹소켓 핸드셰이크 둘뿐이고, [래칫 시험](../../tests/test_outbound_layer.py)이 목록을 못 박는다.
+
 ---
 
 ## 4. 스윔레인 다이어그램
@@ -443,48 +575,60 @@ Mermaid 에는 스윔레인 전용 문법이 없어 `flowchart` 의 `subgraph` �
 ```mermaid
 flowchart LR
     subgraph H[사람 · 화면]
-        h1[펀드 만들기<br/>거래소 · 시작 자본 · 전략] --> h2[콘솔에서 본다<br/>포지션 · 손절 · 대조 배너]
+        h1[펀드/판 만들기<br/>코인: 거래소 · 배율 / 주식: 시장 · 정수 주 · 장중만] --> h2[콘솔에서 본다<br/>포지션 · 손절 · 대조 배너 · 걸음 눈금]
         h2 --> h3{"대조 경보?"}
         h3 -->|잔재| h4[거두기]
         h3 -->|무주공산| h5[이어받기 / 닫기]
-        h6[판 종료]
+        h6[판 종료 · 펀드 접기 → archive/]
+        h7[AI 채팅 · MCP<br/>positions · propose_order 제안까지]
     end
     subgraph A[api 리더]
-        a1[_live_start<br/>연결 거래소 검사 · 유동성 · 1계약 예산 · 중복 판 · 잔재 회수] --> a2[RunStore.open<br/>닻으로 열린 판 있으면 이어받기]
+        a1[_live_start<br/>연결 거래소 · 달력(휴장·조기마감) · 유동성 · 1계약/1주 예산 · 중복 판 · 잔재 회수 · 요청 예산 300] --> a2[RunStore.open<br/>닻으로 열린 판 있으면 이어받기]
         a2 --> a3[LiveRunner 시작]
         a7[watchdog 60s<br/>DB 의 열린 판 vs 러너] --> a8[revive · 실패 시 경보]
         a9[reconcile_loop 120s<br/>4축 대조 · 진입 차단]
         a10[_close_live_position<br/>포지션 청산 → 원장 마감 → 잔재 회수]
+        a11[자원 비트 30s<br/>loop_lag_ms · caches · 요율 눈금]
     end
     subgraph R[LiveRunner]
-        r1[봉 마감 → Session.step] --> r2[진입 지정가<br/>멱등키·판 표식]
+        r1[봉 마감 → Session.step<br/>step_ms 로 잰다] --> r2[진입 지정가<br/>멱등키·판 표식]
         r2 --> r3[체결 → 우편함 → 원장]
-        r3 --> r4[조건부 손절 + 익절 reduce-only]
-        r4 --> r5[30초 점검<br/>손절 재장착 · 선청산 대조 · 펀딩]
+        r3 --> r4[조건부 손절 + 익절 reduce-only<br/>주식 페이퍼는 갭 손절 규칙]
+        r4 --> r5[30초 점검<br/>손절 재장착 · 선청산 대조 · 펀딩 · 휴장 중 frame_frozen 오탐 없음]
         r5 --> r6[걸음마다 원장·대기 계획 저장]
     end
-    subgraph X[거래소]
-        x1[(포지션)] ~~~ x2[(조건부 · 지정가)] ~~~ x3[(체결 · 청산 이력)]
+    subgraph O[common/http 한 층]
+        o1[재시도 · Retry-After · 예산 · 스로틀 · 로그<br/>주문은 NO_RETRY]
+    end
+    subgraph X[거래소 · 브로커]
+        x1[(Gate · Binance<br/>포지션 · 조건부 · 체결 이력)] ~~~ x2[(토스<br/>봉 · 시세 · 달력 · VI)] ~~~ x3[(주식 페이퍼 계좌<br/>DB stock_paper_accounts)]
     end
     subgraph DB[PostgreSQL]
-        d1[(wf_runs<br/>meta_json.pending_entry)] ~~~ d2[(wf_trades · wf_orders<br/>wf_calibration)] ~~~ d3[(event_logs<br/>추가 전용)]
+        d1[(wf_runs<br/>meta_json.pending_entry)] ~~~ d2[(wf_trades · wf_orders<br/>wf_calibration)] ~~~ d3[(event_logs<br/>추가 전용)] ~~~ d4[(candles · financial_facts<br/>봉 · 재무 사실)]
     end
 
     h1 --> a1
     a3 --> r1
-    r2 --> x2
-    r4 --> x2
+    r2 --> o1
+    r4 --> o1
+    r5 --> o1
+    o1 --> x1
+    o1 --> x2
+    r2 --> x3
+    x1 --> r3
     x3 --> r3
-    r5 --> x1
+    d4 --> r1
     r6 --> d1
     r6 --> d2
-    a9 --> x1
+    a9 --> o1
     a9 --> h2
     a7 --> d1
-    h4 --> x2
+    a11 --> h2
+    h4 --> o1
     h5 --> a3
-    h6 --> a10 --> x1
+    h6 --> a10 --> o1
     a10 --> d1
+    h7 --> a1
 ```
 
 ### 4.2 블루그린 배포 — 거래 리더가 끊기지 않게
@@ -552,30 +696,36 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph DATA[데이터 — marketdata]
-        c1[거래소 캔들 수집<br/>4h · 1d · 5m] --> c2{무결성 검사<br/>빈 봉 · 중복 · 시각}
-        c2 -->|통과| c3[(PostgreSQL candles)]
+    subgraph DATA[데이터 — marketdata · 모든 바깥 호출은 common/http 한 층]
+        c1[봉 수집<br/>코인 WS · 주식 토스 폴링(정규장만)<br/>DB 우선 · 브로커는 꼬리만] --> c2{무결성 검사<br/>빈 봉 · 중복 · 시각}
+        c2 -->|통과| c3[(PostgreSQL candles<br/>월 파티션)]
         c2 -->|이상| c4[(candle_quality_issues)]
+        c5[EDGAR 재무<br/>frames 1단계 · companyfacts 2단계] --> c6[(financial_facts)]
+        c7[거시 지표<br/>야후 · CBOE · 연준 · BLS · 토스] --> c8[60초 캐시]
     end
 
     subgraph JUDGE[판정 — analysis · 제안만]
-        j1[봉 마감 → Session.step] --> j2[지표 · 구조물<br/>이평 · ATR · 레벨 · 추세선]
+        j1[봉 마감 → Session.step<br/>step_ms 눈금] --> jg{달력 · 장중 상태<br/>휴장 · 조기마감 · VI → 걸음 없음}
+        jg -->|열림| j2[지표 · 구조물<br/>이평 · ATR · 레벨 · 추세선]
         j2 --> j3{국면 게이트<br/>D1 추세}
         j3 -->|열림| j4[탐지기 플러그인<br/>entry point 로 발견]
         j3 -->|닫힘| j0[제안 없음]
         j4 --> j5[TradeSetup 제안<br/>방향 · 진입 · 손절 · 목표]
+        j6[재무 지표 · 5년 백분위<br/>저평가 점수 = 정렬 기준]
     end
 
     subgraph DECIDE[확정 — decision · 단일 출처]
-        d1[RiskManager<br/>손절 · 익절 · 수량 확정] --> d2{손절이 청산가 안쪽?<br/>RR · 비용 · 표본}
+        d1[RiskManager<br/>손절 · 익절 · 수량 확정] --> d2{손절이 청산가 안쪽?<br/>RR · 비용 · 표본 · 능력표}
         d2 -->|아니오| d0[안 간다 · 기록]
-        d2 -->|예| d3[노출 = r ÷ 손절거리<br/>배율 상한 안에서]
+        d2 -->|예| d3[노출 = r ÷ 손절거리<br/>코인: 배율 상한 · 주식: 배율 1 · 정수 주]
     end
 
     subgraph EXEC[집행 — execution · 값을 못 바꾼다]
         e1[OrderGateway<br/>어댑터 획득의 유일한 문] --> e2[진입 지정가<br/>멱등키 = 판 표식 + 매매 id]
-        e2 --> e3[(거래소)]
+        e2 --> e3[(거래소 Gate · Binance<br/>주문은 NO_RETRY)]
+        e2 --> e7[(주식 페이퍼 계좌<br/>DB · 갭 손절)]
         e3 --> e4[체결 → 우편함]
+        e7 --> e4
         e4 --> e5[조건부 손절 + 익절 reduce-only]
     end
 
@@ -587,14 +737,22 @@ flowchart TD
         l4 -->|경보| l6[콘솔 배너 · 진입 차단 · 사람에게]
     end
 
-    subgraph SHOW[화면 · 리포트 — apps]
-        s1[거래 콘솔<br/>계좌 카드 · 펀드 · 대조 배지]
-        s2[RUN 상세<br/>차트 · 진입/손절선 · 안전장치]
-        s3[리포트<br/>누적 손익 · 결과 분포 · 일일 스냅샷 · 메일]
+    subgraph AI[AI — orchestration/ai_chat · 사실을 읽고 제안까지]
+        a1[채팅 · MCP<br/>도구 13 · 자체 루프] --> a2[propose_order<br/>RiskManager 값으로 제안]
+        a1 --> a3[render_dashboard<br/>값은 도구 결과 참조만 · 환각은 빈 칸]
+    end
+
+    subgraph SHOW[화면 · 리포트 — apps · TradingView Lightweight Charts]
+        s1[거래 콘솔<br/>계좌 카드 · 펀드 · 대조 배지 · 거시 카드]
+        s2[RUN 상세<br/>차트 · 진입/손절선 · 안전장치 · 걸음 눈금]
+        s3[리포트<br/>누적 손익 · 결과 분포 · AI 채점 · 메일]
+        s4[저평가 후보<br/>전체 · SP 500 · NASDAQ · NYSE]
     end
 
     c3 --> j1
+    c6 --> j6
     j5 --> d1
+    a2 --> d1
     d3 --> e1
     e4 --> l1
     e5 --> l2
@@ -602,10 +760,17 @@ flowchart TD
     l5 --> s2
     l5 --> s3
     l6 --> s1
+    j6 --> s4
+    c8 --> s1
+    c3 --> a1
+    c6 --> a1
+    c8 --> a1
+    l5 --> a1
 ```
 
 읽는 법:
-- **화살표는 한 방향**이다. 판정에서 집행으로만 흐르고, 집행이 판정 값을 고쳐 되돌리는 화살표는 없다.
-- 거래소는 그림의 **중간**에 있다 — 주문을 내는 자리(EXEC)와 사실을 되읽는 자리(LEDGER)가 다르다. 둘을 잇는 끈은 멱등키(주문 이름)뿐이다.
+- **화살표는 한 방향**이다. 판정에서 집행으로만 흐르고, 집행이 판정 값을 고쳐 되돌리는 화살표는 없다. AI 도 마찬가지 — `propose_order` 가 RiskManager 로 들어가는 화살표는 있어도 거래소로 가는 화살표는 없다.
+- 거래소는 그림의 **중간**에 있다 — 주문을 내는 자리(EXEC)와 사실을 되읽는 자리(LEDGER)가 다르다. 둘을 잇는 끈은 멱등키(주문 이름)뿐이다. 주식은 거래소 자리에 **DB 페이퍼 계좌**가 선다.
 - 30초·120초 두 리듬이 다른 것을 본다. 30초는 *내 매매*(체결·손절·펀딩), 120초는 *거래소 전체*(내 것이 아닌 포지션·주문까지).
-- 요청이 이 그림에 닿는 문은 하나다 — `auth.guard` 가 `required_cap(method, path, live)` 로 기능 하나를 고르고 계정이 그것을 쥐었는지 본다. 같은 경로가 데모 서버에서는 데모 기능, 실계좌 서버에서는 실거래 기능을 요구한다.
+- 바깥으로 나가는 화살표는 전부 `common/http` 한 층을 지난다(§3.6). 주문은 그 층이 재시도하지 않는다.
+- 요청이 이 그림에 닿는 문은 하나다 — `auth.guard` 가 `required_cap(method, path, live)` 로 기능 하나를 고르고 계정이 그것을 쥐었는지 본다. MCP 토큰 호출자는 읽기 기능만 쥔다.

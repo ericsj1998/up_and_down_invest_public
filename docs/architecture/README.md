@@ -48,12 +48,15 @@ flowchart LR
     U[사람] --> W[화면 React] --> N[nginx<br/>updown_mode 쿠키로 갈림]
     N -->|live| A[api 리더]
     N -->|기본 · demo| D[api_demo 데모]
-    A --> X[거래소<br/>Gate 실계좌 · 테스트넷]
-    D --> X
-    A --> P[(PostgreSQL<br/>원장 · 판 · 봉 · 감사 로그)]
+    M[MCP 클라이언트<br/>Claude Desktop 등 · 읽기 전용 토큰] --> A
+    A --> O[common/http 한 층<br/>재시도 · 예산 · 스로틀 · 로그]
+    D --> O
+    O --> X[거래소<br/>Gate 실계좌 · 테스트넷 · Binance]
+    O --> T[토스 · EDGAR · 거시 출처 · NVIDIA]
+    A --> P[(PostgreSQL<br/>원장 · 판 · 봉 · 재무 사실 · 감사 로그)]
     D --> P
     A --> R[(Redis<br/>거래 리더 락 · 비트)]
-    A -.-> E[engine<br/>봉 수집 · 일간 리포트]
+    A -.-> E[engine in-proc<br/>봉 수집 · 일간 리포트 · 눈금]
 ```
 
 - **분석 → 결정 → 집행**이 코드 계층으로 갈려 있고 import-linter 가 CI 에서 역방향을 막는다.
