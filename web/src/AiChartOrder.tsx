@@ -8,8 +8,8 @@
  * 숫자는 전부 서버가 준 문자열이다 — 화면은 계산하지 않는다(규칙 #2 정신 · 대시보드와 같은 원칙).
  */
 import { useEffect, useState } from "react";
-import { chartOrderAnalyze, chartOrderBuckets, chartOrderResolve, chartOrderRun, chartOrderRuns, consoleBalances, orderCustom, validatePlan } from "./api";
-import type { ChartAnalysis, ChartBucket, ChartParticipant, ChartPlanSide, ChartRun, MarketInfo, Who } from "./api";
+import { chartOrderAnalyze, chartOrderBuckets, chartOrderResolve, chartOrderRun, chartOrderRuns, chartOrderScoreboard, consoleBalances, orderCustom, validatePlan } from "./api";
+import type { ChartAnalysis, ChartBucket, ChartParticipant, ChartPlanSide, ChartRun, MarketInfo, ScoreRow, Who } from "./api";
 import { Chart } from "./Chart";
 import { useJobEvents } from "./chat/useJobEvents";
 import { BrokerMark } from "./shell/BrokerMark";
@@ -282,12 +282,31 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
     if (body) loadHistory(body.symbol, body.market);
   }, [resolveJob.done, resolveJob.error, body]);
 
+  const [reusedNote, setReusedNote] = useState("");
+  const [scores, setScores] = useState<{ rows: ScoreRow[]; min_sample: number; cycles: number; judged: number } | null>(null);
+
   const compare = (side?: string) => {
     if (!symbol.trim() || jobId) return;
     setError("");
     setParticipants(null);
+    setReusedNote("");
     chartOrderRun({ symbol: symbol.trim().toUpperCase(), market, bucket, side })
-      .then((got) => setJobId(got.job_id))
+      .then((got) => {
+        if (got.job_id) {
+          setJobId(got.job_id);
+          return;
+        }
+        // 10분 안의 지난 회차 — 모델을 안 불렀다. 참가자 표만 그대로.
+        setParticipants(got.participants ?? []);
+        setRunId(got.run_id ?? null);
+        setReusedNote(got.note ?? "");
+      })
+      .catch((exc: unknown) => setError(String(exc)));
+  };
+
+  const loadScores = () => {
+    chartOrderScoreboard({ market })
+      .then(setScores)
       .catch((exc: unknown) => setError(String(exc)));
   };
 
@@ -421,7 +440,11 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
             >
               이력
             </button>
+            <button type="button" className="btn small" onClick={loadScores} title="참가자 x 갈래 x 시장 — 판정된 회차만 · 표본 30 미만은 회색">
+              성적표
+            </button>
           </div>
+          {reusedNote ? <p className="faint text-xs">{reusedNote}</p> : null}
           {jobId ? (
             <p className="faint text-xs" style={{ marginTop: 6 }}>
               {job.lines.length ? job.lines[job.lines.length - 1] : "AI 비교를 띄우는 중"}
@@ -516,6 +539,59 @@ export function AiChartOrder({ markets, who }: { markets: MarketInfo[]; who: Who
                 분석 id {body.analysis_id} — 기록돼 나중에 익절/손절에 실제로 닿았는지로 채점한다.
               </p>
             </>
+          ) : null}
+          {scores ? (
+            <div className="card" style={{ marginTop: 8 }}>
+              <b>성적표</b>
+              <p className="faint text-xs">
+                판정된 회차 {scores.judged} / 기록 {scores.cycles} · 익절률 = 익절 먼저 ÷ (익절+손절+만료) · 표본 {scores.min_sample} 미만은 회색(믿지 말라는 표시).
+                제안했지만 진입가에 안 닿은 것은 "진입 안 됨" 으로 따로 센다.
+              </p>
+              {scores.rows.length === 0 ? (
+                <p className="faint text-xs">아직 판정된 회차가 없다 — 회차가 익으면(진입 유효 봉 + 보유 기한) 한 시간마다 자동 채점된다.</p>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="table text-xs">
+                    <thead>
+                      <tr>
+                        <th>참가자</th>
+                        <th>갈래</th>
+                        <th>시장</th>
+                        <th>제안</th>
+                        <th>관망</th>
+                        <th>진입 안 됨</th>
+                        <th>체결</th>
+                        <th>익절 먼저</th>
+                        <th>손절 먼저</th>
+                        <th>만료</th>
+                        <th>익절률</th>
+                        <th>평균 순 R</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {scores.rows.map((r) => (
+                        <tr key={`${r.participant}|${r.bucket}|${r.market}`} className={r.grey ? "faint" : ""} title={r.grey ? `표본 ${r.entered} < ${scores.min_sample}` : undefined}>
+                          <td>
+                            <b>{r.participant}</b>
+                          </td>
+                          <td>{r.bucket}</td>
+                          <td>{r.market}</td>
+                          <td>{r.proposed}</td>
+                          <td>{r.abstained}</td>
+                          <td>{r.no_entry}</td>
+                          <td>{r.entered}</td>
+                          <td>{r.followed}</td>
+                          <td>{r.not_followed}</td>
+                          <td>{r.expired}</td>
+                          <td>{r.follow_pct === null ? "—" : `${r.follow_pct}%`}</td>
+                          <td>{r.avg_net_r ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           ) : null}
           {history ? (
             <div className="card" style={{ marginTop: 8 }}>

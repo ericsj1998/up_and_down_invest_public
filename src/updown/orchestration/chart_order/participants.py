@@ -90,6 +90,18 @@ def structure_proposal(
     )
 
 
+def _flag_name(raw: object) -> str:
+    """깃발 하나의 이름 — dict(`key`/`label`) 도 문자열도 받는다."""
+    if isinstance(raw, dict):
+        row = cast("dict[str, object]", raw)
+        for key in ("key", "label"):
+            value = row.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return str(row)
+    return str(raw)
+
+
 def evidence_note_of(
     *,
     entry_frame: Timeframe,
@@ -140,12 +152,7 @@ def evidence_note_of(
         score_raw = valuation.get("score")
         score = cast("dict[str, Any]", score_raw) if isinstance(score_raw, dict) else valuation
         flags_raw = cast("list[object]", score.get("flags") or valuation.get("flags") or [])
-        flags = [
-            str(cast("dict[str, Any]", f).get("key") or cast("dict[str, Any]", f).get("label") or f)
-            if isinstance(f, dict)
-            else str(f)
-            for f in flags_raw
-        ]
+        flags = [_flag_name(f) for f in flags_raw]
         lines.append(
             f"- 재무: 저평가 점수 {score.get('score')} · "
             f"싼 정도 {score.get('cheapness')} · "

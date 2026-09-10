@@ -88,6 +88,46 @@ def load_buckets(path: Path | None = None) -> dict[str, Bucket]:
 
 
 @dataclass(frozen=True, slots=True)
+class Limits:
+    """AI 비교 상한 (보완 ⑥).
+
+    Attributes:
+        runs_per_user_per_day: 사람·하루 최대 회수.
+        reuse_minutes: 같은 종목·갈래의 지난 회차를 다시 쓰는 시간(분).
+    """
+
+    runs_per_user_per_day: int = 20
+    reuse_minutes: int = 10
+
+
+def load_limits(path: Path | None = None) -> Limits:
+    """`config/analysis_buckets.yml` 의 `limits` — 없으면 기본값.
+
+    Args:
+        path: 설정 파일.
+
+    Returns:
+        상한.
+
+    Raises:
+        BucketConfigError: 파일이 없거나 값이 정수가 아닌 경우.
+    """
+    target = path or DEFAULT_BUCKETS_PATH
+    try:
+        raw = cast("dict[str, Any]", yaml.safe_load(target.read_text(encoding="utf-8")))
+    except OSError as exc:
+        raise BucketConfigError(f"갈래 설정을 읽을 수 없다: {target}") from exc
+    block = cast("dict[str, Any]", raw.get("limits") or {})
+    try:
+        return Limits(
+            runs_per_user_per_day=int(block.get("runs_per_user_per_day", 20)),
+            reuse_minutes=int(block.get("reuse_minutes", 10)),
+        )
+    except (TypeError, ValueError) as exc:
+        raise BucketConfigError(f"limits 가 틀렸다: {exc}") from exc
+
+
+@dataclass(frozen=True, slots=True)
 class Candidate:
     """구조가 말하는 계획 후보 — 확정 전.
 

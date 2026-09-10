@@ -14,10 +14,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, cast
 
@@ -28,6 +29,7 @@ from updown.apps.api import fundamentals as fundamentals_api
 from updown.apps.api import macro as macro_api
 from updown.apps.api.auth import caller_of
 from updown.apps.api.jobs import Reporter, registry
+from updown.common.cache import TtlCache
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.domain.capabilities import capabilities_of
 from updown.common.domain.instrument import Market, MarketGroup, Timeframe
@@ -66,10 +68,17 @@ from updown.orchestration.chart_order.plans import (
     candidates_of,
     distances_of,
     load_buckets,
+    load_limits,
 )
+from updown.orchestration.chart_order.scoreboard import bucket_of, scoreboard_of
 
 router = APIRouter(prefix="/chart-order", tags=["chart-order"])
 _logger = get_logger("api.chart_order")
+
+_RUNS_TODAY = TtlCache[int]("chart_order.runs_today", 24 * 3600.0)
+"""사람 → 오늘 AI 비교 회수 (프로세스 안 · 재시작하면 0 — 원가 상한이지 회계가 아니다)."""
+RESOLVE_EVERY_S = 3600.0
+"""채점 루프 주기 — 익은 회차를 한 시간마다 판정한다 (T273 3단계 자동화)."""
 
 FRAME_BARS = 400
 """진입 축 창 — 차트 주문 탭과 같은 값."""
@@ -380,7 +389,11 @@ async def run(request: Request, payload: Annotated[dict[str, Any], Body()]) -> d
         `{analysis, participants, run_id, matures_at}`.
 
     Raises:
-        HTTPException: 403 게스트 · 400 시장·갈래 · 503 모델 풀 없음.
+        HTTPException: 403 게스트 · 400 시장·갈래 · 429 하루 상한 · 503 모델 풀 없음.
+
+    Note:
+        같은 종목·갈래·시장의 회차가 `reuse_minutes` 안에 있으면 모델을 다시 부르지 않고 그 회차를
+        준다(`{job_id: null, reused: true, ...}`) — 단추 연타가 토큰을 태우지 않게(보완 ⑥).
     """
     email = await _login_not_guest(request)
     symbol = str(payload.get("symbol") or "").strip().upper()
@@ -389,6 +402,28 @@ async def run(request: Request, payload: Annotated[dict[str, Any], Body()]) -> d
     side = str(payload.get("side") or "")
     if not symbol:
         raise HTTPException(400, "symbol 이 없다")
+    limits = load_limits()
+    recent = _recent_cycle(symbol, mk, chosen.key, timedelta(minutes=limits.reuse_minutes))
+    if recent is not None:
+        ledger = Ledger()
+        return {
+            "job_id": None,
+            "reused": True,
+            "run_id": recent.run_id,
+            "taken_at": recent.taken_at.isoformat(),
+            "matures_at": matures_at(recent).isoformat(),
+            "judged": ledger.has_verdict(recent.run_id),
+            "participants": [proposal_row(p) for p in recent.proposals],
+            "note": (
+                f"{limits.reuse_minutes}분 안의 지난 비교를 다시 보여 준다 — "
+                "모델을 새로 부르지 않았다"
+            ),
+        }
+    used = _RUNS_TODAY.get(email) or 0
+    if used >= limits.runs_per_user_per_day:
+        raise HTTPException(
+            429, f"오늘 AI 비교 상한({limits.runs_per_user_per_day}회)에 닿았다 — 내일 다시"
+        )
     try:
         pool = load_pool()
     except PoolConfigError as exc:
@@ -396,6 +431,7 @@ async def run(request: Request, payload: Annotated[dict[str, Any], Body()]) -> d
     model = pool.chat_model or (pool.models[0].id if pool.models else "")
     if not model:
         raise HTTPException(503, "쓸 모델이 없다 — config/llm_pool.yml")
+    _RUNS_TODAY.put(email, used + 1)
 
     async def _work(report: Reporter) -> dict[str, Any]:
         started = time.perf_counter()
@@ -483,6 +519,20 @@ async def run(request: Request, payload: Annotated[dict[str, Any], Body()]) -> d
     return {"job_id": job.job_id, **job.snapshot()}
 
 
+def _recent_cycle(symbol: str, mk: Market, bucket: str, within: timedelta) -> Cycle | None:
+    """같은 종목·시장·갈래의 최근 회차 — `within` 안이면 그것(재사용), 아니면 None."""
+    cutoff = datetime.now(UTC) - within
+    best: Cycle | None = None
+    for cycle in Ledger().cycles():
+        if cycle.symbol != symbol or cycle.market is not mk or cycle.taken_at < cutoff:
+            continue
+        if bucket_of(cycle) != bucket:
+            continue
+        if best is None or cycle.taken_at > best.taken_at:
+            best = cycle
+    return best
+
+
 def _judgement_by(ledger: Ledger, run_id: str) -> dict[str, dict[str, Any]]:
     verdict = ledger.verdict(run_id)
     if verdict is None:
@@ -551,6 +601,58 @@ async def runs(symbol: str = "", market: str = "", limit: int = 20) -> dict[str,
         if len(out) >= max(1, min(limit, 100)):
             break
     return {"runs": out}
+
+
+@router.get("/scoreboard")
+async def scoreboard(market: str = "", bucket: str = "") -> dict[str, Any]:
+    """성적표 — 참가자 x 갈래 x 시장 (판정된 회차만 · 표본 30 미만은 `grey`).
+
+    Args:
+        market: 시장으로 거른다. 비면 전부.
+        bucket: 갈래로 거른다.
+
+    Returns:
+        `{rows: [{participant, bucket, market, proposed, abstained, entered, no_entry, followed,
+        not_followed, expired, follow_pct, avg_net_r, grey}], min_sample}`.
+    """
+    ledger = Ledger()
+    cycles = [c for c in ledger.cycles() if _ours(c)]
+    verdicts = {str(v.get("run_id")): v for v in ledger.verdicts() if v.get("run_id") is not None}
+    rows = scoreboard_of(cycles, verdicts)
+    if market:
+        rows = [r for r in rows if r["market"] == market]
+    if bucket:
+        rows = [r for r in rows if r["bucket"] == bucket]
+    from updown.orchestration.chart_order.scoreboard import MIN_SAMPLE
+
+    return {"rows": rows, "min_sample": MIN_SAMPLE, "cycles": len(cycles), "judged": len(verdicts)}
+
+
+async def resolve_loop(*, every: float = RESOLVE_EVERY_S) -> None:
+    """채점 루프 — 익은 회차를 주기마다 판정한다 (T273 3단계 · 단추 대신).
+
+    Args:
+        every: 주기(초).
+
+    Raises:
+        asyncio.CancelledError: 종료 신호 — 삼키지 않는다(이벤트 루프 종료를 막지 않게).
+
+    Note:
+        실패해도 루프는 산다 — 다음 주기에 다시 본다. 원장은 덮어쓰지 않으니 두 번 돌아도 안전하다.
+    """
+    while True:
+        try:
+            async with MarketDataProvider() as provider:
+                done = await resolve_due(
+                    provider, Ledger(), lambda c: instrument_of(c.symbol, c.market)
+                )
+            if done:
+                _logger.info("chart_order_resolved", payload={"judged": done})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # 채점 하나가 루프를 죽이지 않는다 (규칙 #8 — 이유는 남긴다)
+            _logger.warning("chart_order_resolve_failed", payload={"error": str(exc)[:200]})
+        await asyncio.sleep(every)
 
 
 @router.post("/resolve")

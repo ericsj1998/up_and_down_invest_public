@@ -2458,7 +2458,37 @@ export type ChartRun = {
   participants: ChartParticipant[];
 };
 
-export function chartOrderRun(payload: { symbol: string; market: string; bucket: string; side?: string }): Promise<{ job_id: string }> {
+export type ScoreRow = {
+  participant: string;
+  bucket: string;
+  market: string;
+  proposed: number;
+  abstained: number;
+  entered: number;
+  no_entry: number;
+  followed: number;
+  not_followed: number;
+  expired: number;
+  follow_pct: number | null;
+  avg_net_r: string | null;
+  grey: boolean;
+};
+
+export function chartOrderScoreboard(params: { market?: string; bucket?: string } = {}): Promise<{ rows: ScoreRow[]; min_sample: number; cycles: number; judged: number }> {
+  const query = new URLSearchParams();
+  if (params.market) query.set("market", params.market);
+  if (params.bucket) query.set("bucket", params.bucket);
+  return request(`/chart-order/scoreboard?${query.toString()}`);
+}
+
+/** `job_id` 가 null 이면 `reuse_minutes` 안의 지난 회차를 그대로 준 것 — 모델을 안 불렀다. */
+export function chartOrderRun(payload: { symbol: string; market: string; bucket: string; side?: string }): Promise<{
+  job_id: string | null;
+  reused?: boolean;
+  run_id?: string;
+  participants?: ChartParticipant[];
+  note?: string;
+}> {
   return request("/chart-order/run", { method: "POST", headers: JSON_POST, body: JSON.stringify(payload) });
 }
 

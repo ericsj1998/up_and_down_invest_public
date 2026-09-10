@@ -339,6 +339,10 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         with contextlib.suppress(Exception):
             await reconcile_once()
         tasks.append(asyncio.create_task(reconcile_loop(), name="exchange-reconcile"))
+        # ⭐ AI 차트 주문 채점 루프 (T273 3단계) — 익은 회차를 한 시간마다 판정한다.
+        from updown.apps.api.chart_order import resolve_loop as chart_order_resolve_loop
+
+        tasks.append(asyncio.create_task(chart_order_resolve_loop(), name="chart-order-resolve"))
         # 🔴 **일간 리포트가 여기서 돈다** (사용자 확정 2026-08-30). 엔진 스케줄러가
         #    보내던 것은 `html` 을 안 넘겨 **평문만** 나갔다 — 차트·주문표·계좌 요약이
         #    빠진 옛 형식이었다.

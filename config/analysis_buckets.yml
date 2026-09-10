@@ -6,6 +6,10 @@
 #   rr         익절 목표 = 손절 거리 x rr (다음 저항/지지가 더 가까우면 그쪽 · 좁은 쪽 · 결정 2026-09-11 권장안)
 #   stop_atr   손절은 구조(지지/저항) 뒤로 ATR 의 이 배수만큼
 version: "1.0"
+# AI 비교(모델 호출 2회) 상한 — 사람·하루 · 같은 종목·갈래는 이 분 안이면 새로 돌리지 않고 지난 회차를 준다
+limits:
+  runs_per_user_per_day: 20
+  reuse_minutes: 10
 buckets:
   short:
     label: 단기
