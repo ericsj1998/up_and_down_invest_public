@@ -1819,8 +1819,12 @@ async def guard(request: Request, call_next: Any) -> Response:
     #    ① AUTH_TEST_BYPASS=1 이 명시돼야 켜진다 (미설정 = 지금까지와 동일)
     #    ② 실계좌(on_real_money)면 설정돼 있어도 무시한다 — 프로덕션 전환 시 자동 무력화
     #    ③ 로컬 호스트(127.0.0.1/::1)에서 온 요청만 — 외부 노출 포트로는 안 뚫린다
+    # ⭐ T263 — 자격증명(쿠키·개인 토큰)이 있으면 그 사람이다. 우회는 **아무것도 없을 때만** —
+    #    안 그러면 로컬에서 토큰 경로를 실측할 수 없다(호출자가 비어 MCP 도구가 안 돈다).
+    who = await caller_of(request)
     if (
-        os.environ.get("AUTH_TEST_BYPASS") == "1"
+        who is None
+        and os.environ.get("AUTH_TEST_BYPASS") == "1"
         and not on_real_money()
         and request.client is not None
         and request.client.host in ("127.0.0.1", "::1", "localhost")
@@ -1829,7 +1833,6 @@ async def guard(request: Request, call_next: Any) -> Response:
         with actor_context("test-bypass@local"):
             return cast("Response", await call_next(request))
 
-    who = await caller_of(request)
     request.state.caller = who
     # 🔴 **누가 시작한 흐름인지 감사 로그가 알아야 한다** (2026-08-30). `trace_id` 는
     #    흐름을 잇지만 사람을 안 말해 준다 — 여기서 한 번 넣으면 async 경계를 넘어
