@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -26,7 +27,13 @@ from updown.llm.port import (
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_chat.agent import PROMPT_VERSION, run_chat
 from updown.orchestration.ai_chat.aliases import load_aliases, parse_aliases
-from updown.orchestration.ai_chat.snapshot import compress, extremes_of, summarize_frame
+from updown.orchestration.ai_chat.snapshot import (
+    compress,
+    extremes_of,
+    nearest_levels,
+    summarize_frame,
+    swings_of,
+)
 from updown.orchestration.ai_chat.tools import (
     TOOLS,
     ToolContext,
@@ -78,6 +85,32 @@ class TestSnapshot:
         got = extremes_of(_candles(300))
         assert got["days"] == 252 and got["to_high_52w_pct"] is not None
         assert any("52주 고점" in f for f in got["flags"])
+        assert got["timeframe"] == "1d"
+
+    def test_swings_find_last_confirmed_pivots(self) -> None:
+        """봉 20개 — 10번째에 고점, 15번째에 저점을 심는다. 마지막 3봉은 확정이 안 된다."""
+        rows = _candles(20, step=Decimal(0))
+        rows[10] = replace(rows[10], high=Decimal(120))
+        rows[15] = replace(rows[15], low=Decimal(80))
+        rows[19] = replace(rows[19], high=Decimal(130))  # 오른쪽 봉이 없어 후보가 아니다
+        got = swings_of(rows)
+        assert got["swing_high"] is not None and got["swing_high"]["price"] == 120.0
+        assert got["swing_high"]["label"] == "전고" and got["swing_high"]["away_pct"] is not None
+        assert got["swing_low"] is not None and got["swing_low"]["price"] == 80.0
+        assert swings_of(rows[:5]) == {"swing_high": None, "swing_low": None}
+
+    def test_nearest_levels_pick_first_above_and_below(self) -> None:
+        levels = [
+            {"low": "90", "high": "92", "support": True, "touches": "3", "away_pct": "-8.0"},
+            {"low": "95", "high": "96", "support": True, "touches": "2", "away_pct": "-4.0"},
+            {"low": "104", "high": "105", "support": False, "touches": "2", "away_pct": "4.0"},
+            {"low": "110", "high": "112", "support": False, "touches": "4", "away_pct": "10.0"},
+        ]
+        got = nearest_levels(levels, Decimal(100))
+        assert got["nearest_support"]["high"] == "96" and got["nearest_support"]["kind"] == "지지"
+        assert got["nearest_resistance"]["low"] == "104"
+        assert [lvl["kind"] for lvl in got["levels"]] == ["지지", "지지", "저항", "저항"]
+        assert nearest_levels(levels, None)["nearest_support"] is None
 
 
 class TestAliases:
@@ -88,6 +121,9 @@ class TestAliases:
     def test_exact_contains_fuzzy(self) -> None:
         assert self.BOOK.resolve("테슬라")[0].symbol == "TSLA"
         assert self.BOOK.resolve("테슬라 주가")[0].symbol == "TSLA"
+        # 2글자 별칭도 낱말 전체가 같으면 잡는다 ("구글 주식" 되물음 · 4·5차 실측)
+        word = self.BOOK.resolve("애플 주식 지금 살만 해?")
+        assert word and word[0].symbol == "AAPL" and word[0].confidence == 0.95
         assert self.BOOK.resolve("aapl")[0].confidence == 1.0
         fuzzy = self.BOOK.resolve("비트코이")
         assert fuzzy and fuzzy[0].symbol == "BTC" and fuzzy[0].confidence < 1.0

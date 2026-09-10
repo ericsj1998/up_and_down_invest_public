@@ -21,7 +21,7 @@ flowchart LR
     end
     subgraph AGENT[orchestration/ai_chat — 자체 루프]
         LOOP[agent.py<br/>계획 → 도구 → 종합<br/>최대 6왕복 · 근거 6,000자]
-        REG[tools.py<br/>도구 14개 = 이름·한국어 설명·유사어·JSON 스키마·함수]
+        REG[tools.py<br/>도구 15개 = 이름·한국어 설명·유사어·JSON 스키마·함수]
         DASH[dashboard.py<br/>화면 명세 — 값은 도구 결과 참조만]
         AL[aliases.py<br/>종목 별칭 + 토스 이름표 503]
     end
@@ -78,15 +78,16 @@ flowchart LR
   410(폐기 모델)은 "무효 응답" 이 아니라 **모델 없음**으로 따로 센다 — 실측으로 잡은 구멍이다. HTTP 는 아웃바운드 층 `NO_RETRY` — 재시도가
   실험 표본을 흔든다.
 
-## 4. 도구 14개 — 무엇을 읽고 무엇을 못 하나
+## 4. 도구 15개 — 무엇을 읽고 무엇을 못 하나
 
 | 도구 | 무엇 | 사실의 출처 | 못 하는 것 |
 |---|---|---|---|
 | `symbol_resolve` | "오라클" · "삼전" · "비트" → 코드·시장·확신도 | 손 별칭(`config/ai_aliases.yml`) + 토스 이름표 503(`universe_names.yml`) · 퍼지 | 사전에 없으면 "모른다" — 지어내지 않는다 |
-| `market_view` | 축별 요약(종가·변화·고저·이동평균 거리·RSI·ATR·거래량) · 지지/저항 · 계획선 | 우리 지표(`analysis/`) · 판과 같은 봉 캐시(`StoredCandles`) | **예측** — "현재 구조" 만 |
+| `market_view` | 축별 요약(종가·변화·고저·이동평균 거리·RSI·ATR·거래량) · 전고/전저(`swings` · 거리 %) · 위 첫 저항/아래 첫 지지(`nearest_*`) · 계획선 | 우리 지표(`analysis/`) · 판과 같은 봉 캐시(`StoredCandles`) | **예측** — "현재 구조" 만 |
 | `valuation` | PER·PBR·PSR·EV/EBITDA·FCF 수익률의 5년 백분위 · 부채 깃발 · 저평가 점수 · 공시 링크 | EDGAR companyfacts(`financial_facts`) | 이력이 없는 종목은 404 로 말한다 |
 | `positions` | 포지션·잔고·조건부·펀드 | **거래소가 말하는 값** + 원장 대조 | 지어낸 손익 없음 |
-| `extremes` | 52주 고저 거리 · SMA200 이격 · RSI 극단 | 우리 지표 | — |
+| `extremes` | 52주 고저 거리 · SMA200 이격 · RSI 극단 (`timeframe: 1d` 이름표) | 우리 지표 | — |
+| `base_rate` | "오를 확률" 대신 **과거 빈도** — 같은 구조(RSI 구간 · SMA200 이격 · 20/200 방향)였던 봉들의 N봉 뒤 오른 비율 + n | 우리 지표 · 봉 캐시 1,000봉 | 예측 — 문장에 "오를 확률" 이 없고 30 미만은 "표본 부족" (T270 #4) |
 | `playbook_expectation` | 매매법의 과거 실측(기간·손익·MDD·매매 수·등급) | 저장소(`config/playbooks.yml` + 실측표) | "예상" 이 아니라 과거 |
 | `propose_order` | 진입·손절·1차·목표를 **RiskManager 로 확정**한 제안 | `decision/` | 주문을 내지 않는다 |
 | `recommend_by_budget` | 예산·성향 → 매매법·최소 단위·저평가 후보 3 | T247 성향 규칙 · 저장소 등급 · T244 | "추천" 표기는 `recommended` 참일 때만 |
@@ -128,7 +129,7 @@ Claude Desktop / Cursor / ChatGPT ──(Streamable HTTP · JSON · 무상태)�
 
 ## 7. 시험 — 도구마다 사례 하나, 실제 루프로
 
-`orchestration/ai_chat/evaluate.py CASES` 15개(도구 13 + 합성 2)가 **실제 모델·실제 도구**로 돈다(`POST /ai/report/eval` · 작업 큐 · SSE 진행).
+`orchestration/ai_chat/evaluate.py CASES` 16개(도구 14 + 합성 2)가 **실제 모델·실제 도구**로 돈다(`POST /ai/report/eval` · 작업 큐 · SSE 진행).
 판정은 순수 함수 `judge` — 기대 도구가 불렸나 · 도구 오류 없나 · 답이 있나 · 대시보드가 기대될 때 있나 · 환각(`missing`) 0 인가.
 결과는 `event_logs.ai_chat_eval` 에 추가 전용으로 쌓이고 AI 리포트 "도구 시험" 절에 표로 뜬다. 같은 프롬프트로 결과가 갈리면 **모델 편차**이므로
 한 번의 실패로 프롬프트를 고치지 않는다 — 세 번 누적 뒤 판단한다(측정 없이 고치면 표본이 0 부터). 결과 표는 [ai_chat_scenarios.md](ai_chat_scenarios.md).

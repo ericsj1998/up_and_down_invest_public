@@ -37,8 +37,14 @@ from updown.marketdata.ingest.repository import CandleRepository
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_chat.aliases import AliasBook
+from updown.orchestration.ai_chat.base_rate import DEFAULT_HORIZON, base_rate
 from updown.orchestration.ai_chat.dashboard import resolve as resolve_dashboard
-from updown.orchestration.ai_chat.snapshot import extremes_of, summarize_frame
+from updown.orchestration.ai_chat.snapshot import (
+    extremes_of,
+    nearest_levels,
+    summarize_frame,
+    swings_of,
+)
 from updown.orchestration.walkforward.stored_candles import StoredCandles
 
 _logger = get_logger("orchestration.ai_chat.tools")
@@ -46,6 +52,8 @@ _logger = get_logger("orchestration.ai_chat.tools")
 Fetch = Callable[..., Awaitable[dict[str, Any]]]
 WARMUP_BARS = 260
 """지표 워밍업 — SMA200 이 채워질 만큼."""
+BASE_RATE_BARS = 1000
+"""과거 빈도(`base_rate`)가 세는 봉 수 — 일봉이면 4년. 적재분이 적으면 그만큼만(n 이 말한다)."""
 MAX_RESULT_CHARS = 6_000
 """도구 결과를 모델에 넘길 때 자르는 길이 — 컨텍스트 예산."""
 
@@ -290,6 +298,7 @@ async def _market_view(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
     instrument = instrument_of(symbol, market)
     ctx.report(f"시장 구조: {symbol} {', '.join(frames)}")
     out: dict[str, Any] = {"symbol": symbol, "market": market.value, "frames": {}}
+    last_close: Decimal | None = None
     for name in frames:
         try:
             frame = Timeframe(name)
@@ -298,10 +307,20 @@ async def _market_view(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
             continue
         candles = await _candles(ctx, instrument, frame, 60)
         out["frames"][name] = summarize_frame(candles, name)
+        if name == frames[0] and candles:
+            # ⭐ T270 #2 — 전고·전저는 첫 축(기본 1h)의 확정 피벗. 이름표와 거리(%)를 도구가 준다.
+            last_close = candles[-1].close
+            out["swings"] = {"timeframe": name, **swings_of(candles)}
     if ctx.frame is not None:
         try:
             view = await ctx.frame(symbol, market.value, frames[0])
-            out["levels"] = view.get("levels")
+            # ⭐ T270 #3 — 현재가 위 첫 저항 · 아래 첫 지지를 명시한다(모델이 하나만 읽지 않게).
+            picked = nearest_levels(
+                cast("list[dict[str, Any]]", view.get("levels") or []), last_close
+            )
+            out["levels"] = picked["levels"]
+            out["nearest_support"] = picked["nearest_support"]
+            out["nearest_resistance"] = picked["nearest_resistance"]
             out["levels_raw"] = view.get("levels_raw")
             out["plan"] = view.get("plan")
             out["note"] = view.get("note")
@@ -320,6 +339,28 @@ async def _extremes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     ctx.report(f"고점/저점: {symbol} 일봉")
     daily = await _candles(ctx, instrument, Timeframe.D1, 252)
     return {"symbol": symbol, "market": market.value, **extremes_of(daily)}
+
+
+async def _base_rate(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    market = _market(args, ctx)
+    symbol = str(args.get("symbol") or "")
+    if not symbol:
+        raise ValueError("symbol 이 없다")
+    try:
+        frame = Timeframe(str(args.get("timeframe") or "1d"))
+    except ValueError as exc:
+        raise ValueError(f"모르는 축: {args.get('timeframe')}") from exc
+    horizon = max(1, min(int(args.get("horizon") or DEFAULT_HORIZON), 250))
+    instrument = instrument_of(symbol, market)
+    ctx.report(f"과거 빈도: {symbol} {frame.value} {horizon}봉 뒤")
+    # 표본이 많을수록 좋다 — 봉 캐시(StoredCandles)가 DB 분은 브로커에 안 묻는다.
+    candles = await _candles(ctx, instrument, frame, BASE_RATE_BARS)
+    return {
+        "symbol": symbol,
+        "market": market.value,
+        "timeframe": frame.value,
+        **base_rate(candles, horizon=horizon),
+    }
 
 
 # ── 주입 도구 ─────────────────────────────────────────────────────────────────
@@ -726,9 +767,11 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         ToolSpec(
             "market_view",
-            "종목의 지금 시장 구조 — 축별 요약(종가·변화·창 고저·이동평균 거리·RSI·ATR·거래량)과 "
-            "지지/저항·계획선. 유사어: 동향, 흐름, 추세, 차트, 어떻게 될까, 지금 어때, 지지선, "
-            "저항선. 예측이 아니라 현재 구조 설명이다.",
+            "종목의 지금 시장 구조 — 축별 요약(종가·변화·창 고저·이동평균 거리·RSI·ATR·거래량) · "
+            "전고/전저(swings · 거리 %) · 현재가 위 첫 저항(nearest_resistance)과 아래 첫 지지"
+            "(nearest_support) · 계획선. 유사어: 동향, 흐름, 추세, 차트, 어떻게 될까, 지금 어때, "
+            "지지선, 저항선, 전고, 전저. 예측이 아니라 현재 구조 설명이다. 이동평균 거리는 축마다 "
+            "다르니 축 이름을 붙여 말한다.",
             _obj(
                 {
                     "symbol": {"type": "string"},
@@ -778,6 +821,27 @@ TOOLS: tuple[Tool, ...] = (
         ),
         _extremes,
         starter="엔비디아 고점 근처야?",
+    ),
+    Tool(
+        ToolSpec(
+            "base_rate",
+            '"오를 확률" 을 물을 때 — 예측 대신 **과거 빈도**: 지금과 같은 구조(RSI 구간 · '
+            "SMA200 이격 · 20/200 이평 방향)였던 과거 봉들이 N봉 뒤 오른 비율과 표본 수(n). "
+            "표본 30 미만은 회색. "
+            "유사어: 확률, 오를까, 내릴까, 가능성, 얼마나 자주, 올라갈 확률, 떨어질 확률. "
+            "sentence 를 그대로 옮기고 '오를 확률' 이라는 말은 쓰지 않는다.",
+            _obj(
+                {
+                    "symbol": {"type": "string"},
+                    "market": {"type": "string"},
+                    "timeframe": {"type": "string", "description": "축 (기본 1d)"},
+                    "horizon": {"type": "integer", "description": "몇 봉 뒤 (기본 20)"},
+                },
+                ["symbol"],
+            ),
+        ),
+        _base_rate,
+        starter="엔비디아 지금 자리에서 오를 확률 얼마나 돼?",
     ),
     Tool(
         ToolSpec(

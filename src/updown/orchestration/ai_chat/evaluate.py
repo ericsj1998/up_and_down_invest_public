@@ -43,6 +43,7 @@ CASES: tuple[EvalCase, ...] = (
     EvalCase("valuation", "애플 지금 저렴해, 비싸?", ("valuation",)),
     EvalCase("positions", "내 포지션 몇 % 이득이야?", ("positions",)),
     EvalCase("extremes", "엔비디아 고점 근처야?", ("extremes",)),
+    EvalCase("base_rate", "엔비디아 지금 자리에서 오를 확률 얼마나 돼?", ("base_rate",)),
     EvalCase(
         "playbook_expectation",
         "private_strategy 매매법 과거 성과 알려줘",

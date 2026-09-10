@@ -80,6 +80,15 @@ class AliasBook:
         if exact is not None:
             return [Resolved(exact[0], exact[1], exact[2], 1.0)]
         found: dict[str, Resolved] = {}
+        # ⭐ 낱말 단위 정확 일치 — "구글 주식" 의 "구글" 은 2글자라 포함 규칙(≥3)에 걸리지 않아
+        #    모델이 "GOOGL 인가 GOOG 인가" 되물었다(2026-09-10 4·5차 실측 2/2). 낱말 전체가
+        #    별칭과 같으면 짧아도 안전하다 — 한 글자 종목이 긴 질문 안에 "들어 있는" 것과 다르다.
+        for token in needle.split():
+            hit = self.entries.get(token)
+            if hit is not None:
+                found.setdefault(hit[0], Resolved(hit[0], hit[1], hit[2], 0.95))
+        if found:
+            return sorted(found.values(), key=lambda r: -r.confidence)[:limit]
         for alias, (symbol, group, name) in self.entries.items():
             # ⛔ 짧은 별칭이 긴 질문 안에 "들어 있다" 고 잡지 않는다 — 이름표가 들어오며
             #    한 글자 종목(A · J · T · V …)이 생겨 "JPMorgan" 이 A(애질런트)로 풀렸다

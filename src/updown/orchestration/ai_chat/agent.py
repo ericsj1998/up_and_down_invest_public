@@ -29,7 +29,7 @@ from updown.orchestration.ai_chat.tools import (
 
 _logger = get_logger("orchestration.ai_chat.agent")
 
-PROMPT_VERSION = "chat-1.6"
+PROMPT_VERSION = "chat-1.7"
 MAX_ROUNDS = 6
 EVIDENCE_CHARS = 6_000
 """근거 세미 창에 저장하는 도구 결과 길이 상한 — 대화 표(JSONB)에 남는다.
@@ -65,8 +65,11 @@ SYSTEM_PROMPT = """너는 '업 앤 다운' 의 AI 투자 어시스턴트다. 한
    부른다. 카드가 단계를 진행하므로 본문은 한 줄("아래 카드에서 진행해 주세요")로 끝낸다.
    예산·갈래를 말하며 **무엇을 살지** 묻는 것은 recommend_by_budget 이다 — 위저드가 아니다.
 10. "살만 해 · 사도 돼 · 지금 들어가도 돼" 같은 매수 여부·타이밍 질문은 market_view · extremes ·
-   valuation 셋을 **같은 왕복**에 부르고, 현재가 · 전고/52주 고가 대비 · 지지/저항 · PER 를
-   한 답에 담는다. 확률은 말하지 않는다.
+   valuation 셋을 **같은 왕복**에 부르고, 현재가 · 전고/52주 고가 대비 · 지지/저항 둘 · PER 를
+   한 답에 담는다. 확률은 예측으로 말하지 않는다.
+11. "오를 확률 · 가능성 · 오를까" 를 물으면 base_rate 를 부르고 그 sentence(과거 같은 자리에서
+   N봉 뒤 오른 비율 · n)를 그대로 옮긴다. "오를 확률" 이라는 말은 쓰지 않는다 — 빈도이지 예측이
+   아니다.
 """
 
 
