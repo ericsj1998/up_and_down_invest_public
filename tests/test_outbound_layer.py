@@ -30,16 +30,9 @@ FAST = RetryPolicy(max_retries=2, base_delay_s=0.0, jitter_s=0.0)
 RAW_CLIENT_ALLOWLIST = frozenset(
     {
         "src/updown/common/http/outbound.py",  # 층 자체
-        "src/updown/marketdata/gate/client.py",
-        "src/updown/marketdata/gate/trade_client.py",  # 실주문 — 측정 뒤 옮긴다
-        "src/updown/marketdata/binance/client.py",
-        "src/updown/marketdata/binance/ws.py",  # 웹소켓 핸드셰이크
-        "src/updown/marketdata/binance/trade_client.py",  # 실주문 — 측정 뒤 옮긴다
-        "src/updown/marketdata/toss/client.py",
-        "src/updown/marketdata/upbit/client.py",
-        "src/updown/llm/nvidia.py",
-        "src/updown/apps/api/walkforward.py",  # 환율 표시 — 업비트 어댑터로 가야 한다
-        "src/updown/apps/api/auth.py",  # 구글 토큰 교환
+        "src/updown/marketdata/gate/trade_client.py",  # 실주문 — 측정 뒤 옮긴다 (3차)
+        "src/updown/marketdata/binance/ws.py",  # 웹소켓 핸드셰이크 — 층은 HTTP 만
+        "src/updown/marketdata/binance/trade_client.py",  # 실주문 — 측정 뒤 옮긴다 (3차)
     }
 )
 

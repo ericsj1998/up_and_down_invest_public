@@ -6,12 +6,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Self, cast
 
-import httpx
-
+from updown.common.http.outbound import Outbound, OutboundError, RetryPolicy
 from updown.common.logging.setup import get_logger
 from updown.marketdata.ratelimit import observe
 
@@ -53,7 +51,7 @@ class BinanceClient:
         """
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
-        self._http: httpx.AsyncClient | None = None
+        self._http: Outbound | None = None
 
     @property
     def base_url(self) -> str:
@@ -84,9 +82,19 @@ class BinanceClient:
             await self._http.aclose()
             self._http = None
 
-    def _session(self) -> httpx.AsyncClient:
+    def _session(self) -> Outbound:
         if self._http is None:
-            self._http = httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout)
+            # T217 — 공개 경로(klines·depth)도 같은 IP 가중치를 쓴다. 서명 클라이언트만
+            #    헤더를 읽으면 klines 가 얼마나 먹는지 영영 모른다 (실측으로 잡은 구멍).
+            self._http = Outbound(
+                "BINANCE",
+                base_url=self._base_url,
+                timeout=self._timeout,
+                policy=RetryPolicy(max_retries=_MAX_TRIES - 1, retriable=_RETRYABLE),
+                on_response=lambda path, headers: observe(
+                    "BINANCE", headers, limit=_MINUTE_WEIGHT, path=path
+                ),
+            )
         return self._http
 
     async def get_json(
@@ -104,29 +112,10 @@ class BinanceClient:
         Raises:
             BinanceApiError: 재시도를 소진했거나 4xx 인 경우.
         """
-        last = ""
-        for attempt in range(_MAX_TRIES):
-            try:
-                response = await self._session().get(path, params=params)
-            except httpx.HTTPError as exc:
-                last = f"전송 실패: {exc}"
-            else:
-                # T217 — 공개 경로(klines·depth)도 같은 IP 가중치를 쓴다. 서명 클라이언트만
-                #    헤더를 읽으면 klines 가 얼마나 먹는지 영영 모른다 (실측으로 잡은 구멍).
-                observe("BINANCE", response.headers, limit=_MINUTE_WEIGHT, path=path)
-                if response.status_code == 200:
-                    parsed: list[Any] | dict[str, Any] = response.json()
-                    return parsed
-                last = f"{response.status_code} {response.text[:200]}"
-                if response.status_code not in _RETRYABLE:
-                    raise BinanceApiError(
-                        f"바이낸스 오류 응답(GET {path}): {last}",
-                        status_code=response.status_code,
-                    )
-            wait = 0.5 * (2**attempt)
-            _logger.warning(
-                "binance_retry",
-                payload={"path": path, "attempt": attempt + 1, "why": last[:120]},
-            )
-            await asyncio.sleep(wait)
-        raise BinanceApiError(f"바이낸스 재시도 소진(GET {path}): {last}")
+        try:
+            parsed = await self._session().get_json(path, params=params)
+        except OutboundError as exc:
+            raise BinanceApiError(
+                f"바이낸스 오류 응답(GET {path}): {exc}", status_code=exc.status_code
+            ) from exc
+        return cast("list[Any] | dict[str, Any]", parsed)

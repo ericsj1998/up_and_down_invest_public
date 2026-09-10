@@ -25,15 +25,14 @@ Gate 공개 엔드포인트는 **엔드포인트당 200r/10s (IP 기준)** 이�
 하드코딩하지 않고 매번 읽는 이유다.
 """
 
-import asyncio
-import random
 from types import TracebackType
 from typing import Any, Final, Self, cast
 
 import httpx
 
+from updown.common.http.outbound import Outbound, OutboundError, RetryPolicy
+from updown.common.http.throttle import Throttle
 from updown.common.logging.setup import get_logger
-from updown.marketdata.throttle import Throttle
 
 LIVE_BASE_URL: Final = "https://api.gateio.ws/api/v4"
 """라이브 REST 베이스."""
@@ -123,31 +122,18 @@ class GateClient:
                 구멍이다. 실제 거래소를 두드리는 테스트는 CI 에서 못 돈다.
         """
         self._base_url = base_url
-        self._timeout = timeout
-        self._transport = transport
-        self._client = self._new_http()
-        self._max_retries = max_retries
         self._rate_per_second = rate_per_second
         self._throttles: dict[str, Throttle] = {}
-
-    def _new_http(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url=self._base_url,
-            timeout=self._timeout,
+        # 재시도 · 백오프 · 재개방은 아웃바운드 층(T264 2차). 엔드포인트 스로틀만 여기 남는다.
+        self._client = Outbound(
+            "GATE",
+            base_url=base_url,
+            timeout=timeout,
             headers={"Accept": "application/json"},
-            transport=self._transport,
+            policy=RetryPolicy(max_retries=max_retries, base_delay_s=0.25, jitter_s=0.1),
+            throttle_of=self._throttle,
+            transport=transport,
         )
-
-    def _http(self) -> httpx.AsyncClient:
-        """살아 있는 HTTP 클라이언트 — **닫혔으면 다시 만든다** (2026-09-05).
-
-        이 클라이언트는 프로세스에서 공유된다(`MarketDataProvider._shared_gate`). 누가
-        `async with MarketDataProvider()` 로 쓰고 닫으면 라이브 러너까지 "client has been closed"
-        로 죽었다(실계좌 첫 펀드 · 174건). 닫힘은 그 호출자의 사정이고 공유 자원은 살아야 한다.
-        """
-        if self._client.is_closed:
-            self._client = self._new_http()
-        return self._client
 
     @property
     def base_url(self) -> str:
@@ -224,71 +210,23 @@ class GateClient:
             ⛔ 4xx(404·429 제외)는 재시도하지 않는다 — 요청이 잘못된 것이라 반복해도
             같은 답이고, 그 사이 한도만 태운다.
         """
-        last: GateApiError | None = None
-        for attempt in range(self._max_retries + 1):
-            await self._throttle(path).acquire()
-            try:
-                response = await self._http().get(path, params=params)
-            except httpx.HTTPError as exc:
-                last = GateApiError(f"Gate 요청 실패({path}): {exc}")
-                if not await self._backoff(attempt, path, str(exc)):
-                    break
-                continue
-
-            if response.status_code == _HTTP_OK:
-                return self._parse(response, path)
-
-            if response.status_code == _HTTP_NOT_FOUND:
-                raise UnknownContractError(
-                    f"Gate 에 없는 계약이다({path}, params={params}): {response.text[:200]}",
-                    status_code=response.status_code,
-                    payload=response.text,
-                )
-
-            last = GateApiError(
-                f"Gate 오류 응답({path}): {response.status_code} {response.text[:200]}",
+        try:
+            response = await self._client.request("GET", path, params=params)
+        except OutboundError as exc:
+            raise GateApiError(str(exc), status_code=exc.status_code, payload=exc.body) from exc
+        if response.status_code == _HTTP_OK:
+            return self._parse(response, path)
+        if response.status_code == _HTTP_NOT_FOUND:
+            raise UnknownContractError(
+                f"Gate 에 없는 계약이다({path}, params={params}): {response.text[:200]}",
                 status_code=response.status_code,
                 payload=response.text,
             )
-            retriable = (
-                response.status_code == _HTTP_TOO_MANY or response.status_code >= _HTTP_SERVER_FLOOR
-            )
-            if not retriable:
-                raise last
-            if not await self._backoff(attempt, path, f"status={response.status_code}"):
-                break
-
-        raise last or GateApiError(f"Gate 요청 실패({path}): 원인 불명")
-
-    async def _backoff(self, attempt: int, path: str, reason: str) -> bool:
-        """재시도 전 대기.
-
-        Args:
-            attempt: 0부터 세는 시도 번호.
-            path: 요청 경로 — 로그에 남긴다.
-            reason: 실패 이유.
-
-        Returns:
-            더 시도할 수 있으면 True.
-
-        Note:
-            지수 백오프 + 지터. 마지막 시도였으면 대기하지 않고 False 를 준다 —
-            어차피 던질 것을 기다릴 이유가 없다.
-        """
-        if attempt >= self._max_retries:
-            return False
-        delay = (2**attempt) * 0.25
-        _logger.warning(
-            "gate_request_retry",
-            payload={
-                "path": path,
-                "attempt": attempt + 1,
-                "reason": reason,
-                "delay_seconds": round(delay, 3),
-            },
+        raise GateApiError(
+            f"Gate 오류 응답({path}): {response.status_code} {response.text[:200]}",
+            status_code=response.status_code,
+            payload=response.text,
         )
-        await asyncio.sleep(delay + random.random() * 0.1)
-        return True
 
     def _parse(self, response: httpx.Response, path: str) -> list[dict[str, Any]] | dict[str, Any]:
         """응답 본문을 JSON 으로.

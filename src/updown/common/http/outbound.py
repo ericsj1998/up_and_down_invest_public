@@ -70,6 +70,7 @@ class OutboundError(RuntimeError):
         url: str,
         status_code: int | None = None,
         body: str = "",
+        exc_type: str = "",
     ) -> None:
         """예외를 만든다.
 
@@ -79,12 +80,19 @@ class OutboundError(RuntimeError):
             url: 요청 URL.
             status_code: 마지막 응답 상태.
             body: 마지막 응답 본문 앞부분.
+            exc_type: 마지막 전송 예외의 클래스 이름(`ReadTimeout` 등). 응답이 있었으면 빈 문자열.
         """
         super().__init__(message)
         self.venue = venue
         self.url = url
         self.status_code = status_code
         self.body = body[:200]
+        self.exc_type = exc_type
+
+    @property
+    def timed_out(self) -> bool:
+        """마지막 실패가 타임아웃이었나 — LLM 처럼 타임아웃을 따로 세는 쪽이 본다."""
+        return "Timeout" in self.exc_type
 
 
 class RequestBudgetExceededError(RuntimeError):
@@ -222,15 +230,32 @@ class Outbound:
         self._cap_base = 0
         self._throttle_of = throttle_of
         self._on_response = on_response
-        self._client = httpx.AsyncClient(
-            base_url=base_url,
-            timeout=timeout,
-            headers=dict(headers or {}),
-            transport=transport,
+        self._base_url = base_url
+        self._timeout = timeout
+        self._headers = dict(headers or {})
+        self._transport = transport
+        self._client = self._new_client()
+
+    def _new_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=self._timeout,
+            headers=self._headers,
+            transport=self._transport,
         )
 
+    @property
+    def is_closed(self) -> bool:
+        """연결 풀이 닫혀 있나 — 다음 요청이 다시 연다."""
+        return self._client.is_closed
+
     async def aclose(self) -> None:
-        """연결 풀을 닫는다."""
+        """연결 풀을 닫는다.
+
+        Note:
+            프로세스에서 공유되는 클라이언트(`MarketDataProvider._shared_gate`)는 누가 닫아도
+            살아야 한다 — 다음 `request()` 가 **다시 연다** (2026-09-05 실계좌 174건 실측).
+        """
         await self._client.aclose()
 
     # ------------------------------------------------------------------
@@ -279,6 +304,7 @@ class Outbound:
         json: Any = None,
         data: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
+        throttle_key: str | None = None,
     ) -> httpx.Response:
         """보내고, 재시도 대상이면 정책대로 다시 보낸다.
 
@@ -289,6 +315,7 @@ class Outbound:
             json: JSON 본문.
             data: 폼 본문.
             headers: 이 요청에만 붙는 헤더(서명 · 토큰).
+            throttle_key: 스로틀 키. None 이면 경로 — 업비트·토스처럼 **그룹** 한도인 출처가 넘긴다.
 
         Returns:
             마지막 응답. **재시도 대상이 아닌 상태(404 · 400)는 그대로 돌려준다** — 도메인 예외로
@@ -303,18 +330,23 @@ class Outbound:
         last_status: int | None = None
         last_body = ""
         last_reason = ""
+        last_exc = ""
+        key = throttle_key or path
         for attempt in range(policy.max_retries + 1):
-            throttle = self._throttle_of(path) if self._throttle_of is not None else None
+            throttle = self._throttle_of(key) if self._throttle_of is not None else None
             if throttle is not None:
                 await throttle.acquire()
             self._count(path)
+            if self._client.is_closed:
+                self._client = self._new_client()
             started = time.perf_counter()
             try:
                 response = await self._client.request(
                     method, url, params=params, json=json, data=data, headers=headers
                 )
             except httpx.HTTPError as exc:
-                last_reason = f"{type(exc).__name__}: {exc}"[:160]
+                last_exc = type(exc).__name__
+                last_reason = f"{last_exc}: {exc}"[:160]
                 last_status = None
                 if not await self._sleep_before_retry(attempt, path, last_reason, None):
                     break
@@ -338,6 +370,7 @@ class Outbound:
             last_status = response.status_code
             last_body = response.text[:200]
             last_reason = f"status={response.status_code}"
+            last_exc = ""
             if not await self._sleep_before_retry(attempt, path, last_reason, response.headers):
                 break
         raise OutboundError(
@@ -346,6 +379,7 @@ class Outbound:
             url=url,
             status_code=last_status,
             body=last_body,
+            exc_type=last_exc,
         )
 
     async def get_json(
@@ -354,6 +388,7 @@ class Outbound:
         *,
         params: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
+        throttle_key: str | None = None,
     ) -> object:
         """GET 하고 해석된 JSON 을 돌려준다.
 
@@ -361,6 +396,7 @@ class Outbound:
             url: 절대 URL 또는 경로.
             params: 쿼리.
             headers: 이 요청에만 붙는 헤더.
+            throttle_key: 스로틀 키 (`request` 와 같다).
 
         Returns:
             해석된 JSON (객체 · 배열 · 스칼라).
@@ -370,7 +406,9 @@ class Outbound:
                 본문이 JSON 이 아니다.
             RequestBudgetExceededError: 예산 초과.
         """
-        response = await self.request("GET", url, params=params, headers=headers)
+        response = await self.request(
+            "GET", url, params=params, headers=headers, throttle_key=throttle_key
+        )
         path = _path_of(url)
         if response.status_code != HTTP_OK:
             raise OutboundError(

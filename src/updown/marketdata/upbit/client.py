@@ -21,15 +21,14 @@ group=candles; min=600; sec=9`). 전역 스로틀 하나로 묶으면 캔들 백
 "미지원 unit" 으로 결론냈다면 `1h`/`4h` 를 못 쓴다고 잘못 판단했을 것이다.
 """
 
-import asyncio
-import random
 from types import TracebackType
 from typing import Any, Self
 
 import httpx
 
+from updown.common.http.outbound import Outbound, OutboundError, RetryPolicy
+from updown.common.http.throttle import Throttle
 from updown.common.logging.setup import get_logger
-from updown.marketdata.throttle import Throttle
 
 BASE_URL = "https://api.upbit.com/v1"
 
@@ -121,15 +120,18 @@ class UpbitClient:
             transport: 테스트용 전송 계층 주입. **네트워크 없이 픽스처로 테스트**하기
                 위한 구멍이다 (P0-7-7).
         """
-        self._client = httpx.AsyncClient(
+        self._rate_per_second = rate_per_second
+        self._throttles: dict[str, Throttle] = {}
+        # 재시도 · 백오프 · 로그는 아웃바운드 층(T264 2차). 그룹 스로틀만 여기 남는다.
+        self._client = Outbound(
+            "UPBIT",
             base_url=base_url,
             timeout=timeout,
             headers={"Accept": "application/json"},
+            policy=RetryPolicy(max_retries=max_retries),
+            throttle_of=self._throttle,
             transport=transport,
         )
-        self._max_retries = max_retries
-        self._rate_per_second = rate_per_second
-        self._throttles: dict[str, Throttle] = {}
 
     async def __aenter__(self) -> Self:
         """컨텍스트 진입."""
@@ -185,79 +187,24 @@ class UpbitClient:
             재시도 대기에 **지터**를 넣는다. 여러 워커가 동시에 429 를 맞으면 같은 간격으로
             재시도해 다시 함께 429 가 되는데(thundering herd), 지터가 그 동기화를 깬다.
         """
-        last_error: UpbitApiError | None = None
-
-        for attempt in range(self._max_retries + 1):
-            await self._throttle(group).acquire()
-            try:
-                response = await self._client.get(path, params=params)
-            except httpx.HTTPError as exc:
-                last_error = UpbitApiError(f"업비트 요청 실패({path}): {exc}")
-                if not await self._sleep_before_retry(attempt, path, str(exc)):
-                    break
-                continue
-
-            if response.status_code == HTTP_OK:
-                return self._parse(response, path)
-
-            if response.status_code == HTTP_NOT_FOUND:
-                raise UnknownMarketError(
-                    f"업비트에 없는 마켓이다({path}, params={params}): {response.text[:200]}",
-                    status_code=response.status_code,
-                    payload=response.text,
-                )
-
-            retriable = (
-                response.status_code == HTTP_TOO_MANY_REQUESTS
-                or response.status_code >= HTTP_SERVER_ERROR_FLOOR
-            )
-            last_error = UpbitApiError(
-                f"업비트 오류 응답({path}): {response.status_code} {response.text[:200]}",
+        try:
+            response = await self._client.request("GET", path, params=params, throttle_key=group)
+        except OutboundError as exc:
+            raise UpbitApiError(str(exc), status_code=exc.status_code, payload=exc.body) from exc
+        if response.status_code == HTTP_OK:
+            return self._parse(response, path)
+        if response.status_code == HTTP_NOT_FOUND:
+            raise UnknownMarketError(
+                f"업비트에 없는 마켓이다({path}, params={params}): {response.text[:200]}",
                 status_code=response.status_code,
                 payload=response.text,
             )
-            if not retriable:
-                # 4xx 는 요청이 잘못된 것이라 반복해도 같은 답이다.
-                raise last_error
-            if not await self._sleep_before_retry(attempt, path, f"status={response.status_code}"):
-                break
-
-        raise last_error or UpbitApiError(f"업비트 요청 실패({path}): 원인 불명")
-
-    async def _sleep_before_retry(self, attempt: int, path: str, reason: str) -> bool:
-        """재시도 전 백오프 대기.
-
-        Args:
-            attempt: 0부터 시작하는 시도 번호.
-            path: 요청 경로 (로그용).
-            reason: 실패 사유 (로그용).
-
-        Returns:
-            재시도할 수 있으면 True, 횟수를 소진했으면 False.
-
-        Note:
-            실패를 **매 시도마다 로그로 남긴다.** 조용히 재시도하면 "느린데 원인을 모르는"
-            상태가 된다 (spec §7).
-        """
-        if attempt >= self._max_retries:
-            _logger.warning(
-                "upbit_request_failed",
-                payload={"path": path, "reason": reason, "attempt": attempt, "giving_up": True},
-            )
-            return False
-
-        delay = (2**attempt) * 0.5 + random.uniform(0, 0.25)
-        _logger.warning(
-            "upbit_request_retry",
-            payload={
-                "path": path,
-                "reason": reason,
-                "attempt": attempt,
-                "delay_seconds": round(delay, 3),
-            },
+        # 4xx 는 요청이 잘못된 것이라 반복해도 같은 답이다 — 층이 재시도하지 않고 돌려줬다.
+        raise UpbitApiError(
+            f"업비트 오류 응답({path}): {response.status_code} {response.text[:200]}",
+            status_code=response.status_code,
+            payload=response.text,
         )
-        await asyncio.sleep(delay)
-        return True
 
     @staticmethod
     def _parse(response: httpx.Response, path: str) -> list[dict[str, Any]] | dict[str, Any]:

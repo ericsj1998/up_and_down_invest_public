@@ -44,7 +44,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, cast
 
-import httpx
 import sqlalchemy as sa
 from fastapi import APIRouter, Body, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -63,6 +62,7 @@ from updown.common.db.models.accounts import (
 from updown.common.db.models.enums import LogLevel
 from updown.common.db.models.ops import AppSetting, EventLog
 from updown.common.domain.instrument import Market
+from updown.common.http.outbound import NO_RETRY, Outbound, OutboundError
 from updown.common.logging.context import actor_context, get_trace_id, new_trace_id
 from updown.common.logging.setup import get_logger
 from updown.common.security.caps import (
@@ -333,8 +333,11 @@ async def callback(request: Request, code: str = "", state: str = "") -> Redirec
     if not code:
         raise HTTPException(400, "구글이 코드를 안 줬다")
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        got = await client.post(
+    # 한 번만 보낸다 — 인증 코드는 1회용이라 재시도해도 같은 답이다 (T264 2차 · `NO_RETRY`).
+    http = Outbound("GOOGLE", timeout=15, policy=NO_RETRY)
+    try:
+        got = await http.request(
+            "POST",
             GOOGLE_TOKEN,
             data={
                 "code": code,
@@ -344,6 +347,11 @@ async def callback(request: Request, code: str = "", state: str = "") -> Redirec
                 "grant_type": "authorization_code",
             },
         )
+    except OutboundError as exc:
+        _logger.warning("google_token_failed", payload={"detail": exc.exc_type or "transport"})
+        raise HTTPException(400, "구글 인증에 실패했다") from exc
+    finally:
+        await http.aclose()
     if got.status_code != _HTTP_OK:
         # ⛔ 구글 응답을 그대로 사람에게 보여 주지 않는다 — 설정값이 섞여 나올 수 있다.
         _logger.warning("google_token_failed", payload={"status": got.status_code})

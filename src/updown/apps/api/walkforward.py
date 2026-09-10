@@ -35,7 +35,6 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 from uuid import uuid4
 
-import httpx
 from fastapi import APIRouter, Body, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -2388,13 +2387,11 @@ async def fx() -> dict[str, Any]:
         ⛔ 실패하면 None 을 낸다 — 낡은 값을 캐시해서 내면 화면이 조용히 틀린 돈을 띄운다.
     """
     try:
-        async with httpx.AsyncClient(timeout=6) as client:
-            res = await client.get(
-                "https://api.upbit.com/v1/ticker", params={"markets": "KRW-USDT"}
-            )
-            res.raise_for_status()
-            rows = res.json()
-        rate = str(rows[0]["trade_price"])
+        # ⭐ T264 2차 — apps 가 거래소 URL 을 직접 알지 않는다. 조회 어댑터(공개 `/ticker`)가
+        #    같은 값이다.
+        quotes = MarketDataProvider().adapter_for(Market.UPBIT)
+        tether = Instrument(Market.UPBIT, "KRW-USDT", "KRW-USDT", AssetType.COIN, Currency.KRW)
+        rate = str((await quotes.get_quote(tether)).last_price)
     except Exception as exc:  # 표시용이라 화면을 막지 않는다
         _logger.warning("fx_unreadable", payload={"error": str(exc)[:200]})
         return {"usdt_krw": None, "source": "upbit", "error": str(exc)[:120]}

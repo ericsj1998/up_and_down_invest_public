@@ -29,18 +29,16 @@ rate limit 관리·재시도·인증은 **어댑터 레이어의 책임**이다.
 """
 
 import asyncio
-import contextlib
-import random
-from collections.abc import Generator
+from contextlib import AbstractContextManager
 from types import TracebackType
 from typing import Self, cast
 
 import httpx
 from pydantic import SecretStr
 
+from updown.common.http.outbound import Outbound, OutboundError, RetryPolicy
+from updown.common.http.throttle import Throttle
 from updown.common.logging.setup import get_logger
-from updown.marketdata.adapter import RequestBudgetExceededError
-from updown.marketdata.throttle import Throttle
 
 BASE_URL = "https://openapi.tossinvest.com"
 
@@ -159,24 +157,29 @@ class TossClient:
             rate_per_second: 그룹당 초당 허용 요청 수.
             transport: 테스트용 전송 계층 주입 — 네트워크 없이 픽스처로 검증한다.
         """
-        self._client = httpx.AsyncClient(
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._rate_per_second = rate_per_second
+        self._throttles: dict[str, Throttle] = {}
+        # 재시도 · `Retry-After` · 요청 세기/예산은 아웃바운드 층(T264 2차). 토큰 · 401 한 번
+        # 재발급 · 그룹 스로틀 · `result` 봉투만 여기 남는다.
+        self._client = Outbound(
+            "TOSS",
             base_url=base_url,
             timeout=timeout,
             headers={"Accept": "application/json"},
+            policy=RetryPolicy(max_retries=max_retries),
+            throttle_of=self._throttle,
             transport=transport,
         )
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._max_retries = max_retries
-        self._rate_per_second = rate_per_second
-        self._throttles: dict[str, Throttle] = {}
         self._token: str | None = None
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()
-        self.requests = 0
+
+    @property
+    def requests(self) -> int:
         """보낸 HTTP 요청 수 누계(토큰 발급 포함) — 판 시작 비용의 눈금이다 (T253)."""
-        self._cap = 0
-        self._cap_base = 0
+        return self._client.requests
 
     async def __aenter__(self) -> Self:
         """컨텍스트 진입."""
@@ -195,40 +198,16 @@ class TossClient:
         """HTTP 연결 풀을 닫는다."""
         await self._client.aclose()
 
-    @contextlib.contextmanager
-    def budget(self, cap: int) -> Generator[None, None, None]:
-        """블록 안의 요청 수에 상한을 건다 (T253 · `RequestCounting`).
+    def budget(self, cap: int) -> AbstractContextManager[None]:
+        """블록 안의 요청 수에 상한을 건다 (T253 · `RequestCounting`) — 층에 위임.
 
         Args:
             cap: 허용 요청 수. 0 이하면 무제한.
 
         Returns:
-            블록을 닫으면 바깥 상한으로 돌아가는 컨텍스트 매니저(제너레이터).
-
-        Note:
-            클라이언트는 프로세스에 하나라(`MarketDataProvider._shared_toss`) 동시에 두 판이
-            뜨면 둘의 요청이 같이 세어진다 — 상한이 지키는 것은 **토큰 하나의 요율**이므로
-            그것이 맞다. 중첩은 안쪽이 이기고, 나가면 바깥 값으로 돌아간다.
+            블록을 닫으면 바깥 상한으로 돌아가는 컨텍스트 매니저.
         """
-        was = (self._cap, self._cap_base)
-        self._cap, self._cap_base = cap, self.requests
-        try:
-            yield
-        finally:
-            self._cap, self._cap_base = was
-
-    def _count(self, path: str) -> None:
-        """요청 하나를 센다 — 상한을 넘으면 보내기 **전에** 던진다."""
-        self.requests += 1
-        if self._cap > 0 and self.requests - self._cap_base > self._cap:
-            raise RequestBudgetExceededError(
-                f"브로커 요청이 상한 {self._cap} 을 넘었다 ({path}) — 판 시작 워밍업이 "
-                "너무 비싸다. 축을 줄이거나 봉을 미리 적재한다 (T253)"
-            )
-
-    # ------------------------------------------------------------------
-    # 인증
-    # ------------------------------------------------------------------
+        return self._client.budget(cap)
 
     async def _access_token(self, *, force: bool = False) -> str:
         """유효한 액세스 토큰을 준다 (캐시).
@@ -250,10 +229,9 @@ class TossClient:
             if not force and self._token is not None and loop.time() < self._token_expires_at:
                 return self._token
 
-            await self._throttle("AUTH").acquire()
-            self._count("/oauth2/token")
             try:
-                response = await self._client.post(
+                response = await self._client.request(
+                    "POST",
                     "/oauth2/token",
                     data={
                         "grant_type": "client_credentials",
@@ -261,9 +239,12 @@ class TossClient:
                         "client_secret": self._client_secret.get_secret_value(),
                     },
                     headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    throttle_key="AUTH",
                 )
-            except httpx.HTTPError as exc:
-                raise TossAuthError(f"토큰 발급 요청 실패: {exc}") from exc
+            except OutboundError as exc:
+                raise TossAuthError(
+                    f"토큰 발급 요청 실패: {exc}", status_code=exc.status_code
+                ) from exc
 
             if response.status_code != HTTP_OK:
                 # 본문에 시크릿이 없지만 그래도 앞부분만 싣는다.
@@ -334,27 +315,21 @@ class TossClient:
             **호출부가 envelope 를 알 필요는 없다** — 여기서 벗겨 낸다 (spec §4.2).
         """
         refreshed = False
-        last_error: TossApiError | None = None
-
-        for attempt in range(self._max_retries + 1):
-            token = await self._access_token(force=refreshed and attempt == 0)
-            await self._throttle(group).acquire()
-            self._count(path)
+        while True:
+            token = await self._access_token()
             try:
-                response = await self._client.get(
-                    path, params=params, headers={"Authorization": f"Bearer {token}"}
+                response = await self._client.request(
+                    "GET",
+                    path,
+                    params=params,
+                    headers={"Authorization": f"Bearer {token}"},
+                    throttle_key=group,
                 )
-            except httpx.HTTPError as exc:
-                last_error = TossApiError(f"토스 요청 실패({path}): {exc}")
-                if not await self._sleep_before_retry(attempt, path, str(exc)):
-                    break
-                continue
-
+            except OutboundError as exc:
+                raise TossApiError(str(exc), status_code=exc.status_code) from exc
             request_id = response.headers.get("X-Request-Id")
-
             if response.status_code == HTTP_OK:
                 return self._unwrap(response, path)
-
             if response.status_code == HTTP_UNAUTHORIZED and not refreshed:
                 # refresh token 이 없어 만료·무효화·자격증명 오류가 전부 401 이다.
                 # **한 번만** 강제 재발급해 보고, 그래도 401 이면 자격증명 문제로 본다.
@@ -364,7 +339,6 @@ class TossClient:
                 refreshed = True
                 await self._access_token(force=True)
                 continue
-
             if response.status_code == HTTP_UNAUTHORIZED:
                 raise TossAuthError(
                     f"인증 실패({path}) — 토큰을 재발급해도 401 이다. "
@@ -372,7 +346,6 @@ class TossClient:
                     status_code=response.status_code,
                     request_id=request_id,
                 )
-
             code, message = self._error_fields(response)
             if response.status_code == HTTP_NOT_FOUND:
                 raise UnknownSymbolError(
@@ -381,98 +354,12 @@ class TossClient:
                     code=code,
                     request_id=request_id,
                 )
-
-            last_error = TossApiError(
+            raise TossApiError(
                 f"토스 오류 응답({path}): {response.status_code} {code} {message}",
                 status_code=response.status_code,
                 code=code,
                 request_id=request_id,
             )
-            retriable = (
-                response.status_code == HTTP_TOO_MANY_REQUESTS
-                or response.status_code >= HTTP_SERVER_ERROR_FLOOR
-            )
-            if not retriable:
-                raise last_error
-            if not await self._sleep_before_retry(
-                attempt, path, f"status={response.status_code}", response
-            ):
-                break
-
-        raise last_error or TossApiError(f"토스 요청 실패({path}): 원인 불명")
-
-    @staticmethod
-    def _retry_after_seconds(response: httpx.Response | None) -> float | None:
-        """서버가 지정한 재시도 대기 시간.
-
-        Args:
-            response: 실패 응답. 네트워크 오류라 응답이 없으면 None.
-
-        Returns:
-            초 단위 대기 시간. 헤더가 없거나 해석 불가면 None.
-
-        Note:
-            **서버가 알려 준 값이 우리 추측보다 정확하다.** 지수 백오프는 헤더가 없을
-            때의 대비책이지 우선순위가 아니다 — 서버가 "30초 뒤에 오라"고 했는데 1초
-            뒤에 다시 가면 한도를 또 넘긴다.
-
-            RFC 9110 은 초 단위 정수와 HTTP-date 두 형식을 허용하는데 여기서는 정수만
-            읽는다. 날짜 형식을 잘못 파싱해 음수나 거대한 값이 나오면 백오프가 조용히
-            망가지므로, 모르면 None 을 돌려 지수 백오프에 맡긴다.
-        """
-        if response is None:
-            return None
-        raw = response.headers.get("Retry-After")
-        if raw is None:
-            return None
-        try:
-            seconds = float(raw.strip())
-        except ValueError:
-            return None
-        return seconds if 0 <= seconds <= MAX_RETRY_AFTER_SECONDS else None
-
-    async def _sleep_before_retry(
-        self, attempt: int, path: str, reason: str, response: httpx.Response | None = None
-    ) -> bool:
-        """재시도 전 백오프 대기.
-
-        Args:
-            attempt: 0부터 시작하는 시도 번호.
-            path: 요청 경로 (로그용).
-            reason: 실패 사유 (로그용).
-            response: 실패 응답. `Retry-After` 를 읽는 데 쓴다.
-
-        Returns:
-            재시도할 수 있으면 True.
-
-        Note:
-            지터를 넣는다 — 여러 워커가 같은 간격으로 재시도하면 다시 함께 429 가 된다.
-            단 `Retry-After` 가 있으면 **그 값을 그대로 쓴다** (지터 없이) — 서버가 준
-            시각보다 일찍 가면 안 되고, 늦게 갈 이유도 없다.
-        """
-        if attempt >= self._max_retries:
-            _logger.warning(
-                "toss_request_failed",
-                payload={"path": path, "reason": reason, "attempt": attempt, "giving_up": True},
-            )
-            return False
-        server_delay = self._retry_after_seconds(response)
-        delay = (
-            server_delay
-            if server_delay is not None
-            else (2**attempt) * 0.5 + random.uniform(0, 0.25)
-        )
-        _logger.warning(
-            "toss_request_retry",
-            payload={
-                "path": path,
-                "reason": reason,
-                "attempt": attempt,
-                "delay_seconds": round(delay, 3),
-            },
-        )
-        await asyncio.sleep(delay)
-        return True
 
     @staticmethod
     def _error_fields(response: httpx.Response) -> tuple[str | None, str]:

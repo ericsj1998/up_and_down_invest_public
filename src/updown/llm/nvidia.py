@@ -17,8 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-import httpx
-
+from updown.common.http.outbound import NO_RETRY, Outbound, OutboundError
 from updown.common.logging.setup import get_logger
 from updown.llm.port import (
     ChatMessage,
@@ -67,7 +66,7 @@ class NvidiaClient:
     """
 
     endpoint: str = DEFAULT_ENDPOINT
-    client: httpx.AsyncClient | None = None
+    client: Outbound | None = None
 
     def _headers(self) -> dict[str, str]:
         """인증 헤더.
@@ -126,13 +125,15 @@ class NvidiaClient:
             return int((time.perf_counter() - started) * MS)
 
         owned = self.client is None
-        http = self.client or httpx.AsyncClient(timeout=timeout_seconds)
+        # 한 번만 보낸다(`NO_RETRY`) — 실패는 값으로 돌아가고, 재시도는 실험 표본을 흔든다.
+        http = self.client or Outbound("NVIDIA", timeout=timeout_seconds, policy=NO_RETRY)
         try:
-            response = await http.post(self.endpoint, json=payload, headers=self._headers())
-        except httpx.TimeoutException as exc:
-            return LlmFailure(model, FailureKind.TIMEOUT, str(exc), elapsed())
-        except httpx.HTTPError as exc:
-            return LlmFailure(model, FailureKind.TRANSPORT, str(exc), elapsed())
+            response = await http.request(
+                "POST", self.endpoint, json=payload, headers=self._headers()
+            )
+        except OutboundError as exc:
+            kind = FailureKind.TIMEOUT if exc.timed_out else FailureKind.TRANSPORT
+            return LlmFailure(model, kind, str(exc), elapsed())
         finally:
             if owned:
                 await http.aclose()
@@ -227,13 +228,15 @@ class NvidiaClient:
             return int((time.perf_counter() - started) * MS)
 
         owned = self.client is None
-        http = self.client or httpx.AsyncClient(timeout=timeout_seconds)
+        # 한 번만 보낸다(`NO_RETRY`) — 실패는 값으로 돌아가고, 재시도는 실험 표본을 흔든다.
+        http = self.client or Outbound("NVIDIA", timeout=timeout_seconds, policy=NO_RETRY)
         try:
-            response = await http.post(self.endpoint, json=payload, headers=self._headers())
-        except httpx.TimeoutException as exc:
-            return LlmFailure(model, FailureKind.TIMEOUT, str(exc), _elapsed())
-        except httpx.HTTPError as exc:
-            return LlmFailure(model, FailureKind.TRANSPORT, str(exc), _elapsed())
+            response = await http.request(
+                "POST", self.endpoint, json=payload, headers=self._headers()
+            )
+        except OutboundError as exc:
+            kind = FailureKind.TIMEOUT if exc.timed_out else FailureKind.TRANSPORT
+            return LlmFailure(model, kind, str(exc), _elapsed())
         finally:
             if owned:
                 await http.aclose()

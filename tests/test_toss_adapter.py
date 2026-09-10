@@ -581,7 +581,7 @@ async def test_rate_limit_retry_honours_retry_after() -> None:
         return httpx.Response(200, json={"result": {"candles": [], "nextBefore": None}})
 
     client = make_client(handler, max_retries=2)
-    with patch("updown.marketdata.toss.client.asyncio.sleep", record):
+    with patch("updown.common.http.outbound.asyncio.sleep", record):
         async with client:
             await client.get_result("/api/v1/candles", group=CHART_GROUP)
 
@@ -610,7 +610,7 @@ async def test_absurd_retry_after_falls_back_to_backoff() -> None:
         return httpx.Response(200, json={"result": {"candles": [], "nextBefore": None}})
 
     client = make_client(handler, max_retries=2)
-    with patch("updown.marketdata.toss.client.asyncio.sleep", record):
+    with patch("updown.common.http.outbound.asyncio.sleep", record):
         async with client:
             await client.get_result("/api/v1/candles", group=CHART_GROUP)
 
