@@ -17,6 +17,7 @@ import {
   cancelStop,
   closePosition,
   consoleBalances,
+  dropSession,
   exchange,
   exchangeMarkets,
   modeCookie,
@@ -670,6 +671,57 @@ export function ConsoleTab({ openRun }: Props) {
             {notConnected
               ? "이 API 가 그 시장을 연결하지 않아 러너를 띄울 수 없다 — 시장을 연결(UPDOWN_MARKETS)하거나 판을 닫는다."
               : "거래소에 포지션이 남아 있으면 지금 아무도 관리하지 않는다. 아래 포지션·조건부 주문을 확인한다."}
+            {/* ⭐ 연결 안 된 시장의 죽은 판은 목록에 없어 닫을 자리가 없었다 (사용자 2026-09-11 "도는 RUN 0개인데?").
+                여기서 닫는다 — 되돌릴 수 없어 인라인 2단계. 거래소·페이퍼 포지션은 그 시장에 못 닿아 못 건드린다고 말한다. */}
+            {notConnected ? (
+              confirmClose === row.run ? (
+                <>
+                  {" "}
+                  <span className="loss">
+                    판 기록을 닫는다 — 시장에 닿지 못해 포지션은 건드리지
+                    않는다. 되돌릴 수 없다.
+                  </span>{" "}
+                  <button
+                    className="btn primary"
+                    disabled={busy !== ""}
+                    onClick={() => {
+                      setConfirmClose("");
+                      act(`drop:${row.run}`, async () => {
+                        setActNote({
+                          tone: "warn",
+                          text: `⏳ ${row.run} 닫는 중…`,
+                        });
+                        await dropSession(row.run);
+                        await board.refresh();
+                        setActNote({
+                          tone: "info",
+                          text: `✅ ${row.run} 닫음 — 배너는 다음 감시에서 사라진다`,
+                        });
+                      });
+                    }}
+                  >
+                    닫는다
+                  </button>{" "}
+                  <button
+                    className="btn small"
+                    onClick={() => setConfirmClose("")}
+                  >
+                    취소
+                  </button>
+                </>
+              ) : (
+                <>
+                  {" "}
+                  <button
+                    className="btn small"
+                    disabled={busy !== ""}
+                    onClick={() => setConfirmClose(row.run)}
+                  >
+                    판 닫기
+                  </button>
+                </>
+              )
+            ) : null}
             {orphan ? (
               <>
                 {" "}
