@@ -21,7 +21,6 @@ G0-6 검증은 기동 후 `/health` 를 한 번 부르면 그대로 충족된다
 
 import asyncio
 import contextlib
-import os
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -53,7 +52,6 @@ from updown.apps.api.health import (
     check_database,
     check_redis,
 )
-from updown.apps.api.labels import router as labels_router
 from updown.apps.api.live_stream import router as live_stream_router
 from updown.apps.api.logs_admin import router as logs_admin_router
 from updown.apps.api.macro import router as macro_router
@@ -389,15 +387,6 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     #    2026-01-01 이후가 봉인돼 있다 — 그 봉인은 옳고 건드리지 않는다. 매매 화면은
     #    지금 시세를 보므로 목적이 다르고, 그래서 입구를 나눴다.
     app.include_router(analysis_router)
-    # ⭐ 매매 라벨 (2026-09-03) — 사람이 차트에 표시한 판단을 담는다. 표시는 **가설**
-    #    이고 정답지가 아니다 (규칙 #11 예외 조건: 규칙으로 환원되어 코드에 남는가).
-    #
-    # 🔴 **배포에서는 뺀다** (사용자 2026-09-04: *"라벨(임시) 기능도 배포에서는 빠지게"*).
-    #    `UPDOWN_LABELS=1` 일 때만 등록 — `compose.dev.yml` 만 켠다. 라이브 env 파일엔 두지
-    #    않는다. 화면 쪽은 `VITE_LABELS` 빌드 인자가 같은 문이다 (`web/src/App.tsx`).
-    #    코드는 지우지 않는다 — 연구 도구로 남긴다.
-    if os.environ.get("UPDOWN_LABELS") == "1":
-        app.include_router(labels_router)
     # ⭐ 실시간 봉(SSE) — 같은 `/analysis` 접두사지만 파일을 나눈다. 스트림은
     #    수명·구독 관리가 있어 요청-응답 코드와 섞으면 둘 다 읽기 어려워진다.
     app.include_router(live_stream_router)

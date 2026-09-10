@@ -328,6 +328,7 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
         HTTPException: 400 동의·갈래·매매법·자본이 빠짐 · 그 갈래에 라이브 시장 없음.
     """
     who = await _who(request)
+    auth.require_fresh(request)  # 펀드 생성 = 주문 (보안 점검 2026-09-10)
     answers_raw = payload.get("answers")
     answers = cast("dict[str, Any]", answers_raw) if isinstance(answers_raw, dict) else {}
     row: AssistantDraft | None = None

@@ -33,8 +33,9 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.types import Receive, Scope, Send
 
 from updown.apps.api import ai_chat
-from updown.apps.api.auth import Caller
+from updown.apps.api.auth import Caller, on_real_money
 from updown.common.logging.setup import get_logger
+from updown.common.security.caps import Cap
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_chat.agent import EVIDENCE_CHARS, compact_json
 from updown.orchestration.ai_chat.tools import TOOLS, Tool, ToolContext, find_tool
@@ -42,6 +43,38 @@ from updown.orchestration.ai_chat.tools import TOOLS, Tool, ToolContext, find_to
 _logger = get_logger("api.mcp")
 
 HIDDEN: frozenset[str] = frozenset({"render_dashboard"})
+ACCOUNT_TOOLS: frozenset[str] = frozenset(
+    {"positions", "portfolio_exposure", "propose_order", "recommend_by_budget"}
+)
+"""거래소 잔고·포지션·펀드를 읽는 도구 — HTTP 로 치면 `LIVE/DEMO_ACCOUNT_READ` 가 필요한 것과
+같은 값이다.
+
+🔴 보안 점검(2026-09-10): `/mcp` 는 로그인만 요구하는 경로라, 승인 대기 계정이 토큰 하나로
+실계좌 잔고를
+읽을 수 있었다(같은 사람이 `GET /exchange/state` 를 치면 403). 도구마다 같은 기능을
+요구한다.
+"""
+RUNS_TOOLS: frozenset[str] = frozenset({"trade_journal"})
+"""판·원장을 읽는 도구 — `LIVE/DEMO_RUNS_READ`."""
+
+
+def required_cap_of(tool_name: str) -> Cap | None:
+    """도구가 요구하는 기능 — HTTP 경로 판정(`caps.required_cap`)과 같은 값.
+
+    Args:
+        tool_name: 도구 이름.
+
+    Returns:
+        기능, 또는 None(로그인만 하면 되는 도구 — 종목 풀기 · 시장 구조 · 재무 · 거시).
+    """
+    live = on_real_money()
+    if tool_name in ACCOUNT_TOOLS:
+        return Cap.LIVE_ACCOUNT_READ if live else Cap.DEMO_ACCOUNT_READ
+    if tool_name in RUNS_TOOLS:
+        return Cap.LIVE_RUNS_READ if live else Cap.DEMO_RUNS_READ
+    return None
+
+
 """MCP 로 내보내지 않는 도구 — 우리 화면 전용."""
 
 INSTRUCTIONS = (
@@ -142,6 +175,13 @@ def build_server(context_factory: ContextFactory | None = None) -> Server[Any]:
         tool = find_tool(params.name)
         if tool is None or params.name in HIDDEN:
             return _error(f"모르는 도구다: {params.name}")
+        need = required_cap_of(params.name)
+        if need is not None and not who.has(need):
+            _logger.warning(
+                "mcp_tool_forbidden",
+                payload={"tool": params.name, "email": who.email, "cap": need.value},
+            )
+            return _error(f"{params.name} 은 '{need.value}' 권한이 필요하다 — 관리자에게 요청한다")
         started = time.perf_counter()
         try:
             async with factory(who) as tool_ctx:

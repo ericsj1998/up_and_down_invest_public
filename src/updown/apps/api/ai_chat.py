@@ -748,8 +748,9 @@ async def place_order(
         판 상태 (`live_custom` 응답) + `order_id`.
 
     Raises:
-        HTTPException: 400 제안이 막힌 것 · 그 외는 `live_custom` 의 것.
+        HTTPException: 400 제안이 막힌 것 · 401 재인증 · 그 외는 `live_custom` 의 것.
     """
+    auth.require_fresh(request)  # 돈이 나가는 함수는 스스로 문을 든다 (보안 점검 2026-09-10)
     who = await _who_or_403(request)
     proposal_raw = payload.get("proposal")
     if not isinstance(proposal_raw, dict):
@@ -779,6 +780,12 @@ async def _auto_place(
 ) -> dict[str, Any] | None:
     """자동 모드면 제안을 문에 통과시켜 낸다 — 결과는 제안 카드가 그대로 보여 준다."""
     if not proposals:
+        return None
+    if not who.fresh:
+        # 자동 모드도 돈이 나가는 길이다 — 12시간 쿠키만으로는 안 낸다 (보안 점검 2026-09-10)
+        _logger.info(
+            "auto_place_skipped_stale_auth", payload={"email": who.email, "thread": thread_id}
+        )
         return None
     state = await _auto_state(who.email)
     if not state.enabled:

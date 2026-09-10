@@ -52,7 +52,12 @@ from updown.analysis.playbook.types import Playbook
 from updown.analysis.structures.box_range import SPAN_COVER
 from updown.apps.api.admin import instrument_of, rules_config
 from updown.apps.api.analysis import as_json
-from updown.apps.api.auth import require_market_trade, require_playbook_trade
+from updown.apps.api.auth import (
+    on_real_money,
+    require_fresh,
+    require_market_trade,
+    require_playbook_trade,
+)
 from updown.apps.api.stock_order import StockOrderRejectedError, hours_of, stock_order_terms
 from updown.common.config import load_settings as load_app_settings
 from updown.common.costs import (
@@ -74,6 +79,7 @@ from updown.common.domain.instrument import (
 )
 from updown.common.domain.session import load_calendar
 from updown.common.logging.setup import get_logger
+from updown.common.security.caps import Cap
 from updown.common.wire import candle_json
 from updown.decision.risk.manual import confirm
 from updown.decision.risk.policy import RiskConfigError, require_stop_cap
@@ -4407,11 +4413,35 @@ async def drop(key: str) -> dict[str, Any]:
     return body
 
 
+def _require_bulk_delete(request: Request) -> None:
+    """일괄 삭제의 문 — 삭제 기능(`LIVE/DEMO_DELETE`) + 최근 인증 (보안 점검 2026-09-10).
+
+    Args:
+        request: 요청 (`state.caller`). 호출자가 없으면(시험 우회) 통과.
+
+    Raises:
+        HTTPException: 403 삭제 기능 없음 · 401 재인증.
+
+    Note:
+        `POST /sessions/bulk` 는 POST 라 미들웨어가 거래 기능만 본다. 한 판 지우기(`DELETE`)와 같은
+        일이므로 같은 문을 요구한다 — 게스트가 데모 판 전부를 지우고 청산할 수 있었다.
+    """
+    who = getattr(request.state, "caller", None)
+    need = Cap.LIVE_DELETE if on_real_money() else Cap.DEMO_DELETE
+    if who is not None and not who.has(need):
+        raise HTTPException(403, f"판을 지우려면 '{need.value}' 기능이 필요하다")
+    require_fresh(request)
+
+
 @router.post("/sessions/bulk")
-async def bulk(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def bulk(request: Request, payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     """여러 RUN 을 한 번에 지우거나 시작·중지한다 (사용자 요구 2026-08-17).
 
     Args:
+        request: 요청 — `delete` 는 **삭제 기능**(`LIVE/DEMO_DELETE`)을 따로 본다. POST 라
+            미들웨어는 거래 기능만 보는데, 한 판 지우기(`DELETE /sessions/{key}`)와 같은 일이므로
+            같은 문을 요구한다
+            (보안 점검 2026-09-10: 게스트가 데모 판 전부를 지우고 청산할 수 있었다).
         payload: `{action: "delete"|"start"|"stop", keys: [...]}`.
             `keys` 가 비어 있고 `all` 이 참이면 **전부**가 대상이다.
 
@@ -4438,6 +4468,7 @@ async def bulk(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     if payload.get("all"):
         keys = [*SESSIONS, *(path.stem for path in JOURNAL_ROOT.glob("*.json"))]
     if action == "delete":
+        _require_bulk_delete(request)
         for key in keys:
             # 🔴 일괄 삭제도 포지션을 닫는다 — 한쪽만 닫으면 "삭제" 의 뜻이 두 가지가 된다.
             # ⚠️ **실패도 일괄에서 똑같이 남긴다.** 한 건씩 지울 때만 잡히면, 정작

@@ -40,15 +40,10 @@ const Evidence = lazy(() =>
   import("./Evidence").then((m) => ({ default: m.Evidence })),
 );
 import { AuthFrame, Layout } from "./shell/Layout";
-import { LABELS_ON, pageTitle } from "./shell/nav";
+import { pageTitle } from "./shell/nav";
 import { OpenRunsProvider, useOpenRuns } from "./shell/openRuns";
 import { ToTop } from "./ui";
 
-// 🔬 라벨(임시) 화면은 배포에서 뺀다 (T214). `VITE_LABELS` 가 0 이면 아래 `import()` 가 죽은 가지가 되어
-//    청크 자체가 dist 에 안 나온다. 코드는 지우지 않는다.
-const LabelTab = LABELS_ON
-  ? lazy(() => import("./LabelTab").then((m) => ({ default: m.LabelTab })))
-  : null;
 
 export function App() {
   return (
@@ -136,7 +131,6 @@ function Shell() {
             <Route path="/accounts" element={<Accounts who={who} />} />
             <Route path="/tokens" element={<ApiTokens who={who} />} />
             <Route path="/ai-report" element={<AiReport who={who} />} />
-            <Route path="/label" element={<LabelPage />} />
             <Route path="*" element={<Missing />} />
           </Routes>
         </Boundary>
@@ -185,26 +179,6 @@ function PaperPage() {
 
   if (!run) return <Navigate to="/console" replace />;
   return <PaperTab run={run} home={home} named={runs.remember} />;
-}
-
-function LabelPage() {
-  if (!LabelTab) {
-    // 🔴 주소창에 `/label` 을 쳐도 빈 화면을 주지 않는다 (규칙 #8).
-    return (
-      <section className="card">
-        <h2>라벨(임시)</h2>
-        <p className="faint">
-          이 배포에는 라벨 도구가 들어 있지 않습니다. 연구용 dev 빌드에서만
-          켜집니다.
-        </p>
-      </section>
-    );
-  }
-  return (
-    <Suspense fallback={<p className="faint">라벨 화면을 불러오는 중…</p>}>
-      <LabelTab />
-    </Suspense>
-  );
 }
 
 function Missing() {

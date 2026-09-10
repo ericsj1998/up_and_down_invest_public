@@ -20,18 +20,11 @@ services:
       # ⚠️ Windows(Hyper-V)가 포트 구간을 통째로 예약해 Docker Desktop 이 5175 를 못 열 때가 있다
       #    (2026-09-05 실측: "ports are not available … /forwards/expose 500"). 그때는 WEB_PORT=5176 make up.
       - "${WEB_PORT:-5175}:80"
-    # 🔬 라벨(임시) 탭 — **dev 에서만** 빌드에 넣는다 (T214 · 사용자 2026-09-04
-    #    "배포에서는 빠지게"). paper·live 는 이 인자가 없어 기본 0 으로 빌드된다.
-    build:
-      args:
-        VITE_LABELS: "1"
 
   api: &api_dev
     ports:
       - "8000:8000"
-    # 🔬 라벨 API 도 dev 에서만 — 화면 쪽 `VITE_LABELS` 와 짝이다 (`api/main.py`).
     environment:
-      UPDOWN_LABELS: "1"
       # 🔴 로컬 실계좌 모드는 **거래소 연결이 없다** (2026-09-06 · 사용자 결정 · S7). 화면·원장·백테스트 리포트만.
       #    테스트넷은 전부 데모 모드(api_demo · 로컬 전용 테스트넷 계정)에서 한다 — 계정 하나에 관리자 하나.
       #    `NONE` 은 어느 Market 값과도 안 맞아 live_markets() 가 빈 목록이 된다 → 콘솔은 "연결 없음" 카드.

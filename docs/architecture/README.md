@@ -13,6 +13,7 @@
 | [ai_agents_and_mcp.md](ai_agents_and_mcp.md) | **AI 어시스턴트는 무엇을 하고 무엇을 못 하나** — 자체 루프(LangGraph 미채택 이유) · 도구 13 · 대시보드 명세(환각 측정) · MCP 로 바깥 AI 에 개방(개인 토큰 · 읽기 전용) |
 | [ai_chat_scenarios.md](ai_chat_scenarios.md) | **시험한 대화** — 13사례 · 판정 기준 · 실측 두 묶음(9/12 → 12/13) · 시험 밖 실제 대화에서 깨진 것과 고친 것 |
 | [cross_cutting_design.md](cross_cutting_design.md) | **횡단 관심사** — 바깥 호출 한 층(`common/http`) · TTL 캐시 한 벌 · 소프트 삭제 원칙 · 루프 눈금(비동기) · 표준 분리 점검표 |
+| [review_2026-09-10.md](review_2026-09-10.md) | **점검 2026-09-10** — 보안 10건(High 2 고침) · 한 인스턴스 병목 10건 · 아키텍처 부채 10건 · 태스크 T267~T269 |
 | [architecture_security_audit.md](architecture_security_audit.md) | **추상화 · 하드코딩 · 책임 분리 · 보안** 네 질문에 대한 점검 — 스캔 수치 · 오늘 잡힌 결함 · 권장 순서 |
 
 관련 원문: [runtime_architecture.md](../platform/runtime_architecture.md)(런타임 한 장 그림) ·

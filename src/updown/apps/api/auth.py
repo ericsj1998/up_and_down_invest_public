@@ -290,7 +290,11 @@ async def login(request: Request, next_path: str = "/") -> RedirectResponse:
             "scope": SCOPE,
             "state": f"{state}:{safe}",
             # ⭐ 재인증(요구 ③)에서 이 값이 `select_account` 로 바뀐다 — 아래 참조.
-            "prompt": "select_account" if request.query_params.get("force") else "",
+            # 🔴 재인증(요구 ③)은 **비밀번호를 다시 치게** 한다 — `select_account` 는 구글 세션이
+            #    살아 있으면 계정 클릭 한 번으로 통과해 "자리 비운 노트북" 위협을 못 막았다
+            #    (보안 점검 2026-09-10).
+            "prompt": "login" if request.query_params.get("force") else "",
+            "max_age": "0" if request.query_params.get("force") else "",
         }
     )
     made = RedirectResponse(f"{GOOGLE_AUTH}?{query}", status_code=302)
@@ -769,6 +773,31 @@ def require_playbook_trade(request: Request, playbook_ids: Iterable[str]) -> Non
                     "message": f"{playbook_id} 매매법을 쓸 권한이 없다 — 관리자가 준다",
                 },
             )
+
+
+def require_fresh(request: Request) -> None:
+    """돈이 움직이는 함수 첫 줄에서 **최근 인증**을 본다 (요구 ③ · 보안 점검 2026-09-10).
+
+    Args:
+        request: 요청 (`state.caller`). 호출자가 없으면(시험 우회) 통과.
+
+    Raises:
+        HTTPException: 401 — 재인증 주소를 `detail.reauth` 로 준다(미들웨어 응답과 같은 모양).
+
+    Note:
+        미들웨어의 `TRADE_PATHS` 접두어 검사는 경로가 늘 때마다 빠진다(AI 주문 · 온보딩 펀드 ·
+        일괄 삭제가 실제로 빠져 있었다). 경로가 아니라 **주문이 나가는 함수**가 문을 든다.
+    """
+    who = getattr(request.state, "caller", None)
+    if who is None or who.fresh:
+        return
+    raise HTTPException(
+        401,
+        {
+            "detail": "보안 확인이 필요하다 — 구글 재인증 뒤 다시 시도한다",
+            "reauth": "/auth/login?force=1",
+        },
+    )
 
 
 def require_market_trade(request: Request, market: Market) -> None:
@@ -1798,8 +1827,20 @@ async def set_blocked(
         found = await session.scalar(sa.select(Account).where(Account.email == target))
         if found is None:
             raise HTTPException(404, f"{target} 계정이 없다")
+        if found.deleted_at is not None:
+            # 지운 계정은 `blocked` 도 True 다 — 여기서 풀면 삭제된 계정으로 로그인이 된다
+            # (점검 2026-09-10)
+            raise HTTPException(
+                409, f"{target} 은 지운 계정이다 — 다시 로그인하면 대기 계정으로 되살아난다"
+            )
         if wanted and who is not None and who.email == target:
             raise HTTPException(400, "자기를 차단할 수 없다")
+        if wanted and who is not None and not who.has(Cap.MANAGE_ROLES):
+            # 일반 관리자가 슈퍼 관리자를 차단해 잠그던 구멍 — 관리자 권한을 쥔 계정은
+            # 슈퍼 관리자만 막는다
+            table = await collections()
+            if _caps_of(found, table) & ADMIN_CAPS:
+                raise HTTPException(403, "관리자 권한을 쥔 계정은 슈퍼 관리자만 차단할 수 있다")
         if wanted and found.role is Role.ADMIN:
             admins = await session.scalar(
                 sa.select(sa.func.count()).select_from(Account).where(Account.role == Role.ADMIN)
@@ -1831,6 +1872,9 @@ TRADE_PATHS = (
     "/walkforward/adopt",
     "/exchange/",
     "/rebalancer",
+    # 보안 점검 (2026-09-10): AI 주문 확정 · 온보딩 펀드 생성도 거래소로 주문이 나간다.
+    "/ai/chat/orders",
+    "/assistant/create",
 )
 """**재인증까지 요구하는** 경로 앞자리 (요구 ③).
 

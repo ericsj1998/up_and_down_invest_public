@@ -5,7 +5,7 @@
  *    이름만 바꾼다.
  */
 import type { ComponentType, SVGProps } from "react";
-import { BanknotesIcon, BeakerIcon, ChartBarIcon, CpuChipIcon, KeyIcon, SparklesIcon, TagIcon, UsersIcon } from "@heroicons/react/24/solid";
+import { BanknotesIcon, BeakerIcon, ChartBarIcon, CpuChipIcon, KeyIcon, SparklesIcon, UsersIcon } from "@heroicons/react/24/solid";
 
 export type Icon = ComponentType<SVGProps<SVGSVGElement>>;
 
@@ -35,7 +35,6 @@ export const PAGES: readonly Page[] = [
   // ⭐ T263 — 바깥 AI(Claude Desktop 등)가 우리 도구를 쓰는 열쇠. 로그인한 사람 누구나.
   { to: "/tokens", name: "MCP 토큰", icon: KeyIcon },
   { to: "/accounts", name: "관리", icon: UsersIcon, admin: true },
-  { to: "/label", name: "라벨(임시)", icon: TagIcon, dev: true },
 ];
 
 /** 주소의 첫 칸으로 화면 이름을 찾는다. 판 주소면 null — 판 이름은 열린 판 목록이 안다. */

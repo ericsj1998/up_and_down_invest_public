@@ -75,7 +75,7 @@ line-length = 100
 target-version = "py312"
 src = ["src", "tests", "scripts"]
 # 🧹 archive/ 는 은퇴한 매매법의 동결 보관소다 (2026-08-25 대청소) — 린트로 고쳐 쓰지 않는다.
-exclude = ["archive", "docs/ref_file"]  # ref_file = 외부 참고 코드 원문 — 우리 린트 대상 아님
+exclude = ["archive", "legacy", "docs/ref_file"]  # ref_file = 외부 참고 코드 원문 — 우리 린트 대상 아님
 # ruff 0.16+ 는 Markdown 안의 Python 코드 블록도 포맷 대상으로 잡는다.
 # 스펙·계획 문서는 SSoT 산문이므로 포매터가 임의로 고쳐 쓰게 두지 않는다.
 extend-exclude = ["*.md"]
