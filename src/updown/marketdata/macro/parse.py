@@ -44,11 +44,29 @@ def parse_yahoo_chart(body: Mapping[str, Any]) -> tuple[Decimal, Decimal | None,
     price = meta.get("regularMarketPrice")
     if price is None:
         raise MacroParseError("야후 meta.regularMarketPrice 없음")
-    prev_raw = meta.get("chartPreviousClose", meta.get("previousClose"))
-    prev = None if prev_raw is None else _decimal(prev_raw, "전일 종가")
+    # ⭐ 전일 종가는 봉 목록의 **끝에서 둘째** 종가다 — `chartPreviousClose` 는 조회 구간(5일)
+    #    시작 전 종가라 그것으로 재면 "1일 등락" 이 5일 등락이 된다(실측 VIX +14.9%).
+    #    봉이 둘 미만이면 그것을 쓴다.
+    quote_close = _closes_of(first)
+    if len(quote_close) >= 2:
+        prev: Decimal | None = quote_close[-2]
+    else:
+        prev_raw = meta.get("chartPreviousClose", meta.get("previousClose"))
+        prev = None if prev_raw is None else _decimal(prev_raw, "전일 종가")
     stamp = meta.get("regularMarketTime")
     as_of = datetime.fromtimestamp(int(stamp), tz=UTC) if isinstance(stamp, int | float) else None
     return _decimal(price, "현재가"), prev, as_of
+
+
+def _closes_of(result: Mapping[str, Any]) -> list[Decimal]:
+    """`indicators.quote[0].close` 의 숫자만(None 은 휴장·결측이라 뺀다)."""
+    indicators = cast("Mapping[str, Any]", result.get("indicators") or {})
+    quotes = cast("list[Any]", indicators.get("quote") or [])
+    if not quotes or not isinstance(quotes[0], Mapping):
+        return []
+    first = cast("Mapping[str, Any]", quotes[0])
+    raw = cast("list[Any]", first.get("close") or [])
+    return [Decimal(str(c)) for c in raw if isinstance(c, int | float)]
 
 
 def parse_effr(body: Mapping[str, Any]) -> tuple[Decimal, Decimal | None, Decimal | None, str]:
@@ -104,7 +122,11 @@ def parse_bls_series(body: Mapping[str, Any]) -> list[tuple[str, Decimal]]:
         period = str(row.get("period") or "")
         if not period.startswith("M") or period == "M13":
             continue
-        out.append((f"{row.get('year')}-{period[1:]}", _decimal(row.get("value"), "CPI")))
+        try:
+            value = _decimal(row.get("value"), "CPI")
+        except MacroParseError:
+            continue  # BLS 는 미발표·결측 달을 "-" 로 준다(실측 2026-09-10) — 그 달만 뺀다.
+        out.append((f"{row.get('year')}-{period[1:]}", value))
     if not out:
         raise MacroParseError("BLS 월 행 없음")
     return out

@@ -69,9 +69,8 @@ YAHOO_SPECS: tuple[YahooSpec, ...] = (
     YahooSpec("vix", "VIX 공포지수", "^VIX", "pt"),
     YahooSpec("nq", "나스닥100 선물", "NQ=F", "pt", note="CME NQ 근월물"),
     YahooSpec("sp500", "S&P 500", "^GSPC", "pt"),
-    YahooSpec(
-        "us10y", "미국 10년물 금리", "^TNX", "%", scale=Decimal("0.1"), note="CBOE 10Y 지수 ÷ 10"
-    ),
+    # ⚠️ 야후 `^TNX` 는 이미 % 값이다(실측 4.837) — CBOE 원지수(x10)가 아니다. 나누면 0.48% 가 된다.
+    YahooSpec("us10y", "미국 10년물 금리", "^TNX", "%", note="CBOE 10년물 수익률 지수"),
     YahooSpec("dxy", "달러 인덱스", "DX-Y.NYB", "pt"),
     YahooSpec("gold", "금 선물", "GC=F", "USD", note="COMEX 근월물 · 온스당"),
     YahooSpec("wti", "WTI 원유", "CL=F", "USD", note="NYMEX 근월물 · 배럴당"),

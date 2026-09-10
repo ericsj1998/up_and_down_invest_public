@@ -60,9 +60,11 @@ YAHOO = {
                 "meta": {
                     "symbol": "^VIX",
                     "regularMarketPrice": 16.46,
-                    "chartPreviousClose": 15.72,
+                    "chartPreviousClose": 14.32,
                     "regularMarketTime": 1788984901,
-                }
+                },
+                # 전일 종가는 봉의 끝에서 둘째(15.72) — chartPreviousClose(14.32)는 5일 전이다.
+                "indicators": {"quote": [{"close": [14.32, 14.53, 15.30, 15.72, 16.46]}]},
             }
         ],
         "error": None,
@@ -86,6 +88,7 @@ BLS = {
             {
                 "seriesID": "CUUR0000SA0",
                 "data": [
+                    {"year": "2026", "period": "M08", "value": "-"},
                     {"year": "2026", "period": "M07", "value": "333.918"},
                     {"year": "2026", "period": "M13", "value": "0"},
                     {"year": "2025", "period": "M07", "value": "323.048"},
@@ -111,6 +114,7 @@ class TestParsers:
         points = parse_bls_series(BLS)
         assert ("2026-07", Decimal("333.918")) in points
         assert all(p[0][-2:] != "13" for p in points)
+        assert all(p[0] != "2026-08" for p in points)  # "-" 달은 뺀다
         close, prev_close, when = parse_cboe_vix_csv(CBOE)
         assert (close, prev_close, when) == (Decimal("16.46"), Decimal("15.72"), "09/09/2026")
 
@@ -155,7 +159,7 @@ def _client(*, yahoo_down: frozenset[str] = frozenset(), bls_down: bool = False)
             body = json.loads(json.dumps(YAHOO))
             body["chart"]["result"][0]["meta"]["symbol"] = symbol
             if symbol == "^TNX":
-                body["chart"]["result"][0]["meta"]["regularMarketPrice"] = 41.2
+                body["chart"]["result"][0]["meta"]["regularMarketPrice"] = 4.12
             return httpx.Response(200, json=body)
         if "newyorkfed" in url:
             return httpx.Response(200, json=EFFR)
