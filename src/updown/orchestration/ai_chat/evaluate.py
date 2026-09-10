@@ -46,7 +46,7 @@ CASES: tuple[EvalCase, ...] = (
     EvalCase("base_rate", "엔비디아 지금 자리에서 오를 확률 얼마나 돼?", ("base_rate",)),
     EvalCase(
         "playbook_expectation",
-        "private_strategy 매매법 과거 성과 알려줘",
+        "sample_ma_cross 매매법 과거 성과 알려줘",
         ("playbook_expectation",),
     ),
     EvalCase("propose_order", "NVDA 224 에 사고 217 손절, 234 목표로 제안해줘", ("propose_order",)),

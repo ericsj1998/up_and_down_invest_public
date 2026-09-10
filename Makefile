@@ -147,6 +147,12 @@ secrets: ## 시크릿 스캔 — 추적 파일 (이력까지: make secrets-histo
 secrets-history: ## 시크릿 스캔 — 모든 브랜치·태그의 전체 이력 (느리다)
 	uv run python scripts/dev/secret_scan.py --history
 
+hooks: ## git 훅 설치 — pre-commit(린트) + post-commit(공개 저장소 동기화)
+	uv run pre-commit install --hook-type pre-commit --hook-type post-commit
+
+sync-public: ## 공개 저장소 동기화 — 마지막으로 옮긴 커밋 다음부터 지금 HEAD 까지 (커밋마다 스캔 · 걸리면 멈춤)
+	uv run python scripts/dev/sync_public.py --push
+
 # ── 연구·매매법 쪽 목표(백테스트 진입점 · 금지어 스캔 · 공개본 내보내기)는 Makefile.research 에 있다 (T224).
 #    그 파일은 비공개 저장소에만 있다 — 공개본에는 이 줄만 남고 include 는 조용히 건너뛴다.
 -include Makefile.research

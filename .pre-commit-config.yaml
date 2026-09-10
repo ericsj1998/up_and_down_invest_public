@@ -35,3 +35,17 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+
+  # ⭐ 커밋 뒤 공개 저장소 동기화 (사용자 2026-09-11) — dev·main 의 커밋을 공개본으로 하나씩 옮겨 올린다.
+  #    `make hooks` 로 post-commit 훅까지 설치해야 돈다. 커밋을 막지 않는다(스크립트가 늘 0 으로 끝난다).
+  #    공개본에는 스크립트가 없어 그냥 지나간다.
+  - repo: local
+    hooks:
+      - id: sync-public
+        name: 공개 저장소 동기화 (post-commit)
+        entry: bash -c '[ -f scripts/dev/sync_public.sh ] && bash scripts/dev/sync_public.sh || true'
+        language: system
+        stages: [post-commit]
+        always_run: true
+        pass_filenames: false
+        verbose: true

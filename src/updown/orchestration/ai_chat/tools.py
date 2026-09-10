@@ -831,12 +831,12 @@ TOOLS: tuple[Tool, ...] = (
             "매매법 하나의 과거 실측(저장소) — 기간·손익·MDD·매매 수·청산·등급·창별 실측. "
             "예상이 아니라 과거다. 유사어: 매매법, 전략, 기대 수익, 성과, 백테스트, 얼마나 벌.",
             _obj(
-                {"playbook": {"type": "string", "description": "매매법 id (예: private_strategy)"}},
+                {"playbook": {"type": "string", "description": "매매법 id (예: sample_ma_cross)"}},
                 ["playbook"],
             ),
         ),
         _playbook_expectation,
-        starter="private_strategy 매매법 과거 성과 알려줘",
+        starter="sample_ma_cross 매매법 과거 성과 알려줘",
     ),
     Tool(
         ToolSpec(

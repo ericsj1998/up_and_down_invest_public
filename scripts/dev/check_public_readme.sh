@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 공개본 README 의 상대 링크가 내보낸 트리에 실제로 있는지 — 매 내보내기 뒤 돈다.
 set -u
-DEST="${1:-/home/ericsj1998/projects/up_and_down_invest_public}"
+DEST="${1:-$HOME/projects/up_and_down_invest_public}"
 cd "$DEST" || exit 1
 missing=0
 while IFS= read -r link; do

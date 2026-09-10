@@ -19,7 +19,7 @@
 | 3 | valuation | 애플 지금 저렴해, 비싸? | `valuation` | — |
 | 4 | positions | 내 포지션 몇 % 이득이야? | `positions` | — |
 | 5 | extremes | 엔비디아 고점 근처야? | `extremes` | — |
-| 6 | playbook_expectation | private_strategy 매매법 과거 성과 알려줘 | `playbook_expectation` | — |
+| 6 | playbook_expectation | sample_ma_cross 매매법 과거 성과 알려줘 | `playbook_expectation` | — |
 | 7 | propose_order | NVDA 224 에 사고 217 손절, 234 목표로 제안해줘 | `propose_order` | — |
 | 8 | recommend_by_budget | 200만원으로 미국주식 시작하려는데 뭐가 좋아? | `recommend_by_budget` | — |
 | 9 | portfolio_exposure | 내 비중에 쏠림 있어? | `portfolio_exposure` | — |

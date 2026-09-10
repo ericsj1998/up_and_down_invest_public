@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 견본 백테스트 속도 재기 — 길이를 늘리며 초/봉이 커지는지(비선형) 본다.
 set -u
-cd /home/ericsj1998/projects/up_and_down_invest || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 for d in ${DAYS_LIST:-90 365}; do
   start=$(date +%s)
