@@ -28,6 +28,7 @@ import type {
   ChartBucket,
   ChartParticipant,
   ChartPlanSide,
+  ValueScreenView,
   ChartRun,
   Choice,
   MarketInfo,
@@ -68,16 +69,19 @@ function remembered(group: MarketGroup): {
 }
 
 /**
- * 기본 종목 (사용자 2026-09-11): 코인은 BTC, 주식은 S&P 500. 지수 자체는 봉이 없어 **SPY(S&P 500 ETF)** 로 본다 —
- * 서버 토스가 SPY 일봉을 준다(실측 09-10). 시장은 NYSE 가 있으면 NYSE, 아니면 그 묶음의 첫 시장(토스는 종목으로 찾는다).
+ * 기본 종목: 코인은 BTC, 주식은 **AAPL·NASDAQ** (사용자 2026-09-11 "시작 종목 그냥 애플로" — 전엔 SPY·NYSE 였는데
+ * SPY 는 재무가 없어 저평가 후보 목록에도 안 떠 고르개가 비어 보였다). 시장은 NASDAQ 이 있으면 NASDAQ, 아니면 첫 시장.
  */
 function defaultsFor(
   group: MarketGroup,
   markets: MarketInfo[],
 ): { symbol: string; market: string } {
   if (group === "stock") {
-    const nyse = markets.find((m) => m.name === "NYSE");
-    return { symbol: "SPY", market: nyse?.name ?? markets[0]?.name ?? "NYSE" };
+    const nasdaq = markets.find((m) => m.name === "NASDAQ");
+    return {
+      symbol: "AAPL",
+      market: nasdaq?.name ?? markets[0]?.name ?? "NASDAQ",
+    };
   }
   return { symbol: "BTC_USDT", market: markets[0]?.name ?? "GATE" };
 }
@@ -436,6 +440,10 @@ export function AiChartOrder({
   // 종목 고르개 — 코인은 띄울 수 있는 목록(`/exchange/symbols`), 주식은 저평가 유니버스의 이름표(datalist).
   const [choices, setChoices] = useState<Choice[]>([]);
   const [names, setNames] = useState<{ symbol: string; name: string }[]>([]);
+  // ⭐ 저평가 후보(점수순)를 이 화면에도 띄운다 (사용자 2026-09-11 "저평가 후보가 저쪽에도 떠야 — 필수") — 클릭하면
+  //    그 종목으로 바로 분석. 서버 쪽 크기 상한(50)만큼 받고 처음엔 15개, "더" 로 전부.
+  const [cands, setCands] = useState<ValueScreenView["rows"]>([]);
+  const [moreCands, setMoreCands] = useState(false);
   const [buckets, setBuckets] = useState<ChartBucket[]>([]);
   const [body, setBody] = useState<ChartAnalysis | null>(null);
   // ⭐ 라이브(최신 봉 추종)는 **기본 꺼짐** (사용자 2026-09-11 "우측 고정이어서 불편 — 라이브를 눌렀을 때만").
@@ -544,25 +552,36 @@ export function AiChartOrder({
       return;
     }
     let alive = true;
-    valueScreen(market, { size: 300, sort: "score" })
-      .then(
-        (got) =>
-          alive &&
-          setNames(
-            got.rows.map((r) => ({ symbol: r.symbol, name: r.name ?? "" })),
-          ),
-      )
-      .catch(() => alive && setNames([]));
+    valueScreen(market, { size: 50, sort: "score", has_facts: true })
+      .then((got) => {
+        if (!alive) return;
+        setCands(got.rows);
+        setNames(
+          got.rows.map((r) => ({ symbol: r.symbol, name: r.name ?? "" })),
+        );
+      })
+      .catch(() => {
+        if (!alive) return;
+        setCands([]);
+        setNames([]);
+      });
     return () => {
       alive = false;
     };
   }, [open, page, stock, market]);
 
-  const run = () => {
-    if (!symbol.trim()) return;
+  // `pick` 은 후보 칩에서 바로 분석할 때 — 상태 갱신을 기다리지 않고 그 종목·시장으로 간다.
+  const run = (pick?: { symbol: string; market: string }) => {
+    const chosen = (pick?.symbol ?? symbol).trim().toUpperCase();
+    const where = pick?.market ?? market;
+    if (!chosen) return;
+    if (pick) {
+      setSymbol(pick.symbol);
+      setMarket(pick.market);
+    }
     setBusy(true);
     setError("");
-    chartOrderAnalyze({ symbol: symbol.trim().toUpperCase(), market, bucket })
+    chartOrderAnalyze({ symbol: chosen, market: where, bucket })
       .then((got) => {
         setBody(got);
         try {
@@ -802,7 +821,7 @@ export function AiChartOrder({
               type="button"
               className="btn small primary"
               disabled={busy || !symbol.trim()}
-              onClick={run}
+              onClick={() => run()}
             >
               {busy ? "읽는 중…" : "분석"}
             </button>
@@ -837,6 +856,47 @@ export function AiChartOrder({
               성적표
             </button>
           </div>
+          {stock && cands.length ? (
+            <div
+              className="row"
+              style={{
+                gap: 4,
+                flexWrap: "wrap",
+                marginTop: 6,
+                alignItems: "center",
+              }}
+            >
+              <span
+                className="faint text-xs"
+                title="저평가 후보 화면과 같은 점수 · 이력 있는 종목만 · 누르면 그 종목으로 분석"
+              >
+                저평가 후보 {market} · 점수순
+              </span>
+              {(moreCands ? cands : cands.slice(0, 15)).map((r) => (
+                <button
+                  key={`${r.market ?? market}:${r.symbol}`}
+                  type="button"
+                  className={`chip${r.symbol === symbol.trim().toUpperCase() ? " gain" : ""}`}
+                  disabled={busy}
+                  title={`${r.name ?? ""} · 점수 ${r.score ?? "—"} · 싼 정도 ${r.cheapness ?? "—"} · ${r.price ?? "—"}${r.flags.length ? ` · 깃발 ${r.flags.join(",")}` : ""}`}
+                  onClick={() =>
+                    run({ symbol: r.symbol, market: r.market ?? market })
+                  }
+                >
+                  {r.symbol} <span className="faint">{r.score ?? "—"}</span>
+                </button>
+              ))}
+              {cands.length > 15 ? (
+                <button
+                  type="button"
+                  className="btn small"
+                  onClick={() => setMoreCands((was) => !was)}
+                >
+                  {moreCands ? "접기" : `더 (${cands.length})`}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
           {reusedNote ? <p className="faint text-xs">{reusedNote}</p> : null}
           {jobId ? (
             <p className="faint text-xs" style={{ marginTop: 6 }}>
