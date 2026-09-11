@@ -43,7 +43,10 @@ router = APIRouter(prefix="/admin/toss", tags=["admin-toss-proxy"])
 
 HTTP_BAD_REQUEST = 400
 HTTP_NOT_FOUND = 404
-HTTP_BAD_GATEWAY = 502
+HTTP_FAILED_DEPENDENCY = 424
+"""토스가 오류를 냈다 — 502 가 아닌 이유: nginx 가 `proxy_next_upstream http_502 http_503`
+로 업스트림 실패로 보고 다른 슬롯에 다시 보낸 뒤 자기 502(HTML)를 돌려줘 상세가
+사라진다(2026-09-11 실측). 424 는 그대로 통과한다."""
 HTTP_UNAVAILABLE = 503
 MAX_PARAMS_CHARS = 4_000
 
@@ -91,7 +94,7 @@ async def toss_result(
 
     Raises:
         HTTPException: 400(허용 밖 경로·그룹·params) · 404(토스에 없는 종목) ·
-            502(토스 오류) · 503(이 서버가 토스를 안 부르는 구성).
+            424(토스 오류 — 502 를 쓰면 nginx 가 삼킨다) · 503(이 서버가 토스를 안 부르는 구성).
     """
     if path not in TOSS_PROXY_PATHS:
         raise HTTPException(HTTP_BAD_REQUEST, f"허용되지 않은 경로: {path}")
@@ -116,7 +119,7 @@ async def toss_result(
     except UnknownSymbolError as exc:
         raise HTTPException(HTTP_NOT_FOUND, str(exc)) from exc
     except TossAuthError as exc:
-        raise HTTPException(HTTP_BAD_GATEWAY, f"서버의 토스 인증 실패: {exc}") from exc
+        raise HTTPException(HTTP_FAILED_DEPENDENCY, f"서버의 토스 인증 실패: {exc}") from exc
     except TossApiError as exc:
-        raise HTTPException(HTTP_BAD_GATEWAY, f"토스 오류({exc.status_code}): {exc}") from exc
+        raise HTTPException(HTTP_FAILED_DEPENDENCY, f"토스 오류({exc.status_code}): {exc}") from exc
     return {"result": result}

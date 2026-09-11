@@ -42,6 +42,7 @@ HTTP_OK = 200
 HTTP_UNAUTHORIZED = 401
 HTTP_FORBIDDEN = 403
 HTTP_NOT_FOUND = 404
+HTTP_FAILED_DEPENDENCY = 424
 HTTP_UNAVAILABLE = 503
 
 
@@ -129,7 +130,7 @@ class TossProxyClient:
             TossAuthError: 개인 토큰이 거부됐다(401/403) — 서버에서 토큰을 되돌렸거나
                 관리자가 아니다.
             TossApiError: 그 밖의 실패 — 서버가 토스를 안 부르는 상태(503) · 토스
-                오류(502) · 전송 오류.
+                오류(424 · 서버가 옮김) · 전송 오류.
         """
         query = {
             "path": path,
@@ -160,6 +161,11 @@ class TossProxyClient:
             raise TossApiError(
                 f"토스 프록시 서버가 토스를 안 부르는 상태다({path}): {detail}",
                 status_code=HTTP_UNAVAILABLE,
+            )
+        if response.status_code == HTTP_FAILED_DEPENDENCY:
+            # 서버가 토스에서 받은 오류를 그대로 전한다 — 상세에 토스 상태·코드가 있다.
+            raise TossApiError(
+                f"토스 오류(서버 경유 · {path}): {detail}", status_code=HTTP_FAILED_DEPENDENCY
             )
         raise TossApiError(
             f"토스 프록시 오류({path}, {response.status_code}): {detail}",

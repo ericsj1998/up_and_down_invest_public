@@ -152,8 +152,9 @@ class TestEndpoint:
         ("raised", "status"),
         [
             (UnknownSymbolError("없다", status_code=404), 404),
-            (TossAuthError("401", status_code=401), 502),
-            (TossApiError("429", status_code=429), 502),
+            # 424 — 502/503 은 nginx `proxy_next_upstream` 이 삼킨다(2026-09-11 실측)
+            (TossAuthError("401", status_code=401), 424),
+            (TossApiError("429", status_code=429), 424),
         ],
     )
     def test_maps_toss_errors(
@@ -240,6 +241,7 @@ class TestProxyClient:
             (401, TossAuthError),
             (403, TossAuthError),
             (503, TossApiError),
+            (424, TossApiError),
             (400, TossApiError),
         ],
     )
