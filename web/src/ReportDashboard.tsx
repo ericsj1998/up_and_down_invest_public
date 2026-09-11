@@ -23,6 +23,7 @@ import { reportDashboard, type ReportDashboard as Data } from "./api";
 import { Card, CardBody, CardHeader, Typography } from "./mt";
 import { ReportMailCard } from "./ReportTab";
 import { useOpenRuns } from "./shell/openRuns";
+import { useThemeValue } from "./shell/theme";
 import { ChartCard, Fact } from "./mtui";
 import { apexBaseOptions } from "./chart/apexBase";
 
@@ -61,6 +62,10 @@ function tone(value: number | null): string {
 }
 
 export function ReportDashboard() {
+  // 🔴 밝기를 구독한다 (2026-09-12). ApexCharts 는 옵션을 그릴 때 한 번 읽으므로, 토글을 눌러도
+  //    이 화면이 다시 그려지지 않으면 차트가 옛 밝기를 쥔 채 남는다 — 어두운 바탕에 어두운 축
+  //    글씨. 값이 바뀌면 아래 `apexBaseOptions()` 가 새 밝기로 다시 계산된다.
+  useThemeValue();
   // ⭐ 기간은 주소에 있다 (`/report?hours=168`) — 새로고침·링크 공유에 살아남는다 (탭은 주소다 규칙).
   const [params, setParams] = useSearchParams();
   const fromUrl = Number(params.get("hours"));

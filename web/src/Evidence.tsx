@@ -35,11 +35,14 @@ import { ChartsSection } from "./evidence/ChartsSection";
 import { LiquidationFact } from "./evidence/LiquidationFact";
 import { SyntheticDetailPanel, type Pick } from "./evidence/SyntheticDetail";
 import { Card, CardBody, Typography } from "./mt";
+import { useThemeValue } from "./shell/theme";
 import { AuditNotice, ChartCard, Fact } from "./mtui";
 import { sampleEvidence, type SampleEvidence, type SampleSymbol } from "./api";
 import { apexBaseOptions } from "./chart/apexBase";
 
 export function Evidence() {
+  // 🔴 밝기 구독 — ApexCharts 가 토글을 따라오게 한다 (2026-09-12 · `useThemeValue` 주석 참고).
+  useThemeValue();
   const [bundle, setBundle] = useState<Bundle | null>(null);
   const [error, setError] = useState("");
   const [sample, setSample] = useState<SampleEvidence | null>(null);

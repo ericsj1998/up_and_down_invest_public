@@ -175,7 +175,8 @@ function PlanCard({
         </li>
         <li className="faint text-xs">근거: {plan.basis}</li>
         {plan.blocked.length ? (
-          <li className="text-xs" style={{ color: "#b91c1c" }}>
+          {/* 색은 토큰으로 — 박아 두면 다크에서 어두운 바탕에 어두운 빨강이 된다 (2026-09-12). */}
+          <li className="text-xs" style={{ color: "var(--loss)" }}>
             막은 이유: {plan.blocked.join(" · ")}
           </li>
         ) : null}
@@ -408,7 +409,7 @@ function CoinOrderPanel({
         <ErrorCard message={`막힘: ${blocked.join(" · ")}`} />
       ) : null}
       {over ? (
-        <p className="text-xs" style={{ color: "#b4423a" }}>
+        <p className="text-xs" style={{ color: "var(--loss)" }}>
           예산이 가용 잔고보다 크다.
         </p>
       ) : null}
