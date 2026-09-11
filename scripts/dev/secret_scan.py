@@ -60,7 +60,15 @@ WARN_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
 }
 # 알려진 무해 값 — 예시·CI 전용
-ALLOW = ("ci_only_not_a_secret", "changeme", "example", "xxxxxxxx", "203.0.113.")
+ALLOW = (
+    "ci_only_not_a_secret",
+    "changeme",
+    "example",
+    "xxxxxxxx",
+    "203.0.113.",
+    # URL 경로는 시크릿이 아니다 — `TOKEN_… = "/admin/toss/warm"` 이 걸렸다(2026-09-11 · 옛 커밋에 남음)
+    "/admin/toss/",
+)
 _IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_]*$")  # 값이 아니라 변수 이름 (`KEY=NVIDIA_API_KEY`)
 
 
