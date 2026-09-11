@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -98,6 +98,12 @@ RANKING_TTL_S = 600.0
 (60초)마다 종목 수 x 60개월 표를 다시 만들 이유가 없다. 새로고침(POST)이 비운다."""
 
 _RANKING_CACHE = TtlCache[dict[str, Any]]("fundamentals.ranking", RANKING_TTL_S)
+RANKING_REDIS_KEY = "fundamentals:ranking:{market}"
+RANKING_REDIS_TTL_S = 24 * 3600
+"""순위표의 Redis 사본 수명. 메모리 TTL(10분)이 지나면 **낡은 표를 먼저 주고** 뒤에서 다시
+만든다 — 종목마다 토스 일봉 꼬리를 받는 일이라 요청 안에서 하면 NASDAQ 13초 · NYSE 55초였다
+(2026-09-11 배포 직후)."""
+_RANKING_TASKS: dict[str, asyncio.Task[Any]] = {}
 
 
 def attach_fundamentals(
@@ -258,6 +264,126 @@ async def list_symbols() -> dict[str, Any]:
     }
 
 
+async def _ranking_load(market: str) -> dict[str, Any] | None:
+    """순위표의 Redis 사본을 메모리로 올린다 — 낡았어도 올린다(먼저 주고 뒤에서 새로 만든다).
+
+    Args:
+        market: 시장 이름.
+
+    Returns:
+        표 또는 None(사본 없음 · Redis 없음/죽음 · 깨진 JSON).
+    """
+    if _quick_redis is None:
+        return None
+    try:
+        raw: object = await _quick_redis.get(RANKING_REDIS_KEY.format(market=market))
+    except Exception as exc:
+        _logger.info("screen_ranking_redis_failed", payload={"op": "get", "detail": str(exc)[:80]})
+        return None
+    if not raw or not isinstance(raw, (bytes, str)):
+        return None
+    try:
+        body = cast("dict[str, Any]", json.loads(raw))
+        at = float(body["at"])
+        table = cast("dict[str, Any]", body["table"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    # 메모리 캐시는 단조 시계다 — 벽시계 나이를 그대로 옮긴다.
+    _RANKING_CACHE.put(market, table, now=time.monotonic() - max(0.0, time.time() - at))
+    _logger.info(
+        "screen_ranking_loaded", payload={"market": market, "age_s": int(time.time() - at)}
+    )
+    return table
+
+
+async def _ranking_save(market: str, table: Mapping[str, Any]) -> None:
+    """순위표를 Redis 에도 쓴다 — 실패는 로그만."""
+    if _quick_redis is None:
+        return
+    try:
+        await _quick_redis.set(
+            RANKING_REDIS_KEY.format(market=market),
+            json.dumps({"at": time.time(), "table": table}, ensure_ascii=False, default=str),
+            ex=RANKING_REDIS_TTL_S,
+        )
+    except Exception as exc:
+        _logger.info("screen_ranking_redis_failed", payload={"op": "set", "detail": str(exc)[:80]})
+
+
+async def _ranking_forget() -> None:
+    """순위표를 메모리·Redis 에서 지운다 — 새로고침(이력 수신) 뒤."""
+    _RANKING_CACHE.forget()
+    if _quick_redis is None:
+        return
+    for market in Market:
+        try:
+            await _quick_redis.delete(RANKING_REDIS_KEY.format(market=market.value))
+        except Exception as exc:
+            _logger.info(
+                "screen_ranking_redis_failed", payload={"op": "delete", "detail": str(exc)[:80]}
+            )
+            return
+
+
+def _ranking_finished(task: asyncio.Task[Any]) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _logger.warning("screen_ranking_failed", payload={"detail": str(exc)[:160]})
+
+
+def _ranking_start(market: str, build: Callable[[], Awaitable[dict[str, Any]]]) -> None:
+    """순위표를 **백그라운드로** 만든다 — 이미 만드는 중이면 그대로 둔다.
+
+    Args:
+        market: 시장 이름.
+        build: 표를 만드는 코루틴 팩토리.
+    """
+    task = _RANKING_TASKS.get(market)
+    if task is not None and not task.done():
+        return
+
+    async def _run() -> None:
+        table = await build()
+        _RANKING_CACHE.put(market, table)
+        await _ranking_save(market, table)
+        _logger.info(
+            "screen_ranking_built",
+            payload={"market": market, "rows": len(cast("list[Any]", table.get("rows", [])))},
+        )
+
+    made: asyncio.Task[Any] = asyncio.create_task(_run())
+    made.add_done_callback(_ranking_finished)
+    _RANKING_TASKS[market] = made
+    _logger.info("screen_ranking_started", payload={"market": market})
+
+
+async def _ranking_or_build(
+    market: str, build: Callable[[], Awaitable[dict[str, Any]]]
+) -> tuple[dict[str, Any] | None, bool]:
+    """있는 표를 주고(낡았으면 낡은 채로) 필요하면 뒤에서 새로 만든다 — 요청은 기다리지 않는다.
+
+    Args:
+        market: 시장 이름.
+        build: 표를 만드는 코루틴 팩토리.
+
+    Returns:
+        `(표 또는 None, 만드는 중인가)`. None 은 메모리·Redis 어디에도 없어 처음 만드는 중.
+    """
+    kept = _RANKING_CACHE.peek(market)
+    if kept is None and await _ranking_load(market) is not None:
+        kept = _RANKING_CACHE.peek(market)
+    if kept is None:
+        _ranking_start(market, build)
+        return None, True
+    at, table = kept
+    if time.monotonic() - at >= RANKING_TTL_S:
+        _ranking_start(market, build)
+        return table, True
+    return table, False
+
+
 @router.get("/ranking")
 async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
     """저평가 후보 — 시장의 종목(`instruments`) 전부를 점수 순으로 (T244).
@@ -274,7 +400,9 @@ async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
 
     Note:
         표는 `RANKING_TTL_S` 동안 기억한다 — 종목마다 60개월 표를 다시 만드는 일이라 폴링마다
-        하면 API 가 그 일만 한다. `POST …/refresh` 가 비운다.
+        하면 API 가 그 일만 한다. `POST …/refresh` 가 비운다. **요청 안에서 만들지 않는다**
+        (2026-09-11) — 낡은 표는 낡은 채로 주고(`building: true`) 뒤에서 새로 만든다. 처음이면
+        빈 표 + 안내.
     """
     repo = _repo_or_503()
     config = _config_or_503()
@@ -309,7 +437,19 @@ async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
             ),
         }
 
-    return await _RANKING_CACHE.get_or_fetch(found.value, _build)
+    table, building = await _ranking_or_build(found.value, _build)
+    if table is None:
+        return {
+            "rows": [],
+            "at": "",
+            "market": found.value,
+            "label": CARD_LABEL,
+            "recommended": RECOMMENDED,
+            "window_days": RANK_WINDOW_DAYS,
+            "building": True,
+            "note": "순위표를 준비하는 중 — 몇 분 뒤 다시 읽으면 채워진다",
+        }
+    return {**table, "building": building}
 
 
 UNIVERSE_CONFIG = Path(__file__).resolve().parents[4] / "config" / "fundamentals" / "universe.yml"
@@ -747,8 +887,10 @@ async def screen(
     at = ""
     note = ""
     pending = 0
+    building = False
     for found in markets:
         ranked = await ranking(found.value)
+        building = building or bool(ranked.get("building"))
         at = str(ranked["at"])
         note = str(ranked["note"])
         for r in cast("list[Any]", ranked["rows"]):
@@ -788,6 +930,8 @@ async def screen(
         row.setdefault("name", names.get(str(row["symbol"]), {}).get("ko") or None)
     if pending:
         note = f"1단계 {pending}종을 준비하는 중 — 몇 분 뒤 다시 읽으면 채워진다. {note}"
+    if building:
+        note = f"2단계 순위표를 준비하는 중 — 몇 분 뒤 다시 읽으면 채워진다. {note}"
     body = screen_rows(
         rows,
         ScreenQuery(
@@ -869,7 +1013,7 @@ async def refresh(symbol: str, market: str = "NASDAQ") -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     count = await repo.upsert_facts(facts)
     filings = filings_of(facts)
-    _RANKING_CACHE.forget()
+    await _ranking_forget()
     _forget_quick(ticker)
     _logger.info(
         "fundamentals_refreshed",

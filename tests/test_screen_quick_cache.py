@@ -34,6 +34,9 @@ class FakeRedis:
         self.store[key] = value.encode()
         self.ex[key] = ex or 0
 
+    async def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
 
 @pytest.fixture
 def clean(monkeypatch: pytest.MonkeyPatch) -> FakeRedis:
@@ -207,3 +210,92 @@ class TestBatchPrices:
             (Market.NASDAQ, ["AAPL", "MSFT"]),
             (Market.NYSE, ["JPM"]),
         ]
+
+
+class TestRankingIsBackground:
+    """2단계 순위표 — 요청 안에서 만들지 않는다 · 낡은 표 먼저 · Redis 사본."""
+
+    @staticmethod
+    def _table(tag: str) -> dict[str, Any]:
+        return {"rows": [{"symbol": tag}], "at": tag, "note": ""}
+
+    @pytest.mark.usefixtures("clean")
+    async def test_cold_start_returns_nothing_and_builds_behind(
+        self, clean: FakeRedis, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(api, "_RANKING_TASKS", {})
+        api._RANKING_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
+
+        async def _build() -> dict[str, Any]:
+            return self._table("fresh")
+
+        table, building = await api._ranking_or_build("NASDAQ", _build)  # pyright: ignore[reportPrivateUsage]
+        assert table is None and building is True
+        for _ in range(3):
+            await asyncio.sleep(0)
+        kept = api._RANKING_CACHE.peek("NASDAQ")  # pyright: ignore[reportPrivateUsage]
+        assert kept is not None and kept[1]["at"] == "fresh"
+        assert api.RANKING_REDIS_KEY.format(market="NASDAQ") in clean.store
+
+    @pytest.mark.usefixtures("clean")
+    async def test_stale_table_is_served_while_rebuilding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(api, "_RANKING_TASKS", {})
+        api._RANKING_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
+        api._RANKING_CACHE.put(  # pyright: ignore[reportPrivateUsage]
+            "NYSE", self._table("old"), now=time.monotonic() - api.RANKING_TTL_S - 1
+        )
+        started: list[str] = []
+
+        async def _build() -> dict[str, Any]:
+            started.append("x")
+            return self._table("new")
+
+        table, building = await api._ranking_or_build("NYSE", _build)  # pyright: ignore[reportPrivateUsage]
+        assert table is not None and table["at"] == "old" and building is True
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert started == ["x"]
+        table2, building2 = await api._ranking_or_build("NYSE", _build)  # pyright: ignore[reportPrivateUsage]
+        assert table2 is not None and table2["at"] == "new" and building2 is False
+
+    async def test_redis_copy_is_served_without_a_build(
+        self, clean: FakeRedis, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(api, "_RANKING_TASKS", {})
+        api._RANKING_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
+        clean.store[api.RANKING_REDIS_KEY.format(market="NASDAQ")] = json.dumps(
+            {"at": time.time(), "table": self._table("copy")}
+        ).encode()
+
+        async def _boom() -> dict[str, Any]:
+            raise AssertionError("사본이 신선하면 만들지 않는다")
+
+        table, building = await api._ranking_or_build("NASDAQ", _boom)  # pyright: ignore[reportPrivateUsage]
+        assert table is not None and table["at"] == "copy" and building is False
+
+    @pytest.mark.usefixtures("clean")
+    async def test_ranking_endpoint_never_blocks_on_a_cold_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(api, "_RANKING_TASKS", {})
+        api._RANKING_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
+        monkeypatch.setattr(api, "_repo_or_503", lambda: object())
+        monkeypatch.setattr(api, "_config_or_503", lambda: object())
+        starts: list[str] = []
+
+        def _start(market: str, _build: Any) -> None:
+            starts.append(market)
+
+        monkeypatch.setattr(api, "_ranking_start", _start)
+        body = await asyncio.wait_for(api.ranking("NASDAQ"), timeout=2)
+        assert body["rows"] == [] and body["building"] is True and starts == ["NASDAQ"]
+        assert "준비하는 중" in str(body["note"])
+
+    async def test_forget_clears_memory_and_redis(self, clean: FakeRedis) -> None:
+        api._RANKING_CACHE.put("NASDAQ", self._table("x"))  # pyright: ignore[reportPrivateUsage]
+        clean.store[api.RANKING_REDIS_KEY.format(market="NASDAQ")] = b"{}"
+        await api._ranking_forget()  # pyright: ignore[reportPrivateUsage]
+        assert api._RANKING_CACHE.peek("NASDAQ") is None  # pyright: ignore[reportPrivateUsage]
+        assert api.RANKING_REDIS_KEY.format(market="NASDAQ") not in clean.store
