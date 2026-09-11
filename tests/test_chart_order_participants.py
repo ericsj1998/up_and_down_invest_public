@@ -82,3 +82,20 @@ def test_evidence_note_has_numbers_but_no_conclusion() -> None:
     assert "저평가 점수 2.5" in note and "결론이 아니다" in note
     for word in ("롱", "숏", "진입가", "손절가"):
         assert word not in note
+
+
+def test_ai_compare_fixes_one_snapshot_and_calls_both_models_at_once() -> None:
+    """2026-09-11 실측: 순차 호출이 18초 + 87초 — 스냅샷을 먼저 고정하고 둘을 동시에 던진다.
+    같은 봉을 봐야 비교이므로 `snapshot=` 두 번, `asyncio.gather` 한 번."""
+    from pathlib import Path
+
+    source = Path("src/updown/apps/api/chart_order.py").read_text(encoding="utf-8")
+    body = source[
+        source.index("async def _work(") : source.index(
+            '_logger.info(\n            "chart_order_run"'
+        )
+    ]
+    assert "await fetch_snapshot(" in body
+    assert "asyncio.gather(" in body
+    assert body.count("snapshot=snapshot") == 2
+    assert "snapshot=alone.snapshot" not in body

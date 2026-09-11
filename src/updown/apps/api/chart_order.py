@@ -42,7 +42,7 @@ from updown.llm.nvidia import NvidiaClient
 from updown.llm.pool import PoolConfigError, load_pool
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider
-from updown.orchestration.ai_analysis import AnalysisRequest
+from updown.orchestration.ai_analysis import AnalysisRequest, fetch_snapshot
 from updown.orchestration.ai_analysis import analyze as llm_analyze
 from updown.orchestration.ai_chat.snapshot import extremes_of, swings_of
 from updown.orchestration.ai_chat.tools import WARMUP_BARS, instrument_of
@@ -467,25 +467,35 @@ async def run(request: Request, payload: Annotated[dict[str, Any], Body()]) -> d
         instrument = instrument_of(symbol, mk)
         client = NvidiaClient(endpoint=pool.endpoint or NvidiaClient.endpoint)
         async with MarketDataProvider() as provider:
-            report(f"AI 단독 — {model}")
-            alone = await llm_analyze(
-                AnalysisRequest(instrument=instrument, models=(model,), hold_note=hold_note),
-                provider,
-                client,
-                pool,
-                on_progress=report,
-                quotes=stored_quotes(provider, mk),
+            # ⭐ 스냅샷은 한 번, 모델 호출 둘은 **동시에** (2026-09-11 실측: 순차로 18초 + 87초).
+            #    같은 봉을 보는 것이 비교의 조건이므로 스냅샷을 먼저 고정하고 둘을 같이 던진다.
+            report(f"스냅샷 — {symbol} 다섯 축 (DB 먼저)")
+            snapshot = await fetch_snapshot(
+                instrument, provider, report, quotes=stored_quotes(provider, mk)
             )
-            report(f"AI+근거 — {model}{EVIDENCE_SUFFIX} (같은 스냅샷)")
-            with_note = await llm_analyze(
-                AnalysisRequest(
-                    instrument=instrument, models=(model,), hold_note=hold_note, evidence_note=note
+            report(f"AI 단독 · AI+근거 — {model} 동시 호출")
+            alone, with_note = await asyncio.gather(
+                llm_analyze(
+                    AnalysisRequest(instrument=instrument, models=(model,), hold_note=hold_note),
+                    provider,
+                    client,
+                    pool,
+                    on_progress=report,
+                    snapshot=snapshot,
                 ),
-                provider,
-                client,
-                pool,
-                on_progress=report,
-                snapshot=alone.snapshot,  # 봉을 다시 받지 않는다 — 같은 것을 봐야 비교다
+                llm_analyze(
+                    AnalysisRequest(
+                        instrument=instrument,
+                        models=(model,),
+                        hold_note=hold_note,
+                        evidence_note=note,
+                    ),
+                    provider,
+                    client,
+                    pool,
+                    on_progress=report,
+                    snapshot=snapshot,  # 봉을 다시 받지 않는다 — 같은 것을 봐야 비교다
+                ),
             )
             # 같은 회차에 넷 — 이름으로 갈라야 성적표가 섞이지 않는다.
             merged = replace(
