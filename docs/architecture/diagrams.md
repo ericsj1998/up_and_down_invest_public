@@ -1,8 +1,10 @@
 # 다이어그램 — 개념 ERD · 기술 ERD · 시퀀스 · 스윔레인 · 플로우차트
 
-> 전부 Mermaid 다 (GitHub 에서 바로 그려진다). 출처는 코드다 — 표·열은 `src/updown/common/db/models/`(36 표 · 마이그레이션 0127), 흐름은
+> 전부 Mermaid 다 (GitHub 에서 바로 그려진다). 출처는 코드다 — 표·열은 `src/updown/common/db/models/`(22 표 · 마이그레이션 0129 — 죽은 표 14 정리), 흐름은
 > `apps/api/main.py`(기동) · `apps/api/walkforward.py`(판·대조) · `orchestration/walkforward/live_runner.py`(러너) ·
-> `orchestration/ai_chat/`(AI) · `common/http/`(바깥 호출). 2026-09-10 갱신 — 주식 · EDGAR · 거시 · AI/MCP · 아웃바운드 층 · 소프트 삭제 · 눈금 반영.
+> `orchestration/ai_chat/`(AI) · `apps/api/chart_order.py`(차트 분석 주문) · `apps/api/toss_proxy.py`·`warm_candles.py`(토스 프록시 · 예열) ·
+> `common/http/`(바깥 호출). 2026-09-11 갱신 — AI 차트 분석 주문(차트 보기 · 분석 작업 · AI 비교 · 채점) · 토스 프록시 · 서버 합성 봉 · 야간 예열 ·
+> 작업+SSE · 저평가 Redis 사본 반영.
 
 ---
 
@@ -11,8 +13,9 @@
 ```mermaid
 erDiagram
     ACCOUNT ||--o{ SESSION_COOKIE : "로그인(구글) · 게스트"
-    ACCOUNT ||--o{ API_TOKEN : "MCP · 바깥 AI — 읽기 전용"
+    ACCOUNT ||--o{ API_TOKEN : "MCP · 바깥 AI · 연구 PC 토스 프록시 — 읽기 전용(+예열)"
     ACCOUNT ||--o{ CHAT_THREAD : "AI 대화 — 도구 호출 · 대시보드 명세"
+    ACCOUNT ||--o{ ANALYSIS_CYCLE : "AI 비교 회차 — 하루 상한 · 10분 안 재사용"
     ACCOUNT }o--o{ FUND : "만든다 (관리자·트레이더)"
     FUND ||--|{ RUN : "종목마다 판 하나 (바스켓 비중)"
     RUN ||--o{ TRADE : "원장 — 계획과 실제를 나란히"
@@ -20,8 +23,11 @@ erDiagram
     TRADE ||--o{ CALIBRATION : "의도가 vs 체결가 · 수량"
     RUN }o--|| PLAYBOOK : "버전 고정된 매매법"
     RUN }o--|| INSTRUMENT : "시장 × 종목 (코인 · 주식)"
-    INSTRUMENT ||--o{ CANDLE : "봉 — 코인 WS · 주식 토스 폴링 · DB 우선"
+    INSTRUMENT ||--o{ CANDLE : "봉 — 코인 WS · 주식 토스 합성 · DB 우선 · 야간 예열"
     INSTRUMENT ||--o{ FINANCIAL_FACT : "EDGAR 공시 사실 (재무 2단계)"
+    INSTRUMENT ||--o{ ANALYSIS_CYCLE : "차트 분석 주문 — 갈래(단기·스윙·장투)마다"
+    ANALYSIS_CYCLE ||--|{ PROPOSAL : "참가자 3 — 우리-구조 · AI 단독 · AI+근거"
+    PROPOSAL ||..o| VERDICT : "채점 — 익절 먼저 · 손절 먼저 · 기한 만료 · 미결"
     MARKET ||--o{ INSTRUMENT : "능력표(배율·숏·수량 단위) · 달력(휴장·조기마감)"
     EXCHANGE_ACCOUNT ||--o{ EXCHANGE_POSITION : "거래소가 진실"
     EXCHANGE_ACCOUNT ||--o{ EXCHANGE_ORDER : "조건부 손절 · 지정가 · 이름에 판 표식"
@@ -42,6 +48,19 @@ erDiagram
     CHAT_THREAD {
         json messages "도구 결과 · 대시보드 명세 포함"
         datetime deleted_at "목록·열기만 숨김 — 원가는 남는다"
+    }
+    ANALYSIS_CYCLE {
+        string run_id
+        string bucket "short·swing·long"
+        string digest "스냅샷 지문 — 같은 봉을 봐야 비교다"
+        datetime matures_at "익으면 채점"
+    }
+    PROPOSAL {
+        string participant "structure@ · 모델명 · 모델명+evidence"
+        decimal entry
+        decimal stop
+        decimal target
+        string stance "PROPOSED·ABSTAINED·FAILED"
     }
     FUND {
         string fund_id
@@ -519,7 +538,7 @@ sequenceDiagram
     participant U as 사람 (채팅 창) / MCP 클라이언트 (Claude Desktop 등)
     participant A as api (/ai/chat 작업 큐 · /mcp 무상태)
     participant G as agent.py (자체 루프 · 최대 6왕복)
-    participant T as tools.py (도구 13 · 사실만)
+    participant T as tools.py (도구 15 · MCP 로 13 · 사실만)
     participant P as llm/pool (NVIDIA NIM · 폴백)
     participant D as dashboard.resolve (참조 → 값)
     participant DB as chat_threads · event_logs
@@ -564,6 +583,82 @@ flowchart LR
 - 주문 클라이언트(Gate · 바이낸스)는 `NO_RETRY` — 어떤 상태도 재시도 대상이 아니라 **응답이 그대로 돌아간다**. 주문이 생겼을 수 있는 5xx 를 층이 삼키면 안 된다(규칙 #6).
 - 원시 `httpx.AsyncClient` 를 만드는 파일은 층 자체와 웹소켓 핸드셰이크 둘뿐이고, [래칫 시험](../../tests/test_outbound_layer.py)이 목록을 못 박는다.
 
+### 3.7 AI 차트 분석 주문 한 번 — 차트 보기 · 분석 · AI 비교 · 채점
+
+> 차트는 즉시, 분석은 작업으로, AI 는 비교 참가자로. 어느 화살표도 거래소로 가지 않는다 — "이 계획으로 주문" 은 주문 창의 **초안**이고 사람이 보낸다.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 사람 (AI 차트 분석 주문 화면)
+    participant A as api (chart_order · 작업 레지스트리 · SSE)
+    participant S as StoredCandles (DB 먼저 · 빈 곳만 브로커)
+    participant L as analysis (levels.useful_report · 전고/전저 · 재무 · VIX)
+    participant R as RiskManager (confirm · 손절폭 하한)
+    participant P as llm/pool (NVIDIA NIM)
+    participant X as ai_experiment (실험 원장 · 채점 루프 1h)
+
+    U->>A: 종목 고름 → GET /analysis/frame (trend.structure · 갈래의 진입축)
+    A->>S: 봉 (DB 먼저 · 예열돼 있으면 0.5초 · 첫 적재만 수십 초)
+    S-->>A: 봉 · 이평 · ADX
+    A-->>U: 차트 보기 (계획선 없이)
+    U->>A: 분석 → POST /chart-order/analyze-job (같은 종목·갈래가 돌면 그 작업을 준다)
+    A-->>U: job_id → GET /ai/jobs/{id}/events (진행 줄 · 늦게 붙어도 처음부터)
+    A->>S: 진입축 + 맥락축 (lookback_span · 정규장 기준 400봉)
+    A->>L: 지지/저항 후보 → useful_report (잊힘 · 관통 · 접점 부족 · 비용 안 → 버린 이유)
+    L-->>A: 살아남은 레벨 · 전고/전저 · 52주 · ATR · 재무 줄 · VIX 줄
+    A->>R: candidates_of → confirm (RR · 손절폭 하한 0.5% · 현물은 숏 없음)
+    R-->>A: 롱/숏 계획 또는 후보 없음 + 이유(plan_reasons)
+    A-->>U: 계획선(%·손익비) · 전고/전저 점선 · 사용한 근거 카드 · 후보 없음 이유
+    U->>A: AI 비교 → POST /chart-order/run
+    A->>S: fetch_snapshot 한 번 (5m·15m·1h·4h·1d + 주·월봉) → digest
+    par 동시에 (asyncio.gather)
+        A->>P: AI 단독 (스냅샷만)
+        A->>P: AI+근거 (스냅샷 + 우리 구조 줄)
+    end
+    P-->>A: LlmProposal ×2 (표시·기록·채점 전용 · 주문 경로 없음 · 규칙 #2)
+    A->>X: 회차 = 우리-구조 + AI 단독 + AI+근거 (하루 상한 · 10분 안 같은 종목이면 재사용)
+    A-->>U: 세 줄 나란히 · 이력
+    X->>X: 1시간마다 익은 회차 → 익절 먼저 · 손절 먼저 · 기한 만료
+    U->>A: 성적표 (참가자 × 갈래 × 시장 · 표본 30 미만 회색)
+```
+
+### 3.8 토스 프록시와 야간 예열 — 토큰은 하나, 부르는 프로세스도 하나
+
+> 토스 조회 토큰은 client 당 하나라 두 프로세스가 각자 발급하면 서로 무효화한다(2026-09-11 실측). 그래서 **실계좌 서버만** 토스를 부르고,
+> 연구 PC 는 개인 토큰으로 서버의 관리자 접두어를 지난다(T275). 밤에는 서버가 유니버스를 미리 합성해 낮의 첫 클릭을 1~2초로 만든다.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as 야간 예열 (서버 · 21:00Z · warm_candles)
+    participant L as 연구 PC api (TossProxyAdapter · 개인 토큰)
+    participant A as 실계좌 api (/admin/toss/* · 관리자만)
+    participant S as StoredCandles (서버 DB 먼저)
+    participant O as common/http (스로틀 TOSS_RATE_PER_SECOND · 429 Retry-After)
+    participant T as 토스 (1분·일봉 원봉 · 토큰은 client 당 하나)
+
+    W->>S: 유니버스 99종 × 15m·1h·4h (lookback_span 400+200봉) — 토스를 직접 부르는 프로세스만
+    S->>O: 빈 구간만 7일 덩어리 4개 동시
+    O->>T: 1분봉 페이지 (기본 5건/초 · 401 은 현재 토큰일 때만 재발급)
+    T-->>O: 원봉
+    O-->>S: 합성 → candles 저장
+    L->>A: GET /admin/toss/candles?market&symbol&timeframe&start&end (900초 · 재시도 0)
+    A->>A: 시장:종목:축 잠금 — 같은 합성은 한 번
+    A->>S: regular_only=False 로 합성 (없으면 위와 같은 길로 토스)
+    S-->>A: 봉
+    A-->>L: {"candles": [...]} — 토스 오류는 424 (502/503 은 nginx 가 삼킨다)
+    L->>A: GET /admin/toss/result?path&group&params (허용 목록 — 경로 4 · 그룹 3)
+    A->>O: 그 경로 그대로 (서버가 토스를 안 부르면 503)
+    O->>T: 요청
+    T-->>A: 결과
+    A-->>L: 결과 그대로 — 502/504/429 만 지수 백오프 6회 (블루그린 교체 창)
+    L->>A: POST /admin/toss/warm (개인 토큰의 유일한 쓰기 예외 · 배포 뒤 예열 다시)
+```
+
+- 실계좌 서버 자신은 프록시 client 가 될 수 없다(`ConfigurationError`) — 프록시 두 값이 반쪽이면 기동을 거부한다(규칙 #8).
+- 요율은 env 값이라 사람이 서버에서 올린다. 429 가 보이면 내리고, 안 보이면 10~15 까지 실험한 뒤 고정한다.
+
 ---
 
 ## 4. 스윔레인 다이어그램
@@ -581,6 +676,7 @@ flowchart LR
         h3 -->|무주공산| h5[이어받기 / 닫기]
         h6[판 종료 · 펀드 접기 → archive/]
         h7[AI 채팅 · MCP<br/>positions · propose_order 제안까지]
+        h8["차트 분석 주문<br/>차트 보기 → 분석 → AI 비교<br/>'이 계획으로 주문' 은 주문 창 초안"]
     end
     subgraph A[api 리더]
         a1["_live_start<br/>연결 거래소 · 달력(휴장·조기마감) · 유동성 · 1계약/1주 예산 · 중복 판 · 잔재 회수 · 요청 예산 300"] --> a2[RunStore.open<br/>닻으로 열린 판 있으면 이어받기]
@@ -589,6 +685,12 @@ flowchart LR
         a9[reconcile_loop 120s<br/>4축 대조 · 진입 차단]
         a10[_close_live_position<br/>포지션 청산 → 원장 마감 → 잔재 회수]
         a11[자원 비트 30s<br/>loop_lag_ms · caches · 요율 눈금]
+        a12["작업 레지스트리 + SSE<br/>분석 · AI 비교 · 예열 — 진행 줄 · 같은 일은 하나만"]
+        a13["채점 루프 1h<br/>익은 회차 판정"]
+        a14["야간 예열 21:00Z<br/>유니버스 15m·1h·4h"]
+    end
+    subgraph P[연구 PC · 로컬 데모]
+        p1["TossProxyAdapter<br/>봉은 /admin/toss/candles 한 번 · 나머지는 /admin/toss/result"]
     end
     subgraph R[LiveRunner]
         r1[봉 마감 → Session.step<br/>step_ms 로 잰다] --> r2[진입 지정가<br/>멱등키·판 표식]
@@ -598,13 +700,13 @@ flowchart LR
         r5 --> r6[걸음마다 원장·대기 계획 저장]
     end
     subgraph O[common/http 한 층]
-        o1[재시도 · Retry-After · 예산 · 스로틀 · 로그<br/>주문은 NO_RETRY]
+        o1[재시도 · Retry-After · 예산 · 스로틀(TOSS_RATE_PER_SECOND) · 로그<br/>주문은 NO_RETRY]
     end
     subgraph X[거래소 · 브로커]
-        x1[(Gate · Binance<br/>포지션 · 조건부 · 체결 이력)] ~~~ x2[(토스<br/>봉 · 시세 · 달력 · VI)] ~~~ x3[(주식 페이퍼 계좌<br/>DB stock_paper_accounts)]
+        x1[(Gate · Binance<br/>포지션 · 조건부 · 체결 이력)] ~~~ x2[(토스<br/>1분·일봉 원봉 · 시세 · 달력 · VI<br/>토큰은 client 당 하나)] ~~~ x3[(주식 페이퍼 계좌<br/>DB stock_paper_accounts)] ~~~ x4[(NVIDIA NIM<br/>AI 참가자)]
     end
-    subgraph DB[PostgreSQL]
-        d1[(wf_runs<br/>meta_json.pending_entry)] ~~~ d2[(wf_trades · wf_orders<br/>wf_calibration)] ~~~ d3[(event_logs<br/>추가 전용)] ~~~ d4[(candles · financial_facts<br/>봉 · 재무 사실)]
+    subgraph DB[PostgreSQL · Redis]
+        d1[(wf_runs<br/>meta_json.pending_entry)] ~~~ d2[(wf_trades · wf_orders<br/>wf_calibration)] ~~~ d3[(event_logs<br/>추가 전용)] ~~~ d4[(candles · financial_facts<br/>봉 · 재무 사실)] ~~~ d5[(Redis<br/>리더 락 · 비트 · 저평가 사본)]
     end
 
     h1 --> a1
@@ -629,6 +731,15 @@ flowchart LR
     h6 --> a10 --> o1
     a10 --> d1
     h7 --> a1
+    h8 --> a12
+    a12 --> o1
+    a12 --> x4
+    a12 --> d4
+    a13 --> d4
+    a14 --> o1
+    a14 --> d4
+    p1 -->|개인 토큰| a12
+    d5 --> h2
 ```
 
 ### 4.2 블루그린 배포 — 거래 리더가 끊기지 않게
@@ -697,11 +808,14 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph DATA[데이터 — marketdata · 모든 바깥 호출은 common/http 한 층]
-        c1["봉 수집<br/>코인 WS · 주식 토스 폴링(정규장만)<br/>DB 우선 · 브로커는 꼬리만"] --> c2{무결성 검사<br/>빈 봉 · 중복 · 시각}
+        c1["봉 수집<br/>코인 WS · 주식 토스 폴링(정규장만)<br/>토스는 1분·일봉 원봉만 → 15m·1h·4h 는 합성"] --> c9["StoredCandles<br/>DB 먼저 · 빈 곳만 브로커<br/>7일 덩어리 4개 동시"]
+        c9 --> c2{무결성 검사<br/>빈 봉 · 중복 · 시각}
         c2 -->|통과| c3[(PostgreSQL candles<br/>월 파티션)]
         c2 -->|이상| c4[(candle_quality_issues)]
+        c10["야간 예열 21:00Z<br/>유니버스 99종 15m·1h·4h"] --> c9
+        c11["토스 프록시<br/>토큰은 client 당 하나 → 발급 주체는 서버<br/>연구 PC 는 /admin/toss/candles 로 합성본을 한 번에"] --> c9
         c5[EDGAR 재무<br/>frames 1단계 · companyfacts 2단계] --> c6[(financial_facts)]
-        c7[거시 지표<br/>야후 · CBOE · 연준 · BLS · 토스] --> c8[60초 캐시]
+        c7[거시 지표<br/>야후 · CBOE · 연준 · BLS · 토스] --> c8[60초 캐시 · CPI 12h · EFFR 1h]
     end
 
     subgraph JUDGE[판정 — analysis · 제안만]
@@ -711,11 +825,12 @@ flowchart TD
         j3 -->|열림| j4[탐지기 플러그인<br/>entry point 로 발견]
         j3 -->|닫힘| j0[제안 없음]
         j4 --> j5[TradeSetup 제안<br/>방향 · 진입 · 손절 · 목표]
-        j6[재무 지표 · 5년 백분위<br/>저평가 점수 = 정렬 기준]
+        j6[재무 지표 · 5년 백분위<br/>저평가 점수 = 정렬 기준<br/>1단계 백그라운드 · Redis 사본]
+        j7["차트 분석 주문 — 분석(작업 · 진행 줄)<br/>지지/저항(useful: 잊힘·관통·접점·비용) · 전고/전저 · 52주<br/>후보 없음이면 이유를 적는다"]
     end
 
     subgraph DECIDE[확정 — decision · 단일 출처]
-        d1[RiskManager<br/>손절 · 익절 · 수량 확정] --> d2{손절이 청산가 안쪽?<br/>RR · 비용 · 표본 · 능력표}
+        d1[RiskManager<br/>손절 · 익절 · 수량 확정] --> d2{손절이 청산가 안쪽?<br/>RR · 비용 · 표본 · 능력표 · 손절폭 하한 0.5%}
         d2 -->|아니오| d0[안 간다 · 기록]
         d2 -->|예| d3[노출 = r ÷ 손절거리<br/>코인: 배율 상한 · 주식: 배율 1 · 정수 주]
     end
@@ -735,24 +850,32 @@ flowchart TD
         l3 --> l4{A 무주공산 · B 유령 · C 잔재 · D 무방비}
         l4 -->|정상| l5[걸음마다 저장<br/>wf_runs · wf_trades]
         l4 -->|경보| l6[콘솔 배너 · 진입 차단 · 사람에게]
+        l7["실험 원장 ai_experiment<br/>회차 = 스냅샷 1 · 참가자 3<br/>채점 루프 1h · 성적표"]
     end
 
     subgraph AI[AI — orchestration/ai_chat · 사실을 읽고 제안까지]
-        a1[채팅 · MCP<br/>도구 13 · 자체 루프] --> a2[propose_order<br/>RiskManager 값으로 제안]
+        a1[채팅 · MCP<br/>도구 15 · 자체 루프] --> a2[propose_order<br/>RiskManager 값으로 제안]
         a1 --> a3[render_dashboard<br/>값은 도구 결과 참조만 · 환각은 빈 칸]
+        a4["AI 비교 — 같은 스냅샷을<br/>AI 단독 · AI+우리 근거 에 동시에<br/>LlmProposal = 표시·기록·채점 전용"]
     end
 
     subgraph SHOW[화면 · 리포트 — apps · TradingView Lightweight Charts]
         s1[거래 콘솔<br/>계좌 카드 · 펀드 · 대조 배지 · 거시 카드]
         s2[RUN 상세<br/>차트 · 진입/손절선 · 안전장치 · 걸음 눈금]
-        s3[리포트<br/>누적 손익 · 결과 분포 · AI 채점 · 메일]
+        s3[리포트 · AI 리포트<br/>누적 손익 · 결과 분포 · 토너먼트 · 도구 시험]
         s4[저평가 후보<br/>전체 · SP 500 · NASDAQ · NYSE]
+        s5["AI 차트 분석 주문<br/>차트 보기 → 분석 → AI 비교 → 성적표<br/>주문은 사람이 주문 창에서"]
     end
 
     c3 --> j1
+    c3 --> j7
     c6 --> j6
+    c6 --> j7
+    c8 --> j7
     j5 --> d1
+    j7 --> d1
     a2 --> d1
+    d1 --> s5
     d3 --> e1
     e4 --> l1
     e5 --> l2
@@ -761,11 +884,16 @@ flowchart TD
     l5 --> s3
     l6 --> s1
     j6 --> s4
+    j6 --> s5
     c8 --> s1
     c3 --> a1
     c6 --> a1
     c8 --> a1
     l5 --> a1
+    s5 --> a4
+    a4 --> l7
+    l7 --> s5
+    l7 --> s3
 ```
 
 읽는 법:
@@ -773,4 +901,6 @@ flowchart TD
 - 거래소는 그림의 **중간**에 있다 — 주문을 내는 자리(EXEC)와 사실을 되읽는 자리(LEDGER)가 다르다. 둘을 잇는 끈은 멱등키(주문 이름)뿐이다. 주식은 거래소 자리에 **DB 페이퍼 계좌**가 선다.
 - 30초·120초 두 리듬이 다른 것을 본다. 30초는 *내 매매*(체결·손절·펀딩), 120초는 *거래소 전체*(내 것이 아닌 포지션·주문까지).
 - 바깥으로 나가는 화살표는 전부 `common/http` 한 층을 지난다(§3.6). 주문은 그 층이 재시도하지 않는다.
+- **차트 분석 주문**(j7 · s5 · a4 · l7)은 판(RUN)이 아니다 — 같은 봉·같은 RiskManager 를 쓰지만 결과는 실험 원장에 남고 주문은 사람이 주문 창에서 낸다.
+- 봉이 DB 에 먼저 있어야 모든 화면이 빠르다 — 야간 예열(c10)과 프록시(c11)는 그 한 가지를 위한 길이다.
 - 요청이 이 그림에 닿는 문은 하나다 — `auth.guard` 가 `required_cap(method, path, live)` 로 기능 하나를 고르고 계정이 그것을 쥐었는지 본다. MCP 토큰 호출자는 읽기 기능만 쥔다.
