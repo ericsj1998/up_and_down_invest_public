@@ -29,13 +29,20 @@ Phase 2 에서 주문이 열릴 때도 이 파일은 바뀌지 않는다 — 주
 """
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from types import TracebackType
 from typing import ClassVar, Self
 
 from updown.common.config import ConfigurationError, Settings, load_settings
 from updown.common.domain.fundamentals import FundamentalsConfig
-from updown.common.domain.instrument import Market, MarketListing
+from updown.common.domain.instrument import (
+    AssetType,
+    Currency,
+    Instrument,
+    Market,
+    MarketListing,
+)
 from updown.common.logging.setup import get_logger
 from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter
 from updown.marketdata.binance.adapter import BinanceAdapter
@@ -59,6 +66,7 @@ from updown.marketdata.toss.client import TossApiError as TossApiError
 from updown.marketdata.toss.client import TossAuthError as TossAuthError
 from updown.marketdata.toss.client import TossClient
 from updown.marketdata.toss.client import UnknownSymbolError as UnknownSymbolError
+from updown.marketdata.toss.mapping import to_symbol
 from updown.marketdata.toss.proxy_client import TossProxyClient
 from updown.marketdata.upbit.adapter import UpbitAdapter
 from updown.marketdata.upbit.client import UpbitClient
@@ -332,6 +340,32 @@ class MarketDataProvider:
                 )
         self._toss_client = MarketDataProvider._shared_toss
         return self._toss_client
+
+    async def last_prices(self, market: Market, symbols: Sequence[str]) -> dict[str, Decimal]:
+        """현재가 **묶음** — 토스 시장만 (`/api/v1/prices` 200개씩 · 2026-09-11).
+
+        Args:
+            market: 시장 (KRX · NASDAQ · NYSE).
+            symbols: 우리 종목 코드들.
+
+        Returns:
+            종목 → 현재가. 응답에 없는 종목은 빠진다.
+
+        Raises:
+            UnsupportedMarketError: 토스 시장이 아니다 — 묶음 현재가는 토스에만 있다.
+
+        Note:
+            프로토콜(`QuoteAdapter.get_quote`)은 한 종목씩이라 403종이면 403번이다. 묶음은 토스
+            어댑터의 것이므로 **구체 어댑터를 아는 유일한 자리인 여기서** 갈린다(규칙 #0).
+        """
+        adapter = self.adapter_for(market)
+        if not isinstance(adapter, TossAdapter):
+            raise UnsupportedMarketError(f"{market.value}: 묶음 현재가는 토스 시장만 된다")
+        toss_symbols = [
+            to_symbol(Instrument(market, s, s, AssetType.STOCK, Currency.USD)) for s in symbols
+        ]
+        got = await adapter.last_prices(toss_symbols)
+        return {s: got[t] for s, t in zip(symbols, toss_symbols, strict=True) if t in got}
 
     async def list_symbols(self, market: Market) -> list[str]:
         """그 시장에서 조회 가능한 종목 코드들 (Phase 5 §5-6 종목 검색).

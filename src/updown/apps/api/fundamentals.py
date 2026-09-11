@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -330,6 +331,105 @@ _QUICK_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
 _QUICK_LOCKS: dict[str, asyncio.Lock] = {}
 _QUICK_TASKS: dict[str, asyncio.Task[Any]] = {}
 """범위별 백그라운드 준비 — 참조를 들고 있어야 GC 가 안 거둔다(`jobs.py` 와 같은 함정)."""
+_quick_redis: Any = None
+"""1단계 캐시의 바깥 사본(Redis) — 배포·재시작에도 남긴다.
+
+2026-09-11 실측: 배포마다 메모리 캐시가 비어 첫 요청이 20초 넘게 멈추고(499) `전체` 는 몇 분 동안
+"준비 중 403종" 이었다. 메모리가 1차, Redis 가 2차 — Redis 가 없거나 죽어도 화면은 돈다
+(캐시는 캐시다)."""
+QUICK_REDIS_KEY = "fundamentals:quick:{key}"
+
+
+def attach_quick_cache(redis: Any) -> None:
+    """1단계 캐시를 Redis 에도 남긴다 — API 기동 훅이 부른다.
+
+    Args:
+        redis: `redis.asyncio` 클라이언트. None 이면 메모리만(시험 · 종료).
+    """
+    global _quick_redis
+    _quick_redis = redis
+
+
+async def _quick_load(key: str) -> tuple[float, dict[str, dict[str, Any]]] | None:
+    """Redis 사본을 메모리로 올린다.
+
+    Args:
+        key: 캐시 키.
+
+    Returns:
+        `(만든 시각, 행)` — 없거나 낡았거나 Redis 가 없거나 죽었으면 None(로그만).
+    """
+    if _quick_redis is None:
+        return None
+    try:
+        raw: object = await _quick_redis.get(QUICK_REDIS_KEY.format(key=key))
+    except Exception as exc:
+        _logger.info("screen_quick_redis_failed", payload={"op": "get", "detail": str(exc)[:80]})
+        return None
+    if not raw or not isinstance(raw, (bytes, str)):
+        return None
+    try:
+        body = cast("dict[str, Any]", json.loads(raw))
+        at = float(body["at"])
+        rows = cast("dict[str, dict[str, Any]]", body["rows"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    if time.time() - at >= QUICK_TTL_S:
+        return None
+    _QUICK_CACHE[key] = (at, rows)
+    _logger.info("screen_quick_loaded", payload={"key": key, "rows": len(rows)})
+    return at, rows
+
+
+async def _quick_save(key: str, at: float, rows: Mapping[str, dict[str, Any]]) -> None:
+    """메모리 캐시를 Redis 에도 쓴다 — 실패는 로그만."""
+    if _quick_redis is None:
+        return
+    try:
+        await _quick_redis.set(
+            QUICK_REDIS_KEY.format(key=key),
+            json.dumps({"at": at, "rows": rows}, ensure_ascii=False, default=str),
+            ex=int(QUICK_TTL_S),
+        )
+    except Exception as exc:
+        _logger.info("screen_quick_redis_failed", payload={"op": "set", "detail": str(exc)[:80]})
+
+
+async def _quick_prices(
+    provider: MarketDataProvider, symbols: Mapping[str, Market | None]
+) -> dict[str, tuple[Decimal, date]]:
+    """현재가 — 시장별 **묶음** 한두 번(`/api/v1/prices` 200개씩).
+
+    Args:
+        provider: 조회 지점.
+        symbols: 종목 → 시장(None 이면 시세 없음 · AMEX).
+
+    Returns:
+        종목 → (현재가, 오늘 날짜). 실패한 시장은 로그만 남기고 빠진다(행은 시세 없이 값만).
+
+    Note:
+        종목마다 일봉을 물으면 403종이 403번이고 그동안 화면이 "준비 중" 이다(2026-09-11).
+    """
+    by_market: dict[Market, list[str]] = {}
+    for symbol, market in symbols.items():
+        if market is not None:
+            by_market.setdefault(market, []).append(symbol)
+    out: dict[str, tuple[Decimal, date]] = {}
+    today = datetime.now(UTC).date()
+    for market, names in by_market.items():
+        try:
+            got = await provider.last_prices(market, names)
+        except Exception as exc:
+            _logger.info(
+                "screen_price_missing",
+                payload={"market": market.value, "symbols": len(names), "detail": str(exc)[:80]},
+            )
+            continue
+        for symbol, price in got.items():
+            out[symbol] = (price, today)
+    return out
+
+
 _YAML_CACHE: dict[str, tuple[float, object]] = {}
 
 
@@ -451,10 +551,13 @@ async def _quick_rows(key: str, symbols: Mapping[str, Market | None]) -> dict[st
     """
     if not symbols:
         return {}
-    now = time.monotonic()
+    now = time.time()
     cached = _QUICK_CACHE.get(key)
     if cached is not None and now - cached[0] < QUICK_TTL_S and set(symbols) <= set(cached[1]):
         return {s: cached[1][s] for s in symbols if s in cached[1]}
+    loaded = await _quick_load(key)
+    if loaded is not None and set(symbols) <= set(loaded[1]):
+        return {s: loaded[1][s] for s in symbols if s in loaded[1]}
     lock = _QUICK_LOCKS.setdefault(key, asyncio.Lock())
     async with lock:
         adapter = _adapter_or_503()
@@ -514,31 +617,15 @@ async def _quick_rows(key: str, symbols: Mapping[str, Market | None]) -> dict[st
                             used.setdefault(cik, {})[name] = f"{tag}@{period}"
             for cik, value in got.items():
                 picked.setdefault(cik, {})[name] = value
-        # 종가 — 봉이 없는 종목은 브로커 일봉 하나. 시장을 모르면(AMEX) 값만.
+        # 현재가 — 시장별 묶음(`_quick_prices`). 시장을 모르면(AMEX) 값만.
         provider = MarketDataProvider()
+        prices = await _quick_prices(provider, {s: symbols.get(s) for s in ciks})
         out: dict[str, dict[str, Any]] = {}
         for symbol, cik in ciks.items():
             market = symbols.get(symbol)
             broker = None if market is None else provider.broker_of(market)
             values = picked.get(cik, {})
-            price: Decimal | None = None
-            price_date: date | None = None
-            try:
-                if market is None:
-                    raise ValueError("시장을 모른다 — 시세 없이 값만")
-                quotes = provider.adapter_for(market)
-                instrument = Instrument(market, symbol, symbol, AssetType.STOCK, Currency.USD)
-                end = datetime.now(UTC)
-                candles = await quotes.get_candles(
-                    instrument, Timeframe.D1, end - timedelta(days=12), end
-                )
-                if candles:
-                    price = candles[-1].close
-                    price_date = candles[-1].ts.date()
-            except Exception as exc:
-                _logger.info(
-                    "screen_price_missing", payload={"symbol": symbol, "detail": str(exc)[:80]}
-                )
+            price, price_date = prices.get(symbol, (None, None))
             made = quick_metrics(
                 price=price,
                 shares=values.get("shares"),
@@ -568,14 +655,16 @@ async def _quick_rows(key: str, symbols: Mapping[str, Market | None]) -> dict[st
                 "periods": payload["periods"],
             }
         merged = {**(cached[1] if cached else {}), **out}
-        _QUICK_CACHE[key] = (time.monotonic(), merged)
+        at = time.time()
+        _QUICK_CACHE[key] = (at, merged)
+        await _quick_save(key, at, merged)
         return out
 
 
-def _quick_or_warm(
+async def _quick_or_warm(
     key: str, symbols: Mapping[str, Market | None]
 ) -> tuple[dict[str, dict[str, Any]], int]:
-    """캐시에 있으면 주고, 없으면 **백그라운드로** 준비를 띄운다 (SP500 범위).
+    """캐시(메모리 → Redis)에 있으면 주고, 없으면 **백그라운드로** 준비를 띄운다.
 
     Args:
         key: 캐시 키.
@@ -591,7 +680,10 @@ def _quick_or_warm(
     if not symbols:
         return {}, 0
     cached = _QUICK_CACHE.get(key)
-    fresh = cached is not None and time.monotonic() - cached[0] < QUICK_TTL_S
+    fresh = cached is not None and time.time() - cached[0] < QUICK_TTL_S
+    if not fresh:
+        cached = await _quick_load(key)
+        fresh = cached is not None
     if fresh and cached is not None:
         # 준비가 끝난 뒤 빠진 종목은 실패(CIK 없음 등)다 — 다시 띄우지 않는다.
         return {s: cached[1][s] for s in symbols if s in cached[1]}, 0
@@ -654,6 +746,7 @@ async def screen(
     have: set[str] = set()
     at = ""
     note = ""
+    pending = 0
     for found in markets:
         ranked = await ranking(found.value)
         at = str(ranked["at"])
@@ -669,10 +762,12 @@ async def screen(
             )
             have.add(str(row["symbol"]))
         extra = [s for s in universe_of(found) if s not in have]
-        quick = await _quick_rows(found.value, dict.fromkeys(extra, found))
+        # ⭐ 시장 유니버스의 1단계도 백그라운드(2026-09-11) — 배포 직후 첫 요청이 그 자리에서
+        #    준비하다 20초를 넘겨 화면이 포기(499)했다. 준비 중이면 "준비 중 N종" 으로 답한다.
+        quick, waiting = await _quick_or_warm(found.value, dict.fromkeys(extra, found))
         rows.extend(quick[s] for s in extra if s in quick)
         have.update(s for s in extra if s in quick)
-    pending = 0
+        pending += waiting
     if with_candidates:
         # ⭐ 후보 503 중 아직 적재 안 된 것 — 시장은 이름표에서(AMEX 는 시장 없음 · 값만).
         candidates = candidates_of()
@@ -681,8 +776,9 @@ async def screen(
             for s in candidates
             if s not in have
         }
-        quick, pending = _quick_or_warm(SP500_SCOPE, leftovers)
+        quick, waiting = await _quick_or_warm(SP500_SCOPE, leftovers)
         rows.extend(quick.values())
+        pending += waiting
         if scope == SP500_SCOPE:
             # `전체` 는 필터가 없고, `SP 500` 은 같은 행을 후보 목록으로 거른다
             # (사용자 정의 2026-09-10).
@@ -691,7 +787,7 @@ async def screen(
     for row in rows:
         row.setdefault("name", names.get(str(row["symbol"]), {}).get("ko") or None)
     if pending:
-        note = f"S&P 500 1단계 {pending}종을 준비하는 중 — 몇 분 뒤 다시 읽으면 채워진다. {note}"
+        note = f"1단계 {pending}종을 준비하는 중 — 몇 분 뒤 다시 읽으면 채워진다. {note}"
     body = screen_rows(
         rows,
         ScreenQuery(

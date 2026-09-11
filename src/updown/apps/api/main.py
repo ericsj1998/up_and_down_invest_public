@@ -45,7 +45,7 @@ from updown.apps.api.backtest import router as backtest_router
 from updown.apps.api.chart_order import router as chart_order_router
 from updown.apps.api.evidence import router as evidence_router
 from updown.apps.api.exchange import router as exchange_router
-from updown.apps.api.fundamentals import attach_fundamentals
+from updown.apps.api.fundamentals import attach_fundamentals, attach_quick_cache
 from updown.apps.api.fundamentals import router as fundamentals_router
 from updown.apps.api.gates import router as gates_router
 from updown.apps.api.health import (
@@ -214,6 +214,9 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         attach_state_store(DbStateStore(resolved_state.session_factory))
         # ⭐ 재무 사실(T243) — 같은 풀. 설정은 EDGAR User-Agent 때문에 넘긴다.
         attach_fundamentals(resolved_state.session_factory, resolved_state.settings)
+        # ⭐ 저평가 1단계 캐시의 Redis 사본 — 배포·재시작 뒤에도 "준비 중 N종" 이 안 뜨게
+        #    (2026-09-11).
+        attach_quick_cache(getattr(resolved_state, "redis", None))
         # ⭐ AI 분석·AI 차트 주문의 봉은 DB 먼저(`StoredCandles`) — 토스 1m 합성 2.5분을 한 번만.
         attach_candles(resolved_state.session_factory)
         # 🔴 계정 저장소 — 미들웨어가 **매 요청** 등급을 여기서 읽는다. 안 붙으면
@@ -297,6 +300,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
             attach_store(None)
             attach_state_store(None)
             attach_fundamentals(None)
+            attach_quick_cache(None)
             attach_candles(None)
             attach_accounts(None)
             if accounts_engine is not None:
