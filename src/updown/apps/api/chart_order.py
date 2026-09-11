@@ -507,7 +507,13 @@ async def analyze_job(payload: Annotated[dict[str, Any], Body()]) -> dict[str, A
         made, _ = await _assemble(symbol, mk, chosen, report)
         return made
 
-    job = registry.start("chart-order-analyze", f"{symbol} · {chosen.label} · 구조 읽기", _work)
+    label = f"{symbol} · {chosen.label} · 구조 읽기"
+    # ⭐ 같은 종목·갈래가 이미 읽히는 중이면 그 작업을 준다 — 연타·새로고침이 둘을 띄우고 셋째부터
+    #    429 였다(2026-09-11). 같은 일을 두 번 하지도, 사람을 막지도 않는다.
+    already = registry.running("chart-order-analyze", label)
+    if already is not None:
+        return {"job_id": already.job_id, "reused": True, **already.snapshot()}
+    job = registry.start("chart-order-analyze", label, _work)
     return {"job_id": job.job_id, **job.snapshot()}
 
 

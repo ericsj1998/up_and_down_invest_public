@@ -138,6 +138,22 @@ class JobRegistry:
         self._limit = limit
         self._jobs: dict[str, Job] = {}
 
+    def running(self, kind: str, label: str) -> Job | None:
+        """같은 종류·같은 대상으로 **아직 도는** 작업.
+
+        Args:
+            kind: 작업 종류.
+            label: 표시용 대상 — 같으면 같은 일이다.
+
+        Returns:
+            도는 작업 또는 None. 부르는 쪽은 새로 띄우지 않고 이것을 준다 — 단추 연타·새로고침이
+            같은 분석을 둘 띄우고 셋째부터 429 를 맞았다(2026-09-11 신고).
+        """
+        for item in self._jobs.values():
+            if item.kind == kind and item.label == label and not item.done:
+                return item
+        return None
+
     def start(
         self,
         kind: str,
