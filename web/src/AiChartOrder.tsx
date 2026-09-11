@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  chartOrderAnalyze,
+  chartOrderAnalyzeJob,
   chartOrderBuckets,
   chartOrderResolve,
   chartOrderRun,
@@ -107,10 +107,13 @@ function PlanCard({
   plan,
   label,
   onOrder,
+  dec = 6,
 }: {
   plan: ChartPlanSide | null;
   label: string;
   onOrder?: () => void;
+  /** 소수 자릿수 — 주식 2 · 코인 6. */
+  dec?: number;
 }) {
   if (plan === null) {
     return (
@@ -143,9 +146,9 @@ function PlanCard({
       </div>
       <ul className="text-sm">
         <li>
-          진입 {numText(plan.entry)} · 손절 {numText(plan.stop)}
+          진입 {numText(plan.entry, dec)} · 손절 {numText(plan.stop, dec)}
           {plan.stop_moved ? " (RiskManager 가 옮김)" : ""} · 1차{" "}
-          {numText(plan.first)} · 목표 {numText(plan.target)}
+          {numText(plan.first, dec)} · 목표 {numText(plan.target, dec)}
         </li>
         {d ? (
           <li>
@@ -453,9 +456,15 @@ export function AiChartOrder({
   const [error, setError] = useState("");
   const info = markets.find((m) => m.name === market);
   const stock = info?.group === "stock";
+  // 카드 숫자의 소수 자릿수 — 주식은 센트(2) · 코인은 6 (사용자 2026-09-11 "소수점이 너무 길다").
+  const dec = stock ? 2 : 6;
   // 2단계 — AI 비교 작업 · 3단계 — 이력·채점
   const [jobId, setJobId] = useState<string | null>(null);
   const job = useJobEvents(jobId);
+  // ⭐ 구조 읽기도 작업이다 — 단계마다 진행 줄이 온다 (사용자 2026-09-11 "무슨 작업을 하는지 다 띄워").
+  const [analyzeId, setAnalyzeId] = useState<string | null>(null);
+  const analyzeJob = useJobEvents(analyzeId);
+  const [showLog, setShowLog] = useState(false);
   const [participants, setParticipants] = useState<ChartParticipant[] | null>(
     null,
   );
@@ -481,6 +490,28 @@ export function AiChartOrder({
     setParticipants(got?.participants ?? []);
     setRunId(got?.run_id ?? null);
   }, [job.done, job.error, job.result]);
+
+  useEffect(() => {
+    if (!analyzeJob.done) return;
+    setAnalyzeId(null);
+    setBusy(false);
+    if (analyzeJob.error) {
+      setError(analyzeJob.error);
+      return;
+    }
+    const got = analyzeJob.result as ChartAnalysis | null;
+    if (!got) return;
+    setBody(got);
+    try {
+      localStorage.setItem(
+        slotFor(group),
+        JSON.stringify({ symbol: got.symbol, market: got.market, bucket }),
+      );
+    } catch {
+      // 기억만 못 한다.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analyzeJob.done, analyzeJob.error, analyzeJob.result]);
 
   const loadHistory = (sym: string, mkt: string) => {
     chartOrderRuns({ symbol: sym, market: mkt, limit: 10 })
@@ -581,20 +612,12 @@ export function AiChartOrder({
     }
     setBusy(true);
     setError("");
-    chartOrderAnalyze({ symbol: chosen, market: where, bucket })
-      .then((got) => {
-        setBody(got);
-        try {
-          localStorage.setItem(
-            slotFor(group),
-            JSON.stringify({ symbol: got.symbol, market: got.market, bucket }),
-          );
-        } catch {
-          // 기억만 못 한다.
-        }
-      })
-      .catch((exc: unknown) => setError(String(exc)))
-      .finally(() => setBusy(false));
+    chartOrderAnalyzeJob({ symbol: chosen, market: where, bucket })
+      .then((got) => setAnalyzeId(got.job_id))
+      .catch((exc: unknown) => {
+        setError(String(exc));
+        setBusy(false);
+      });
   };
 
   // ⭐ 화면으로 들어오면 기본 종목(또는 마지막 종목)의 차트가 **바로** 떠 있어야 한다 (사용자 2026-09-11) — 첫 렌더에 한 번.
@@ -692,6 +715,24 @@ export function AiChartOrder({
     marks.push({
       at: s.swings.swing_low.ts,
       label: `전저 ${s.swings.swing_low.price}`,
+      tone: "gain",
+    });
+  // ⭐ 전고/전저는 **선**으로도 (사용자 2026-09-11 "트레이딩뷰에서 선으로 그려져야지") — 점은 자리, 선은 값.
+  const lines: {
+    price: number;
+    label: string;
+    tone: "entry" | "gain" | "loss";
+  }[] = [];
+  if (s?.swings.swing_high)
+    lines.push({
+      price: Number(s.swings.swing_high.price),
+      label: `전고 ${numText(String(s.swings.swing_high.price), dec)}`,
+      tone: "loss",
+    });
+  if (s?.swings.swing_low)
+    lines.push({
+      price: Number(s.swings.swing_low.price),
+      label: `전저 ${numText(String(s.swings.swing_low.price), dec)}`,
       tone: "gain",
     });
   // `/fundamentals/snapshot` 은 점수를 `score: {score, cheapness, flags}` 로 감싼다 — 그 안을 읽는다.
@@ -900,9 +941,21 @@ export function AiChartOrder({
           {reusedNote ? <p className="faint text-xs">{reusedNote}</p> : null}
           {jobId ? (
             <p className="faint text-xs" style={{ marginTop: 6 }}>
-              {job.lines.length
-                ? job.lines[job.lines.length - 1]
-                : "AI 비교를 띄우는 중"}
+              {job.lines.length ? (
+                <ul
+                  style={{
+                    fontFamily: "monospace",
+                    margin: 0,
+                    paddingLeft: 16,
+                  }}
+                >
+                  {job.lines.map((line, i) => (
+                    <li key={i}>{line}</li>
+                  ))}
+                </ul>
+              ) : (
+                "AI 비교를 띄우는 중"
+              )}
             </p>
           ) : null}
           {busy && stock ? (
@@ -911,6 +964,32 @@ export function AiChartOrder({
               <b>처음 한 번</b>만 1~2분이 들고, 그 뒤로는 DB 에 남아 몇 초면
               된다. 그대로 두면 된다.
             </p>
+          ) : null}
+          {analyzeJob.lines.length && (busy || showLog) ? (
+            <ul
+              className="faint text-xs"
+              style={{
+                fontFamily: "monospace",
+                margin: "4px 0 0",
+                paddingLeft: 16,
+              }}
+            >
+              {analyzeJob.lines.map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
+          {!busy && analyzeJob.lines.length ? (
+            <button
+              type="button"
+              className="btn small"
+              onClick={() => setShowLog((was) => !was)}
+              title="방금 분석이 단계마다 무엇을 얼마나 했는지"
+            >
+              {showLog
+                ? "진행 기록 접기"
+                : `진행 기록 (${analyzeJob.lines.length})`}
+            </button>
           ) : null}
           {error ? <ErrorCard message={error} /> : null}
           {body && s ? (
@@ -950,8 +1029,19 @@ export function AiChartOrder({
                 plan={chartPlan}
                 zones={zones}
                 marks={marks}
+                lines={lines}
                 follow={liveOn}
               />
+              {body.evidence?.length ? (
+                <div className="card" style={{ marginTop: 8 }}>
+                  <b>사용한 근거</b>
+                  <ul className="text-xs" style={{ margin: "4px 0 0" }}>
+                    {body.evidence.map((line, i) => (
+                      <li key={i}>{line}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               <div
                 className="row"
                 style={{ flexWrap: "wrap", gap: 8, alignItems: "stretch" }}
@@ -960,16 +1050,17 @@ export function AiChartOrder({
                   <b>구조 · {body.bucket.entry}</b>
                   <ul className="text-sm">
                     <li>
-                      현재가 {s.last} · ATR {s.atr || "—"}
+                      현재가 {numText(s.last, dec)} · ATR{" "}
+                      {s.atr ? numText(s.atr, dec) : "—"}
                     </li>
                     <li>
                       전고{" "}
                       {s.swings.swing_high
-                        ? `${s.swings.swing_high.price} (${pctText(String(s.swings.swing_high.away_pct ?? ""))})`
+                        ? `${numText(String(s.swings.swing_high.price), dec)} (${pctText(String(s.swings.swing_high.away_pct ?? ""))})`
                         : "—"}{" "}
                       · 전저{" "}
                       {s.swings.swing_low
-                        ? `${s.swings.swing_low.price} (${pctText(String(s.swings.swing_low.away_pct ?? ""))})`
+                        ? `${numText(String(s.swings.swing_low.price), dec)} (${pctText(String(s.swings.swing_low.away_pct ?? ""))})`
                         : "—"}
                     </li>
                     <li>
@@ -1044,6 +1135,7 @@ export function AiChartOrder({
                 <PlanCard
                   plan={body.plans.long}
                   label="롱"
+                  dec={dec}
                   onOrder={
                     who && !guest && body.plans.long
                       ? () =>
@@ -1056,6 +1148,7 @@ export function AiChartOrder({
                 <PlanCard
                   plan={body.plans.short}
                   label="숏"
+                  dec={dec}
                   onOrder={
                     who && !guest && body.plans.short
                       ? () =>

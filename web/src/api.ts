@@ -2604,6 +2604,8 @@ export type ChartAnalysis = {
   valuation_note: string;
   vix: { value?: number | string; note?: string; band?: string } | null;
   plans: { long: ChartPlanSide | null; short: ChartPlanSide | null };
+  /** 계획에 실제로 쓴 근거 — 서버가 만든 줄 그대로 ("사용한 근거" 카드). */
+  evidence?: string[];
   note: string;
 };
 
@@ -2671,6 +2673,19 @@ export function chartOrderScoreboard(
 }
 
 /** `job_id` 가 null 이면 `reuse_minutes` 안의 지난 회차를 그대로 준 것 — 모델을 안 불렀다. */
+/** `/analyze` 를 작업으로 — 진행 줄은 `useJobEvents(job_id)`, 결과 이벤트가 `ChartAnalysis` (2026-09-11). */
+export function chartOrderAnalyzeJob(payload: {
+  symbol: string;
+  market: string;
+  bucket: string;
+}): Promise<{ job_id: string }> {
+  return request("/chart-order/analyze-job", {
+    method: "POST",
+    headers: JSON_POST,
+    body: JSON.stringify(payload),
+  });
+}
+
 export function chartOrderRun(payload: {
   symbol: string;
   market: string;

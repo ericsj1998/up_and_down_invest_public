@@ -53,7 +53,11 @@ import {
 import { mayPaint, mayReplant } from "./paint";
 import { frameSeconds } from "./ui";
 import { buildEnabled, useChartSettings, type Ohlc } from "./chart/indicators";
-import { applyOverlays, computeOverlays, type OverlayHandle } from "./chart/overlays";
+import {
+  applyOverlays,
+  computeOverlays,
+  type OverlayHandle,
+} from "./chart/overlays";
 
 const HEIGHT = 460;
 /** 추세강도 판의 높이 — 가격 판을 눌러 버리지 않을 만큼만. */
@@ -96,14 +100,19 @@ export function pinRight(chart: IChartApi, count: number): boolean {
   // ⚠️ 반 봉 안이면 붙은 것으로 친다. 정확히 0 을 요구하면 봉이 닫힐 때마다
   //    깜빡거린다 (마지막 봉이 여백만큼 밀려나기 때문이다).
   if (Math.abs(range.to - edge) < 0.5) return false;
-  scale.setVisibleLogicalRange({ from: edge - (range.to - range.from), to: edge });
+  scale.setVisibleLogicalRange({
+    from: edge - (range.to - range.from),
+    to: edge,
+  });
   return true;
 }
 
 /** CSS 토큰 하나 — 차트는 DOM 밖(캔버스)이라 변수를 값으로 풀어 넘겨야 한다. */
 function tone(name: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
-  const found = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const found = getComputedStyle(document.documentElement)
+    .getPropertyValue(name)
+    .trim();
   return found || fallback;
 }
 
@@ -203,20 +212,22 @@ class BandsPrimitive implements ISeriesPrimitive<Time> {
             }) {
               const series = owner.series;
               if (series === null || owner.bands.length === 0) return;
-              target.useBitmapCoordinateSpace(({ context, bitmapSize, verticalPixelRatio }) => {
-                for (const band of owner.bands) {
-                  const top = series.priceToCoordinate(band.high);
-                  const bottom = series.priceToCoordinate(band.low);
-                  if (top === null || bottom === null) continue;
-                  context.fillStyle = band.color;
-                  context.fillRect(
-                    0,
-                    top * verticalPixelRatio,
-                    bitmapSize.width,
-                    Math.max(1, (bottom - top) * verticalPixelRatio),
-                  );
-                }
-              });
+              target.useBitmapCoordinateSpace(
+                ({ context, bitmapSize, verticalPixelRatio }) => {
+                  for (const band of owner.bands) {
+                    const top = series.priceToCoordinate(band.high);
+                    const bottom = series.priceToCoordinate(band.low);
+                    if (top === null || bottom === null) continue;
+                    context.fillStyle = band.color;
+                    context.fillRect(
+                      0,
+                      top * verticalPixelRatio,
+                      bitmapSize.width,
+                      Math.max(1, (bottom - top) * verticalPixelRatio),
+                    );
+                  }
+                },
+              );
             },
           };
         },
@@ -253,6 +264,8 @@ type Props = {
    * 를 말하는 띠라 판이 도는 중에만 그린다 — 분석은 그 판단과 무관하게 구조를 본다.
    */
   zones?: { low: number; high: number; kind: string }[];
+  /** 가로 가격선 — 전고/전저처럼 **선으로** 보여야 하는 근거 (사용자 2026-09-11). 점(marks)과 같이 써도 된다. */
+  lines?: { price: number; label: string; tone: MarkTone }[];
   /**
    * **끌 수 있는 계획선** — 차트 주문 탭이 쓴다 (3단계).
    *
@@ -262,7 +275,10 @@ type Props = {
    */
   draft?: { entry: number; stop: number; first: number; target: number } | null;
   /** 선을 끌었다 — 어느 선이 어디로 갔는지 부모에게 알린다. */
-  onDrag?: (which: "entry" | "stop" | "first" | "target", price: number) => void;
+  onDrag?: (
+    which: "entry" | "stop" | "first" | "target",
+    price: number,
+  ) => void;
   /**
    * **추세선·채널** — 봉 번호로 온 선분들 (분석 샌드박스).
    *
@@ -297,6 +313,7 @@ export function Chart({
   marks,
   follow,
   zones,
+  lines,
   draft,
   onDrag,
   segments,
@@ -509,7 +526,8 @@ export function Chart({
     // ⚠️ **정렬까지 한다.** Map 은 넣은 순서를 지킬 뿐 시간순을 보장하지 않는다 —
     //    서버가 오름차순으로 주므로 지금까지는 맞았지만, 계약을 코드가 지켜야 한다.
     const rows = new Map<number, CandlestickData<Time>>();
-    for (const row of frame.candles) rows.set(stamp(row.ts) as number, toBar(row));
+    for (const row of frame.candles)
+      rows.set(stamp(row.ts) as number, toBar(row));
     const sorted = [...rows.entries()].sort((a, b) => a[0] - b[0]);
     series.current.setData(sorted.map(([, bar]) => bar));
     const lastClosed = sorted.at(-1)?.[0] ?? null;
@@ -571,7 +589,11 @@ export function Chart({
   useEffect(() => {
     const made = chart.current;
     if (made === null) return;
-    overlayLines.current = applyOverlays(made, overlayLines.current, overlaySeries);
+    overlayLines.current = applyOverlays(
+      made,
+      overlayLines.current,
+      overlaySeries,
+    );
   }, [overlaySeries, frame.timeframe]);
 
   // ── 만드는 중 봉 — 꼬리가 흔들린다 ──────────────────────────────────
@@ -625,6 +647,7 @@ export function Chart({
   //    끄는 것이 차트를 끄는 것이 되어 화면이 통째로 움직인다.
   const held = useRef<"entry" | "stop" | "first" | "target" | null>(null);
   const draftLines = useRef<IPriceLine[]>([]);
+  const extraLines = useRef<IPriceLine[]>([]);
   /** 추세선 시리즈들 — 선 하나가 시리즈 하나다 (LWC 에 "선분" 개념이 없다). */
   const segLines = useRef<ISeriesApi<"Line">[]>([]);
 
@@ -632,7 +655,8 @@ export function Chart({
     const box = holder.current;
     const made = chart.current;
     const drawn = series.current;
-    if (box === null || made === null || drawn === null || !draft || !onDrag) return;
+    if (box === null || made === null || drawn === null || !draft || !onDrag)
+      return;
 
     /** 화면 y 를 가격으로 — 축 밖이면 `null`. */
     const priceAt = (event: MouseEvent): number | null => {
@@ -648,7 +672,8 @@ export function Chart({
       //    차트를 못 끈다 — 잡는 반경은 화면 높이의 2% 로 둔다.
       const rect = box.getBoundingClientRect();
       const near = Math.abs(
-        Number(drawn.coordinateToPrice(0) ?? 0) - Number(drawn.coordinateToPrice(rect.height * 0.02) ?? 0),
+        Number(drawn.coordinateToPrice(0) ?? 0) -
+          Number(drawn.coordinateToPrice(rect.height * 0.02) ?? 0),
       );
       const rows: ["entry" | "stop" | "first" | "target", number][] = [
         ["entry", draft.entry],
@@ -659,7 +684,11 @@ export function Chart({
       let best: (typeof rows)[number] | null = null;
       for (const row of rows) {
         if (Math.abs(row[1] - price) > near) continue;
-        if (best === null || Math.abs(row[1] - price) < Math.abs(best[1] - price)) best = row;
+        if (
+          best === null ||
+          Math.abs(row[1] - price) < Math.abs(best[1] - price)
+        )
+          best = row;
       }
       if (best === null) return;
       held.current = best[0];
@@ -718,6 +747,32 @@ export function Chart({
     );
   }, [draft]);
 
+  // 근거 가격선(전고/전저 등) — 점선 · 축 라벨 · 이름. 값이 바뀔 때마다 다시 긋는다.
+  useEffect(() => {
+    const drawn = series.current;
+    if (drawn === null) return;
+    for (const line of extraLines.current) drawn.removePriceLine(line);
+    extraLines.current = [];
+    for (const item of lines ?? []) {
+      const [token, fallback] =
+        item.tone === "loss"
+          ? ["--loss", "#b4423a"]
+          : item.tone === "gain"
+            ? ["--gain", "#0f7b6c"]
+            : ["--entry-line", "#b8860b"];
+      extraLines.current.push(
+        drawn.createPriceLine({
+          price: item.price,
+          color: tone(token, fallback),
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: item.label,
+        }),
+      );
+    }
+  }, [lines]);
+
   // ── 추세선·채널 ─────────────────────────────────────────────────────
   //
   // 🔴 **x 가 봉 번호로 온다.** 시각이 아니라 창 안의 인덱스라, 봉 배열로 시각을
@@ -731,10 +786,12 @@ export function Chart({
     if (made === null) return;
     for (const line of segLines.current) made.removeSeries(line);
     segLines.current = [];
-    if (!segments || segments.length === 0 || frame.candles.length === 0) return;
+    if (!segments || segments.length === 0 || frame.candles.length === 0)
+      return;
 
     const at = (index: number): Time | null => {
-      const row = frame.candles[Math.max(0, Math.min(frame.candles.length - 1, index))];
+      const row =
+        frame.candles[Math.max(0, Math.min(frame.candles.length - 1, index))];
       return row ? stamp(row.ts) : null;
     };
     const up = tone("--gain", "#0f7b6c");
@@ -797,11 +854,24 @@ export function Chart({
     //    진입+100R 자리표시자라, 그리면 "29배 목표" 처럼 거짓말한다 — 숨긴다. 그리고 손절선이
     //    곧 청산선이다(봉마다 SMA 로 상향 트레일) — 라벨을 "청산" 으로 바꿔 실제 동작을 말한다.
     const ride = plan.full_ride === true;
+    // ⭐ 진입 대비 % 와 손익비를 라벨에 — 트레이딩뷰 포지션 도구처럼 선만 보고 읽힌다(사용자 2026-09-11).
+    const entryPrice = Number(plan.entry);
+    const pctOf = (price: number): string => {
+      if (!Number.isFinite(entryPrice) || entryPrice === 0) return "";
+      const pct = ((price - entryPrice) / entryPrice) * 100;
+      return ` ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
+    };
+    const rr = (plan as { rr?: string }).rr;
     for (const spec of PLAN_LINES) {
       if (ride && (spec.key === "first" || spec.key === "target")) continue;
       const raw = plan[spec.key];
       if (raw === undefined || raw === null) continue;
-      const title = ride && spec.key === "stop" ? "청산(트레일)" : spec.label;
+      const title =
+        ride && spec.key === "stop"
+          ? "청산(트레일)"
+          : spec.key === "entry"
+            ? spec.label
+            : `${spec.label}${pctOf(Number(raw))}${spec.key === "target" && rr ? ` · 손익비 ${rr}` : ""}`;
       planLines.current.push(
         drawn.createPriceLine({
           price: Number(raw),
@@ -823,7 +893,10 @@ export function Chart({
     for (const shape of layer?.shapes ?? []) {
       const ts = shape["ts"];
       const price = shape["price"];
-      if (typeof ts === "string" && (typeof price === "string" || typeof price === "number")) {
+      if (
+        typeof ts === "string" &&
+        (typeof price === "string" || typeof price === "number")
+      ) {
         seen.set(stamp(ts) as number, Number(price));
       }
     }
@@ -854,7 +927,10 @@ export function Chart({
     for (const shape of layer?.shapes ?? []) {
       const ts = shape["ts"];
       const value = shape["value"];
-      if (typeof ts === "string" && (typeof value === "string" || typeof value === "number")) {
+      if (
+        typeof ts === "string" &&
+        (typeof value === "string" || typeof value === "number")
+      ) {
         seen.set(stamp(ts) as number, Number(value));
       }
     }
@@ -864,7 +940,9 @@ export function Chart({
   }, [frame.layers]);
 
   const gates = useMemo<Gate[]>(() => {
-    const layer = frame.layers.find((item) => item.flag === "overlay.adx_gates");
+    const layer = frame.layers.find(
+      (item) => item.flag === "overlay.adx_gates",
+    );
     return readGates((layer?.shapes ?? []) as Record<string, unknown>[]);
   }, [frame.layers]);
 
@@ -881,7 +959,9 @@ export function Chart({
   }, [frame.layers]);
 
   const vol = useMemo(() => {
-    const layer = frame.layers.find((item) => item.flag === "overlay.vol_target");
+    const layer = frame.layers.find(
+      (item) => item.flag === "overlay.vol_target",
+    );
     return readVol((layer?.shapes ?? []) as Record<string, unknown>[]);
   }, [frame.layers]);
 
@@ -923,7 +1003,9 @@ export function Chart({
         // ⚠️ 진입 문과 청산 문을 **다른 색**으로 — 35 와 31 이 같은 색이면 사람이
         //    둘을 한 규칙으로 읽는다. 실제로는 들어가는 문과 나가는 문이다.
         color:
-          gate.kind === "in" ? tone("--gain", "#0f7b6c") : tone("--loss", "#b4423a"),
+          gate.kind === "in"
+            ? tone("--gain", "#0f7b6c")
+            : tone("--loss", "#b4423a"),
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: false,
@@ -996,11 +1078,19 @@ export function Chart({
             title="청산선(SMA) — full_ride 전략의 실제 청산가는 봉마다 이 선으로 상향한다. 갭은 현재가가 이 선 위로 떨어진 여유(롱). 음수면 청산 임박."
             style={{ color: tone("--ma-line", "#8957e5") }}
           >
-            청산선(SMA) {maGap.level.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+            청산선(SMA){" "}
+            {maGap.level.toLocaleString(undefined, {
+              maximumFractionDigits: 4,
+            })}
           </span>
           <span
             className="chip"
-            style={{ color: maGap.pct >= 0 ? tone("--gain", "#0f7b6c") : tone("--loss", "#b4423a") }}
+            style={{
+              color:
+                maGap.pct >= 0
+                  ? tone("--gain", "#0f7b6c")
+                  : tone("--loss", "#b4423a"),
+            }}
             title="현재가가 청산선(SMA) 위로 떨어져 있는 거리다 — **손익이 아니다**. 롱은 이 버퍼가 클수록 안전하고, 0 에 가까우면 곧 청산이다."
           >
             {/* 🔴 **"현재가 +14.58%" 는 손익으로 읽힌다** (사용자 물음 2026-08-30:
@@ -1060,7 +1150,9 @@ export function Chart({
               title={`SMA 선이 ${slope.bars}봉 전보다 얼마나 움직였나. 가격이 SMA 아래인 것만으로는 숏이 아니다 — 급락 직후는 반등 자리일 수 있어서, 선 자체가 내려가는 것(음수)을 더 본다.`}
               style={{
                 color:
-                  slope.pct < 0 ? tone("--loss", "#b4423a") : tone("--gain", "#0f7b6c"),
+                  slope.pct < 0
+                    ? tone("--loss", "#b4423a")
+                    : tone("--gain", "#0f7b6c"),
               }}
             >
               SMA 기울기 {slope.pct >= 0 ? "+" : ""}

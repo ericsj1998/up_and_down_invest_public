@@ -40,7 +40,6 @@ from updown.decision.risk.manual import confirm
 from updown.decision.risk.policy import load_settings as load_risk_settings
 from updown.llm.nvidia import NvidiaClient
 from updown.llm.pool import PoolConfigError, load_pool
-from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration.ai_analysis import AnalysisRequest, fetch_snapshot
 from updown.orchestration.ai_analysis import analyze as llm_analyze
@@ -171,18 +170,104 @@ def _plan_json(
     }
 
 
+def _evidence_lines(
+    *,
+    chosen: Bucket,
+    bars: int,
+    flags: str,
+    support: dict[str, Any] | None,
+    resistance: dict[str, Any] | None,
+    swings: dict[str, Any],
+    atr: str,
+    extremes: dict[str, Any],
+    valuation: dict[str, Any] | None,
+    valuation_note: str,
+    vix: dict[str, Any] | None,
+    plans: dict[str, dict[str, Any] | None],
+) -> list[str]:
+    """계획에 실제로 쓴 근거를 사람이 읽을 줄로 (순수) — 화면의 "사용한 근거" 카드.
+
+    Returns:
+        줄 목록. 없는 근거는 "없음" 으로 적는다 — 빠뜨리면 있는 것처럼 읽힌다(규칙 #8).
+    """
+
+    def band(label: str, level: dict[str, Any] | None) -> str:
+        if level is None:
+            return f"{label}: 없음"
+        return (
+            f"{label}: {level.get('low')}~{level.get('high')} · 접점 {level.get('touches')} · "
+            f"현재가에서 {level.get('away_pct')}%"
+        )
+
+    def swing(label: str, item: Any) -> str:
+        if not isinstance(item, dict):
+            return f"{label}: 없음"
+        got = cast("dict[str, Any]", item)
+        when = str(got.get("ts") or "")[:16].replace("T", " ")
+        return f"{label}: {got.get('price')} ({when} · {got.get('away_pct')}%)"
+
+    out = [
+        f"봉: {chosen.entry.value} {bars}개 · 켜진 규칙 "
+        f"{len(flags.split(',')) if flags else 0}개 ({flags or '없음'})",
+        band("아래 첫 지지", support),
+        band("위 첫 저항", resistance),
+        swing("전고", swings.get("swing_high")),
+        swing("전저", swings.get("swing_low")),
+        f"ATR({chosen.entry.value}): {atr or '없음'}",
+    ]
+    if extremes.get("high_52w") is not None:
+        out.append(
+            f"52주: 고 {extremes.get('high_52w')} ({extremes.get('to_high_52w_pct')}%) · "
+            f"저 {extremes.get('low_52w')} ({extremes.get('to_low_52w_pct')}%) · "
+            f"SMA200 {extremes.get('sma200')} ({extremes.get('to_sma200_pct')}%)"
+        )
+    else:
+        out.append(f"52주: {extremes.get('note') or '일봉 없음'}")
+    if valuation is not None:
+        score: object = valuation.get("score")
+        if isinstance(score, dict):
+            score = cast("dict[str, Any]", score).get("score")
+        out.append(f"재무: 점수 {score if score is not None else '—'}")
+    else:
+        out.append(f"재무: {valuation_note or '없음'}")
+    if vix is not None:
+        out.append(
+            f"VIX: {vix.get('value', '—')} {vix.get('band') or ''} {vix.get('note') or ''}".strip()
+        )
+    for side, label in (("long", "롱"), ("short", "숏")):
+        plan = plans.get(side)
+        if plan is None:
+            out.append(f"{label} 계획: 후보 없음")
+        elif not plan.get("ok"):
+            out.append(f"{label} 계획: 막힘 — {' · '.join(plan.get('blocked') or [])}")
+        else:
+            out.append(f"{label} 계획 근거: {plan.get('basis')}")
+    return out
+
+
 async def _assemble(
-    symbol: str, mk: Market, chosen: Bucket
+    symbol: str, mk: Market, chosen: Bucket, report: Reporter | None = None
 ) -> tuple[dict[str, Any], dict[str, Candidate | None]]:
     """1단계의 몸통 — 구조 · 전고/전저 · 52주 · 재무 · VIX · 롱/숏 계획.
 
-    `/analyze` 와 `/run` 이 같이 쓴다.
+    `/analyze` · `/analyze-job` · `/run` 이 같이 쓴다. `report` 가 있으면 단계마다 한 줄씩
+    (경과 초 포함) — 화면이 "지금 무엇을 하는지" 를 보여 준다(사용자 2026-09-11).
     """
+    started = time.perf_counter()
+
+    def say(message: str) -> None:
+        if report is not None:
+            report(f"[{time.perf_counter() - started:5.1f}s] {message}")
+
     caps = capabilities_of(mk)
     instrument = instrument_of(symbol, mk)
     from updown.analysis.detectors.rules import load_rules  # 순환 회피
 
     flags = ",".join(name for name, rule in load_rules().items() if rule.enabled)
+    say(
+        f"봉 읽기 — {symbol} {chosen.entry.value} {FRAME_BARS}봉 "
+        "(DB 먼저 · 빈 곳만 토스 1분봉 합성)"
+    )
     frame = await analysis_api.frame(
         symbol=symbol, flags=flags, timeframe=chosen.entry.value, market=mk, bars=FRAME_BARS
     )
@@ -191,6 +276,11 @@ async def _assemble(
     if last is None or last <= 0:
         raise HTTPException(400, f"{symbol} {chosen.entry.value} 봉이 없다 — 구조를 읽을 수 없다")
     levels = cast("list[dict[str, Any]]", frame.get("levels") or [])
+    say(
+        f"구조 읽음 — 봉 {len(candles_json)} · 레벨 {len(levels)}"
+        f"(원본 {frame.get('levels_raw')}) · "
+        f"ATR {frame.get('atr') or '—'}"
+    )
     support = next(
         (
             lv
@@ -208,18 +298,19 @@ async def _assemble(
         None,
     )
     now = datetime.now(UTC)
+    say("전고/전저 · 52주 — 진입 축 봉과 일봉")
     async with MarketDataProvider() as provider:
         adapter = stored_quotes(provider, mk)  # DB 먼저 · 토스 1m 합성은 빈 곳만
         entry_rows = await adapter.get_candles(
             instrument,
             chosen.entry,
-            now - interval(chosen.entry) * (FRAME_BARS + WARMUP_BARS),
+            now - analysis_api.lookback_span(chosen.entry, FRAME_BARS + WARMUP_BARS, mk),
             now,
         )
         daily_rows = await adapter.get_candles(
             instrument,
             Timeframe.D1,
-            now - interval(Timeframe.D1) * (DAILY_BARS + WARMUP_BARS),
+            now - analysis_api.lookback_span(Timeframe.D1, DAILY_BARS + WARMUP_BARS, mk),
             now,
         )
     swings = (
@@ -229,6 +320,7 @@ async def _assemble(
     valuation: dict[str, Any] | None = None
     valuation_note = ""
     if MarketGroup.of(mk) is not MarketGroup.COIN:
+        say("재무 — EDGAR 사실 · 점수")
         try:
             valuation = await fundamentals_api.snapshot(symbol, market=mk.value)
         except HTTPException as exc:
@@ -238,6 +330,7 @@ async def _assemble(
     else:
         valuation_note = "코인은 재무제표가 없다"
     vix: dict[str, Any] | None = None
+    say("거시 — VIX")
     try:
         macro = await macro_api.macro_snapshot(("vix",))
         vix = next(
@@ -250,6 +343,7 @@ async def _assemble(
         )
     except Exception as exc:
         vix = {"key": "vix", "note": f"거시 출처 실패: {str(exc)[:100]}"}
+    say("롱/숏 계획 — 후보 → RiskManager 확정 · 거리")
     round_trip = load_cost_table(DEFAULT_CONFIG_PATH).for_market(mk).round_trip_pct
     cands = candidates_of(
         last=last,
@@ -279,6 +373,21 @@ async def _assemble(
         + ("이 시장은 숏이 없다. " if not caps.short_allowed else "")
         + f"계획은 {chosen.valid_bars}봉 안에 진입가에 닿아야 산다."
     )
+    evidence = _evidence_lines(
+        chosen=chosen,
+        bars=len(candles_json),
+        flags=flags,
+        support=support,
+        resistance=resistance,
+        swings=swings,
+        atr=str(frame.get("atr") or ""),
+        extremes=extremes,
+        valuation=valuation,
+        valuation_note=valuation_note,
+        vix=vix,
+        plans=plans,
+    )
+    say(f"끝 — 근거 {len(evidence)}줄")
     payload = {
         "analysis_id": uuid.uuid4().hex[:12],
         "at": now.isoformat(),
@@ -298,6 +407,7 @@ async def _assemble(
         "valuation_note": valuation_note,
         "vix": vix,
         "plans": plans,
+        "evidence": evidence,
         "note": note,
     }
     _logger.info(
@@ -373,6 +483,34 @@ async def analyze(symbol: str, market: str, bucket: str = "swing") -> dict[str, 
     return payload
 
 
+@router.post("/analyze-job")
+async def analyze_job(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+    """`/analyze` 와 같은 일을 **작업**으로 — 단계마다 진행 줄을 흘린다 (사용자 2026-09-11).
+
+    Args:
+        payload: `{symbol, market, bucket}`.
+
+    Returns:
+        `{job_id, ...}` — 진행은 `GET /ai/jobs/{id}/events`, 결과 이벤트가 분석 본문
+        (`/analyze` 와 같다).
+
+    Raises:
+        HTTPException: 400 시장·갈래·종목.
+    """
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    mk = _market(str(payload.get("market") or ""))
+    chosen = _bucket(str(payload.get("bucket") or "swing"))
+    if not symbol:
+        raise HTTPException(400, "symbol 이 없다")
+
+    async def _work(report: Reporter) -> dict[str, Any]:
+        made, _ = await _assemble(symbol, mk, chosen, report)
+        return made
+
+    job = registry.start("chart-order-analyze", f"{symbol} · {chosen.label} · 구조 읽기", _work)
+    return {"job_id": job.job_id, **job.snapshot()}
+
+
 async def _login_not_guest(request: Request) -> str:
     who = await caller_of(request)
     if who is None:
@@ -443,7 +581,7 @@ async def run(request: Request, payload: Annotated[dict[str, Any], Body()]) -> d
     async def _work(report: Reporter) -> dict[str, Any]:
         started = time.perf_counter()
         report(f"구조 읽기 — {symbol} {chosen.label}({chosen.entry.value})")
-        analysis, cands = await _assemble(symbol, mk, chosen)
+        analysis, cands = await _assemble(symbol, mk, chosen, report)
         rules_ms = int((time.perf_counter() - started) * 1000)
         pick = cands.get(side) if side in ("long", "short") else (cands["long"] or cands["short"])
         plan_json = cast(

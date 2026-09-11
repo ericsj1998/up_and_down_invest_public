@@ -27,7 +27,7 @@ out-of-sample 구간을 눈으로 보면 그 뒤의 판정이 오염되고, 오�
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
 
@@ -41,7 +41,7 @@ from updown.apps.api.quotes import stored_quotes
 from updown.common.cache import TtlCache
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.domain.candle import Candle
-from updown.common.domain.instrument import Market, Timeframe
+from updown.common.domain.instrument import Market, MarketGroup, Timeframe
 from updown.common.logging.setup import get_logger
 from updown.common.wire import candle_json
 from updown.decision.risk.manual import Confirmed, confirm
@@ -115,6 +115,34 @@ OFFERED: tuple[Timeframe, ...] = (
 폐기한 이유는 표본이 아니라 **비용**이다 (필요 승률 100.7~100.9%). 계획을 세울 때는
 `required_win_rate` 가 그 산수를 그대로 보여 준다.
 """
+
+
+REGULAR_SESSION_HOURS = 6.5
+"""주식 정규장 길이(시간) — KRX 09:00~15:30 · 미국 09:30~16:00. 봉 수를 달력 기간으로
+바꿀 때 쓴다."""
+
+
+def lookback_span(timeframe: Timeframe, bars: int, market: Market) -> timedelta:
+    """봉 `bars` 개가 들어갈 **달력** 기간 (순수).
+
+    Args:
+        timeframe: 봉 간격.
+        bars: 원하는 봉 수.
+        market: 시장 — 코인은 24시간·7일이라 그대로, 주식은 정규장에만 봉이 생기므로 늘려 잡는다.
+
+    Returns:
+        `now - 이 값` 부터 받으면 정규장 봉이 `bars` 개쯤 나온다.
+
+    Note:
+        2026-09-11 신고 "차트가 너무 짧다" — 1h 400봉을 달력 600시간으로 잡아 정규장 봉 107개만
+        왔다. 분봉은 하루 6.5시간 · 주 5일이라 약 5.2배, 일봉은 주 5일이라 1.4배다.
+    """
+    span = interval(timeframe) * bars
+    if MarketGroup.of(market) is MarketGroup.COIN:
+        return span
+    if timeframe is Timeframe.D1:
+        return span * (7 / 5)
+    return span * (24 / REGULAR_SESSION_HOURS) * (7 / 5)
 
 
 @router.get("/frame")
@@ -194,7 +222,7 @@ async def frame(
             rows = await stored_quotes(provider, market).get_candles(
                 _instrument(symbol, market),
                 only,
-                now - interval(only) * (window + WARMUP_BARS),
+                now - lookback_span(only, window + WARMUP_BARS, market),
                 now,
             )
         except ValueError as exc:
