@@ -114,20 +114,23 @@ function PlanCard({
   label,
   onOrder,
   dec = 6,
+  reason,
 }: {
   plan: ChartPlanSide | null;
   label: string;
   onOrder?: () => void;
   /** 소수 자릿수 — 주식 2 · 코인 6. */
   dec?: number;
+  /** 계획이 없을 때 서버가 말한 이유 — 원래 없는 자리인지 오류인지 (2026-09-11). */
+  reason?: string | null;
 }) {
   if (plan === null) {
     return (
       <div className="card" style={{ flex: 1, minWidth: 260 }}>
-        <b>{label}</b>
+        <b>{label} · 후보 없음</b>
         <p className="faint text-xs">
-          구조에서 후보가 안 나왔다 — 그 방향의 지지/저항이 없거나 이 시장은 그
-          방향이 없다.
+          {reason ??
+            "구조에서 후보가 안 나왔다 — 그 방향의 지지/저항이 없거나 이 시장은 그 방향이 없다."}
         </p>
       </div>
     );
@@ -980,13 +983,6 @@ export function AiChartOrder({
               )}
             </p>
           ) : null}
-          {busy && stock ? (
-            <p className="faint text-xs">
-              ⏳ 토스 시장의 분봉은 1분 원봉을 합쳐 만든다 — 이 종목·축은{" "}
-              <b>처음 한 번</b>만 1~2분이 들고, 그 뒤로는 DB 에 남아 몇 초면
-              된다. 그대로 두면 된다.
-            </p>
-          ) : null}
           {analyzeJob.lines.length > 0 && (busy || showLog) ? (
             <ul
               className="faint text-xs"
@@ -1158,6 +1154,7 @@ export function AiChartOrder({
                   plan={body.plans.long}
                   label="롱"
                   dec={dec}
+                  reason={body.plan_reasons?.long}
                   onOrder={
                     who && !guest && body.plans.long
                       ? () =>
@@ -1171,6 +1168,7 @@ export function AiChartOrder({
                   plan={body.plans.short}
                   label="숏"
                   dec={dec}
+                  reason={body.plan_reasons?.short}
                   onOrder={
                     who && !guest && body.plans.short
                       ? () =>

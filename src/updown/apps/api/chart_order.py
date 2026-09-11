@@ -170,11 +170,58 @@ def _plan_json(
     }
 
 
+def plan_reasons(
+    *,
+    plans: dict[str, dict[str, Any] | None],
+    support: dict[str, Any] | None,
+    resistance: dict[str, Any] | None,
+    short_allowed: bool,
+    dropped: dict[str, int],
+) -> dict[str, str | None]:
+    """계획이 없을 때 **왜 없는지** 한 줄 (순수) — 원래 없는 자리인지 오류인지 가른다 (2026-09-11).
+
+    Args:
+        plans: `_plan_json` 결과.
+        support: 아래 첫 지지 띠.
+        resistance: 위 첫 저항 띠.
+        short_allowed: 능력표.
+        dropped: `levels_dropped`.
+
+    Returns:
+        `{"long": 이유|None, "short": 이유|None}` — 계획이 있으면 None.
+    """
+    raw, kept = dropped.get("raw", 0), dropped.get("kept", 0)
+    if raw == 0:
+        levels = "이 창에서 작도가 수평 레벨을 하나도 못 찾았다(접점 3회 이상인 자리가 없다)"
+    elif kept == 0:
+        levels = (
+            f"작도 레벨 {raw}개가 전부 걸러졌다 — 잊힘 {dropped.get('stale', 0)} · 관통 "
+            f"{dropped.get('broken', 0)} · 접점 부족 {dropped.get('few_touches', 0)} · "
+            f"비용 안 {dropped.get('too_close', 0)}"
+        )
+    else:
+        levels = f"쓸 수 있는 레벨 {kept}개가 전부 반대편에 있다"
+    out: dict[str, str | None] = {"long": None, "short": None}
+    if plans.get("long") is None:
+        out["long"] = (
+            "아래 첫 지지가 없다 — " + levels
+            if support is None
+            else "지지 위로 손절·목표 산수가 안 선다"
+        )
+    if plans.get("short") is None:
+        if not short_allowed:
+            out["short"] = "이 시장은 숏이 없다(현물)"
+        elif resistance is None:
+            out["short"] = "위 첫 저항이 없다 — " + levels
+        else:
+            out["short"] = "저항 아래로 손절·목표 산수가 안 선다"
+    return out
+
+
 def _evidence_lines(
     *,
     chosen: Bucket,
     bars: int,
-    flags: str,
     support: dict[str, Any] | None,
     resistance: dict[str, Any] | None,
     swings: dict[str, Any],
@@ -184,6 +231,9 @@ def _evidence_lines(
     valuation_note: str,
     vix: dict[str, Any] | None,
     plans: dict[str, dict[str, Any] | None],
+    dropped: dict[str, int],
+    layers: list[str],
+    reasons: dict[str, str | None],
 ) -> list[str]:
     """계획에 실제로 쓴 근거를 사람이 읽을 줄로 (순수) — 화면의 "사용한 근거" 카드.
 
@@ -206,9 +256,16 @@ def _evidence_lines(
         when = str(got.get("ts") or "")[:16].replace("T", " ")
         return f"{label}: {got.get('price')} ({when} · {got.get('away_pct')}%)"
 
+    d = dropped
+    drop_line = (
+        f"레벨: 작도 {d.get('raw', 0)}개 → 쓸 수 있는 것 {d.get('kept', 0)}개 "
+        f"(잊힘 {d.get('stale', 0)} · 관통 {d.get('broken', 0)} · 접점 부족 "
+        f"{d.get('few_touches', 0)} · 비용 안 {d.get('too_close', 0)})"
+    )
     out = [
-        f"봉: {chosen.entry.value} {bars}개 · 켜진 규칙 "
-        f"{len(flags.split(',')) if flags else 0}개 ({flags or '없음'})",
+        f"봉: {chosen.entry.value} {bars}개 · 그린 규칙 {len(layers)}개 "
+        f"({', '.join(layers) or '없음'})",
+        drop_line,
         band("아래 첫 지지", support),
         band("위 첫 저항", resistance),
         swing("전고", swings.get("swing_high")),
@@ -237,7 +294,7 @@ def _evidence_lines(
     for side, label in (("long", "롱"), ("short", "숏")):
         plan = plans.get(side)
         if plan is None:
-            out.append(f"{label} 계획: 후보 없음")
+            out.append(f"{label} 계획: 후보 없음 — {reasons.get(side) or '이유 없음'}")
         elif not plan.get("ok"):
             out.append(f"{label} 계획: 막힘 — {' · '.join(plan.get('blocked') or [])}")
         else:
@@ -373,10 +430,24 @@ async def _assemble(
         + ("이 시장은 숏이 없다. " if not caps.short_allowed else "")
         + f"계획은 {chosen.valid_bars}봉 안에 진입가에 닿아야 산다."
     )
+    dropped = cast("dict[str, int]", frame.get("levels_dropped") or {})
+    layers = [
+        str(cast("dict[str, Any]", layer).get("flag") or "")
+        for layer in cast("list[Any]", frame.get("layers") or [])
+    ]
+    reasons = plan_reasons(
+        plans=plans,
+        support=support,
+        resistance=resistance,
+        short_allowed=caps.short_allowed,
+        dropped=dropped,
+    )
     evidence = _evidence_lines(
         chosen=chosen,
         bars=len(candles_json),
-        flags=flags,
+        dropped=dropped,
+        layers=layers,
+        reasons=reasons,
         support=support,
         resistance=resistance,
         swings=swings,
@@ -407,6 +478,7 @@ async def _assemble(
         "valuation_note": valuation_note,
         "vix": vix,
         "plans": plans,
+        "plan_reasons": reasons,
         "evidence": evidence,
         "note": note,
     }

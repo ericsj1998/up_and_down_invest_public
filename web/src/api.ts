@@ -2606,6 +2606,8 @@ export type ChartAnalysis = {
   plans: { long: ChartPlanSide | null; short: ChartPlanSide | null };
   /** 계획에 실제로 쓴 근거 — 서버가 만든 줄 그대로 ("사용한 근거" 카드). */
   evidence?: string[];
+  /** 계획이 없을 때 왜 없는지 — 원래 없는 자리인지 오류인지 (2026-09-11). */
+  plan_reasons?: { long: string | null; short: string | null };
   note: string;
 };
 

@@ -144,22 +144,88 @@ def useful(
         ⚠️ **빈 목록도 답이다.** 억지로 채우면 "쓸 수 있는 자리" 라는 말이 뜻을 잃는다 —
         지금 볼 자리가 없는 국면이 실제로 있다.
     """
+    return useful_report(boxes, candles, span=span, round_trip=round_trip, limit=limit)[0]
+
+
+@dataclass(frozen=True, slots=True)
+class DropReport:
+    """레벨이 어디서 떨어졌나 — "후보 없음" 이 원래 없는 자리인지 화면이 말하게 (2026-09-11).
+
+    Attributes:
+        raw: 작도가 찾은 레벨 수.
+        stale: 마지막 접점이 `STALE_BARS` 보다 오래된 것.
+        broken: 접점 뒤 종가가 관통한 것(뭉친 뒤 기준).
+        few_touches: 접점이 `MIN_TOUCHES` 미만.
+        too_close: 지금 가격에서 왕복 비용 x `COST_COVER` 안.
+        kept: 남은 것(상한 `limit` 적용 전).
+    """
+
+    raw: int
+    stale: int
+    broken: int
+    few_touches: int
+    too_close: int
+    kept: int
+
+    def as_json(self) -> dict[str, int]:
+        """화면 모양."""
+        return {
+            "raw": self.raw,
+            "stale": self.stale,
+            "broken": self.broken,
+            "few_touches": self.few_touches,
+            "too_close": self.too_close,
+            "kept": self.kept,
+        }
+
+
+def useful_report(
+    boxes: Sequence[Box],
+    candles: Sequence[Candle],
+    *,
+    span: Decimal,
+    round_trip: Decimal,
+    limit: int = 6,
+) -> tuple[list[Level], DropReport]:
+    """`useful` 과 같되 **떨어진 이유의 수**를 같이 준다 (순수).
+
+    Args:
+        boxes: 작도가 찾은 수평 레벨 전부.
+        candles: 창의 봉들 (오름차순).
+        span: ATR.
+        round_trip: 왕복 비용 비율.
+        limit: 남길 수.
+
+    Returns:
+        `(가까운 순 레벨, 보고)`. 봉·ATR 이 없으면 빈 목록과 전부 0 인 보고(원본 수만).
+    """
+    empty = DropReport(raw=len(boxes), stale=0, broken=0, few_touches=0, too_close=0, kept=0)
     if not candles or span <= 0:
-        return []
+        return [], empty
     price = candles[-1].close
     if price <= 0:
-        return []
+        return [], empty
     fresh = _recent(boxes, candles)
     merged = _merge(fresh, span)
     alive = [item for item in merged if not _broken(item, candles, span)]
     floor = price * round_trip * COST_COVER
+    few = sum(1 for item in alive if item.touches < MIN_TOUCHES)
+    near = sum(1 for item in alive if item.touches >= MIN_TOUCHES and abs(item.mid - price) < floor)
     out = [
         _with_distance(item, price)
         for item in alive
         if item.touches >= MIN_TOUCHES and abs(item.mid - price) >= floor
     ]
     out.sort(key=lambda item: item.away_pct)
-    return out[:limit]
+    report = DropReport(
+        raw=len(boxes),
+        stale=len(boxes) - len(fresh),
+        broken=len(merged) - len(alive),
+        few_touches=few,
+        too_close=near,
+        kept=len(out),
+    )
+    return out[:limit], report
 
 
 @dataclass(frozen=True, slots=True)

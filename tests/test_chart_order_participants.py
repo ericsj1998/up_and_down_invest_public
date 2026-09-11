@@ -99,3 +99,33 @@ def test_ai_compare_fixes_one_snapshot_and_calls_both_models_at_once() -> None:
     assert "asyncio.gather(" in body
     assert body.count("snapshot=snapshot") == 2
     assert "snapshot=alone.snapshot" not in body
+
+
+def test_plan_reasons_tell_why_there_is_no_candidate() -> None:
+    """후보 없음이 원래 없는 자리인지 오류인지 — 레벨이 어디서 떨어졌는지로 말한다 (2026-09-11)."""
+    from updown.apps.api.chart_order import plan_reasons
+
+    none = {"long": None, "short": None}
+    got = plan_reasons(
+        plans=none,
+        support=None,
+        resistance=None,
+        short_allowed=False,
+        dropped={"raw": 5, "kept": 0, "stale": 2, "broken": 2, "few_touches": 1, "too_close": 0},
+    )
+    assert (
+        got["long"] is not None and "5개가 전부 걸러졌다" in got["long"] and "관통 2" in got["long"]
+    )
+    assert got["short"] == "이 시장은 숏이 없다(현물)"
+    got = plan_reasons(
+        plans=none, support=None, resistance=None, short_allowed=True, dropped={"raw": 0}
+    )
+    assert got["long"] is not None and "하나도 못 찾았다" in got["long"]
+    assert got["short"] is not None and "위 첫 저항이 없다" in got["short"]
+    assert plan_reasons(
+        plans={"long": {"ok": True}, "short": {"ok": True}},
+        support={"low": "1"},
+        resistance={"low": "2"},
+        short_allowed=True,
+        dropped={"raw": 3, "kept": 2},
+    ) == {"long": None, "short": None}

@@ -35,7 +35,7 @@ from fastapi import APIRouter, Body, HTTPException
 
 from updown.analysis.detectors.rules import load_rules
 from updown.analysis.indicators.atr import atr
-from updown.analysis.levels import Level, useful
+from updown.analysis.levels import DropReport, Level, useful_report
 from updown.analysis.plan import propose
 from updown.apps.api.quotes import stored_quotes
 from updown.common.cache import TtlCache
@@ -267,9 +267,10 @@ async def frame(
     cost = load_cost_table(DEFAULT_CONFIG_PATH).for_market(market).round_trip_pct
     span = atr([c.high for c in visible], [c.low for c in visible], [c.close for c in visible])[-1]
     picked: list[Level] = []
+    dropped = DropReport(raw=0, stale=0, broken=0, few_touches=0, too_close=0, kept=0)
     made = None
     if span is not None and span > 0 and view.bundle is not None:
-        picked = useful(view.bundle.boxes, visible, span=span, round_trip=cost)
+        picked, dropped = useful_report(view.bundle.boxes, visible, span=span, round_trip=cost)
         made = propose(picked, visible[-1].close, span=span, round_trip=cost)
     _logger.info(
         "analysis_frame",
@@ -306,6 +307,9 @@ async def frame(
             for item in picked
         ],
         "levels_raw": str(len(view.bundle.boxes) if view.bundle is not None else 0),
+        # ⭐ 어디서 떨어졌나 — "후보 없음" 이 원래 없는 자리인지 오류인지 화면이 가르게
+        #    (2026-09-11).
+        "levels_dropped": dropped.as_json(),
         "atr": "" if span is None else str(span),
         "round_trip_pct": f"{cost * 100:.3f}",
         # 🔴 **계획은 제안이다** — 사람이 고칠 수 있고, 집행값의 SSoT 는 RiskManager 다
