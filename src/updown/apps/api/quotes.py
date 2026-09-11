@@ -34,12 +34,16 @@ def attach_candles(factory: async_sessionmaker[AsyncSession] | None) -> None:
     _candles = None if factory is None else CandleRepository(factory)
 
 
-def stored_quotes(provider: MarketDataProvider, market: Market) -> QuoteAdapter:
+def stored_quotes(
+    provider: MarketDataProvider, market: Market, *, regular_only: bool = True
+) -> QuoteAdapter:
     """그 시장의 봉 조회 — 저장소가 붙어 있으면 DB 를 먼저 보고 빈 곳만 브로커에서 받는다.
 
     Args:
         provider: 조회 경로.
         market: 시장.
+        regular_only: 정규장 봉만 돌려줄지. 프록시 봉 끝점(`/admin/toss/candles`)은 거르지 않고
+            그대로 넘긴다 — 받는 쪽의 `StoredCandles` 가 저장·거른다(같은 규칙 두 번).
 
     Returns:
         `QuoteAdapter`. 저장소가 없으면(시험 · 기동 전) 브로커 어댑터 그대로.
@@ -50,7 +54,7 @@ def stored_quotes(provider: MarketDataProvider, market: Market) -> QuoteAdapter:
     adapter = cast("QuoteAdapter", provider.adapter_for(market))
     if _candles is None:
         return adapter
-    return StoredCandles(adapter, _candles, calendar=load_calendar())
+    return StoredCandles(adapter, _candles, calendar=load_calendar() if regular_only else None)
 
 
 __all__ = ["attach_candles", "stored_quotes"]

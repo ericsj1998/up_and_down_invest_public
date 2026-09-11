@@ -2843,6 +2843,8 @@ def _claims(id_token: str) -> dict[str, Any]:
 
 # ── 개인 API 토큰 (T263 MCP) ─────────────────────────────────────────────────
 
+TOKEN_POST_ALLOWED = "/admin/toss/warm"
+"""개인 토큰으로 되는 유일한 쓰기 경로 — 유니버스 봉 예열 작업(관리자 접두어 · 주문 아님)."""
 TOKEN_PREFIX = "updn_"
 """토큰 값의 머리 — 로그·문서에서 알아보게 하고, Bearer 가 우리 것인지 가른다."""
 TOKEN_USED_EVERY_S = 60.0
@@ -2882,6 +2884,10 @@ def token_allowed(method: str, path: str) -> bool:
         읽기(GET·HEAD·OPTIONS)거나 `/mcp` 면 참. 그 밖의 쓰기는 거짓 — 주문·설정 변경은 화면에서.
     """
     clean = path.rstrip("/") or "/"
+    if clean == TOKEN_POST_ALLOWED:
+        # ⭐ 유니버스 봉 예열(2026-09-11) — 주문도 설정 변경도 아닌 서버 작업. 관리자 접두어
+        #    (`/admin/toss`)라 등급은 따로 걸린다. 연구 PC 가 배포 직후 스크립트로 띄우려고 연다.
+        return True
     return clean == "/mcp" or clean.startswith("/mcp/") or method.upper() in READ_METHODS
 
 

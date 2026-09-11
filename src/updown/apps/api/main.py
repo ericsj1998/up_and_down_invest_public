@@ -356,6 +356,10 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         from updown.apps.api.chart_order import resolve_loop as chart_order_resolve_loop
 
         tasks.append(asyncio.create_task(chart_order_resolve_loop(), name="chart-order-resolve"))
+        # ⭐ 유니버스 봉 예열 (2026-09-11) — 매일 21:00Z, 토스를 직접 부르는 프로세스만 실제로 돈다.
+        from updown.apps.api.warm_candles import warm_loop as warm_candles_loop
+
+        tasks.append(asyncio.create_task(warm_candles_loop(), name="toss-warm"))
         # 🔴 **일간 리포트가 여기서 돈다** (사용자 확정 2026-08-30). 엔진 스케줄러가
         #    보내던 것은 `html` 을 안 넘겨 **평문만** 나갔다 — 차트·주문표·계좌 요약이
         #    빠진 옛 형식이었다.

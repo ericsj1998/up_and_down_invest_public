@@ -62,11 +62,12 @@ from updown.marketdata.toss.adapter import (
     ResultClient,
     TossAdapter,
 )
+from updown.marketdata.toss.client import DEFAULT_RATE_PER_SECOND, TossClient
 from updown.marketdata.toss.client import TossApiError as TossApiError
 from updown.marketdata.toss.client import TossAuthError as TossAuthError
-from updown.marketdata.toss.client import TossClient
 from updown.marketdata.toss.client import UnknownSymbolError as UnknownSymbolError
 from updown.marketdata.toss.mapping import to_symbol
+from updown.marketdata.toss.proxy_adapter import TossProxyAdapter
 from updown.marketdata.toss.proxy_client import TossProxyClient
 from updown.marketdata.upbit.adapter import UpbitAdapter
 from updown.marketdata.upbit.client import UpbitClient
@@ -275,7 +276,12 @@ class MarketDataProvider:
             return UpbitAdapter(self._upbit_client)
 
         if market in _TOSS_MARKETS:
-            return TossAdapter(self.toss_client(market))
+            client = self.toss_client(market)
+            if isinstance(client, TossProxyClient):
+                # 봉은 서버 합성본 한 번에 — 1분봉 페이지 수백 개를 프록시로 넘기지 않는다
+                # (2026-09-11).
+                return TossProxyAdapter(client)
+            return TossAdapter(client)
 
         raise UnsupportedMarketError(f"{market} 의 조회 어댑터가 없다")
 
@@ -333,7 +339,12 @@ class MarketDataProvider:
                 )
             else:
                 client_id, client_secret = settings.toss_market_data_credentials
-                MarketDataProvider._shared_toss = TossClient(client_id, client_secret)
+                rate = settings.toss_rate_per_second
+                MarketDataProvider._shared_toss = TossClient(
+                    client_id,
+                    client_secret,
+                    rate_per_second=rate if rate > 0 else DEFAULT_RATE_PER_SECOND,
+                )
                 _logger.info(
                     "market_data_adapter_created",
                     payload={"market": market.value, "broker": "toss"},

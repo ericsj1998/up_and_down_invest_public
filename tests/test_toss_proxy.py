@@ -389,3 +389,132 @@ class TestSwapWindow:
             return httpx.Response(status, json={"detail": "서버가 낸 것"})
 
         return hits, handler
+
+
+class TestCandlesProxy:
+    """봉은 서버 합성본 한 번에 — 1분봉 페이지 수백 개를 프록시로 넘기지 않는다 (2026-09-11)."""
+
+    def test_endpoint_returns_stored_candles_unfiltered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import UTC, datetime
+        from decimal import Decimal
+
+        from updown.apps.api import toss_proxy as api
+        from updown.common.domain.candle import Candle
+        from updown.common.domain.instrument import Instrument, Timeframe
+
+        seen: list[tuple[str, str, bool]] = []
+
+        class FakeStored:
+            async def get_candles(
+                self, instrument: Instrument, timeframe: Timeframe, start: datetime, end: datetime
+            ) -> list[Candle]:
+                seen.append((instrument.symbol, timeframe.value, start < end))
+                return [
+                    Candle(
+                        instrument=instrument,
+                        timeframe=timeframe,
+                        ts=datetime(2026, 9, 10, 14, tzinfo=UTC),
+                        open=Decimal("1"),
+                        high=Decimal("2"),
+                        low=Decimal("0.5"),
+                        close=Decimal("1.5"),
+                        volume=Decimal("10"),
+                    )
+                ]
+
+        def _stored(
+            _provider: MarketDataProvider, _market: Market, *, regular_only: bool = True
+        ) -> FakeStored:
+            seen.append(("stored", "", regular_only))
+            return FakeStored()
+
+        monkeypatch.setattr(api, "stored_quotes", _stored)
+        monkeypatch.setattr(MarketDataProvider, "toss_via_proxy", _no_proxy)
+        app = FastAPI()
+        app.include_router(router)
+        res = TestClient(app).get(
+            "/admin/toss/candles",
+            params={
+                "market": "NASDAQ",
+                "symbol": "aapl",
+                "timeframe": "1h",
+                "start": "2026-09-01T00:00:00+00:00",
+                "end": "2026-09-11T00:00:00+00:00",
+            },
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["candles"][0]["close"] == "1.5"
+        assert ("stored", "", False) in seen, "정규장 거르기는 받는 쪽 몫"
+        assert ("AAPL", "1h", True) in seen
+        bad = TestClient(app).get(
+            "/admin/toss/candles",
+            params={
+                "market": "GATE",
+                "symbol": "X",
+                "timeframe": "1h",
+                "start": "2026-09-01T00:00:00+00:00",
+                "end": "2026-09-02T00:00:00+00:00",
+            },
+        )
+        assert bad.status_code == 400
+
+    def test_client_parses_server_candles(self) -> None:
+        import asyncio
+        from datetime import UTC, datetime
+
+        from updown.common.domain.instrument import AssetType, Currency, Instrument, Timeframe
+        from updown.marketdata.toss.proxy_client import CANDLES_PATH
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path.endswith(CANDLES_PATH)
+            assert (
+                request.url.params["timeframe"] == "1h" and request.url.params["symbol"] == "AAPL"
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "candles": [
+                        {
+                            "ts": "2026-09-10T14:00:00+00:00",
+                            "open": "1",
+                            "high": "2",
+                            "low": "0.5",
+                            "close": "1.5",
+                            "volume": "10",
+                        }
+                    ]
+                },
+            )
+
+        client = TossProxyClient(
+            "https://s.test/api", SecretStr("updn_x"), transport=_transport(handler)
+        )
+        instrument = Instrument(Market.NASDAQ, "AAPL", "AAPL", AssetType.STOCK, Currency.USD)
+        got = asyncio.run(
+            client.get_candles(
+                instrument,
+                Timeframe.H1,
+                datetime(2026, 9, 1, tzinfo=UTC),
+                datetime(2026, 9, 11, tzinfo=UTC),
+            )
+        )
+        assert len(got) == 1 and str(got[0].close) == "1.5" and got[0].ts.tzinfo is not None
+
+    def test_provider_hands_out_the_proxy_adapter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from updown.marketdata.toss.proxy_adapter import TossProxyAdapter
+
+        monkeypatch.setenv("UPDOWN_MARKETS", "NASDAQ")
+        monkeypatch.setattr(MarketDataProvider, "_shared_toss", None)
+        settings = _settings(toss_proxy_url="https://s.test/api", toss_proxy_token="updn_t")
+        adapter = MarketDataProvider(settings).adapter_for(Market.NASDAQ)
+        assert isinstance(adapter, TossProxyAdapter)
+
+
+def test_personal_token_may_start_the_warm_job_only() -> None:
+    from updown.apps.api.auth import token_allowed
+
+    assert token_allowed("POST", "/admin/toss/warm")
+    assert not token_allowed("POST", "/admin/toss/other")
+    assert not token_allowed("POST", "/admin/toss/result")

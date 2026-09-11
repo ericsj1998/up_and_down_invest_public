@@ -24,11 +24,24 @@
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from datetime import datetime
+from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 
+from updown.apps.api.jobs import Reporter, registry
+from updown.apps.api.quotes import stored_quotes
+from updown.apps.api.warm_candles import can_warm, warm_universe
 from updown.common.config import ConfigurationError
+from updown.common.domain.instrument import (
+    AssetType,
+    Currency,
+    Instrument,
+    Market,
+    MarketGroup,
+    Timeframe,
+)
+from updown.common.wire import candle_json
 from updown.marketdata.provider import (
     TOSS_PROXY_GROUPS,
     TOSS_PROXY_PATHS,
@@ -123,3 +136,108 @@ async def toss_result(
     except TossApiError as exc:
         raise HTTPException(HTTP_FAILED_DEPENDENCY, f"토스 오류({exc.status_code}): {exc}") from exc
     return {"result": result}
+
+
+def _stock_market(raw: str) -> Market:
+    try:
+        market = Market(raw)
+    except ValueError as exc:
+        raise HTTPException(HTTP_BAD_REQUEST, f"모르는 시장: {raw}") from exc
+    if MarketGroup.of(market) is MarketGroup.COIN:
+        raise HTTPException(HTTP_BAD_REQUEST, f"{market.value}: 토스 시장이 아니다")
+    return market
+
+
+def _utc(raw: str, name: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise HTTPException(HTTP_BAD_REQUEST, f"{name} 가 ISO 시각이 아니다: {raw}") from exc
+    if parsed.tzinfo is None:
+        raise HTTPException(HTTP_BAD_REQUEST, f"{name} 는 UTC aware 여야 한다")
+    return parsed
+
+
+@router.get("/candles")
+async def toss_candles(
+    market: str, symbol: str, timeframe: str, start: str, end: str
+) -> dict[str, Any]:
+    """서버가 합성해 둔 봉을 한 번에 — 서버 DB 먼저(`StoredCandles`), 빈 곳만 토스 (2026-09-11).
+
+    Args:
+        market: 토스 시장 (`NASDAQ` · `NYSE` · `KRX`).
+        symbol: 종목.
+        timeframe: 봉 간격.
+        start: 시작(ISO · UTC).
+        end: 끝(ISO · UTC).
+
+    Returns:
+        `{"candles": [{ts, open, high, low, close, volume}, …]}` — 정규장 밖 봉도 그대로
+        (받는 쪽이 거른다).
+
+    Raises:
+        HTTPException: 400 시장·축·시각 · 404 없는 종목 · 424 토스 오류 · 503 이 서버가
+            토스를 안 부름.
+    """
+    mk = _stock_market(market)
+    try:
+        tf = Timeframe(timeframe)
+    except ValueError as exc:
+        raise HTTPException(HTTP_BAD_REQUEST, f"모르는 시간축: {timeframe}") from exc
+    a, b = _utc(start, "start"), _utc(end, "end")
+    if a > b:
+        raise HTTPException(HTTP_BAD_REQUEST, "start 가 end 보다 늦다")
+    provider = MarketDataProvider()
+    if provider.toss_via_proxy():
+        raise HTTPException(HTTP_UNAVAILABLE, "이 서버는 토스를 직접 부르지 않는다(프록시 client)")
+    try:
+        adapter = stored_quotes(provider, mk, regular_only=False)
+    except (UnsupportedMarketError, ConfigurationError) as exc:
+        raise HTTPException(HTTP_UNAVAILABLE, str(exc)) from exc
+    instrument = Instrument(mk, symbol.strip().upper(), symbol, AssetType.STOCK, Currency.USD)
+    try:
+        rows = await adapter.get_candles(instrument, tf, a, b)
+    except UnknownSymbolError as exc:
+        raise HTTPException(HTTP_NOT_FOUND, str(exc)) from exc
+    except TossAuthError as exc:
+        raise HTTPException(HTTP_FAILED_DEPENDENCY, f"서버의 토스 인증 실패: {exc}") from exc
+    except TossApiError as exc:
+        raise HTTPException(HTTP_FAILED_DEPENDENCY, f"토스 오류({exc.status_code}): {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(HTTP_BAD_REQUEST, str(exc)) from exc
+    return {"candles": [candle_json(c) for c in rows]}
+
+
+@router.post("/warm")
+async def toss_warm(payload: Annotated[dict[str, Any], Body()] | None = None) -> dict[str, Any]:
+    """유니버스 봉 예열을 지금 띄운다 (작업) — 밤 루프와 같은 일. 관리자만.
+
+    Args:
+        payload: `{symbols?: {"NASDAQ": [...], "NYSE": [...]}}` — 없으면 유니버스 전부.
+
+    Returns:
+        `{job_id, ...}` — 진행은 `GET /ai/jobs/{id}/events`.
+
+    Raises:
+        HTTPException: 503 이 서버가 토스를 직접 안 부름.
+    """
+    if not can_warm():
+        raise HTTPException(
+            HTTP_UNAVAILABLE, "이 프로세스는 토스를 직접 부르지 않는다 — 예열은 실계좌 서버에서"
+        )
+    chosen: dict[Market, list[str]] | None = None
+    raw = (payload or {}).get("symbols")
+    if isinstance(raw, dict):
+        chosen = {}
+        for name, names in cast("dict[str, Any]", raw).items():
+            if isinstance(names, list):
+                chosen[_stock_market(name)] = [str(s).upper() for s in cast("list[Any]", names)]
+
+    async def _work(report: Reporter) -> dict[str, Any]:
+        return await warm_universe(report, symbols=chosen)
+
+    already = registry.running("toss-warm", "유니버스 봉 예열")
+    if already is not None:
+        return {"job_id": already.job_id, "reused": True, **already.snapshot()}
+    job = registry.start("toss-warm", "유니버스 봉 예열", _work)
+    return {"job_id": job.job_id, **job.snapshot()}

@@ -204,6 +204,11 @@ class Settings(BaseSettings):
     toss_proxy_url: str | None = None
     toss_proxy_token: SecretStr | None = None
 
+    toss_rate_per_second: int = 5
+    """토스 요율 그룹당 초당 요청 수 — 토스 스펙이 수치를 안 주어 보수적으로 5 (2026-09-11 사용자
+    "30초 너무 길다": 1h 400봉 = 1분봉 200페이지 = 5건/초로 40초). 서버에서 올려 보고 429 가 없으면
+    유지한다 — `Outbound` 가 429 의 `Retry-After` 로 물러난다. 0 이하면 기본값."""
+
     dart_api_key: SecretStr | None = None
 
     edgar_user_agent: str | None = None

@@ -22,11 +22,15 @@ from __future__ import annotations
 
 import json
 from contextlib import AbstractContextManager
+from datetime import datetime
+from decimal import Decimal
 from typing import cast
 
 import httpx
 from pydantic import SecretStr
 
+from updown.common.domain.candle import Candle
+from updown.common.domain.instrument import Instrument, Timeframe
 from updown.common.http.outbound import Outbound, OutboundError, RetryPolicy
 from updown.common.logging.setup import get_logger
 from updown.marketdata.toss.client import TossApiError, TossAuthError, UnknownSymbolError
@@ -35,6 +39,8 @@ _logger = get_logger("marketdata.toss.proxy")
 
 PROXY_PATH = "/admin/toss/result"
 """서버 쪽 끝점 경로 (`apps/api/toss_proxy.py`)."""
+CANDLES_PATH = "/admin/toss/candles"
+"""서버가 합성해 둔 봉을 주는 끝점 — 1분봉 수백 페이지 대신 요청 한 번."""
 MODE_COOKIE = "updown_mode"
 """nginx 가 행선지를 고르는 쿠키 — 없으면 데모 API 로 가는데, 데모는 토스를 안 부른다."""
 
@@ -180,6 +186,76 @@ class TossProxyClient:
             f"토스 프록시 오류({path}, {response.status_code}): {detail}",
             status_code=response.status_code,
         )
+
+    async def get_candles(
+        self, instrument: Instrument, timeframe: Timeframe, start: datetime, end: datetime
+    ) -> list[Candle]:
+        """서버가 합성해 둔 봉을 한 번에 받는다 (`/admin/toss/candles` · 2026-09-11).
+
+        Args:
+            instrument: 종목.
+            timeframe: 봉 간격.
+            start: 시작 (UTC).
+            end: 끝 (UTC).
+
+        Returns:
+            `Candle` 목록, `ts` 오름차순.
+
+        Raises:
+            TossApiError: 프록시 실패 또는 응답 모양이 다름.
+        """
+        query = {
+            "market": instrument.market.value,
+            "symbol": instrument.symbol,
+            "timeframe": timeframe.value,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+        }
+        try:
+            response = await self._client.request(
+                "GET", CANDLES_PATH, params=query, throttle_key=None
+            )
+        except OutboundError as exc:
+            raise TossApiError(
+                f"토스 프록시 봉 실패({instrument.symbol} {timeframe.value}): {exc}",
+                status_code=exc.status_code,
+            ) from exc
+        if response.status_code != HTTP_OK:
+            detail = self._detail(response)
+            if response.status_code == HTTP_NOT_FOUND:
+                raise UnknownSymbolError(
+                    f"토스에 없는 종목이다({instrument.symbol}): {detail}",
+                    status_code=HTTP_NOT_FOUND,
+                )
+            raise TossApiError(
+                f"토스 프록시 봉 오류({instrument.symbol} {timeframe.value}, "
+                f"{response.status_code}): {detail}",
+                status_code=response.status_code,
+            )
+        try:
+            body: object = response.json()
+        except ValueError as exc:
+            raise TossApiError(
+                f"봉 응답이 JSON 이 아니다({instrument.symbol}): {response.text[:120]}"
+            ) from exc
+        if not isinstance(body, dict) or not isinstance(
+            cast("dict[str, object]", body).get("candles"), list
+        ):
+            raise TossApiError(f"봉 응답 모양이 다르다({instrument.symbol}): {response.text[:120]}")
+        rows = cast("list[dict[str, str]]", cast("dict[str, object]", body)["candles"])
+        return [
+            Candle(
+                instrument=instrument,
+                timeframe=timeframe,
+                ts=datetime.fromisoformat(row["ts"]),
+                open=Decimal(row["open"]),
+                high=Decimal(row["high"]),
+                low=Decimal(row["low"]),
+                close=Decimal(row["close"]),
+                volume=Decimal(row["volume"]),
+            )
+            for row in rows
+        ]
 
     @staticmethod
     def _detail(response: httpx.Response) -> str:
