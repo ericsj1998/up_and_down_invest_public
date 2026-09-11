@@ -965,7 +965,7 @@ export function AiChartOrder({
               된다. 그대로 두면 된다.
             </p>
           ) : null}
-          {analyzeJob.lines.length && (busy || showLog) ? (
+          {analyzeJob.lines.length > 0 && (busy || showLog) ? (
             <ul
               className="faint text-xs"
               style={{
@@ -979,7 +979,7 @@ export function AiChartOrder({
               ))}
             </ul>
           ) : null}
-          {!busy && analyzeJob.lines.length ? (
+          {!busy && analyzeJob.lines.length > 0 ? (
             <button
               type="button"
               className="btn small"
