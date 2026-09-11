@@ -35,6 +35,7 @@ import type {
   Who,
 } from "./api";
 import { Chart } from "./Chart";
+import { Live } from "./Live";
 import { useJobEvents } from "./chat/useJobEvents";
 import { BrokerMark } from "./shell/BrokerMark";
 import {
@@ -437,6 +438,9 @@ export function AiChartOrder({
   const [names, setNames] = useState<{ symbol: string; name: string }[]>([]);
   const [buckets, setBuckets] = useState<ChartBucket[]>([]);
   const [body, setBody] = useState<ChartAnalysis | null>(null);
+  // ⭐ 라이브(최신 봉 추종)는 **기본 꺼짐** (사용자 2026-09-11 "우측 고정이어서 불편 — 라이브를 눌렀을 때만").
+  //    분석 화면은 과거 구조를 훑는 자리라 콘솔과 반대다. 켜면 콘솔과 같은 규칙(오른쪽 끝 고정).
+  const [liveOn, setLiveOn] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const info = markets.find((m) => m.name === market);
@@ -879,12 +883,14 @@ export function AiChartOrder({
                   지지/저항 · 점 = 전고/전저 · 선·구간 = 켜진 규칙의
                   레벨·오더블록·추세선
                 </span>
+                <Live on={liveOn} onToggle={() => setLiveOn((was) => !was)} />
               </div>
               <Chart
                 frame={body.frame}
                 plan={chartPlan}
                 zones={zones}
                 marks={marks}
+                follow={liveOn}
               />
               <div
                 className="row"
