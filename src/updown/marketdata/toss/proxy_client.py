@@ -41,6 +41,9 @@ PROXY_PATH = "/admin/toss/result"
 """서버 쪽 끝점 경로 (`apps/api/toss_proxy.py`)."""
 CANDLES_PATH = "/admin/toss/candles"
 """서버가 합성해 둔 봉을 주는 끝점 — 1분봉 수백 페이지 대신 요청 한 번."""
+CANDLES_TIMEOUT_S = 900.0
+"""봉 끝점 대기 상한 — 서버가 처음 합성하는 종목은 몇 분이 걸린다. 끊고 다시 보내면 두 번
+합성한다."""
 MODE_COOKIE = "updown_mode"
 """nginx 가 행선지를 고르는 쿠키 — 없으면 데모 API 로 가는데, 데모는 토스를 안 부른다."""
 
@@ -104,6 +107,22 @@ class TossProxyClient:
             ),
             transport=transport,
         )
+        # ⭐ 봉 끝점은 **오래 걸릴 수 있고 재시도하면 안 된다** — 서버가 1분봉 수백 페이지를
+        #    합성하는 동안(요율 5/s 면 1h 400봉 ≈ 1분, 밤 예열과 겹치면 몇 분) 30초에 끊고 다시
+        #    보내면 서버가 같은 합성을 또 시작한다(2026-09-11 실측: 6번 재시도 → 7분). nginx 는
+        #    3600s 까지 기다린다.
+        self._slow = Outbound(
+            "TOSS_PROXY",
+            base_url=self._base,
+            timeout=CANDLES_TIMEOUT_S,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token.get_secret_value()}",
+                "Cookie": f"{MODE_COOKIE}={mode}",
+            },
+            policy=RetryPolicy(max_retries=0, retriable=frozenset(), retry_5xx=False),
+            transport=transport,
+        )
         _logger.info("toss_proxy_client_created", payload={"base": self._base})
 
     @property
@@ -125,6 +144,7 @@ class TossProxyClient:
     async def aclose(self) -> None:
         """연결 풀을 닫는다."""
         await self._client.aclose()
+        await self._slow.aclose()
 
     async def get_result(
         self, path: str, *, group: str, params: dict[str, str] | None = None
@@ -212,7 +232,7 @@ class TossProxyClient:
             "end": end.isoformat(),
         }
         try:
-            response = await self._client.request(
+            response = await self._slow.request(
                 "GET", CANDLES_PATH, params=query, throttle_key=None
             )
         except OutboundError as exc:

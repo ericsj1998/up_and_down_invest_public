@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from typing import Annotated, Any, cast
@@ -62,6 +63,8 @@ HTTP_FAILED_DEPENDENCY = 424
 사라진다(2026-09-11 실측). 424 는 그대로 통과한다."""
 HTTP_UNAVAILABLE = 503
 MAX_PARAMS_CHARS = 4_000
+_CANDLE_LOCKS: dict[str, asyncio.Lock] = {}
+"""`시장:종목:축` → 합성 중 잠금 — 같은 봉을 두 번 합성하지 않는다."""
 
 
 def parse_params(raw: str) -> dict[str, str]:
@@ -195,8 +198,12 @@ async def toss_candles(
     except (UnsupportedMarketError, ConfigurationError) as exc:
         raise HTTPException(HTTP_UNAVAILABLE, str(exc)) from exc
     instrument = Instrument(mk, symbol.strip().upper(), symbol, AssetType.STOCK, Currency.USD)
+    # ⭐ 같은 종목·축을 동시에 합성하지 않는다 — 첫 요청이 몇 분 걸리는 사이 같은 요청이 또 오면
+    #    (재시도 · 두 화면) 1분봉 페이지를 두 번 받는다. 뒤 요청은 기다렸다가 DB 를 맞는다.
+    lock = _CANDLE_LOCKS.setdefault(f"{mk.value}:{instrument.symbol}:{tf.value}", asyncio.Lock())
     try:
-        rows = await adapter.get_candles(instrument, tf, a, b)
+        async with lock:
+            rows = await adapter.get_candles(instrument, tf, a, b)
     except UnknownSymbolError as exc:
         raise HTTPException(HTTP_NOT_FOUND, str(exc)) from exc
     except TossAuthError as exc:
