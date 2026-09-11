@@ -791,6 +791,7 @@ NVIDIA NIM. Docker Compose, Caddy, Lightsail. uv, ruff, pyright, pytest, import-
 | 문서 | 내용 |
 |---|---|
 | [README.md](docs/architecture/README.md) | 설계 기록 묶음 |
+| [tech_stack.md](docs/architecture/tech_stack.md) | 기술 스택 — 기술마다 설명, 장점, **단점**, 채택 이유, 쓰지 않기로 한 것 |
 | [diagrams.md](docs/architecture/diagrams.md) | ERD, 시퀀스, 스윔레인, 플로우차트 |
 | [ai_agents_and_mcp.md](docs/architecture/ai_agents_and_mcp.md) | AI 는 무엇을 하고 무엇을 못 하나 |
 | [ai_chat_scenarios.md](docs/architecture/ai_chat_scenarios.md) | 시험한 대화 |

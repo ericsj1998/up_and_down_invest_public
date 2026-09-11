@@ -6,6 +6,7 @@
 | 문서 | 무엇을 답하나 |
 |---|---|
 | 이 문서 | 프로젝트가 무엇인지 · 어떤 고민에서 어떤 설계가 나왔는지 (결정 기록) |
+| [tech_stack.md](tech_stack.md) | **기술 스택 — 무엇을 왜 골랐나.** 기술마다 설명 · 장점 · **단점** · 채택 이유 · 쓰지 않기로 한 것 · 교체 방아쇠 |
 | [diagrams.md](diagrams.md) | 개념 ERD · 기술 ERD · 시퀀스 다이어그램 · 스윔레인 다이어그램 · **플로우차트**(캔들 → 리포트) |
 | [ledger_reconciliation.md](ledger_reconciliation.md) | **원장과 거래소를 어떻게 맞추나** — 주문 시 대조 절차 · 서버가 죽었을 때 · 영속성 · 실제 사고와 수정 |
 | [code_quality_review.md](code_quality_review.md) | 코드가 개발 표준(추상화 · 책임 분리 · 주석 · 구조)을 얼마나 지키는지 — 분석 보고 |
