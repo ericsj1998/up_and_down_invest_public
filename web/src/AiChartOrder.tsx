@@ -7,7 +7,7 @@
  *
  * 숫자는 전부 서버가 준 문자열이다 — 화면은 계산하지 않는다(규칙 #2 정신 · 대시보드와 같은 원칙).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   chartOrderAnalyzeJob,
@@ -84,6 +84,12 @@ function defaultsFor(
     };
   }
   return { symbol: "BTC_USDT", market: markets[0]?.name ?? "GATE" };
+}
+
+/** 점수(0~100) — 소수 한 자리. 서버 값 그대로 두면 `94.16666666666667` 처럼 나온다 (사용자 2026-09-11). */
+function scoreText(raw: number | null | undefined): string {
+  if (raw === null || raw === undefined || !Number.isFinite(raw)) return "—";
+  return raw.toFixed(1);
 }
 
 function pctText(raw: string | undefined): string {
@@ -453,6 +459,7 @@ export function AiChartOrder({
   //    분석 화면은 과거 구조를 훑는 자리라 콘솔과 반대다. 켜면 콘솔과 같은 규칙(오른쪽 끝 고정).
   const [liveOn, setLiveOn] = useState(false);
   const [busy, setBusy] = useState(false);
+  const autoRun = useRef<number | null>(null);
   const [error, setError] = useState("");
   const info = markets.find((m) => m.name === market);
   const stock = info?.group === "stock";
@@ -822,7 +829,22 @@ export function AiChartOrder({
                 <input
                   value={symbol}
                   list={stock ? "ai-chart-order-names" : undefined}
-                  onChange={(e) => setSymbol(e.target.value)}
+                  onChange={(e) => {
+                    const typed = e.target.value;
+                    setSymbol(typed);
+                    // ⭐ 목록에서 고르면(또는 코드를 다 치면) **바로 읽는다** — 고르고 나서 단추를 또 눌러야
+                    //    하는 것이 "로딩이 안 된다" 로 보였다(사용자 2026-09-11). 반 초 뒤 그때의 값이
+                    //    아는 종목이면 실행 — 치는 중간(GOOG→GOOGL)에 두 번 읽지 않게.
+                    const code = typed.trim().toUpperCase();
+                    if (autoRun.current !== null)
+                      window.clearTimeout(autoRun.current);
+                    if (stock && names.some((n) => n.symbol === code)) {
+                      autoRun.current = window.setTimeout(() => {
+                        autoRun.current = null;
+                        run({ symbol: code, market });
+                      }, 500);
+                    }
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") run();
                   }}
@@ -864,7 +886,7 @@ export function AiChartOrder({
               disabled={busy || !symbol.trim()}
               onClick={() => run()}
             >
-              {busy ? "읽는 중…" : "분석"}
+              {busy ? "읽는 중…" : "차트 보기"}
             </button>
             <button
               type="button"
@@ -919,12 +941,12 @@ export function AiChartOrder({
                   type="button"
                   className={`chip${r.symbol === symbol.trim().toUpperCase() ? " gain" : ""}`}
                   disabled={busy}
-                  title={`${r.name ?? ""} · 점수 ${r.score ?? "—"} · 싼 정도 ${r.cheapness ?? "—"} · ${r.price ?? "—"}${r.flags.length ? ` · 깃발 ${r.flags.join(",")}` : ""}`}
+                  title={`${r.name ?? ""} · 점수 ${scoreText(r.score)} · 싼 정도 ${scoreText(r.cheapness)} · ${numText(r.price, dec)}${r.flags?.length ? ` · 깃발 ${r.flags.join(",")}` : ""}`}
                   onClick={() =>
                     run({ symbol: r.symbol, market: r.market ?? market })
                   }
                 >
-                  {r.symbol} <span className="faint">{r.score ?? "—"}</span>
+                  {r.symbol} <span className="faint">{scoreText(r.score)}</span>
                 </button>
               ))}
               {cands.length > 15 ? (
