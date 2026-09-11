@@ -174,8 +174,8 @@ function PlanCard({
           손절폭 {plan.stop_pct ? `${Number(plan.stop_pct).toFixed(2)}%` : "—"}
         </li>
         <li className="faint text-xs">근거: {plan.basis}</li>
+        {/* 색은 토큰으로 — 박아 두면 다크에서 어두운 바탕에 어두운 빨강이 된다 (2026-09-12). */}
         {plan.blocked.length ? (
-          {/* 색은 토큰으로 — 박아 두면 다크에서 어두운 바탕에 어두운 빨강이 된다 (2026-09-12). */}
           <li className="text-xs" style={{ color: "var(--loss)" }}>
             막은 이유: {plan.blocked.join(" · ")}
           </li>
