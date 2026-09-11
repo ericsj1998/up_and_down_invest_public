@@ -37,6 +37,7 @@ from updown.analysis.detectors.rules import load_rules
 from updown.analysis.indicators.atr import atr
 from updown.analysis.levels import Level, useful
 from updown.analysis.plan import propose
+from updown.apps.api.quotes import stored_quotes
 from updown.common.cache import TtlCache
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.domain.candle import Candle
@@ -187,7 +188,10 @@ async def frame(
                 f"고를 수 있는 축: {', '.join(item.value for item in served)}",
             )
         try:
-            rows = await adapter.get_candles(
+            # ⭐ DB 먼저(`StoredCandles`) — 브로커를 직접 부르면 토스 시장은 요청마다 1분 원봉
+            #    2만여 개를 새로 받아 1h 400봉이 60초를 넘겼고 화면이 포기했다(2026-09-11 신고 ·
+            #    SPY 1h 499). 저장소가 붙어 있으면 빈 곳만 받고, 없으면(시험) 브로커 그대로다.
+            rows = await stored_quotes(provider, market).get_candles(
                 _instrument(symbol, market),
                 only,
                 now - interval(only) * (window + WARMUP_BARS),

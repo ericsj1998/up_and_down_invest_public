@@ -110,3 +110,11 @@ class TestItRefusesLoudly:
     def test_the_response_carries_the_served_frames(self) -> None:
         """화면이 단추를 이것으로 그린다 — 없으면 목록이 다시 화면 것이 된다."""
         assert '"frames": [item.value for item in served]' in self.SOURCE
+
+    def test_candles_come_from_the_store_first(self) -> None:
+        """⛔ 브로커를 직접 부르면 토스 시장은 요청마다 1분 원봉 2만여 개를 새로 받는다
+        (2026-09-11 · SPY 1h 60초+ · 화면 포기 499). 축 목록은 어댑터에게, 봉은 저장소 먼저."""
+        assert "stored_quotes(provider, market).get_candles(" in self.SOURCE
+        # 브로커 직접 호출은 틱(봉 3개) 하나뿐 — frame 블록보다 뒤에 있다.
+        assert self.SOURCE.count("adapter.get_candles(") == 1
+        assert self.SOURCE.index("adapter.get_candles(") > self.SOURCE.index("_FORMING.fresh(key)")
