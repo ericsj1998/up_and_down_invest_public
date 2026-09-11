@@ -29,6 +29,11 @@ POST /oauth2/token          Content-Type: application/x-www-form-urlencoded
 ⇒ 어댑터는 토큰을 **캐시**하고 만료 직전에만 재발급한다. 그리고 **백필·수집을 동시에
 여러 프로세스로 띄우지 않는다.**
 
+⇒ **2026-09-11 (T275)**: client 추가 발급이 안 되므로 **토스를 직접 부르는 프로세스를 실계좌 서버
+하나로 고정**했다. 연구 PC 는 서버의 `GET /admin/toss/result`(관리자 · 개인 토큰)를 부른다 —
+`marketdata/toss/proxy_client.py` · `apps/api/toss_proxy.py`. 한 프로세스 안의 동시 401 재발급 연쇄는
+`_access_token(stale=)` 이 막는다(1.7.2).
+
 ### ⚠️ 함정 ② — refresh token 이 없다
 
 만료되면 같은 엔드포인트로 다시 받는다. 그래서 401 은 "자격증명이 틀렸다"일 수도,

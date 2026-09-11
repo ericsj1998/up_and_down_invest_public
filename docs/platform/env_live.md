@@ -42,7 +42,8 @@
 | `REPORT_AT_KST` | 코드가 읽는 이름은 `REPORT_HOUR_KST`(정수) 다. `.env.example` 이 낡은 이름을 실어 왔다(§3 에서 고쳤다). 09시면 아예 없어도 된다 |
 
 ⛔ 다음은 **`.env.live` 에 있으면 안 되는** 이름이다(§12.4 격리 — 반대편 파일에 라이브 키가 있으면 기동 거부):
-`.env.demo` 에 `GATE_API_*` · `.env.live` 에 `BINANCE_TESTNET_*`(배포는 Binance 를 안 쓴다) · `TOSS_*` · `DART_API_KEY` · `NVIDIA_LLM_ACCESS_KEY`(연구 PC 전용) · `AUTH_TEST_BYPASS` · `WALK_SYNTH_DIR`(테스트 문 · 라이브 금지).
+`.env.demo` 에 `GATE_API_*` · `.env.live` 에 `BINANCE_TESTNET_*`(배포는 Binance 를 안 쓴다) · `TOSS_*` · `DART_API_KEY` · `NVIDIA_LLM_ACCESS_KEY`(연구 PC 전용) · `AUTH_TEST_BYPASS` · `WALK_SYNTH_DIR`(테스트 문 · 라이브 금지) · `TOSS_PROXY_URL` · `TOSS_PROXY_TOKEN`(T275 · 연구 PC 전용 —
+실계좌 서버가 프록시 client 가 되면 `ConfigurationError` · 발급 주체는 서버 하나).
 
 ## 3. 이번에 드러난 어긋남
 

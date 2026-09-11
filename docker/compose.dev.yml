@@ -118,7 +118,9 @@ services:
       # base 는 GATE 다(서버 데모). 로컬 데모는 BINANCE 테스트넷 — 위 머리말.
       # + 미국 주식(T240 · 2026-09-09): 토스 시세 + 페이퍼 계좌(demo DB stock_paper_accounts). 실주문 없음.
       #   NYSE 는 비용표(costs.yml)가 비어 있어 아직 안 연다 — 유니버스에 NYSE 종목이 없다.
-      UPDOWN_MARKETS: ${DEMO_MARKETS:-BINANCE}  # 2026-09-11 토스 토큰은 client 당 하나 — 서버가 NASDAQ 을 쓰는 동안 로컬은 안 부른다(런북 §4). 주식 로컬 테스트는 DEMO_MARKETS=BINANCE,NASDAQ make rebuild
+      # 2026-09-11 토스 토큰은 client 당 하나 — 서버가 NASDAQ 을 쓰는 동안 로컬은 직접 안 부른다(런북 §4).
+      # 주식 로컬 테스트는 .env.dev 에 TOSS_PROXY_URL/TOKEN(T275 · 서버가 대신 부름) + DEMO_MARKETS=BINANCE,NASDAQ make rebuild
+      UPDOWN_MARKETS: ${DEMO_MARKETS:-BINANCE}
     volumes:
       - ../src:/app/src:ro
       - ../config:/app/config:ro

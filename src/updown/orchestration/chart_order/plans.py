@@ -171,7 +171,16 @@ def tick_of(last: Decimal) -> Decimal:
 
 
 def snap(value: Decimal, tick: Decimal, rounding: str = ROUND_HALF_UP) -> Decimal:
-    """값을 눈금에 맞춘다 — 기본 반올림. 손절은 진입에서 **먼 쪽**으로(하한을 눈금이 못 깎게)."""
+    """값을 눈금에 맞춘다 — 기본 반올림. 손절은 진입에서 **먼 쪽**으로(하한을 눈금이 못 깎게).
+
+    Args:
+        value: 맞출 값.
+        tick: 호가단위.
+        rounding: `decimal` 라운딩 모드.
+
+    Returns:
+        눈금에 맞춘 값.
+    """
     return value.quantize(tick, rounding=rounding)
 
 

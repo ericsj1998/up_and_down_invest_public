@@ -48,8 +48,18 @@ from updown.marketdata.gate.adapter import GateAdapter
 from updown.marketdata.gate.client import GateClient
 from updown.marketdata.macro.adapter import MacroAdapter
 from updown.marketdata.macro.client import MacroClient
-from updown.marketdata.toss.adapter import TossAdapter
+from updown.marketdata.toss.adapter import (
+    CHART_GROUP,
+    MARKET_DATA_GROUP,
+    STOCK_GROUP,
+    ResultClient,
+    TossAdapter,
+)
+from updown.marketdata.toss.client import TossApiError as TossApiError
+from updown.marketdata.toss.client import TossAuthError as TossAuthError
 from updown.marketdata.toss.client import TossClient
+from updown.marketdata.toss.client import UnknownSymbolError as UnknownSymbolError
+from updown.marketdata.toss.proxy_client import TossProxyClient
 from updown.marketdata.upbit.adapter import UpbitAdapter
 from updown.marketdata.upbit.client import UpbitClient
 
@@ -57,6 +67,13 @@ _logger = get_logger("marketdata.provider")
 
 #: 토스 어댑터가 담당하는 시장.
 _TOSS_MARKETS = frozenset({Market.KRX, Market.NASDAQ, Market.NYSE})
+
+#: 토스 프록시(T275)가 대신 불러 주는 경로 — 어댑터가 쓰는 넷뿐. 그 밖은 서버가 400.
+TOSS_PROXY_PATHS = frozenset(
+    {"/api/v1/candles", "/api/v1/orderbook", "/api/v1/prices", "/api/v1/stocks"}
+)
+#: 프록시가 받는 요율 그룹 — 서버 스로틀 키가 되므로 어댑터의 셋만.
+TOSS_PROXY_GROUPS = frozenset({CHART_GROUP, MARKET_DATA_GROUP, STOCK_GROUP})
 
 
 def market_allowlist(env: Mapping[str, str] | None = None) -> frozenset[str]:
@@ -114,7 +131,7 @@ class MarketDataProvider:
     #    만들면 요청마다 연결 풀·rate-limit 계량기가 새로 생긴다.
     _shared_gate: ClassVar[GateClient | None] = None
     _shared_binance: ClassVar[BinanceClient | None] = None
-    _shared_toss: ClassVar[TossClient | None] = None
+    _shared_toss: ClassVar[ResultClient | None] = None
 
     def __init__(self, settings: Settings | None = None) -> None:
         """Provider 를 만든다. 실제 클라이언트는 시장별로 지연 생성한다.
@@ -125,7 +142,7 @@ class MarketDataProvider:
         """
         self._settings = settings
         self._upbit_client: UpbitClient | None = None
-        self._toss_client: TossClient | None = None
+        self._toss_client: ResultClient | None = None
         # ⭐ Gate 는 **자격증명이 없다** — 조회 엔드포인트가 전부 공개라서, 키를 안 쓰는
         #   것 자체가 주문 차단 방어선이다 (업비트와 같은 방향 · spec §8).
         self._gate_client: GateClient | None = None
@@ -250,27 +267,71 @@ class MarketDataProvider:
             return UpbitAdapter(self._upbit_client)
 
         if market in _TOSS_MARKETS:
-            # 🔴 **프로세스에서 하나** (T250 실측 2026-09-09). 토스는 client 당 토큰이 하나라
-            #    두 판이 각자 클라이언트를 들면 서로의 토큰을 무효화한다(`token-revoked` 401 →
-            #    재발급 반복). Gate 와 같은 이유로 클래스 수준에 둔다. 프로세스 사이(api ·
-            #    engine)는 여전히 한 키를 나눠 쓰므로 동시 백필을 띄우지 않는다(toss_api_notes §1).
-            if not toss_allowed(market_allowlist()):
-                raise UnsupportedMarketError(
-                    f"{market.value}: 이 프로세스는 토스를 부르지 않는다 — "
-                    "UPDOWN_MARKETS 에 KRX/NASDAQ/NYSE 가 없다 (토큰은 client 당 하나)"
+            return TossAdapter(self.toss_client(market))
+
+        raise UnsupportedMarketError(f"{market} 의 조회 어댑터가 없다")
+
+    def toss_via_proxy(self) -> bool:
+        """이 프로세스가 토스를 **프록시로** 부르는 구성인가 (`TOSS_PROXY_URL/TOKEN` · T275).
+
+        Returns:
+            둘 다 설정돼 있으면 True. 반쪽이면 `ConfigurationError`.
+        """
+        settings = self._settings or load_settings()
+        return settings.toss_proxy is not None
+
+    def toss_client(self, market: Market = Market.NASDAQ) -> ResultClient:
+        """프로세스 공유 토스 조회 client — 직접(`TossClient`) 또는 프록시(`TossProxyClient`).
+
+        Args:
+            market: 로그·오류 문구용 시장. 어느 토스 시장이든 client 는 하나다.
+
+        Returns:
+            `ResultClient`. 처음 부를 때 만든다.
+
+        Raises:
+            UnsupportedMarketError: `UPDOWN_MARKETS` 에 토스 시장이 없다 — 어댑터도
+                토큰도 안 만든다.
+            ConfigurationError: 자격증명/프록시 설정이 없거나 반쪽이다 · 실계좌 서버가
+                프록시 client 로 구성됐다.
+
+        Note:
+            🔴 **프로세스에서 하나** (T250 실측 2026-09-09). 토스는 client 당 토큰이
+            하나라 두 판이 각자 클라이언트를 들면 서로의 토큰을 무효화한다
+            (`token-revoked` 401 → 재발급 반복). Gate 와 같은 이유로 클래스 수준에 둔다.
+            프로세스 사이(서버 ↔ 연구 PC)는 **프록시**(T275)로 발급 주체를 서버
+            하나에 모은다 — 서버 `/admin/toss/result`(`apps/api/toss_proxy.py`)가
+            이 메서드의 직접 client 로 대신 부른다.
+        """
+        if not toss_allowed(market_allowlist()):
+            raise UnsupportedMarketError(
+                f"{market.value}: 이 프로세스는 토스를 부르지 않는다 — "
+                "UPDOWN_MARKETS 에 KRX/NASDAQ/NYSE 가 없다 (토큰은 client 당 하나)"
+            )
+        if MarketDataProvider._shared_toss is None:
+            settings = self._settings or load_settings()
+            proxy = settings.toss_proxy
+            if proxy is not None:
+                if settings.is_live:
+                    raise ConfigurationError(
+                        "실계좌 서버는 토스 프록시 client 가 될 수 없다 — 발급 주체는 서버 하나다. "
+                        ".env.live 에서 TOSS_PROXY_URL/TOKEN 을 지운다"
+                    )
+                url, token = proxy
+                MarketDataProvider._shared_toss = TossProxyClient(url, token)
+                _logger.info(
+                    "market_data_adapter_created",
+                    payload={"market": market.value, "broker": "toss", "via": "proxy"},
                 )
-            if MarketDataProvider._shared_toss is None:
-                settings = self._settings or load_settings()
+            else:
                 client_id, client_secret = settings.toss_market_data_credentials
                 MarketDataProvider._shared_toss = TossClient(client_id, client_secret)
                 _logger.info(
                     "market_data_adapter_created",
                     payload={"market": market.value, "broker": "toss"},
                 )
-            self._toss_client = MarketDataProvider._shared_toss
-            return TossAdapter(self._toss_client)
-
-        raise UnsupportedMarketError(f"{market} 의 조회 어댑터가 없다")
+        self._toss_client = MarketDataProvider._shared_toss
+        return self._toss_client
 
     async def list_symbols(self, market: Market) -> list[str]:
         """그 시장에서 조회 가능한 종목 코드들 (Phase 5 §5-6 종목 검색).
@@ -360,7 +421,7 @@ class MarketDataProvider:
         #    `async with MarketDataProvider()` 한 번이 라이브 러너의 클라이언트까지 닫아
         #    "client has been closed" 174건 — 공유 자원의 수명은 프로세스다. 토스도 공유로
         #    올린 날 같은 증상이 재현됐다(rank60 의 async with 가 닫음 → 주식 판 전부 실패).
-        pending: list[UpbitClient | TossClient] = [
+        pending: list[UpbitClient] = [
             client for client in (self._upbit_client,) if client is not None
         ]
         self._upbit_client = None

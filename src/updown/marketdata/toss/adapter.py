@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from updown.common.cache import TtlCache
@@ -43,7 +43,7 @@ from updown.marketdata.adapter import Capability
 from updown.marketdata.ingest.aggregate import bucket_start, merge_rows
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.stream import CandleStream
-from updown.marketdata.toss.client import TossApiError, TossClient
+from updown.marketdata.toss.client import TossApiError
 from updown.marketdata.toss.mapping import (
     DAILY_INTERVAL,
     MAX_CANDLE_COUNT,
@@ -113,6 +113,49 @@ MAX_PAGES_HARD_LIMIT = 20_000
 MAX_CONSECUTIVE_EMPTY_PAGES = 5
 
 
+class ResultClient(Protocol):
+    """어댑터가 client 에게 바라는 전부 — 직접(`TossClient`)이든 프록시(T275)든 같다.
+
+    토큰·스로틀·재시도는 client 의 책임이고 어댑터는 `result` 안쪽만 받는다.
+    프록시(`TossProxyClient`)면 그 책임은 서버의 client 가 진다.
+    """
+
+    @property
+    def requests(self) -> int:
+        """보낸 요청 수 누계 (`RequestCounting`)."""
+        ...
+
+    def budget(self, cap: int) -> AbstractContextManager[None]:
+        """블록 안 요청 수 상한.
+
+        Args:
+            cap: 허용 요청 수. 0 이하면 무제한.
+
+        Returns:
+            블록을 닫으면 상한이 풀리는 컨텍스트 매니저.
+        """
+        ...
+
+    async def get_result(
+        self, path: str, *, group: str, params: dict[str, str] | None = None
+    ) -> object:
+        """GET 하고 `result` 안쪽을 돌려준다.
+
+        Args:
+            path: 토스 경로(`/api/v1/candles` 등).
+            group: 요율 그룹 이름.
+            params: 쿼리.
+
+        Returns:
+            `result` 값 — 모양은 끝점마다 다르다.
+        """
+        ...
+
+    async def aclose(self) -> None:
+        """연결을 닫는다."""
+        ...
+
+
 class OrderPathNotAvailableError(NotImplementedError):
     """토스 어댑터에는 주문 경로가 없다 (조회 전용).
 
@@ -162,11 +205,12 @@ class TossAdapter:
         않는다). 주문 메서드는 시그니처를 지키되 예외를 던진다.
     """
 
-    def __init__(self, client: TossClient, *, calendar: MarketCalendar | None = None) -> None:
+    def __init__(self, client: ResultClient, *, calendar: MarketCalendar | None = None) -> None:
         """어댑터를 만든다.
 
         Args:
-            client: HTTP 클라이언트. 토큰 발급·스로틀·재시도는 클라이언트의 책임이다.
+            client: HTTP 클라이언트(직접 또는 프록시). 토큰 발급·스로틀·재시도는
+                클라이언트의 책임이다.
             calendar: 장 시간 판정 (시험용). None 이면 처음 필요할 때 `config/market_sessions.yml`.
         """
         self._client = client

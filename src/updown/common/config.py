@@ -105,6 +105,9 @@ _OPTIONAL_FIELDS: tuple[str, ...] = (
     "accounts_database_url",
     *LIVE_ONLY_FIELDS,
     *MARKET_DATA_ONLY_FIELDS,
+    # 토스 프록시 (T275) — 자리만 잡힌 키는 없는 것
+    "toss_proxy_url",
+    "toss_proxy_token",
 )
 
 
@@ -194,6 +197,12 @@ class Settings(BaseSettings):
     # 조회 전용 — 주문 경로에서 쓰지 않는다 (`MARKET_DATA_ONLY_FIELDS` 주석).
     toss_marketdata_client_id: SecretStr | None = None
     toss_marketdata_client_secret: SecretStr | None = None
+
+    # 토스 프록시 (T275 · 2026-09-11) — 이 프로세스가 토스를 직접 안 부르고
+    # 실계좌 서버의 `/admin/toss/result` 를 개인 토큰으로 부른다. 토스 토큰은
+    # client 당 하나라 발급 주체를 서버 하나로 고정하기 위해서다. 둘 다 있어야 켜진다.
+    toss_proxy_url: str | None = None
+    toss_proxy_token: SecretStr | None = None
 
     dart_api_key: SecretStr | None = None
 
@@ -364,6 +373,27 @@ class Settings(BaseSettings):
     def is_live(self) -> bool:
         """Live 환경인가."""
         return self.app_env is AppEnv.LIVE
+
+    @property
+    def toss_proxy(self) -> tuple[str, SecretStr] | None:
+        """토스 프록시 `(url, token)` — 둘 다 있을 때만. 없으면 None(직접 호출).
+
+        Returns:
+            `(base_url, token)` 또는 None.
+
+        Raises:
+            ConfigurationError: 하나만 있는 경우 — 반쯤 켜진 채 조용히 직접 호출로
+                떨어지면 토큰이 둘이 된다(규칙 #8).
+        """
+        url, token = self.toss_proxy_url, self.toss_proxy_token
+        if url is None and token is None:
+            return None
+        if url is None or token is None:
+            missing = "TOSS_PROXY_URL" if url is None else "TOSS_PROXY_TOKEN"
+            raise ConfigurationError(
+                f"토스 프록시 설정이 반쪽이다 — {missing} 이 없다. 둘 다 두거나 둘 다 지운다"
+            )
+        return url, token
 
     @property
     def toss_market_data_credentials(self) -> tuple[SecretStr, SecretStr]:

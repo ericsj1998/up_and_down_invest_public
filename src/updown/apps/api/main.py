@@ -64,6 +64,7 @@ from updown.apps.api.quotes import attach_candles
 from updown.apps.api.rebalancer import router as rebalancer_router
 from updown.apps.api.report import router as report_router
 from updown.apps.api.resources_admin import router as resources_admin_router
+from updown.apps.api.toss_proxy import router as toss_proxy_router
 from updown.apps.api.walkforward import router as walkforward_router
 from updown.common import paths as log_paths
 from updown.common.config import Settings, load_settings
@@ -416,6 +417,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     app.include_router(logs_admin_router)
     # 자원 창 (T215) — `/admin/resources` 도 관리자 접두어.
     app.include_router(resources_admin_router)
+    # 토스 프록시 (T275) — `/admin/toss` 관리자 접두어. 발급 주체를 서버 하나로 고정한다.
+    app.include_router(toss_proxy_router)
     # 실거래 관문 (2026-09-04) — 읽기 권한. 돈 데이터 없음 · 문을 여는 경로 없음.
     app.include_router(gates_router)
     # 근거 (T222) — 라이브 경로 vs 45미래. 시장 가격·연구 결과만 · 읽기 권한 · 게스트도 본다.
