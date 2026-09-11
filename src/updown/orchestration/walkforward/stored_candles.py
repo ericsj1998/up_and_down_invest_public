@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -45,6 +46,14 @@ _logger = get_logger("walkforward.stored_candles")
 HEAD_TOLERANCE = timedelta(days=4)
 """저장된 첫 봉이 요청 시작보다 이만큼 늦어야 머리를 받는다 — 주말+휴일 연휴가 이 안에 든다."""
 _DAILY_OR_LONGER = frozenset({Timeframe.D1})
+
+FETCH_CHUNK = timedelta(days=7)
+"""분봉 계열의 빈 구간을 나누는 폭 — 토스는 1분 원봉을 합쳐 주므로 1h 400봉이 1분봉 2만여 개 ·
+페이지 112개다. 한 덩어리로 순차 받으면 60초(프록시 경유 · 2026-09-11 실측) → 7일씩 나눠
+동시에 받는다. 일봉은 한 번에."""
+FETCH_CONCURRENCY = 4
+"""동시에 받는 덩어리 수 — 요율은 client 스로틀(그룹당 5/s)이 지키므로 여기서 겹치는 것은
+왕복 지연뿐이다."""
 """일봉은 거르지 않는다 — 토스 일봉 ts(04:00Z)는 정규장 밖이라 걸면 전부 사라진다."""
 CLOSED_TAIL_INTERVAL = 900.0
 """장이 닫혀 있을 때 꼬리를 다시 묻는 간격(초) — 러너의 축 갱신(5m 축은 30초마다)이 밤새 빈 요청을
@@ -62,6 +71,30 @@ class _StatusQuotes(Protocol):
             세션과 주문 가능 여부.
         """
         ...
+
+
+def fetch_chunks(
+    start: datetime, end: datetime, timeframe: Timeframe
+) -> list[tuple[datetime, datetime]]:
+    """빈 구간을 브로커 호출 덩어리로 나눈다 (순수).
+
+    Args:
+        start: 구간 시작.
+        end: 구간 끝.
+        timeframe: 봉 간격 — 일봉 이상은 나누지 않는다(한 호출이 몇 페이지 안 된다).
+
+    Returns:
+        `(시작, 끝)` 오름차순. `FETCH_CHUNK` 이하면 하나.
+    """
+    if timeframe in _DAILY_OR_LONGER or end - start <= FETCH_CHUNK:
+        return [(start, end)]
+    out: list[tuple[datetime, datetime]] = []
+    cur = start
+    while cur < end:
+        nxt = min(cur + FETCH_CHUNK, end)
+        out.append((cur, nxt))
+        cur = nxt
+    return out
 
 
 class StoredCandles:
@@ -142,7 +175,8 @@ class StoredCandles:
         merged: dict[datetime, Candle] = {c.ts: c for c in stored}
         now = datetime.now(UTC)
         for a, b in ranges:
-            fresh = await self._quotes.get_candles(instrument, timeframe, a, b)
+            pieces = fetch_chunks(a, b, timeframe)
+            fresh = await self._fetch_pieces(instrument, timeframe, pieces)
             self.fetched += len(fresh)
             if not fresh:
                 continue
@@ -161,12 +195,42 @@ class StoredCandles:
                     "fetched": len(fresh),
                     "stored": len(closed),
                     "had": len(stored),
+                    "chunks": len(pieces),
                 },
             )
         rows = [merged[ts] for ts in sorted(merged) if start <= ts <= end]
         if self._calendar is None or timeframe in _DAILY_OR_LONGER:
             return rows
         return regular_only(rows, self._calendar)
+
+    async def _fetch_pieces(
+        self,
+        instrument: Instrument,
+        timeframe: Timeframe,
+        pieces: Sequence[tuple[datetime, datetime]],
+    ) -> list[Candle]:
+        """덩어리들을 동시에(`FETCH_CONCURRENCY`) 받아 `ts` 오름차순 하나로 합친다.
+
+        Args:
+            instrument: 종목.
+            timeframe: 봉 간격.
+            pieces: `(시작, 끝)` 목록 — 경계 봉이 겹치면 뒤 것이 남는다(같은 봉이다).
+
+        Returns:
+            합친 봉. 한 덩어리라도 실패하면 예외 — 부분 결과를 저장하지 않는다.
+        """
+        gate = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+        async def _one(a: datetime, b: datetime) -> list[Candle]:
+            async with gate:
+                return await self._quotes.get_candles(instrument, timeframe, a, b)
+
+        parts = await asyncio.gather(*(_one(a, b) for a, b in pieces))
+        by_ts: dict[datetime, Candle] = {}
+        for part in parts:
+            for c in part:
+                by_ts[c.ts] = c
+        return [by_ts[ts] for ts in sorted(by_ts)]
 
     async def get_quote(self, instrument: Instrument) -> Quote:
         """안쪽 어댑터에 위임한다.

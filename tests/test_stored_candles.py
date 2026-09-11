@@ -193,3 +193,33 @@ def test_needed_frames_is_step_entry_daily() -> None:
         Timeframe.H1,
         Timeframe.D1,
     )
+
+
+# ── 첫 적재 덩어리 (2026-09-11 · 프록시 경유 1h 400봉 60초 → 7일씩 동시에) ──────────
+
+
+def test_fetch_chunks_splits_minute_frames_only() -> None:
+    from updown.orchestration.walkforward.stored_candles import FETCH_CHUNK, fetch_chunks
+
+    a = datetime(2026, 8, 1, tzinfo=UTC)
+    b = a + timedelta(days=30)
+    pieces = fetch_chunks(a, b, Timeframe.H1)
+    assert len(pieces) == 5 and pieces[0] == (a, a + FETCH_CHUNK) and pieces[-1][1] == b
+    assert all(y - x <= FETCH_CHUNK for x, y in pieces)
+    assert [x for x, _ in pieces[1:]] == [y for _, y in pieces[:-1]], "이어진다"
+    assert fetch_chunks(a, b, Timeframe.D1) == [(a, b)], "일봉은 한 번에"
+    assert fetch_chunks(a, a + timedelta(days=3), Timeframe.M5) == [(a, a + timedelta(days=3))]
+
+
+@pytest.mark.asyncio
+async def test_long_empty_range_is_fetched_in_concurrent_chunks_and_merged() -> None:
+    cache, repo, quotes = _cache()
+    now = floor_to_interval(datetime.now(UTC), Timeframe.H1)
+    start = now - timedelta(days=20)
+    rows = await cache.get_candles(AAPL, Timeframe.H1, start, now)
+    assert len(quotes.calls) == 3, "20일 → 7·7·6일 덩어리 셋"
+    assert sorted(quotes.calls)[0][0] == start and sorted(quotes.calls)[-1][1] == now
+    hours = int((now - start) / HOUR) + 1
+    assert len(rows) == hours, "경계가 겹쳐도 봉은 하나씩"
+    assert [c.ts for c in rows] == sorted(c.ts for c in rows)
+    assert len(repo.rows) == hours - 1, "진행 중 봉만 빼고 저장"

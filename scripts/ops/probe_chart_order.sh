@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# AI 차트 분석 주문 요청이 서버에서 얼마나 걸리나 — nginx rt= · api 의 chart_analysis/stored_candles_filled (값 없음).
-cd ~/updown 2>/dev/null || exit 1
-echo "=== nginx 20m: /api/chart-order/* (상태 · rt)"
-docker logs --since 20m updown_live-web-1 2>&1 | grep "/api/chart-order" | grep -oE '"(GET|POST) /api/chart-order/[a-z]+[^"]*" [0-9]+ .*rt=[0-9.]+' | sed -E 's/&?[a-z_]+=[^&" ]*//g; s/ [0-9]+ "[^"]*" "[^"]*"//' | tail -6 | cut -c1-140
-A=$(docker ps --format '{{.Names}}' | grep -E "^updown_live-api(_b)?-1$" | head -1)
-echo "=== $A 20m: 봉 채움 · 분석 · 토스 요청 수"
-docker logs --since 20m $A 2>&1 | grep -oE '"event_type": "(stored_candles_filled|chart_analysis|toss_candles_fetched|http_5xx)"' | sort | uniq -c
-docker logs --since 20m $A 2>&1 | grep -c 'openapi.tossinvest.com/api/v1/candles'
-echo "=== 채움 상세 (frame · fetched)"
-docker logs --since 20m $A 2>&1 | grep stored_candles_filled | grep -oE '"symbol": "[A-Z]+"|"frame": "[0-9a-z]+"|"fetched": [0-9]+' | paste - - - | sort | uniq -c | head -8
+# AI 차트 분석 주문 진단 — nginx 의 chart-order 요청(상태·rt) + 리더/데모 api 의 5xx 상세·트레이스백. 값은 안 찍는다.
+set -u
+echo "=== nginx 60m: chart-order (상태 · ups · rt)"
+docker logs --since 60m updown_live-web-1 2>&1 | grep 'chart-order' \
+  | grep -oE '"(GET|POST) [^ ]+[^"]*" [0-9]{3} .*ups=[^ ]+ rt=[^ ]+' | sed -E 's/\?[^"]*"/"/' | awk '{print $1, $2, $3, $(NF-1), $NF}' | tail -12
+for c in updown_live-api-1 updown_live-api_b-1 updown_live-api_demo-1; do
+  docker ps --format '{{.Names}}' | grep -qx "$c" || continue
+  echo "=== $c 60m: http_5xx 상세 (앞 260자)"
+  docker logs --since 60m "$c" 2>&1 | grep -E 'http_5xx' | cut -c1-260 | tail -6
+  echo "--- $c 60m: Traceback/Error 줄 (앞 200자 · 최근 12)"
+  docker logs --since 60m "$c" 2>&1 | grep -vE '"level": "(debug|info)"' | grep -E 'Traceback|Error|error' | cut -c1-200 | tail -12
+  echo "--- $c 60m: chart_order 이벤트"
+  docker logs --since 60m "$c" 2>&1 | grep -E 'chart_order|stored_candles|candles_fetched' | grep -oE '"event_type": "[^"]+"' | sort | uniq -c | sort -rn | head -8
+done
