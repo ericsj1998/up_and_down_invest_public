@@ -170,6 +170,14 @@ def _plan_json(
     }
 
 
+def _short(raw: object, places: int = 4) -> str:
+    """근거 줄의 수 — Decimal 산술 꼬리(`3.358082861558…`)를 자른다. 수가 아니면 그대로."""
+    try:
+        return f"{Decimal(str(raw)):.{places}f}".rstrip("0").rstrip(".")
+    except InvalidOperation:
+        return str(raw)
+
+
 def plan_reasons(
     *,
     plans: dict[str, dict[str, Any] | None],
@@ -270,7 +278,7 @@ def _evidence_lines(
         band("위 첫 저항", resistance),
         swing("전고", swings.get("swing_high")),
         swing("전저", swings.get("swing_low")),
-        f"ATR({chosen.entry.value}): {atr or '없음'}",
+        f"ATR({chosen.entry.value}): {_short(atr) or '없음'}",
     ]
     if extremes.get("high_52w") is not None:
         out.append(
@@ -284,7 +292,7 @@ def _evidence_lines(
         score: object = valuation.get("score")
         if isinstance(score, dict):
             score = cast("dict[str, Any]", score).get("score")
-        out.append(f"재무: 점수 {score if score is not None else '—'}")
+        out.append(f"재무: 점수 {_short(score, 2) if score is not None else '—'}")
     else:
         out.append(f"재무: {valuation_note or '없음'}")
     if vix is not None:
