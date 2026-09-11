@@ -62,7 +62,8 @@ class TossProxyClient:
         *,
         mode: str = "live",
         timeout: float = 30.0,
-        max_retries: int = 1,
+        max_retries: int = 6,
+        retry_base_s: float = 1.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         """클라이언트를 만든다.
@@ -72,8 +73,11 @@ class TossProxyClient:
             token: 개인 API 토큰(T263). 헤더에만 실리고 로그엔 안 찍힌다.
             mode: `updown_mode` 쿠키 값 — 실계좌 API 가 토스를 부르므로 기본 `live`.
             timeout: 요청 타임아웃(초). 서버가 토스를 부르고 돌아오는 시간까지다.
-            max_retries: 5xx 재시도 횟수. 서버가 이미 토스 쪽을 재시도했으므로 적게 —
-                블루그린 순간의 502 정도만.
+            max_retries: nginx 502/504 · 429 재시도 횟수. 블루그린 교체 창(수십 초)을 덮도록
+                지수 백오프 1·2·4·8·16·32초 — 1회·0.6초였을 때 배포마다 백필 달이 통째로
+                빠졌다(2026-09-11 실측 GOOG 8달). 서버가 낸 424(토스 오류)·503(토스 안 부름)은
+                재시도하지 않는다 — 기다려도 같다.
+            retry_base_s: 백오프 밑값(초). 시험이 줄인다.
             transport: 시험용 전송 계층.
         """
         self._base = base_url.rstrip("/")
@@ -86,7 +90,12 @@ class TossProxyClient:
                 "Authorization": f"Bearer {token.get_secret_value()}",
                 "Cookie": f"{MODE_COOKIE}={mode}",
             },
-            policy=RetryPolicy(max_retries=max_retries),
+            policy=RetryPolicy(
+                max_retries=max_retries,
+                base_delay_s=retry_base_s,
+                retriable=frozenset({429, 502, 504}),
+                retry_5xx=False,
+            ),
             transport=transport,
         )
         _logger.info("toss_proxy_client_created", payload={"base": self._base})

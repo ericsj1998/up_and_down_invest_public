@@ -340,3 +340,52 @@ class TestProviderBranch:
         settings = _settings(toss_proxy_url="https://s.test/api", toss_proxy_token="updn_t")
         with pytest.raises(UnsupportedMarketError):
             MarketDataProvider(settings).toss_client()
+
+
+class TestSwapWindow:
+    """블루그린 교체 창의 nginx 502 는 기다렸다 다시 — 서버가 낸 503/424 는 바로 실패."""
+
+    def test_502_is_retried_until_the_slot_is_back(self) -> None:
+        import asyncio
+
+        seen: list[int] = []
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            seen.append(1)
+            if len(seen) < 4:
+                return httpx.Response(502, text="<html>502 Bad Gateway</html>")
+            return httpx.Response(200, json={"result": {"ok": 1}})
+
+        client = TossProxyClient(
+            "https://example.test/api",
+            SecretStr("updn_x"),
+            retry_base_s=0.001,
+            transport=_transport(handler),
+        )
+        got = asyncio.run(client.get_result("/api/v1/candles", group=CHART_GROUP))
+        assert got == {"ok": 1} and len(seen) == 4
+
+    def test_503_and_424_are_not_retried(self) -> None:
+        import asyncio
+
+        for status in (503, 424):
+            seen = self._counting(status)
+            client = TossProxyClient(
+                "https://example.test/api",
+                SecretStr("updn_x"),
+                retry_base_s=0.001,
+                transport=_transport(seen[1]),
+            )
+            with pytest.raises(TossApiError):
+                asyncio.run(client.get_result("/api/v1/prices", group="MARKET_DATA"))
+            assert len(seen[0]) == 1
+
+    @staticmethod
+    def _counting(status: int) -> tuple[list[int], Any]:
+        hits: list[int] = []
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            hits.append(1)
+            return httpx.Response(status, json={"detail": "서버가 낸 것"})
+
+        return hits, handler
