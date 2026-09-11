@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 from updown.common.domain.instrument import Timeframe
 from updown.orchestration.ai_experiment.record import ParticipantKind, Stance
@@ -105,7 +106,7 @@ def test_plan_reasons_tell_why_there_is_no_candidate() -> None:
     """후보 없음이 원래 없는 자리인지 오류인지 — 레벨이 어디서 떨어졌는지로 말한다 (2026-09-11)."""
     from updown.apps.api.chart_order import plan_reasons
 
-    none = {"long": None, "short": None}
+    none: dict[str, dict[str, Any] | None] = {"long": None, "short": None}
     got = plan_reasons(
         plans=none,
         support=None,

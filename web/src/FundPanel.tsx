@@ -12,6 +12,7 @@ import * as api from "./api";
 import type { FundStatus, MarketInfo } from "./api";
 import { useMe } from "./Gate";
 import { bookInGroup, groupOfName, marketTradeAllowed, useMarketGroup } from "./shell/marketGroup";
+import { when } from "./shell/MarketHours";
 import { FundMembers } from "./FundMembers";
 import { ErrorCard, SelectField } from "./ui";
 
@@ -131,6 +132,10 @@ export function FundPanel() {
   >([]);
   const [playbook, setPlaybook] = useState("");
   const [market, setMarket] = useState("GATE");
+  /** 장 마감 중 만들기 — 확인 패널에 띄울 다음 개장 (null 이면 패널 없음). */
+  const [closedAsk, setClosedAsk] = useState<{ nextOpen: string | null } | null>(
+    null,
+  );
   // ⭐ T261 — 펀드 하나의 상세(종목마다 일봉 + 상태). 한 번에 하나만 편다.
   const [detail, setDetail] = useState<string | null>(null);
   const [members, setMembers] = useState<{ symbol: string; weight: string }[]>(
@@ -155,6 +160,15 @@ export function FundPanel() {
   useEffect(() => {
     if (groupMarkets.length && !groupMarkets.includes(market)) setMarket(groupMarkets[0] ?? market);
   }, [groupMarkets.join(","), market]);
+  // 🔴 **묶음을 바꾸면 매매법도 그 묶음 것으로** (2026-09-11 실측). 코인에서 주식으로 옮겨도
+  //    `playbook` 은 코인 것으로 남았는데, `<select>` 는 목록에 없는 값을 **첫 항목처럼**
+  //    그린다 — 화면은 주식 매매법을 고른 것처럼 보이고 근거 카드와 서버로 가는 값은 코인
+  //    것이었다(레버리지 6x · BN 6.58년). 고른 것과 보내는 것이 갈리면 사람은 알 길이 없다.
+  useEffect(() => {
+    if (!groupBooks.length) return;
+    if (groupBooks.some((b) => b.id === playbook)) return;
+    setPlaybook(groupBooks[0]?.id ?? "");
+  }, [groupBooks.map((b) => b.id).join(","), playbook]);
 
   const refresh = () =>
     api
@@ -203,10 +217,22 @@ export function FundPanel() {
   // 선택한 전략 — 선언 배율·기준 백테스트 표기 전용 (서버가 같은 선언을 읽는다).
   const selBook = books.find((b) => b.id === playbook) ?? null;
 
-  const create = async () => {
+  // 🔴 **장 밖이면 먼저 말한다** (사용자 2026-09-11: *"장이 닫혀 있으면 예약이 걸리는 건가?
+  //    그걸 사용자한테 물어봐야 할 것 같은데"*). 주문 창은 장 밖이면 409 로 막지만(예약 주문
+  //    없음), 펀드는 만들어 두고 개장을 기다리는 것이 쓸모 있다 — 대신 **예약이 아니라 대기**
+  //    라는 것을 만들기 전에 분명히 한다. 그냥 만들면 "만들었는데 아무 일도 안 일어난다" 가 된다.
+  const create = async (confirmed = false) => {
     setBusy("create");
     setErr("");
     try {
+      if (!confirmed && group !== "coin") {
+        const status = await api.marketStatus(market).catch(() => null);
+        if (status && !status.always_open && status.state === "closed") {
+          setClosedAsk({ nextOpen: status.next_open });
+          return;
+        }
+      }
+      setClosedAsk(null);
       await api.fundCreate({
         label,
         total_cash: cash,
@@ -810,13 +836,36 @@ export function FundPanel() {
         />
         <button
           className="btn primary"
-          onClick={create}
+          onClick={() => create()}
           disabled={busy === "create" || !mayTradeHere}
           title={mayTradeHere ? undefined : "이 시장에서 거래할 권한이 없다 — 관리자가 준다"}
         >
           {mayTradeHere ? (busy === "create" ? "만드는 중…" : "펀드 만들기") : "🔒 거래 권한 없음"}
         </button>
       </div>
+      {closedAsk && (
+        <div className="book-card" role="alert">
+          <span className="card-name">지금은 장 마감이다</span>
+          <p className="muted">
+            펀드를 만들면 종목마다 RUN 이 뜨지만, 판정은
+            {closedAsk.nextOpen ? ` 다음 개장(${when(closedAsk.nextOpen)})` : " 다음 개장"}
+            부터 시작한다. <b>예약 주문이 아니라 대기다</b> — 그때까지 주문은 나가지 않고, 개장하면
+            매매법이 스스로 자리를 찾는다.
+          </p>
+          <div className="row">
+            <button
+              className="btn primary"
+              onClick={() => create(true)}
+              disabled={busy === "create"}
+            >
+              {busy === "create" ? "만드는 중…" : "그래도 만든다"}
+            </button>
+            <button className="btn" onClick={() => setClosedAsk(null)}>
+              취소
+            </button>
+          </div>
+        </div>
+      )}
       {/* 레버리지 입력칸을 없앤 대신 고르는 근거를 카드로 보여 준다 (사용자 2026-09-03).
           칩은 flex-wrap 이라 확대해도 자연스럽게 줄바꿈된다. 값은 플레이북 선언이 출처. */}
       {selBook && (

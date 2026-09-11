@@ -29,6 +29,7 @@ import contextlib
 import random
 import time
 from collections.abc import Callable, Generator, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -37,6 +38,18 @@ import httpx
 from updown.common.logging.setup import get_logger
 
 _logger = get_logger("common.http")
+
+
+@dataclass
+class _Tally:
+    """예산 블록 하나의 눈금 — 상한과 이 작업이 쓴 수."""
+
+    cap: int
+    used: int = 0
+
+
+_BUDGET: ContextVar[_Tally | None] = ContextVar("outbound_budget", default=None)
+"""지금 작업의 예산 눈금 (`Outbound.budget`). 작업마다 따로라 남의 요청은 안 세어진다."""
 
 HTTP_OK = 200
 HTTP_TOO_MANY_REQUESTS = 429
@@ -226,8 +239,6 @@ class Outbound:
         self.venue = venue
         self.policy = policy or RetryPolicy()
         self.requests = 0
-        self._cap = 0
-        self._cap_base = 0
         self._throttle_of = throttle_of
         self._on_response = on_response
         self._base_url = base_url
@@ -264,7 +275,7 @@ class Outbound:
 
     @contextlib.contextmanager
     def budget(self, cap: int) -> Generator[None, None, None]:
-        """블록 안의 요청 수에 상한을 건다.
+        """블록 안에서 **이 작업이 낸** 요청 수에 상한을 건다.
 
         Args:
             cap: 허용 요청 수. 0 이하면 무제한.
@@ -273,21 +284,40 @@ class Outbound:
             블록을 닫으면 바깥 상한으로 돌아가는 컨텍스트 매니저.
 
         Note:
-            중첩은 안쪽이 이기고, 나가면 바깥 값으로 돌아간다. 같은 클라이언트를 나눠 쓰는 두
-            작업의 요청이 같이 세어지는 것은 의도다 — 상한이 지키는 것은 토큰 하나의 요율이다.
+            🔴 **남의 요청은 안 센다** (2026-09-11 실측으로 바꿨다). 예전에는 클라이언트의 총
+            요청 수를 재서, 같은 시각에 도는 야간 예열·콘솔 폴링·다른 판의 점검이 모두 이 상한을
+            먹었다. 사람이 펀드를 만들 때 "TOSS 요청이 상한 300 을 넘었다" 가 나면서도 그 판이
+            실제로 쓴 요청은 훨씬 적었고, 화면에는 고칠 방법이 없는 실패로만 보였다.
+
+            세는 자리는 `contextvars` 라 이 블록 안에서 만든 하위 작업(`asyncio.gather` 의
+            갈래)은 같이 세어지고, 블록 밖에서 이미 돌던 작업은 세어지지 않는다. 요율 자체는
+            스로틀이 지킨다 — 이 상한이 지키는 것은 **한 작업이 너무 비싼가**이다.
+
+            중첩은 안쪽이 이기고, 나가면 바깥 상한으로 돌아간다. 바깥 눈금에 안쪽 요청은
+            안 들어간다.
         """
-        was = (self._cap, self._cap_base)
-        self._cap, self._cap_base = cap, self.requests
+        token = _BUDGET.set(_Tally(cap=cap))
         try:
             yield
         finally:
-            self._cap, self._cap_base = was
+            _BUDGET.reset(token)
+
+    @property
+    def budget_used(self) -> int | None:
+        """지금 예산 블록 안에서 이 작업이 낸 요청 수 — 블록 밖이면 None."""
+        tally = _BUDGET.get()
+        return None if tally is None else tally.used
 
     def _count(self, path: str) -> None:
         self.requests += 1
-        if self._cap > 0 and self.requests - self._cap_base > self._cap:
+        tally = _BUDGET.get()
+        if tally is None:
+            return
+        # 상한이 0 이면 세기만 한다 — 눈금은 남기고 막지는 않는다.
+        tally.used += 1
+        if tally.cap > 0 and tally.used > tally.cap:
             raise RequestBudgetExceededError(
-                f"{self.venue} 요청이 상한 {self._cap} 을 넘었다 ({path}) — 작업이 너무 비싸다. "
+                f"{self.venue} 요청이 상한 {tally.cap} 을 넘었다 ({path}) — 작업이 너무 비싸다. "
                 "축을 줄이거나 봉을 미리 적재한다 (T253)"
             )
 

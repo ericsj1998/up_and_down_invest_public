@@ -130,6 +130,11 @@ class TossProxyClient:
         """보낸 프록시 요청 수 누계 — 토스 요청 수와 1:1 이다(토큰 발급은 서버 몫)."""
         return self._client.requests
 
+    @property
+    def budget_used(self) -> int | None:
+        """지금 예산 블록에서 이 작업이 쓴 요청 수 — 층에 위임. 블록 밖이면 None."""
+        return self._client.budget_used
+
     def budget(self, cap: int) -> AbstractContextManager[None]:
         """블록 안의 요청 수 상한 (`RequestCounting`).
 

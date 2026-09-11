@@ -204,6 +204,11 @@ class TossClient:
         """보낸 HTTP 요청 수 누계(토큰 발급 포함) — 판 시작 비용의 눈금이다 (T253)."""
         return self._client.requests
 
+    @property
+    def budget_used(self) -> int | None:
+        """지금 예산 블록에서 이 작업이 쓴 요청 수 — 층에 위임. 블록 밖이면 None."""
+        return self._client.budget_used
+
     async def __aenter__(self) -> Self:
         """컨텍스트 진입."""
         return self

@@ -125,6 +125,11 @@ class ResultClient(Protocol):
         """보낸 요청 수 누계 (`RequestCounting`)."""
         ...
 
+    @property
+    def budget_used(self) -> int | None:
+        """지금 예산 블록에서 이 작업이 쓴 요청 수 — 블록 밖이면 None."""
+        ...
+
     def budget(self, cap: int) -> AbstractContextManager[None]:
         """블록 안 요청 수 상한.
 
@@ -240,6 +245,11 @@ class TossAdapter:
     def requests(self) -> int:
         """보낸 HTTP 요청 수 누계 (`RequestCounting` · T253)."""
         return self._client.requests
+
+    @property
+    def budget_used(self) -> int | None:
+        """지금 예산 블록에서 이 작업이 쓴 요청 수 — client 에 위임. 블록 밖이면 None."""
+        return self._client.budget_used
 
     def budget(self, cap: int) -> AbstractContextManager[None]:
         """요청 상한 블록 — 클라이언트에 그대로 넘긴다 (`RequestCounting` · T253).

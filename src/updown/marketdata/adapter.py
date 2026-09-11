@@ -413,13 +413,22 @@ class RequestCounting(Protocol):
         """지금까지 보낸 HTTP 요청 수 (프로세스 누계)."""
         ...
 
+    @property
+    def budget_used(self) -> int | None:
+        """지금 예산 블록에서 **이 작업이** 쓴 요청 수 — 블록 밖이면 None."""
+        ...
+
     def budget(self, cap: int) -> AbstractContextManager[None]:
-        """블록 안에서 `cap` 개를 넘는 요청은 `RequestBudgetExceededError`.
+        """블록 안에서 **이 작업이** `cap` 개를 넘게 부르면 `RequestBudgetExceededError`.
 
         Args:
             cap: 허용 요청 수. 0 이하면 무제한.
 
         Returns:
             블록을 닫으면 상한이 풀리는 컨텍스트 매니저.
+
+        Note:
+            같은 시각에 도는 다른 작업(예열 · 폴링)의 요청은 세지 않는다 — 2026-09-11 에
+            그것 때문에 사람의 펀드 만들기가 남의 일로 실패했다.
         """
         ...

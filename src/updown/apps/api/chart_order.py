@@ -250,6 +250,15 @@ def _evidence_lines(
     """
 
     def band(label: str, level: dict[str, Any] | None) -> str:
+        """지지·저항 한 줄 — 구간·접점 수·현재가 대비 거리.
+
+        Args:
+            label: 앞에 붙일 이름 (지지 · 저항).
+            level: 레벨 한 개. None 이면 "없음" 이라고 적는다.
+
+        Returns:
+            사람이 읽는 한 줄.
+        """
         if level is None:
             return f"{label}: 없음"
         return (
@@ -258,6 +267,15 @@ def _evidence_lines(
         )
 
     def swing(label: str, item: Any) -> str:
+        """전고·전저 한 줄 — 가격과 그때 시각, 현재가 대비 거리.
+
+        Args:
+            label: 앞에 붙일 이름 (전고 · 전저 · 52주 고가 …).
+            item: 스윙 한 개. 모양이 아니면 "없음" 이라고 적는다.
+
+        Returns:
+            사람이 읽는 한 줄.
+        """
         if not isinstance(item, dict):
             return f"{label}: 없음"
         got = cast("dict[str, Any]", item)
@@ -321,6 +339,11 @@ async def _assemble(
     started = time.perf_counter()
 
     def say(message: str) -> None:
+        """진행 줄 하나 — 경과 초를 앞에 붙여 보고한다. `report` 가 없으면 아무 일도 안 한다.
+
+        Args:
+            message: 지금 하는 일 한 줄.
+        """
         if report is not None:
             report(f"[{time.perf_counter() - started:5.1f}s] {message}")
 

@@ -159,6 +159,11 @@ class FakeToss:
     def budget(self, cap: int) -> AbstractContextManager[None]:  # noqa: ARG002 — 프로토콜 이름
         return nullcontext()
 
+    @property
+    def budget_used(self) -> int | None:
+        """예산 블록의 눈금 — 이 흉내는 세지 않는다 (`ResultClient`)."""
+        return None
+
     async def get_result(
         self, path: str, *, group: str, params: dict[str, str] | None = None
     ) -> object:

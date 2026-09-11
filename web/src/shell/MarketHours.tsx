@@ -13,7 +13,7 @@ function hhmm(iso: string): string {
 }
 
 /** 오늘이 아니면 요일까지 — "22:30" 만 보면 오늘인지 월요일인지 모른다. */
-function when(iso: string): string {
+export function when(iso: string): string {
   const at = new Date(iso);
   const sameDay = at.toDateString() === new Date().toDateString();
   return sameDay ? hhmm(iso) : `${at.toLocaleDateString("ko-KR", { weekday: "short" })} ${hhmm(iso)}`;

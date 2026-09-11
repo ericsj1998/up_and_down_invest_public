@@ -574,6 +574,26 @@ def _playbook(name: str) -> Playbook:
     return found
 
 
+def playbooks_outside(books: Sequence[Playbook], market: Market) -> list[str]:
+    """이 시장의 갈래를 선언하지 않은 매매법 id — 비면 통과다 (순수).
+
+    Args:
+        books: 판에 실을 매매법들 (번들은 펼친 뒤).
+        market: 판을 띄울 시장.
+
+    Returns:
+        갈래 밖 매매법 id 목록. 순서는 받은 순서.
+
+    Note:
+        🔴 2026-09-11 실측. 화면이 코인 매매법을 고른 채 시장만 NASDAQ 으로 바꿔 보내자 판이
+        그대로 떴다 — 선언 축·봉이 코인 기준이라 첫 시드가 토스 요청 상한을 넘겨 503 이 났고,
+        사람은 "펀드가 왜 안 되지" 만 봤다. 선언에 없는 갈래로 띄우는 것은 매매법을 바꾸는
+        것과 같으므로 **띄우기 전에** 막는다 (규칙 #8 · 능력표가 시장 차이를 말한다).
+    """
+    group = MarketGroup.of(market)
+    return [item.playbook_id for item in books if group not in item.market_groups]
+
+
 def _load_synth(
     root: Path, symbol: str, market: Market, start: datetime, end: datetime
 ) -> dict[Timeframe, list[Candle]]:
@@ -823,6 +843,15 @@ async def _live_start(
     market = Market(str(payload.get("market", Market.GATE.value)))
     if request is not None:
         require_market_trade(request, market)  # T242 — 이 시장에서 거래할 권한
+
+    # 🔴 **매매법이 이 갈래에서 도는가** — 판정은 `playbooks_outside` 가 한다 (위 Note).
+    outsiders = playbooks_outside(books, market)
+    if outsiders:
+        raise HTTPException(
+            400,
+            f"{', '.join(outsiders)} 는 {MarketGroup.of(market).value} 에서 도는 매매법이 "
+            f"아니다 — {market.value} 에는 그 시장을 선언한 매매법으로 띄운다",
+        )
 
     instrument = instrument_of(symbol, market)
     provider = MarketDataProvider()

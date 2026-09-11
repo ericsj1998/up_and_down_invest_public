@@ -168,7 +168,12 @@ class DropReport:
     kept: int
 
     def as_json(self) -> dict[str, int]:
-        """화면 모양."""
+        """화면 모양.
+
+        Returns:
+            탈락 이유별 수 — `raw`(작도) · `stale`(잊힘) · `broken`(관통) ·
+            `few_touches`(접점 부족) · `too_close`(비용 안) · `kept`(남은 것).
+        """
         return {
             "raw": self.raw,
             "stale": self.stale,

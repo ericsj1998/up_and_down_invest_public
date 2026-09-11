@@ -136,16 +136,21 @@ class _Counting:
         self.requests = 0
         self._per_call = per_call
         self._cap = 0
-        self._base = 0
+        self._used: int | None = None
+
+    @property
+    def budget_used(self) -> int | None:
+        """블록 안에서 이 작업이 쓴 수 — 층과 같은 뜻이다 (2026-09-11)."""
+        return self._used
 
     @contextlib.contextmanager
     def budget(self, cap: int) -> Generator[None, None, None]:
-        was = (self._cap, self._base)
-        self._cap, self._base = cap, self.requests
+        was = (self._cap, self._used)
+        self._cap, self._used = cap, 0
         try:
             yield
         finally:
-            self._cap, self._base = was
+            self._cap, self._used = was
 
     async def get_candles(
         self, instrument: Instrument, timeframe: Timeframe, start: datetime, end: datetime
@@ -153,8 +158,10 @@ class _Counting:
         del start, end
         for _ in range(self._per_call):
             self.requests += 1
-            if self._cap > 0 and self.requests - self._base > self._cap:
-                raise RequestBudgetExceededError("cap")
+            if self._used is not None:
+                self._used += 1
+                if self._cap > 0 and self._used > self._cap:
+                    raise RequestBudgetExceededError("cap")
         return _bars(instrument, timeframe)
 
 

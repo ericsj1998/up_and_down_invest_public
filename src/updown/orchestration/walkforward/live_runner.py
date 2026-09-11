@@ -5970,19 +5970,34 @@ async def seed_within_budget(
     meter = counter if counter is not None else quotes
     counting = meter if isinstance(meter, RequestCounting) else None
     before = counting.requests if counting is not None else 0
-    guard = counting.budget(cap) if counting is not None and cap > 0 else contextlib.nullcontext()
-    with guard:
-        feed = await build_live_feed(quotes, instrument, frames, entry, bars=bars)
-    used = counting.requests - before if counting is not None else None
-    _logger.info(
-        "run_start_requests",
-        payload={
-            "symbol": instrument.symbol,
-            "frames": [f.value for f in frames],
-            "requests": used,
-            "cap": cap,
-        },
-    )
+    # 상한이 0(무제한)이어도 블록은 연다 — 눈금(`budget_used`)이 있어야 로그가 값을 남긴다.
+    guard = counting.budget(cap) if counting is not None else contextlib.nullcontext()
+    # ⭐ 실패해도 눈금을 남긴다 (2026-09-11). 상한을 넘으면 예외가 이 줄 **앞에서** 나가
+    #    "얼마나 썼나" 가 로그에 없었다 — 사람은 503 만 보고 어느 축이 비쌌는지 모른다.
+    #    T253 의 DoD 는 눈금이지 성공 로그가 아니다.
+    used: int | None = None
+    try:
+        with guard:
+            try:
+                feed = await build_live_feed(quotes, instrument, frames, entry, bars=bars)
+            finally:
+                # 눈금은 **블록을 나가기 전에** 읽는다 — 나가면 예산이 풀려 None 이 된다.
+                used = counting.budget_used if counting is not None else None
+    finally:
+        _logger.info(
+            "run_start_requests",
+            payload={
+                "symbol": instrument.symbol,
+                "market": instrument.market.value,
+                "frames": [f.value for f in frames],
+                "bars": bars,
+                # 이 판이 쓴 수 / 그동안 프로세스 전체가 쓴 수 — 둘이 크게 벌어지면 배경 작업이
+                # 같이 돌던 것이고, 상한에 걸린 쪽은 앞의 수다.
+                "requests": used,
+                "process_requests": (counting.requests - before) if counting is not None else None,
+                "cap": cap,
+            },
+        )
     return feed, used
 
 
