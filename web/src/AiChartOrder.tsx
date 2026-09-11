@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  analysisFrame,
   chartOrderAnalyzeJob,
   chartOrderBuckets,
   chartOrderResolve,
@@ -24,6 +25,7 @@ import {
   valueScreen,
 } from "./api";
 import type {
+  AnalysisFrame,
   ChartAnalysis,
   ChartBucket,
   ChartParticipant,
@@ -611,6 +613,42 @@ export function AiChartOrder({
     };
   }, [open, page, stock, market]);
 
+  // ⭐ "차트 보기" 와 "분석" 은 **별개** (사용자 2026-09-11). 차트 보기는 봉과 겹칩선만 — DB 에 있으면 1초 —
+  //    종목을 고르는 순간 이것이 뜬다. 분석(구조·지지/저항·계획·재무·VIX)은 단추를 눌러야 돈다.
+  const [chart, setChart] = useState<AnalysisFrame | null>(null);
+  const [chartBusy, setChartBusy] = useState(false);
+  const [chartOf, setChartOf] = useState<{
+    symbol: string;
+    market: string;
+  } | null>(null);
+  const view = (pick?: { symbol: string; market: string }) => {
+    const chosen = (pick?.symbol ?? symbol).trim().toUpperCase();
+    const where = pick?.market ?? market;
+    if (!chosen) return;
+    if (pick) {
+      setSymbol(pick.symbol);
+      setMarket(pick.market);
+    }
+    const entry = buckets.find((b) => b.key === bucket)?.entry ?? "1h";
+    setChartBusy(true);
+    setError("");
+    // 다른 종목의 옛 분석은 내린다 — 지금 보는 봉과 다른 계획이 화면에 남으면 거짓말이다.
+    if (body && (body.symbol !== chosen || body.market !== where))
+      setBody(null);
+    analysisFrame({
+      symbol: chosen,
+      market: where,
+      flags: ["trend.structure"],
+      timeframe: entry,
+    })
+      .then((got) => {
+        setChart(got);
+        setChartOf({ symbol: chosen, market: where });
+      })
+      .catch((exc: unknown) => setError(String(exc)))
+      .finally(() => setChartBusy(false));
+  };
+
   // `pick` 은 후보 칩에서 바로 분석할 때 — 상태 갱신을 기다리지 않고 그 종목·시장으로 간다.
   const run = (pick?: { symbol: string; market: string }) => {
     const chosen = (pick?.symbol ?? symbol).trim().toUpperCase();
@@ -632,9 +670,9 @@ export function AiChartOrder({
 
   // ⭐ 화면으로 들어오면 기본 종목(또는 마지막 종목)의 차트가 **바로** 떠 있어야 한다 (사용자 2026-09-11) — 첫 렌더에 한 번.
   useEffect(() => {
-    if (page) run();
+    if (page && buckets.length) view();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page]);
+  }, [page, buckets.length]);
 
   const order = (plan: ChartPlanSide) => {
     if (!body || !plan.entry || !plan.stop || !plan.first || !plan.target)
@@ -844,7 +882,7 @@ export function AiChartOrder({
                     if (stock && names.some((n) => n.symbol === code)) {
                       autoRun.current = window.setTimeout(() => {
                         autoRun.current = null;
-                        run({ symbol: code, market });
+                        view({ symbol: code, market });
                       }, 500);
                     }
                   }}
@@ -886,10 +924,20 @@ export function AiChartOrder({
             <button
               type="button"
               className="btn small primary"
+              disabled={chartBusy || !symbol.trim()}
+              onClick={() => view()}
+              title="봉과 겹칩선만 — 종목을 고르면 자동으로 뜬다"
+            >
+              {chartBusy ? "차트 읽는 중…" : "차트 보기"}
+            </button>
+            <button
+              type="button"
+              className="btn small"
               disabled={busy || !symbol.trim()}
               onClick={() => run()}
+              title="구조(지지/저항·전고/전저) · 재무 · VIX · 롱/숏 계획 — 규칙 엔진 · AI 아님"
             >
-              {busy ? "읽는 중…" : "차트 보기"}
+              {busy ? "분석 중…" : "분석"}
             </button>
             <button
               type="button"
@@ -946,7 +994,7 @@ export function AiChartOrder({
                   disabled={busy}
                   title={`${r.name ?? ""} · 점수 ${scoreText(r.score)} · 싼 정도 ${scoreText(r.cheapness)} · ${numText(r.price, dec)}${r.flags?.length ? ` · 깃발 ${r.flags.join(",")}` : ""}`}
                   onClick={() =>
-                    run({ symbol: r.symbol, market: r.market ?? market })
+                    view({ symbol: r.symbol, market: r.market ?? market })
                   }
                 >
                   {r.symbol} <span className="faint">{scoreText(r.score)}</span>
@@ -1010,6 +1058,19 @@ export function AiChartOrder({
             </button>
           ) : null}
           {error ? <ErrorCard message={error} /> : null}
+          {!body && chart && chartOf ? (
+            <>
+              <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                <span className="faint text-xs">
+                  {chartOf.symbol} · {chartOf.market} · {chart.timeframe} 봉{" "}
+                  {chart.candles.length}개 — 구조·지지/저항·계획은 <b>분석</b>{" "}
+                  을 누르면 이 차트 위에 얹힌다.
+                </span>
+                <Live on={liveOn} onToggle={() => setLiveOn((was) => !was)} />
+              </div>
+              <Chart frame={chart} follow={liveOn} />
+            </>
+          ) : null}
           {body && s ? (
             <>
               <p className="faint text-xs" style={{ marginTop: 6 }}>
