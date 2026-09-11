@@ -1,6 +1,6 @@
 {
  "id": "sample_ma_cross",
- "label": "예시 · 이동평균 교차 0.1.1 (SMA20/50 · 손절 2xATR · 목표 2R · 측정 없음) · GATE 선물 6종 · 1.0년 · λ=2 · 4h",
+ "label": "예시 · 이동평균 교차 0.1.1 (SMA20/50 · 손절 2xATR · 목표 2R · 측정 없음) · GATE 6종 · 1.0년 · λ=2 · 4h",
  "playbook": "sample_ma_cross@0.1.1",
  "symbols": [
   "BTC_USDT",
@@ -10,6 +10,7 @@
   "DOGE_USDT",
   "ADA_USDT"
  ],
+ "market": "GATE",
  "frame": "4h",
  "years": 1.0,
  "total_pct": -0.18,
@@ -11852,7 +11853,7 @@
    ]
   }
  ],
- "generated": "2026-09-09T04:36:04+00:00",
+ "generated": "2026-09-10T19:42:42+00:00",
  "candles": {
   "BTC_USDT": {
    "ts_offset": 0,
