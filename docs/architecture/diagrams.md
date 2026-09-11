@@ -574,7 +574,7 @@ flowchart LR
     B --> S[httpx 전송<br/>닫힌 풀이면 다시 연다]
     S --> H[on_response 훅<br/>요율 눈금 · 밴 기록]
     H --> D{재시도 대상?<br/>429 · 5xx · 전송 오류}
-    D -->|아니오 · 또는 NO_RETRY| OK[응답 그대로 → 클라이언트가 도메인 예외로<br/>404 = 모르는 CIK · 401 = 자격증명]
+    D -->|아니오 · 또는 NO_RETRY| OK["응답 그대로 → 클라이언트가 도메인 예외로<br/>404 = 모르는 CIK · 401 = 자격증명"]
     D -->|예 · 남은 횟수| W[대기<br/>Retry-After 우선 · 지수 백오프 + 지터] --> T
     D -->|예 · 소진| E2[OutboundError<br/>status_code · exc_type]
     R -.->|debug| LOG[outbound_request<br/>venue · path · status · latency · attempt]
@@ -670,7 +670,7 @@ Mermaid 에는 스윔레인 전용 문법이 없어 `flowchart` 의 `subgraph` �
 ```mermaid
 flowchart LR
     subgraph H[사람 · 화면]
-        h1[펀드/판 만들기<br/>코인: 거래소 · 배율 / 주식: 시장 · 정수 주 · 장중만] --> h2["콘솔에서 본다<br/>포지션 · 손절 · 대조 배너 · 걸음 눈금"]
+        h1["펀드/판 만들기<br/>코인: 거래소 · 배율 / 주식: 시장 · 정수 주 · 장중만"] --> h2["콘솔에서 본다<br/>포지션 · 손절 · 대조 배너 · 걸음 눈금"]
         h2 --> h3{"대조 경보?"}
         h3 -->|잔재| h4[거두기]
         h3 -->|무주공산| h5[이어받기 / 닫기]
@@ -700,7 +700,7 @@ flowchart LR
         r5 --> r6[걸음마다 원장·대기 계획 저장]
     end
     subgraph O[common/http 한 층]
-        o1[재시도 · Retry-After · 예산 · 스로틀(TOSS_RATE_PER_SECOND) · 로그<br/>주문은 NO_RETRY]
+        o1["재시도 · Retry-After · 예산 · 스로틀(TOSS_RATE_PER_SECOND) · 로그<br/>주문은 NO_RETRY"]
     end
     subgraph X[거래소 · 브로커]
         x1[(Gate · Binance<br/>포지션 · 조건부 · 체결 이력)] ~~~ x2[(토스<br/>1분·일봉 원봉 · 시세 · 달력 · VI<br/>토큰은 client 당 하나)] ~~~ x3[(주식 페이퍼 계좌<br/>DB stock_paper_accounts)] ~~~ x4[(NVIDIA NIM<br/>AI 참가자)]
@@ -761,10 +761,10 @@ flowchart LR
         o1[거래 루프 거두기] --> o2[락 해제]
     end
     subgraph New[api_b 새 슬롯]
-        n1[팔로워: 조회만] --> n2[락 획득 5초 내] --> n3[autostart_live<br/>adopt · pending 복원 · 좀비 정리]
+        n1["팔로워: 조회만"] --> n2[락 획득 5초 내] --> n3[autostart_live<br/>adopt · pending 복원 · 좀비 정리]
     end
     subgraph Rd[Redis]
-        l1[(updown:api:trader<br/>TTL · 하트비트)]
+        l1[("updown:api:trader<br/>TTL · 하트비트")]
     end
     subgraph X[거래소]
         x1[(포지션 · 조건부 손절은 그대로 산다)]
@@ -825,18 +825,18 @@ flowchart TD
         j3 -->|열림| j4[탐지기 플러그인<br/>entry point 로 발견]
         j3 -->|닫힘| j0[제안 없음]
         j4 --> j5[TradeSetup 제안<br/>방향 · 진입 · 손절 · 목표]
-        j6[재무 지표 · 5년 백분위<br/>저평가 점수 = 정렬 기준<br/>1단계 백그라운드 · Redis 사본]
+        j6["재무 지표 · 5년 백분위<br/>저평가 점수 = 정렬 기준<br/>1단계 백그라운드 · Redis 사본"]
         j7["차트 분석 주문 — 분석(작업 · 진행 줄)<br/>지지/저항(useful: 잊힘·관통·접점·비용) · 전고/전저 · 52주<br/>후보 없음이면 이유를 적는다"]
     end
 
     subgraph DECIDE[확정 — decision · 단일 출처]
         d1[RiskManager<br/>손절 · 익절 · 수량 확정] --> d2{손절이 청산가 안쪽?<br/>RR · 비용 · 표본 · 능력표 · 손절폭 하한 0.5%}
         d2 -->|아니오| d0[안 간다 · 기록]
-        d2 -->|예| d3[노출 = r ÷ 손절거리<br/>코인: 배율 상한 · 주식: 배율 1 · 정수 주]
+        d2 -->|예| d3["노출 = r ÷ 손절거리<br/>코인: 배율 상한 · 주식: 배율 1 · 정수 주"]
     end
 
     subgraph EXEC[집행 — execution · 값을 못 바꾼다]
-        e1[OrderGateway<br/>어댑터 획득의 유일한 문] --> e2[진입 지정가<br/>멱등키 = 판 표식 + 매매 id]
+        e1[OrderGateway<br/>어댑터 획득의 유일한 문] --> e2["진입 지정가<br/>멱등키 = 판 표식 + 매매 id"]
         e2 --> e3[(거래소 Gate · Binance<br/>주문은 NO_RETRY)]
         e2 --> e7[(주식 페이퍼 계좌<br/>DB · 갭 손절)]
         e3 --> e4[체결 → 우편함]
