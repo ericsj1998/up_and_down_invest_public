@@ -9,7 +9,7 @@
  * 🔴 **화면을 변수에 담아 렌더하지 않는다** (2026-08-19 실측). 라우트의 `element` 는 고정 JSX 다 — 컴포넌트
  *    신원이 렌더마다 바뀌면 React 가 그 아래를 통째로 언마운트-리마운트해 차트가 처음부터 다시 그려진다.
  */
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect } from "react";
 import {
   BrowserRouter,
   Navigate,
@@ -23,9 +23,7 @@ import { Accounts } from "./Accounts";
 import { ApiTokens } from "./ApiTokens";
 import { AiChartOrderPage } from "./AiChartOrder";
 import { AiReport } from "./AiReport";
-import { assistantDraft, type Who } from "./api";
 import { AssistantPage } from "./AssistantPage";
-import { readLocal } from "./assistant";
 import { Boundary } from "./Boundary";
 import { ChatPopout } from "./chat/ChatShell";
 import { ConsoleTab } from "./ConsoleTab";
@@ -56,30 +54,13 @@ export function App() {
 }
 
 /** 첫 화면 — 서버가 "처음" 이라 하면 어시스턴트, 아니면 콘솔. 게스트는 브라우저 초안이 끝났으면 콘솔. */
-function Home({ who }: { who: Who | null }) {
-  const [to, setTo] = useState<string | null>(null);
-  useEffect(() => {
-    let alive = true;
-    if (!who?.signed_in) {
-      setTo("/console");
-      return;
-    }
-    assistantDraft()
-      .then((got) => {
-        if (!alive) return;
-        const local = got.persisted ? null : readLocal();
-        const first = got.persisted
-          ? got.first
-          : !(local && local.step === "done");
-        setTo(first ? "/assistant" : "/console");
-      })
-      .catch(() => alive && setTo("/console"));
-    return () => {
-      alive = false;
-    };
-  }, [who?.signed_in]);
-  if (!to) return <p className="faint">첫 화면을 정하는 중…</p>;
-  return <Navigate to={to} replace />;
+// 🔴 **첫 화면은 언제나 콘솔이다** (사용자 2026-09-12: *"콘솔이 먼저 나오게 하고 싶어"*).
+//    T247 은 온보딩을 안 끝낸 계정을 `/assistant` 로 보냈는데, 그 판정(`assistant_drafts` 의
+//    `step`·`fund_id`)은 **위저드를 쓴 적이 있는가**만 본다. 콘솔에서 직접 펀드를 만들어 온
+//    계정은 펀드가 여럿이어도 영원히 "처음" 으로 분류돼 매번 어시스턴트로 떨어졌다.
+//    위저드는 어시스턴트 탭에 그대로 있으니 길이 막히는 것은 아니다.
+function Home() {
+  return <Navigate to="/console" replace />;
 }
 
 function Shell() {
@@ -105,7 +86,7 @@ function Shell() {
         <Boundary where={where} onRetry={refresh}>
           <Routes>
             {/* ⭐ T247 — 초안도 펀드도 없는 사람은 어시스턴트가 첫 화면을 잡는다. 판정은 서버(`/assistant/draft.first`). */}
-            <Route path="/" element={<Home who={who} />} />
+            <Route path="/" element={<Home />} />
             <Route path="/assistant" element={<AssistantPage who={who} />} />
             <Route path="/console" element={<ConsolePage />} />
             {/* ⭐ T273 — AI 차트 분석 주문. 콘솔 안 접이식이던 것을 화면으로 (사용자 2026-09-11). */}
