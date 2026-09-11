@@ -5,19 +5,17 @@
 매매법은 백테스트로 먼저 검증하고, 같은 코드를 테스트넷과 실계좌에 올린다. 그 위에 재무제표 기반 저평가 후보,
 거시 지표, AI 차트 분석 주문, AI 투자 어시스턴트가 붙어 있다. AI 는 제안과 채점까지만 하고, 주문은 사람이 낸다.
 
-매매법(진입과 청산 규칙)은 플러그인으로 붙는다. 이 저장소에는 견본 매매법 하나(이동평균 교차)만 들어 있고,
-실제로 돈을 굴리는 매매법과 측정 결과, 연구 스크립트는 들어 있지 않다. 플랫폼은 매매법의 이름을 모른다.
-
-> 이 소프트웨어를 이용한 투자 결과에 대해 작성자는 어떤 책임도 지지 않는다. 견본 매매법은 성과가 측정된 것이 아니다.
-> 작성자의 실계좌에서는 2026-09-05 부터 돌고 있다(Gate 선물, v1.7.12). 주식은 토스 시세로 페이퍼 계좌만 돈다.
+> 실계좌가 돌고 있다 (2026-09-05 ~). Gate 선물, 300 USDT, 6종 펀드 1개, Lightsail 도쿄, v1.7.12 (2026-09-11).
+> 주식은 토스 시세로 페이퍼 계좌만 돈다. 실주문 어댑터는 없다.
+> 서버를 만지기 전에 [운영 런북](docs/platform/ops_runbook.md)을 먼저 읽는다.
 
 | 궁금한 것 | 문서 |
 |---|---|
 | 지금 서버에서 무엇이 도나 | [runtime_architecture.md](docs/platform/runtime_architecture.md) |
 | 왜 이렇게 설계했나 | [architecture/](docs/architecture/README.md) |
-| AI 는 무엇을 하고 무엇을 못 하나 | [ai_agents_and_mcp.md](docs/architecture/ai_agents_and_mcp.md) |
-| 매매법을 어떻게 붙이나 | [strategy_authoring.md](docs/platform/strategy_authoring.md) |
-| 서버를 어떻게 돌리나 | [ops_runbook.md](docs/platform/ops_runbook.md) |
+| AI 는 무엇을 하고 무엇을 못 하나 | [ai_agents_and_mcp.md](docs/architecture/ai_agents_and_mcp.md), [T273 차트 분석 주문](docs/planning/tasks/T273_ai_chart_analysis_page.md) |
+| 무엇이 남았나 | [session_handoff.md](docs/status/session_handoff.md) |
+| 전략은 무엇인가 | [strategy/](docs/strategy/judgement.md) |
 
 | 규모 (2026-09-11) | |
 |---|---|
@@ -33,21 +31,19 @@
 [1 전체 구조](#1-전체-구조) ·
 [2 개발 방식](#2-개발-방식) ·
 [3 계층과 책임](#3-계층과-책임) ·
-[4 매매법 붙이기](#4-매매법-붙이기) ·
-[5 연결된 거래소와 데이터](#5-연결된-거래소와-데이터) ·
-[6 주식 · 재무 · 거시](#6-주식--재무--거시) ·
-[7 AI 차트 분석 주문](#7-ai-차트-분석-주문) ·
-[8 AI 어시스턴트와 MCP](#8-ai-어시스턴트와-mcp) ·
-[9 백테스트 검증](#9-백테스트-검증) ·
-[10 실거래 안전장치](#10-실거래-안전장치) ·
-[11 운영](#11-운영) ·
-[12 로그인과 보안](#12-로그인과-보안) ·
-[13 배포와 CI](#13-배포와-ci) ·
-[14 저장소 구조](#14-저장소-구조) ·
-[15 시작하기](#15-시작하기) ·
-[16 규칙과 도구](#16-규칙과-도구) ·
-[17 문서 지도](#17-문서-지도) ·
-[18 라이선스](#18-라이선스)
+[4 연결된 거래소와 데이터](#4-연결된-거래소와-데이터) ·
+[5 주식 · 재무 · 거시](#5-주식--재무--거시) ·
+[6 AI 차트 분석 주문](#6-ai-차트-분석-주문) ·
+[7 AI 어시스턴트와 MCP](#7-ai-어시스턴트와-mcp) ·
+[8 백테스트 검증](#8-백테스트-검증) ·
+[9 실거래 안전장치](#9-실거래-안전장치) ·
+[10 운영](#10-운영) ·
+[11 로그인과 보안](#11-로그인과-보안) ·
+[12 배포와 CI](#12-배포와-ci) ·
+[13 저장소 구조](#13-저장소-구조) ·
+[14 시작하기](#14-시작하기) ·
+[15 규칙과 도구](#15-규칙과-도구) ·
+[16 문서 지도](#16-문서-지도)
 
 ---
 
@@ -399,15 +395,15 @@ flowchart LR
 문서가 코드보다 먼저 나온다. 코드는 문서에 적힌 결정을 구현하고, 측정 결과는 다시 문서로 돌아간다.
 
 ```
-설계 SSoT (auto_invest_spec)  →  절대 규칙 (CLAUDE.md)  →  태스크 문서 (비공개)
+설계 SSoT (auto_invest_spec)  →  절대 규칙 (CLAUDE.md)  →  태스크 (docs/planning/tasks/)
         ↑                                                       ↓
-   측정 결과 (비공개)   ←   코드와 시험   ←   구현 (측정 전에 판정 기준을 먼저 정한다)
+   측정 결과 (docs/measurements/)   ←   코드와 시험   ←   구현 (측정 전에 판정 기준을 먼저 정한다)
 ```
 
 | 원칙 | 방법 |
 |---|---|
 | 스펙에 없는 결정은 임의로 하지 않는다 | 애매하면 태스크 문서의 "착수 전 확정 필요" 표에 올리고 사람이 정한다. 결정에는 번호를 붙여 기록에 남긴다. |
-| 한 태스크는 한 파일 | 목적, 선행 조건, 완료 조건을 적는다. 틀린 판단은 지우지 않고 "대체됨"을 붙인다. |
+| 한 태스크는 한 파일 | 열린 태스크는 `docs/planning/tasks/`, 끝난 것은 `tasks/done/`. 목적, 선행 조건, 완료 조건을 적는다. 틀린 판단은 지우지 않고 "대체됨"을 붙인다. |
 | 판정 기준을 측정 전에 정한다 | 필요 승률표, 표본 하한 30, 봉인 구간을 결과를 보기 전에 고정한다. 결과가 좋게 나오는 것 자체를 의심한다. |
 | 기록은 지우지 않는다 | 계획 이력, 측정 스크립트, 숫자의 원문을 보관한다. 재현이 안 된 것도 적는다. |
 | AI 협업 규약 | [CLAUDE.md](CLAUDE.md)가 문서 우선순위, 절대 규칙, 코딩 규약을 정한다. AI 는 가격, 수량, 타이밍을 정하지 않고 실계좌 배포는 사람이 허가한다. |
@@ -443,21 +439,7 @@ common → marketdata → llm → portfolio → analysis → decision → execut
 - 임계값은 코드가 아니라 `config/*.yml` 에 둔다.
 - 금지 계약 세 개. 분석은 집행을 import 하지 못한다. 탐지기는 이행률을 import 하지 못한다(미래 참조 차단). LLM 은 결정과 집행을 import 하지 못한다.
 
-## 4. 매매법 붙이기
-
-매매법은 파일 셋과 등록 한 줄로 붙는다. 절차와 점검표는 [strategy_authoring.md](docs/platform/strategy_authoring.md)에 있다.
-
-| 무엇 | 어디 | 견본 |
-|---|---|---|
-| 탐지기. 봉을 받아 방향, 진입, 손절, 목표를 제안한다 | `src/updown/analysis/detectors/<rule_id>.py` 의 `register()` | [sample_ma_cross.py](src/updown/analysis/detectors/sample_ma_cross.py) |
-| 룰 설정. 문턱값과 배수 | `config/rules/<rule_id>.yml` | [sample_ma_cross.yml](config/rules/sample_ma_cross.yml) |
-| 플레이북 선언. 시간축, 국면, 셋업, 배율, 리스크 | `config/playbooks.yml` | [playbooks.yml](config/playbooks.yml) |
-| 등록 | `pyproject.toml` 의 `[project.entry-points."updown.detectors"]` | 한 줄 |
-
-플랫폼은 entry point 로 탐지기를 발견만 하고 이름을 알지 못한다. 매매법을 별도 패키지로 두면 `pyproject.toml` 한 줄로 붙는다.
-지표는 직접 구현한 것(`analysis/indicators`)만 쓴다. 라이브러리에 맡기지 않는 이유는 재현성이다.
-
-## 5. 연결된 거래소와 데이터
+## 4. 연결된 거래소와 데이터
 
 | 출처 | 무엇 | 주문 | 어디에 쓰나 |
 |---|---|---|---|
@@ -476,7 +458,7 @@ common → marketdata → llm → portfolio → analysis → decision → execut
 - 토스 토큰은 클라이언트당 하나다. 두 프로세스가 각자 발급하면 서로 무효화되므로, 서버만 직접 부르고 연구 PC 는 서버 프록시를 쓴다.
 - 모든 바깥 호출은 `common/http` 한 층을 지난다. 재시도, `Retry-After`, 요청 예산, 스로틀, 로그를 한 곳에서 처리한다.
 
-## 6. 주식 · 재무 · 거시
+## 5. 주식 · 재무 · 거시
 
 코인에서 검증한 세션 엔진을 주식으로 넓힌 층이다.
 
@@ -490,12 +472,13 @@ common → marketdata → llm → portfolio → analysis → decision → execut
 | 재무 1단계 | EDGAR `frames` 로 "지금 값"을 받는다. 백그라운드에서 준비하고 Redis 에 6시간 사본을 둬서 배포 직후에도 비지 않는다. | `apps/api/fundamentals.py` |
 | 재무 2단계 | `companyfacts` 이력으로 PER, PBR, PSR, EV/EBITDA, FCF 수익률의 5년 백분위를 구하고, 부채 깃발을 감점해 점수를 만든다. 순위표도 백그라운드로 만들고 24시간 사본을 둔다. | `analysis/fundamentals/` |
 | 거시 카드 | VIX, 나스닥100 선물, S&P 500, 10년물, 달러, 금, WTI, 원달러, 기준금리, CPI, 코스피, 코스닥. 실패한 지표는 이유를 같이 보여 준다. | `marketdata/macro` |
+| 시초가 박스 연구 | 첫 15~60분 박스와 5분봉 반전을 720가지 설정으로 재봤다. 전부 무작위 진입과 구별되지 않아 채택하지 않았다. | [측정](docs/measurements/opening_box_2026-09-11.md) |
 
 재무를 두 단계로 나눈 이유. `frames` 는 한 지표를 전 회사 기준으로 한 번에 주고, `companyfacts` 는 한 회사의 전 이력을 준다. 백분위는 이력이 있어야 나오는데 회사마다 수 MB 라, 100종만 미리 받고 나머지는 사람이 "이력 받기"를 누를 때 받는다.
 
 첫 적재가 느린 이유. 1h 봉 400개를 만들려면 1분봉 약 4만 개, 곧 200페이지를 받아야 한다. 초당 5건이면 40초다. 그래서 서버가 밤에 미리 채우고, 로컬은 서버가 합성한 봉을 한 번에 받는다.
 
-## 7. AI 차트 분석 주문
+## 6. AI 차트 분석 주문
 
 "이 종목, 지금 어디서 사고 어디서 손절해야 하나"를 묻는 화면이다. 답을 세 명이 낸다.
 규칙 엔진(우리가 만든 구조 분석), AI 단독(차트만 보고), AI + 근거(차트와 우리 분석을 같이 보고).
@@ -534,7 +517,7 @@ AI 의 답이 그대로 주문이 되는 경로는 없다. 코드 계층에서�
 
 코드 위치는 `apps/api/chart_order.py`, `orchestration/chart_order/`, `orchestration/ai_experiment/`, `web/src/AiChartOrder.tsx` 다.
 
-## 8. AI 어시스턴트와 MCP
+## 7. AI 어시스턴트와 MCP
 
 채팅 창에 한국어로 물으면 AI 가 답한다. 다만 AI 는 가격이나 지표를 기억이나 추측으로 말하지 않는다.
 숫자가 필요하면 반드시 "도구"를 불러 우리 서버의 데이터를 읽고, 그 결과로만 답한다.
@@ -582,9 +565,9 @@ AI 의 답이 그대로 주문이 되는 경로는 없다. 코드 계층에서�
 - **시험.** 도구마다 실제 질문 하나를 두고 실제 모델과 실제 도구로 돌린다. 기대한 도구가 불렸는지, 성공했는지, 답이 나왔는지만 본다. 답의 내용을 사람이 채점하지는 않는다. 최근 결과는 16개 중 15개 통과다.
 - **MCP.** 같은 도구 13개를 MCP 라는 표준 방식으로 바깥에 연다. Claude Desktop, Cursor, ChatGPT 에 이 서버를 등록하면 그 AI 가 우리 도구를 부를 수 있다. 인증은 개인 토큰이고, 토큰으로는 읽기만 되며 주문과 설정은 화면에서만 된다.
 
-## 9. 백테스트 검증
+## 8. 백테스트 검증
 
-출발점은 "성과가 좋아 보이면 버그를 의심한다"이다. 방법과 결함 목록은 backtest_validity.md.
+출발점은 "성과가 좋아 보이면 버그를 의심한다"이다. 방법과 결함 목록은 [backtest_validity.md](docs/rules/backtest_validity.md).
 
 | 단계 | 내용 |
 |---|---|
@@ -598,27 +581,9 @@ AI 의 답이 그대로 주문이 되는 경로는 없다. 코드 계층에서�
 | 같은 코드인지 대조 | 합성 봉을 라이브 러너에 흘려 백테스트 엔진과 결과를 비교했다. 소수점까지 일치했다. |
 | 연구 엔진은 채택 근거가 아니다 | 연구용 엔진 숫자는 후보를 거르는 데만 쓴다. 채택은 세션 엔진으로 재현한 뒤에만 한다. |
 
-측정 결과와 매매법은 이 저장소에 없다. 화면의 근거 탭은 결과 묶음(`config/evidence/`)의 숫자를 옮겨 보여 주는데, 공개본에는 묶음이 없어 비어 있다. 자기 매매법을 측정해 묶음을 만들면 채워진다.
+결과 원문은 [docs/measurements/](docs/measurements/README.md)에 있다. 화면의 근거 탭은 그 숫자를 옮겨 보여 주고, 옮긴 값은 빌드마다 원문과 대조한다.
 
-### 백테스트를 직접 돌리려면
-
-백테스트 엔진은 라이브와 같은 `Session` 이다. 구간을 봉인하고(미래를 못 보게) 그 안을 걸어간다.
-
-```bash
-# 세션 열기. start 를 안 주면 시작점이 랜덤이다(시드로만 재현). 잘 나올 구간을 사람이 고르지 못하게 한 것이다.
-curl -X POST localhost:8000/walkforward/start -H 'content-type: application/json' \
-  -d '{"playbook":"sample_ma_cross","symbol":"BTC_USDT","market":"GATE","cash":"10000","days":30,"seed":7}'
-# 걸어가기, 상태, 스냅샷(차트용)
-curl -X POST localhost:8000/walkforward/step/<session_id>
-curl localhost:8000/walkforward/state/<session_id>
-curl localhost:8000/walkforward/snapshot/<session_id>
-```
-
-응답에는 원장(매매, 손익, 손절, 수수료, 펀딩), 깔때기(판정 → 진입 → 청산 수), 국면이 들어 있다. 데이터가 모자라면 열리지 않는다.
-한 RUN 을 끝까지 돌려 보려면 `uv run python scripts/dev/smoke_walkforward.py 2024-03-02 7` 을 쓴다.
-견본 매매법이 진입부터 청산까지 도는지는 [tests/test_sample_end_to_end.py](tests/test_sample_end_to_end.py)가 확인한다.
-
-## 10. 실거래 안전장치
+## 9. 실거래 안전장치
 
 한 RUN 이 한 걸음을 어떻게 걷고, 무엇이 어디서 막히는지. 전체 절차는 [ledger_reconciliation.md](docs/architecture/ledger_reconciliation.md).
 
@@ -637,9 +602,9 @@ curl localhost:8000/walkforward/snapshot/<session_id>
 
 **서버가 죽으면** 거래소에 걸어 둔 조건부 손절이 마지막 방어선이다. 컨테이너는 자동 재시작하고, 리더 락은 5초 안에 다른 슬롯이 이어받는다. 재기동하면 포지션과 조건부 주문에서 계획을 되읽어 RUN 을 입양하고, 손절이 없으면 입양을 거부한다. Redis 나 DB 가 끊겨도 손절과 청산은 나가고 신규 진입만 멈춘다.
 
-실제로 겪은 사고와 수정 기록은 비공개 문서에 있다.
+실제로 겪은 사고와 수정은 [docs/incidents/](docs/incidents/)에 시간순으로 있다.
 
-## 11. 운영
+## 10. 운영
 
 | 항목 | 내용 |
 |---|---|
@@ -654,9 +619,9 @@ curl localhost:8000/walkforward/snapshot/<session_id>
 | 자원 | 콘솔 폴링 10초, 서버 TTL 캐시, 저평가 준비는 백그라운드와 Redis 사본 |
 
 env 값(`LIVE_ORDERS`, 키, `UPDOWN_MARKETS`, `TOSS_RATE_PER_SECOND`)은 사람이 서버에서 바꾼다. 스크립트는 이미지 태그만 바꾼다.
-화면 문제는 서버 프로브가 아니라 nginx 접근 로그부터 본다.
+화면 문제는 서버 프로브가 아니라 nginx 접근 로그부터 본다. 실계좌가 재는 항목은 [ON_LIVE.md](docs/planning/ON_LIVE.md)에 있다.
 
-## 12. 로그인과 보안
+## 11. 로그인과 보안
 
 | 영역 | 내용 |
 |---|---|
@@ -674,7 +639,7 @@ env 값(`LIVE_ORDERS`, 키, `UPDOWN_MARKETS`, `TOSS_RATE_PER_SECOND`)은 사람�
 
 미비한 것(인증 실패 회로차단, 키 회전 절차, 의존성 취약점 점검)은 [architecture_security_audit.md](docs/architecture/architecture_security_audit.md)에 적어 두었다.
 
-## 13. 배포와 CI
+## 12. 배포와 CI
 
 **CI.** ruff, ruff format, pyright strict, import-linter, 문서 링크 검사, docstring 검사, pytest, tsc, vitest 순서다.
 같은 순서를 로컬에서 `bash scripts/dev/ci_local.sh` 로 돌린다. GitHub Actions 는 결제 한도로 멈춰 있어 지금은 커밋 메시지에 `[skip ci]` 를 붙이고 로컬 점검을 배포 조건으로 쓴다.
@@ -692,7 +657,7 @@ env 값(`LIVE_ORDERS`, 키, `UPDOWN_MARKETS`, `TOSS_RATE_PER_SECOND`)은 사람�
 **블루그린.** 목표는 거래 리더가 끊기지 않는 것이다. 빈 슬롯을 새 이미지로 띄우고 팔로워로 확인한 뒤, 옛 슬롯을 30초 유예로 멈추고 새 슬롯을 승격한다. 새 슬롯은 열린 RUN 을 입양한다. 어느 단계든 실패하면 새 슬롯을 내리고 옛 슬롯을 그대로 둔다.
 두 이미지가 같은 DB 를 쓰는 순간이 있으므로 마이그레이션은 하위 호환만 허용한다. 2026-09-11 하루에 열 번 배포하는 동안 RUN 6개가 매번 이어받았다.
 
-## 14. 저장소 구조
+## 13. 저장소 구조
 
 ```
 .
@@ -708,14 +673,15 @@ env 값(`LIVE_ORDERS`, 키, `UPDOWN_MARKETS`, `TOSS_RATE_PER_SECOND`)은 사람�
 ├── web/                 React 18, TypeScript, Vite, Lightweight Charts
 ├── tests/               pytest 298 파일
 ├── alembic/             마이그레이션 0001~0129
-├── config/              risk, costs, markets, market_sessions, playbooks(견본), baskets, llm_pool, analysis_buckets, fundamentals/, rules/
+├── config/              risk, costs, markets, market_sessions, playbooks, baskets, llm_pool, analysis_buckets, fundamentals/, rules/, evidence/
 ├── docker/              compose(base, dev, live, proxy), Caddyfile, backup, restore
-├── scripts/             runtime/ deploy/ ops/ dev/
-├── docs/                platform/ architecture/ readmeimage/  (매매법 · 측정 · 계획 문서는 비공개)
+├── scripts/             runtime/ deploy/ ops/ dev/ research/ history/
+├── docs/                strategy/ rules/ platform/ planning/ status/ measurements/ incidents/ architecture/ readmeimage/
+├── legacy/ archive/     물러난 화면, 은퇴한 매매법
 └── CLAUDE.md            AI 협업 규약
 ```
 
-## 15. 시작하기
+## 14. 시작하기
 
 ```bash
 cp .env.example .env.dev          # 값을 채운다. 로컬은 테스트넷 키만 둔다
@@ -732,13 +698,12 @@ bash scripts/dev/ci_local.sh       # 전체 점검 (CI 와 같은 순서)
 | `make sync-public` | 공개 저장소 동기화 (커밋마다 자동으로도 돈다) |
 | `bash scripts/ops/remote.sh scripts/ops/status.sh` | 실계좌 서버 점검 |
 | `make secrets` | 시크릿 스캔 |
-| `uv run python scripts/runtime/backfill_cli.py` | 캔들 적재. 앵커와 구간은 [config/backfill.yml](config/backfill.yml) |
 | `bash scripts/deploy/ship.sh` | 실계좌 배포. 사용자 허가 뒤에만 |
 
 로컬에는 실계좌 키가 없다. 화면은 데모(Binance 테스트넷)로 들어간다.
 주식을 로컬에서 보려면 `.env.dev` 에 `DEMO_MARKETS=BINANCE,NASDAQ` 과 프록시 두 줄(`TOSS_PROXY_URL`, `TOSS_PROXY_TOKEN`)을 둔다. 토스를 로컬에서 직접 부르면 서버 토큰이 무효가 된다.
 
-## 16. 규칙과 도구
+## 15. 규칙과 도구
 
 **절대 규칙 요약.** 전문은 [CLAUDE.md](CLAUDE.md).
 
@@ -769,42 +734,14 @@ bash scripts/dev/ci_local.sh       # 전체 점검 (CI 와 같은 순서)
 PostgreSQL 16, Redis. React 18, TypeScript, Vite, Material Tailwind, TradingView Lightweight Charts 5.
 NVIDIA NIM. Docker Compose, Caddy, Lightsail. uv, ruff, pyright, pytest, import-linter, vitest, pre-commit.
 
-## 17. 문서 지도
+## 16. 문서 지도
 
-### 플랫폼 (`docs/platform/`)
-
-| 문서 | 내용 |
-|---|---|
-| [runtime_architecture.md](docs/platform/runtime_architecture.md) | 배포된 서버가 어떻게 도나. 요청, 돈, 데이터의 길과 죽었을 때 무엇이 살아나나 |
-| [strategy_authoring.md](docs/platform/strategy_authoring.md) | 매매법 작성 가이드 |
-| [architecture_boundaries.md](docs/platform/architecture_boundaries.md) | 계층 경계와 강제 방법 |
-| [interfaces_v1.md](docs/platform/interfaces_v1.md) | 인터페이스 계약. `BrokerAdapter`, `SetupDetector`, 원장 |
-| [logging_conventions.md](docs/platform/logging_conventions.md) | 로깅 규약 |
-| [ops_runbook.md](docs/platform/ops_runbook.md) | 운영 런북. 접속, 배포, 점검, 토스 프록시 |
-| [deploy.md](docs/platform/deploy.md) | 배포 절차. 서버, TLS, 구글 콘솔, 블루그린 |
-| [host_setup.md](docs/platform/host_setup.md) | 호스트 준비. WSL2, Docker, 포트, 시계 |
-| [env_and_secrets.md](docs/platform/env_and_secrets.md), [env_live.md](docs/platform/env_live.md) | 환경 분리와 시크릿, 실계좌 환경변수 목록(이름만) |
-| [toss_api_notes.md](docs/platform/toss_api_notes.md), [upbit_api_notes.md](docs/platform/upbit_api_notes.md) | 거래소 API 실측 기록 |
-
-### 설계 기록 (`docs/architecture/`)
-
-| 문서 | 내용 |
-|---|---|
-| [README.md](docs/architecture/README.md) | 설계 기록 묶음 |
-| [diagrams.md](docs/architecture/diagrams.md) | ERD, 시퀀스, 스윔레인, 플로우차트 |
-| [ai_agents_and_mcp.md](docs/architecture/ai_agents_and_mcp.md) | AI 는 무엇을 하고 무엇을 못 하나 |
-| [ai_chat_scenarios.md](docs/architecture/ai_chat_scenarios.md) | 시험한 대화 |
-| [cross_cutting_design.md](docs/architecture/cross_cutting_design.md) | 바깥 호출, 캐시, 작업, 소프트 삭제 |
-| [ledger_reconciliation.md](docs/architecture/ledger_reconciliation.md) | 원장과 거래소를 맞추는 법 |
-| [functional_and_load_review.md](docs/architecture/functional_and_load_review.md) | 기능, 동시성, 부하 검토 |
-| [architecture_security_audit.md](docs/architecture/architecture_security_audit.md) | 구조와 보안 점검 |
-| [code_quality_review.md](docs/architecture/code_quality_review.md) | 코드 품질 보고 |
-
-그 밖에 [CLAUDE.md](CLAUDE.md)(개발 규약), [CHANGELOG.md](CHANGELOG.md), [docs/README.md](docs/README.md), [scripts/README.md](scripts/README.md).
-매매법 문서(판단 근거, 플레이북, 측정 결과, 계획 이력)는 매매법과 함께 비공개에 있다.
-
-## 18. 라이선스
-
-[Elastic License 2.0](LICENSE) 을 따른다. 읽고, 고치고, 회사 안에서 쓰는 것은 자유다.
-이 소프트웨어를 남에게 관리형 서비스나 호스팅 서비스로 제공하는 것과, 라이선스 키나 기능 제한을 우회하는 것만 금지된다.
-이 소프트웨어를 이용한 투자 결과에 대해 작성자는 어떤 책임도 지지 않는다.
+- 전략: [judgement](docs/strategy/judgement.md), [judgement_spec](docs/strategy/judgement_spec.md), [playbooks](docs/strategy/playbooks.md), [trading_flow](docs/strategy/trading_flow.md), [T274 시초가 박스](docs/planning/tasks/T274_opening_box_rotation.md)
+- AI: [ai_agents_and_mcp](docs/architecture/ai_agents_and_mcp.md), [ai_chat_scenarios](docs/architecture/ai_chat_scenarios.md), [T248](docs/planning/tasks/T248_ai_chat_assistant.md), [T256](docs/planning/tasks/T256_dashboard_spec_tool.md), [T258](docs/planning/tasks/T258_chat_eval_engine.md), [T263](docs/planning/tasks/T263_mcp_server.md), [T273 차트 분석 주문](docs/planning/tasks/T273_ai_chart_analysis_page.md)
+- 횡단 설계: [cross_cutting_design](docs/architecture/cross_cutting_design.md), [T264](docs/planning/tasks/T264_outbound_http_layer.md), [T265](docs/planning/tasks/T265_async_audit.md), [T266](docs/planning/tasks/T266_soft_delete_review.md)
+- 주식: [T259](docs/planning/tasks/T259_live_session_guard.md), [T260](docs/planning/tasks/T260_universe_top100.md), [T262](docs/planning/tasks/T262_macro_indicators.md), [T275 토스 프록시](docs/planning/tasks/T275_toss_proxy.md), [stock_session_notes](docs/rules/stock_session_notes.md), [toss_api_notes](docs/platform/toss_api_notes.md)
+- 운영: [ops_runbook](docs/platform/ops_runbook.md), [deploy](docs/platform/deploy.md), [ops_issues](docs/platform/ops_issues_2026-09.md), [env_live](docs/platform/env_live.md), [incidents/](docs/incidents/)
+- 계획: [planning/README](docs/planning/README.md), [ON_LIVE](docs/planning/ON_LIVE.md), [auto_invest_spec](docs/planning/auto_invest_spec.md), [tasks/](docs/planning/tasks/)
+- 검증: [backtest_validity](docs/rules/backtest_validity.md), [measurements/](docs/measurements/README.md)
+- 설계 기록: [architecture/README](docs/architecture/README.md), [diagrams](docs/architecture/diagrams.md), [ledger_reconciliation](docs/architecture/ledger_reconciliation.md), [code_quality_review](docs/architecture/code_quality_review.md), [architecture_security_audit](docs/architecture/architecture_security_audit.md)
+- 전체 색인: [docs/README.md](docs/README.md)
