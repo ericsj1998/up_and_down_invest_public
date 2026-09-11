@@ -46,6 +46,22 @@ def test_public_readme_keeps_diagrams_and_screens() -> None:
     )
 
 
+def test_public_readme_toc_breaks_every_line() -> None:
+    """목차는 한 줄에 하나로 보인다 — 사용자가 공개본에서 직접 넣은 `<br>` (2026-09-11).
+
+    Note:
+        마크다운은 홑 줄바꿈을 붙여 한 문단으로 흘린다. 파생이 이것을 지우면 사용자의 손질이
+        발행할 때마다 사라진다.
+    """
+    mod = _load()
+    out = mod.public_readme((ROOT / "README.md").read_text(encoding="utf-8"))
+    head = out[out.index("**목차**") : out.index("\n\n---\n\n")]
+    entries = [ln for ln in head.splitlines() if ln.startswith("[")]
+    assert len(entries) >= 10
+    assert all(ln.endswith("<br>") for ln in entries[:-1]), entries[:3]
+    assert not entries[-1].endswith("<br>"), "마지막 줄에는 줄바꿈을 붙이지 않는다"
+
+
 def test_public_readme_public_only_sections_and_numbering() -> None:
     """매매법 붙이기 · 라이선스 절이 있고, 번호 절은 1부터 빠짐없이 이어진다."""
     mod = _load()
