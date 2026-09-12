@@ -1015,6 +1015,18 @@ textarea.input {
   color: #4c3fb0;
 }
 
+/* 🔴 **색 칩의 글자는 다크에서 다시 골라야 한다** (사용자 2026-09-12 "붉은 버튼 색깔이 다크모드에서
+   가독성이 떨어진다"). 위 두 색(#a12226 어두운 빨강 · #4c3fb0 어두운 보라)은 흰 바탕에서 고른 값이라
+   어두운 바탕에서는 대비가 2:1 안팎이다 — 테두리만 보이고 글자는 안 읽힌다.
+   테두리는 중간 톤이라 그대로 두고 **글자만** 올린다 (칩 바탕 기준 red 7.3:1 · violet 6.6:1). */
+[data-theme="dark"] .chip.live {
+  color: #f28b82;
+}
+
+[data-theme="dark"] .chip.admin {
+  color: #a78bfa;
+}
+
 .chip button {
   all: unset;
   cursor: pointer;
@@ -1025,6 +1037,10 @@ textarea.input {
 
 .chip button:hover {
   color: #a12226;
+}
+
+[data-theme="dark"] .chip button:hover {
+  color: #f28b82;
 }
 
 .chip.add {
