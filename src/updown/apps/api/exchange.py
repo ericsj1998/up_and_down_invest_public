@@ -31,7 +31,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 
 from updown.apps.api.market_hours import market_status_payload
 from updown.common.cache import TtlCache
@@ -41,6 +41,7 @@ from updown.common.domain.instrument import Instrument, Market, MarketGroup, Tim
 from updown.common.domain.order import OrderKind, OrderRequest, OrderType, Side
 from updown.common.domain.session import SessionConfigError, load_calendar
 from updown.common.logging.setup import get_logger
+from updown.common.security.roles import Role
 from updown.execution.gateway import OrderGatewayError, order_adapter
 from updown.marketdata.adapter import QuoteAdapter
 from updown.marketdata.calendar_check import (
@@ -538,17 +539,63 @@ async def _tracked(orders: Any, market: str) -> tuple[str, ...]:
 
 
 @router.get("/state")
-async def state(symbol: str = DEFAULT_SYMBOL, market: str = "GATE") -> dict[str, Any]:
+async def state(
+    request: Request, symbol: str = DEFAULT_SYMBOL, market: str = "GATE"
+) -> dict[str, Any]:
     """`_state_fresh` 의 TTL 캐시 겉면 — docstring 은 그쪽에 있다.
+
+    Args:
+        request: 호출자를 읽으려고 받는다 (`request.state.caller`).
+        symbol: 종목.
+        market: 거래소.
+
+    Returns:
+        그 종목의 포지션·주문·조건부 상태. **키 IP 화이트리스트는 관리자에게만** 담긴다.
+
+    Note:
+        🔴 화이트리스트는 **서버 주소**다 (사용자 2026-09-12 "관리자 권한이 없으면 보여주지
+        말라"). 화면에서만 숨기면 URL 을 아는 사람은 그대로 받는다 — 여기서 지운다.
+        응답이 TTL 캐시라 캐시 **뒤에서** 사람마다 지운다. 캐시 안에서 지우면 먼저 부른
+        사람의 등급이 뒤에 오는 사람에게 그대로 적용된다.
+    """
+    return hide_whitelist(
+        await console_state(symbol, market), getattr(request.state, "caller", None)
+    )
+
+
+async def console_state(symbol: str = DEFAULT_SYMBOL, market: str = "GATE") -> dict[str, Any]:
+    """캐시된 거래소 상태 — **서버 안에서 부르는 문** (고아 쓸기 · 펀드 정리 등).
 
     Args:
         symbol: 종목.
         market: 거래소.
 
     Returns:
-        그 종목의 포지션·주문·조건부 상태.
+        `_state_fresh` 의 결과(캐시). 화이트리스트가 **그대로** 들어 있다 — 사람에게 나가는
+        길은 `state()` 하나뿐이고 거기서 지운다.
     """
     return await _cached(f"state:{market}:{symbol}", market, lambda: _state_fresh(symbol, market))
+
+
+def hide_whitelist(payload: dict[str, Any], who: object | None) -> dict[str, Any]:
+    """관리자가 아니면 `account.ip_whitelist` 를 비운다 (순수).
+
+    Args:
+        payload: `_state_fresh` 결과 (캐시에서 나온 것 — **원본을 고치지 않는다**).
+        who: 호출자 (`Caller`) 또는 None.
+
+    Returns:
+        관리자면 받은 그대로, 아니면 그 칸만 빈 사본.
+    """
+    raw = payload.get("account")
+    if not isinstance(raw, dict):
+        return payload
+    account = cast("dict[str, Any]", raw)
+    if not account.get("ip_whitelist"):
+        return payload
+    if getattr(who, "role", None) is Role.ADMIN:
+        return payload
+    return {**payload, "account": {**account, "ip_whitelist": ""}}
 
 
 async def _state_fresh(symbol: str = DEFAULT_SYMBOL, market: str = "GATE") -> dict[str, Any]:

@@ -1955,7 +1955,7 @@ async def _clear_orphans() -> None:
         return
     # ⭐ **한 번만 묻는다.** 콘솔 상태가 이미 전 종목 포지션을 낸다 — 고아마다 따로
     #   물으면 종목 수만큼 왕복이 곱해진다.
-    from updown.apps.api.exchange import state as console_state
+    from updown.apps.api.exchange import console_state
 
     try:
         body = await console_state()
@@ -2554,7 +2554,7 @@ async def _venue_snapshot(
         HTTPException: 조회 실패. ⛔ 조용히 빈 값을 내면 **"잔재 없음"** 이 되고,
             그것은 있는 위험을 없다고 말하는 것이다 (규칙 #8).
     """
-    from updown.apps.api.exchange import state as console_state
+    from updown.apps.api.exchange import console_state
 
     try:
         body = await console_state(market=market)

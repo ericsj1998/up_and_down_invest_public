@@ -676,6 +676,19 @@ th.head-act {
 
 .field input,
 .field select,
+/* 🔴 **클래스 없는 입력칸도 테마를 따른다** (사용자 캡처 2026-09-12).
+   Tailwind preflight 는 글자색만 물려주고 배경은 브라우저 기본(흰색)으로 남긴다. 그래서
+   `className` 없이 쓴 `<input>` 이 다크에서 **흰 상자에 밝은 글씨**가 되어 값이 안 보였다
+   (차트 분석 주문의 증거금·배율 칸 · MCP 토큰 이름 칸). 색만 준다 — 여백·테두리는 건드리지
+   않아야 `.input` 과 Material Tailwind 의 제 모양이 그대로 이긴다(클래스가 요소보다 세다).
+   체크박스·라디오·슬라이더는 제외한다 — 배경을 칠하면 표시가 사라진다. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+select,
+textarea {
+  background-color: var(--pure-white);
+  color: var(--ink-black);
+}
+
 .input {
   padding: 7px 12px;
   border: 1px solid var(--stone-muted);

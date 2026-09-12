@@ -1096,7 +1096,9 @@ export function ConsoleTab({ openRun }: Props) {
                   : "포지션 없음"
               }
             />
-            {effMkt === "GATE" || body?.account.ip_whitelist ? (
+            {/* 🔴 **관리자에게만** (사용자 2026-09-12). 값이 서버 주소라 아무에게나 보이면 안 된다.
+                서버도 관리자가 아니면 이 칸을 비워 보낸다 — 여기는 빈 카드까지 지우는 것뿐이다. */}
+            {me.who?.role === "admin" && (effMkt === "GATE" || body?.account.ip_whitelist) ? (
               <Card
                 name="키 IP 화이트리스트"
                 value={body?.account.ip_whitelist || "없음"}

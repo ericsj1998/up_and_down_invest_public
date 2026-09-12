@@ -31,6 +31,12 @@ module.exports = withMT({
         // 손익 부호 — 장식이 아니라 정보다 (tokens.css 의 --gain/--loss 를 그대로).
         gain: { DEFAULT: "#0f7b6c", wash: "#dcf0eb" },
         loss: { DEFAULT: "#b4423a", wash: "#f8e5e3" },
+        // 🔴 다크의 바탕·카드는 **두 벌이 같은 값이어야 한다** (2026-09-12).
+        //    셸(Tailwind `dark:bg-gray-950/900`)과 옛 화면(`tokens.css` 의 --stone-canvas/--pure-white)이
+        //    각자 색을 들고 있어, 토큰만 고치면 사이드바와 카드가 서로 다른 검정이 된다.
+        //    여기서 두 칸을 토큰과 같은 값으로 덮어 한 벌로 만든다.
+        //    800 은 카드 테두리(`dark:border-gray-800`)와 눌림 배경으로 쓰여 같이 맞춘다.
+        gray: { 800: "#26313f", 900: "#161d26", 950: "#0e141b" },
       },
       // 로그인 화면 움직임 (사용자 참고안 apsn_knowledge_graph_app · 2026-09-05): 카드 미끄러져 들어옴 ·
       // 살아 있음을 말하는 점의 맥박 · 배경 빛 덩이의 느린 표류 · 항목 차례로 떠오름. 전부 `motion-reduce:animate-none`.
