@@ -283,6 +283,27 @@ class EdgarClient:
             raise EdgarApiError(f"companyfacts 의 최상위가 매핑이 아니다: {path}")
         return cast("dict[str, Any]", body)
 
+    async def submissions(self, cik: str) -> dict[str, Any]:
+        """`/submissions/CIK##########.json` — 최근 공시 1,000건 (T277).
+
+        Args:
+            cik: CIK (자릿수는 여기서 맞춘다).
+
+        Returns:
+            응답 JSON 통째 — 해석은 `events.parse_submissions`. `filings.recent` 가 열 단위
+            배열이다 (`form[i]` · `filingDate[i]` · `items[i]` · `accessionNumber[i]` ·
+            `primaryDocument[i]`).
+
+        Raises:
+            UnknownEntityError: 404.
+            EdgarApiError: 그 외 실패.
+        """
+        path = f"{self._base_url}/submissions/CIK{cik.zfill(CIK_WIDTH)}.json"
+        body = await self.get_json(path)
+        if not isinstance(body, dict):
+            raise EdgarApiError(f"submissions 의 최상위가 매핑이 아니다: {path}")
+        return cast("dict[str, Any]", body)
+
     # ------------------------------------------------------------------
     # 요청
     # ------------------------------------------------------------------

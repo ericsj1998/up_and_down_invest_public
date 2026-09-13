@@ -7,10 +7,16 @@ Note:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Any, cast
+
 from updown.marketdata.fundamentals.events import (
     FilingEvent,
+    document_url,
     is_material,
     parse_items,
+    parse_submissions,
     read_filing,
 )
 
@@ -66,3 +72,83 @@ def test_it_says_nothing_about_direction() -> None:
     fields = set(FilingEvent.__dataclass_fields__)
     for banned in ("sentiment", "score", "bullish", "positive", "direction"):
         assert banned not in fields
+
+
+class TestSubmissions:
+    """`submissions` 실호출(AAPL · 2026-09-14 · 앞 40건) 픽스처."""
+
+    FIXTURE = (
+        Path(__file__).resolve().parents[1]
+        / "tests"
+        / "fixtures"
+        / "fundamentals"
+        / "submissions_aapl.json"
+    )
+
+    def _body(self) -> dict[str, Any]:
+        return cast("dict[str, Any]", json.loads(self.FIXTURE.read_text(encoding="utf-8")))
+
+    def test_rows_are_events_with_document_links(self) -> None:
+        rows = parse_submissions(self._body())
+        assert 30 <= len(rows) <= 40
+        assert rows == sorted(rows, key=lambda r: r.filed_at, reverse=True)
+        eight_k = [r for r in rows if r.event.form == "8-K"]
+        assert eight_k, "8-K 가 하나는 있어야 한다"
+        first = eight_k[0]
+        assert first.event.headline in {
+            "실적 발표",
+            "임원 변경",
+            "주주총회 표결 결과",
+            "기타 중요 사항",
+        }
+        assert first.url.startswith(
+            "https://www.sec.gov/Archives/edgar/data/320193/"
+        ) and first.url.endswith(".htm")
+        assert first.material is True
+        body = first.as_json()
+        assert set(body) == {
+            "filed_at",
+            "accession",
+            "form",
+            "form_label",
+            "items",
+            "labels",
+            "headline",
+            "url",
+            "description",
+            "material",
+        }
+        assert not {"direction", "score", "sentiment", "bias", "probability"} & set(body)
+
+    def test_limit_and_every_row_has_a_link(self) -> None:
+        rows = parse_submissions(self._body(), limit=5)
+        assert len(rows) == 5 and all(r.url for r in rows)
+        # Form 4(내부자 거래)도 사건이다 — 8-K 만 보던 계획보다 넓다(실측).
+        assert any(
+            r.event.form == "4" and r.event.form_label == "내부자 거래"
+            for r in parse_submissions(self._body())
+        )
+
+    def test_broken_rows_are_dropped_not_guessed(self) -> None:
+        body = {
+            "cik": "320193",
+            "filings": {
+                "recent": {
+                    "form": ["8-K", "8-K", "10-Q"],
+                    "filingDate": ["2026-07-30", "not-a-date", "2026-08-01"],
+                    "items": ["2.02,9.01", "5.02", ""],
+                    "accessionNumber": ["0000320193-26-000068", "0000320193-26-000070", ""],
+                    "primaryDocument": ["aapl-20260730.htm"],
+                }
+            },
+        }
+        rows = parse_submissions(body)
+        assert [r.accession for r in rows] == ["0000320193-26-000068"]
+        assert (
+            rows[0].url
+            == "https://www.sec.gov/Archives/edgar/data/320193/000032019326000068/aapl-20260730.htm"
+        )
+        assert document_url("0000320193", "0000320193-26-000068") == (
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000068/"
+        )
+        assert parse_submissions({}) == []

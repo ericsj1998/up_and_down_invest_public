@@ -909,7 +909,13 @@ async def caller_of(request: Request) -> Caller | None:
     bearer = request.headers.get("authorization", "")
     if bearer.startswith("Bearer ") and bearer[7:].strip().startswith(TOKEN_PREFIX):
         # ⭐ T263 — 개인 토큰. 쪽지가 아니라 표에서 주인을 찾는다. 되돌린 토큰은 없는 것과 같다.
-        email_of_token = await token_owner(bearer[7:].strip())
+        raw_token = bearer[7:].strip()
+        # 🔴 행선지가 새겨진 토큰이 다른 쪽 서버에 오면 거절 — nginx 가 잘못 보내도 여기서 한 번
+        #    더 막는다 (실계좌 토큰은 데모 DB 에 없어 어차피 거절되지만, 이중으로).
+        marked = token_mode(raw_token)
+        if marked is not None and marked != ("live" if on_real_money() else "demo"):
+            return None
+        email_of_token = await token_owner(raw_token)
         if email_of_token is None:
             return None
         email, fresh, auth_at, via_token = email_of_token, False, 0.0, True
@@ -2852,13 +2858,46 @@ TOKEN_USED_EVERY_S = 60.0
 _token_seen: dict[str, float] = {}
 
 
-def new_token() -> str:
-    """새 토큰 값 — 무작위 32바이트(URL-safe). 한 번만 보여 주고 해시만 남긴다.
+TOKEN_MODES = ("live", "demo")
+"""토큰이 아는 행선지 — 값에 `updn_live_` · `updn_demo_` 로 새긴다 (2026-09-14).
+
+MCP 클라이언트는 쿠키가 없어 nginx 가 늘 데모로 보냈고, 실계좌 화면에서 만든 토큰은 데모 DB 에 없어
+거절됐다. nginx 는 Authorization 머리의 이 접두어를 보고 보낸다(쿠키와 같은 규칙 ·
+`web/nginx.conf`). 접두어 없는 옛 토큰(`updn_…`)은 쿠키 규칙(기본 데모)을 따른다 — 다시 만들면
+된다."""
+
+
+def token_mode(token: str) -> str | None:
+    """토큰 값에 새겨진 행선지.
+
+    Args:
+        token: `updn_live_…` · `updn_demo_…` · 옛 `updn_…`.
 
     Returns:
-        `updn_` 머리가 붙은 값.
+        `live` · `demo` · None(옛 토큰 — 행선지를 모른다).
     """
-    return TOKEN_PREFIX + secrets.token_urlsafe(32)
+    for mode in TOKEN_MODES:
+        if token.startswith(f"{TOKEN_PREFIX}{mode}_"):
+            return mode
+    return None
+
+
+def new_token(mode: str | None = None) -> str:
+    """새 토큰 값 — 무작위 32바이트(URL-safe). 한 번만 보여 주고 해시만 남긴다.
+
+    Args:
+        mode: 행선지(`live` · `demo`). None 이면 이 프로세스의 환경(`APP_ENV=live` 면 live).
+
+    Returns:
+        `updn_<mode>_` 머리가 붙은 값.
+
+    Raises:
+        ValueError: 모르는 행선지.
+    """
+    picked = mode or ("live" if on_real_money() else "demo")
+    if picked not in TOKEN_MODES:
+        raise ValueError(f"모르는 토큰 행선지: {picked!r}")
+    return f"{TOKEN_PREFIX}{picked}_{secrets.token_urlsafe(32)}"
 
 
 def hash_token(token: str) -> str:

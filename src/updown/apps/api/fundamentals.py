@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from updown.analysis.fundamentals.quick import (
@@ -76,6 +76,7 @@ from updown.marketdata.fundamentals.adapter import (
     UnknownEntityError,
 )
 from updown.marketdata.fundamentals.edgar import EdgarAdapter, filings_of
+from updown.marketdata.fundamentals.events import parse_submissions
 from updown.marketdata.fundamentals.repository import FundamentalsRepository
 from updown.marketdata.ingest.repository import CandleRepository
 from updown.marketdata.provider import MarketDataProvider, fundamentals_adapter
@@ -1026,6 +1027,70 @@ async def refresh(symbol: str, market: str = "NASDAQ") -> dict[str, Any]:
         "filings": len(filings),
         "latest_filed_at": None if latest is None else latest.isoformat(),
     }
+
+
+FILINGS_TTL_S = 3600.0
+"""최근 공시 목록 기억 — EDGAR 는 초당 8회 스로틀이고 공시는 하루에 몇 건이다
+(T277 결정 #6 · 종목당 시간에 한 번)."""
+_FILINGS_CACHE = TtlCache[dict[str, Any]]("fundamentals.filings", FILINGS_TTL_S)
+
+
+@router.get("/{symbol}/filings")
+async def recent_filings(
+    symbol: str,
+    market: str = "NASDAQ",
+    limit: int = Query(12, ge=1, le=100),
+    material: bool = True,
+) -> dict[str, Any]:
+    """한 종목의 최근 공시 — 사건 이름(8-K 항목 번호가 곧 분류)과 원문 링크 (T277 1단계).
+
+    Args:
+        symbol: 티커.
+        market: 시장 (검증용 — EDGAR 는 미국주식만).
+        limit: 몇 건.
+        material: 참이면 첨부만 있는 8-K 같은 잡음을 뺀다.
+
+    Returns:
+        `{symbol, cik, name, at, filings: [...], reason}`. 방향(호재·악재) 칸은 없다(규칙 #2 · #11).
+        못 받았으면 `filings` 가 비고 `reason` 이 이유다 — 조용히 빈 목록으로 두지 않는다(규칙 #8).
+    """
+    _market_or_400(market)
+    ticker = symbol.upper()
+    cache_key = f"{ticker}:{int(material)}:{limit}"
+
+    async def _build() -> dict[str, Any]:
+        adapter = _adapter_or_503()
+        body = await adapter.submissions(ticker)
+        rows = [f for f in parse_submissions(body) if f.material or not material][:limit]
+        return {
+            "symbol": ticker,
+            "cik": str(body.get("cik") or ""),
+            "name": str(body.get("name") or ""),
+            "at": datetime.now(UTC).isoformat(),
+            "filings": [f.as_json() for f in rows],
+            "reason": None,
+        }
+
+    try:
+        return await _FILINGS_CACHE.get_or_fetch(cache_key, _build)
+    except UnknownEntityError as exc:
+        return {
+            "symbol": ticker,
+            "cik": "",
+            "name": "",
+            "at": datetime.now(UTC).isoformat(),
+            "filings": [],
+            "reason": str(exc),
+        }
+    except FundamentalsError as exc:
+        return {
+            "symbol": ticker,
+            "cik": "",
+            "name": "",
+            "at": datetime.now(UTC).isoformat(),
+            "filings": [],
+            "reason": str(exc)[:160],
+        }
 
 
 def _num(value: Any) -> float | None:

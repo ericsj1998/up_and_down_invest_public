@@ -21,6 +21,10 @@ import react from "@vitejs/plugin-react";
  */
 function apiRouter(): Plugin {
   const pick = (req: http.IncomingMessage): number => {
+    // ⭐ 개인 토큰(MCP)은 쿠키가 없다 — 토큰 값의 행선지 접두어로 보낸다 (nginx.conf 와 같은 규칙 · 2026-09-14).
+    const auth = String(req.headers.authorization ?? "");
+    if (/^Bearer\s+updn_live_/.test(auth)) return 8000;
+    if (/^Bearer\s+updn_demo_/.test(auth)) return 8002;
     const cookie = req.headers.cookie ?? "";
     // 기본은 데모 — 쿠키가 live 라고 말할 때만 실계좌 API (nginx.conf 와 같은 규칙 · 2026-09-07).
     const live =

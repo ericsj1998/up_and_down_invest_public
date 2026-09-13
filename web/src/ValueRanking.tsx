@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { fundamentals, fundamentalsRefresh, valueScreen, type FundamentalsView, type ValueRow, type ValueScreenView } from "./api";
+import { filings, fundamentals, fundamentalsRefresh, valueScreen, type FilingsView, type FundamentalsView, type ValueRow, type ValueScreenView } from "./api";
 import { BrokerMark } from "./shell/BrokerMark";
 import { DISCLAIMER_TEXT } from "./shell/disclaimer";
 import { requestStockOrder } from "./StockOrder";
@@ -60,11 +60,17 @@ function cell(row: ValueRow, key: (typeof COLUMNS)[number]["key"], percent: bool
 export function FundamentalsDetail({ symbol, market }: { symbol: string; market: string }) {
   const [view, setView] = useState<FundamentalsView | null>(null);
   const [error, setError] = useState("");
+  const [recent, setRecent] = useState<FilingsView | null>(null);
   useEffect(() => {
     let alive = true;
     fundamentals(symbol, market)
       .then((body) => alive && setView(body))
       .catch((exc: unknown) => alive && setError(String(exc)));
+    // ⭐ T277 — 최근 공시(EDGAR submissions). 재무와 따로 받는다 — 하나가 죽어도 다른 하나는 뜬다.
+    setRecent(null);
+    filings(symbol, market)
+      .then((body) => alive && setRecent(body))
+      .catch((exc: unknown) => alive && setRecent({ symbol, cik: "", name: "", at: "", filings: [], reason: String(exc) }));
     return () => {
       alive = false;
     };
@@ -120,6 +126,36 @@ export function FundamentalsDetail({ symbol, market }: { symbol: string; market:
           </ul>
         </div>
       ))}
+      {/* ⭐ T277 — 최근 공시. 사건 이름(8-K 항목 번호가 곧 분류)과 원문 링크. 호재·악재를 말하지 않는다(규칙 #2). */}
+      <div>
+        <p className="faint">
+          <b>최근 공시</b>
+          {recent?.name ? <span> · {recent.name}</span> : null}
+        </p>
+        {recent === null ? (
+          <p className="faint">공시 읽는 중…</p>
+        ) : recent.reason ? (
+          <p className="faint">공시를 못 받았다 — {recent.reason}</p>
+        ) : recent.filings.length === 0 ? (
+          <p className="faint">최근 공시가 없다.</p>
+        ) : (
+          <ul>
+            {recent.filings.map((f) => (
+              <li key={f.accession}>
+                <span className="mono">{f.filed_at}</span>{" "}
+                <a href={f.url} target="_blank" rel="noreferrer">
+                  {f.headline}
+                </a>
+                <span className="faint">
+                  {" "}
+                  · {f.form_label}({f.form})
+                  {f.labels.length > 1 ? ` · ${f.labels.join(", ")}` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       <p className="faint">
         점수 {view.score.score === null ? "없음" : num(view.score.score, 0)}
         {view.score.note ? ` — ${view.score.note}` : ""} · 백분위 표본 {view.history_points}개월 ·

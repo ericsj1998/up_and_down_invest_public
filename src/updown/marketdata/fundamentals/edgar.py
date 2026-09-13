@@ -8,6 +8,7 @@ CIK 표(`company_tickers.json`)는 수천 행짜리 한 파일이라 **한 번 �
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from updown.common.domain.fundamentals import Filing, FinancialFact, FundamentalsConfig
 from updown.common.logging.setup import get_logger
@@ -121,6 +122,22 @@ class EdgarAdapter:
         cik = await self.cik_of(symbol)
         body = await self._client.company_facts(cik)
         return parse_company_facts(body, symbol=symbol.upper(), config=self._config)
+
+    async def submissions(self, symbol: str) -> dict[str, Any]:
+        """종목의 최근 공시 1,000건 원문 (T277).
+
+        Args:
+            symbol: 티커.
+
+        Returns:
+            EDGAR `submissions` 응답 그대로.
+
+        Raises:
+            UnknownEntityError: 티커를 모른다.
+            FundamentalsError: 호출 실패.
+        """
+        cik = await self.cik_of(symbol)
+        return await self._client.submissions(cik)
 
     async def filings(self, symbol: str) -> list[Filing]:
         """사실이 실린 공시 목록.

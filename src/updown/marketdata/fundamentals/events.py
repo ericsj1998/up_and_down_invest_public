@@ -23,7 +23,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
+from typing import Any, cast
+
+ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data"
+"""공시 원문이 사는 곳 — `edgar.py` 의 `filing_url` 과 같은 뿌리(폴더까지). 여기는 대표 문서까지
+간다."""
 
 ITEM_LABELS: dict[str, str] = {
     "1.01": "중요 계약 체결",
@@ -148,12 +155,129 @@ def is_material(event: FilingEvent) -> bool:
     return any(item not in NOISE_ITEMS for item in event.items)
 
 
+@dataclass(frozen=True, slots=True)
+class RecentFiling:
+    """`submissions` 의 공시 한 건 — 사건으로 읽은 것 + 원문 링크.
+
+    Attributes:
+        filed_at: 공시일.
+        accession: 접수 번호.
+        event: 사건(서식·항목 이름).
+        url: 원문 링크 — 대표 문서가 있으면 그 문서, 없으면 색인 폴더. **항상 있다**(링크 없는
+            항목은 애초에 만들지 않는다 · T277 규칙).
+        description: SEC 가 붙인 대표 문서 설명(`primaryDocDescription`). 없으면 빈 값.
+        material: 사람에게 보여 줄 만한가 (`is_material`).
+    """
+
+    filed_at: date
+    accession: str
+    event: FilingEvent
+    url: str
+    description: str = ""
+    material: bool = True
+
+    def as_json(self) -> dict[str, Any]:
+        """화면 모양 — 방향 칸은 없다.
+
+        Returns:
+            `{filed_at, accession, form, form_label, items, labels, headline, url, description,
+            material}`.
+        """
+        return {
+            "filed_at": self.filed_at.isoformat(),
+            "accession": self.accession,
+            "form": self.event.form,
+            "form_label": self.event.form_label,
+            "items": list(self.event.items),
+            "labels": list(self.event.labels),
+            "headline": self.event.headline,
+            "url": self.url,
+            "description": self.description,
+            "material": self.material,
+        }
+
+
+def document_url(cik: str, accession: str, primary_document: str = "") -> str:
+    """공시 원문 링크 — 대표 문서가 있으면 그 문서, 없으면 색인 폴더.
+
+    Args:
+        cik: CIK (앞 0 은 경로에서 빠진다).
+        accession: 접수 번호 (`0000320193-26-000068` · 경로에서는 대시가 빠진다).
+        primary_document: `primaryDocument` (`aapl-20260730.htm`). 빈 값이면 폴더까지만.
+
+    Returns:
+        `https://www.sec.gov/Archives/edgar/data/<cik>/<접수번호>/<문서>`.
+    """
+    folder = f"{ARCHIVE_URL}/{cik.lstrip('0') or '0'}/{accession.replace('-', '')}/"
+    return folder + primary_document if primary_document else folder
+
+
+def parse_submissions(body: Mapping[str, Any], *, limit: int = 1000) -> list[RecentFiling]:
+    """EDGAR `submissions` 응답(열 단위 배열)을 공시 목록으로 (순수).
+
+    Args:
+        body: 응답 JSON. `cik` 와 `filings.recent.{form, filingDate, items, accessionNumber,
+            primaryDocument, primaryDocDescription}` 을 읽는다.
+        limit: 앞에서 몇 건(응답은 최신순이다).
+
+    Returns:
+        최신순. 접수 번호나 날짜가 깨진 행은 버린다 — 링크를 못 만들면 항목이 아니다.
+
+    Note:
+        SEC 는 배열 길이가 서로 같다고 약속하지만 믿지 않는다 — 짧은 배열은 빈 값으로 읽는다.
+    """
+    cik = str(body.get("cik") or "")
+    filings = cast("Mapping[str, Any]", body.get("filings") or {})
+    recent = cast("Mapping[str, Any]", filings.get("recent") or {})
+
+    def column(name: str) -> list[Any]:
+        """열 하나 — 배열이 아니면 빈 열."""
+        got = recent.get(name)
+        return cast("list[Any]", got) if isinstance(got, list) else []
+
+    forms = column("form")
+    dates = column("filingDate")
+    items = column("items")
+    accessions = column("accessionNumber")
+    documents = column("primaryDocument")
+    descriptions = column("primaryDocDescription")
+
+    def at(rows: list[Any], index: int) -> str:
+        """열의 i 번째 — 짧은 열이면 빈 값."""
+        return str(rows[index]) if index < len(rows) and rows[index] is not None else ""
+
+    out: list[RecentFiling] = []
+    for index in range(min(len(forms), limit)):
+        accession = at(accessions, index)
+        if not accession or not cik:
+            continue
+        try:
+            filed_at = date.fromisoformat(at(dates, index))
+        except ValueError:
+            continue
+        event = read_filing(at(forms, index), at(items, index))
+        out.append(
+            RecentFiling(
+                filed_at=filed_at,
+                accession=accession,
+                event=event,
+                url=document_url(cik, accession, at(documents, index)),
+                description=at(descriptions, index),
+                material=is_material(event),
+            )
+        )
+    return out
+
+
 __all__ = [
     "FORM_LABELS",
     "ITEM_LABELS",
     "NOISE_ITEMS",
     "FilingEvent",
+    "RecentFiling",
+    "document_url",
     "is_material",
     "parse_items",
+    "parse_submissions",
     "read_filing",
 ]

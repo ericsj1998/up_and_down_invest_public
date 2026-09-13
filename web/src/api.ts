@@ -1906,6 +1906,38 @@ export function fundamentals(
   );
 }
 
+/** 최근 공시 한 건 (T277 · EDGAR `submissions`) — 사건 이름과 원문 링크. 방향 칸은 없다. */
+export type RecentFiling = {
+  filed_at: string;
+  accession: string;
+  form: string;
+  form_label: string;
+  items: string[];
+  labels: string[];
+  headline: string;
+  url: string;
+  description: string;
+  material: boolean;
+};
+
+export type FilingsView = {
+  symbol: string;
+  cik: string;
+  name: string;
+  at: string;
+  filings: RecentFiling[];
+  /** 못 받았을 때 이유. */
+  reason: string | null;
+};
+
+export function filings(symbol: string, market: string, limit = 12): Promise<FilingsView> {
+  return request(
+    `/fundamentals/${encodeURIComponent(symbol)}/filings?market=${encodeURIComponent(market)}&limit=${limit}`,
+    undefined,
+    30_000,
+  );
+}
+
 /** 온보딩 위저드 초안 (T247 · `/assistant/draft`). */
 export type AssistantDraft = {
   step: "consent" | "capital" | "profile" | "setup" | "review" | "done";

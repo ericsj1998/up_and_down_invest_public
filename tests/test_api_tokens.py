@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
-from updown.apps.api.auth import TOKEN_PREFIX, hash_token, new_token, token_allowed
+import pytest
+
+from updown.apps.api.auth import TOKEN_PREFIX, hash_token, new_token, token_allowed, token_mode
 from updown.common.security.caps import Access, required_cap
 from updown.common.security.roles import Need, need_for
 
@@ -35,3 +37,18 @@ class TestPaths:
         assert not token_allowed("POST", "/walkforward/live")
         assert not token_allowed("POST", "/auth/tokens")
         assert not token_allowed("DELETE", "/rebalancer/abc")
+
+
+class TestTokenMode:
+    """토큰 값에 행선지를 새긴다 (2026-09-14) — MCP 요청은 쿠키가 없어 nginx 가 이걸로 보낸다."""
+
+    def test_new_token_carries_mode_and_old_tokens_have_none(self) -> None:
+        live, demo = new_token("live"), new_token("demo")
+        assert live.startswith("updn_live_") and demo.startswith("updn_demo_")
+        assert token_mode(live) == "live" and token_mode(demo) == "demo"
+        assert token_mode("updn_" + "x" * 43) is None  # 옛 토큰
+        assert token_mode("other_live_abc") is None
+        # 접두어를 붙여도 우리 토큰 머리(`updn_`)로 시작한다 — caller_of 의 첫 판별 그대로.
+        assert live.startswith(TOKEN_PREFIX)
+        with pytest.raises(ValueError):
+            new_token("paper")

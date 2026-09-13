@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Mapping
+from typing import Any, Protocol
 
 from updown.common.domain.fundamentals import Filing, FinancialFact
 
@@ -40,6 +41,21 @@ class FundamentalsAdapter(Protocol):
 
         Returns:
             공시일 오름차순 사실.
+
+        Raises:
+            UnknownEntityError: 출처가 그 종목을 모른다.
+            FundamentalsError: 호출 실패.
+        """
+        ...
+
+    async def submissions(self, symbol: str) -> Mapping[str, Any]:
+        """종목의 최근 공시 목록 원문 (T277 · EDGAR `submissions`).
+
+        Args:
+            symbol: 종목 코드.
+
+        Returns:
+            출처 응답 그대로 — 해석은 `events.parse_submissions`. 국내(DART)는 아직 없다.
 
         Raises:
             UnknownEntityError: 출처가 그 종목을 모른다.
