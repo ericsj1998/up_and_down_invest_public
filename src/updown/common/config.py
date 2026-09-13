@@ -108,6 +108,9 @@ _OPTIONAL_FIELDS: tuple[str, ...] = (
     # 토스 프록시 (T275) — 자리만 잡힌 키는 없는 것
     "toss_proxy_url",
     "toss_proxy_token",
+    # 주요 일정 달력 (T276) — 자리만 잡힌 키는 없는 것 · 없으면 달력이 이유와 함께 빈 칸
+    "fred_api_key",
+    "finnhub_api_key",
 )
 
 
@@ -208,6 +211,11 @@ class Settings(BaseSettings):
     """토스 요율 그룹당 초당 요청 수 — 토스 스펙이 수치를 안 주어 보수적으로 5 (2026-09-11 사용자
     "30초 너무 길다": 1h 400봉 = 1분봉 200페이지 = 5건/초로 40초). 서버에서 올려 보고 429 가 없으면
     유지한다 — `Outbound` 가 429 의 `Retry-After` 로 물러난다. 0 이하면 기본값."""
+
+    # 주요 일정 달력 (T276 · 2026-09-13) — FRED 는 지표 발표 **예정일**, Finnhub 는 실적 **예정일**.
+    # 값·확정은 이미 있는 BLS·EDGAR 가 맡는다. 둘 다 없어도 뜬다 — 그 출처만 이유와 함께 빈 칸.
+    fred_api_key: SecretStr | None = None
+    finnhub_api_key: SecretStr | None = None
 
     dart_api_key: SecretStr | None = None
 

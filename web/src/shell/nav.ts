@@ -8,6 +8,7 @@ import type { ComponentType, SVGProps } from "react";
 import {
   BanknotesIcon,
   BeakerIcon,
+  CalendarDaysIcon,
   ChartBarIcon,
   ChartBarSquareIcon,
   CpuChipIcon,
@@ -38,6 +39,8 @@ export const PAGES: readonly Page[] = [
   { to: "/chart-order", name: "AI 차트 분석 주문", icon: ChartBarSquareIcon },
   // AI 투자 어시스턴트 (T247) — 첫 접속 온보딩 · 이어 하기 · 펀드 기본값 편집. 처음 온 사람은 `/` 가 여기로 보낸다.
   { to: "/assistant", name: "AI 투자 어시스턴트", icon: SparklesIcon },
+  // 주요 일정 달력 (T276) — 지표 발표·실적 예정일. 방향은 말하지 않는다 · 실적 행은 재무 카드로 이어진다.
+  { to: "/calendar", name: "주요 일정 달력", icon: CalendarDaysIcon },
   { to: "/report", name: "리포트", icon: ChartBarIcon },
   // 백테스트 리포트 (T222) — 어떤 데이터·전략·결과로 검증했나. 주소는 /evidence 그대로(링크 보존) · 이름만 바꿈 (사용자 2026-09-06).
   { to: "/evidence", name: "백테스트 리포트", icon: BeakerIcon },

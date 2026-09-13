@@ -56,8 +56,8 @@ function cell(row: ValueRow, key: (typeof COLUMNS)[number]["key"], percent: bool
   return percent ? pct(got.value) : `${num(got.value, 1)}x`;
 }
 
-/** 펼침 — 한 종목의 표 전체 (지표 · 백분위 · 출처 링크). */
-function Detail({ symbol, market }: { symbol: string; market: string }) {
+/** 펼침 — 한 종목의 표 전체 (지표 · 백분위 · 출처 링크). 달력의 실적 행(T276)도 이것을 쓴다 — 두 곳이 갈리지 않게. */
+export function FundamentalsDetail({ symbol, market }: { symbol: string; market: string }) {
   const [view, setView] = useState<FundamentalsView | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -490,7 +490,7 @@ function RowPair({
       {shown ? (
         <tr className="why-row">
           <td colSpan={11}>
-            <Detail symbol={row.symbol} market={rowMarket ?? market} />
+            <FundamentalsDetail symbol={row.symbol} market={rowMarket ?? market} />
           </td>
         </tr>
       ) : null}

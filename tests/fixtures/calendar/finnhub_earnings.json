@@ -1,0 +1,81 @@
+{
+ "earningsCalendar": [
+  {
+   "symbol": "COST",
+   "date": "2026-09-24",
+   "hour": "amc",
+   "quarter": 4,
+   "year": 2026,
+   "epsEstimate": 6.6904,
+   "epsActual": null,
+   "revenueEstimate": 96474309568,
+   "revenueActual": null
+  },
+  {
+   "symbol": "FGPR",
+   "date": "2026-09-25",
+   "hour": "",
+   "quarter": 4,
+   "year": 2026,
+   "epsEstimate": null,
+   "epsActual": null,
+   "revenueEstimate": null,
+   "revenueActual": null
+  },
+  {
+   "symbol": "TBN",
+   "date": "2026-09-25",
+   "hour": "",
+   "quarter": 4,
+   "year": 2026,
+   "epsEstimate": -0.198,
+   "epsActual": null,
+   "revenueEstimate": 2457663,
+   "revenueActual": null
+  },
+  {
+   "symbol": "UEC",
+   "date": "2026-09-25",
+   "hour": "amc",
+   "quarter": 4,
+   "year": 2026,
+   "epsEstimate": -0.0505,
+   "epsActual": null,
+   "revenueEstimate": 4545000,
+   "revenueActual": null
+  },
+  {
+   "symbol": "AFB",
+   "date": "2026-09-24",
+   "hour": "",
+   "quarter": 3,
+   "year": 2026,
+   "epsEstimate": null,
+   "epsActual": null,
+   "revenueEstimate": null,
+   "revenueActual": null
+  },
+  {
+   "symbol": "BSET",
+   "date": "2026-09-24",
+   "hour": "",
+   "quarter": 3,
+   "year": 2026,
+   "epsEstimate": 0.1326,
+   "epsActual": null,
+   "revenueEstimate": 84724943,
+   "revenueActual": null
+  },
+  {
+   "symbol": "BTOC",
+   "date": "2026-09-24",
+   "hour": "",
+   "quarter": 4,
+   "year": 2026,
+   "epsEstimate": null,
+   "epsActual": null,
+   "revenueEstimate": null,
+   "revenueActual": null
+  }
+ ]
+}

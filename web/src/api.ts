@@ -2769,3 +2769,33 @@ export function orderCustom(payload: {
     body: JSON.stringify(payload),
   });
 }
+
+/** 주요 일정 달력 (T276 · `/calendar/upcoming`) — 예정일만. 방향을 말하는 칸은 없다. */
+export type CalendarEvent = {
+  kind: "macro" | "earnings";
+  /** ISO 날짜 — 출처의 현지(미국) 기준. */
+  date: string;
+  title: string;
+  source: string;
+  key: string;
+  symbol: string | null;
+  market: string | null;
+  url: string | null;
+  detail: Record<string, string | number | null>;
+};
+
+export type CalendarView = {
+  at: string;
+  from: string;
+  to: string;
+  days: number;
+  events: CalendarEvent[];
+  /** 못 받은 출처 — 이유와 함께. 조용히 빠지지 않는다. */
+  failures: Array<{ key: string; label: string; reason: string }>;
+  watch: Array<{ key: string; label: string; note: string; url: string | null }>;
+};
+
+export function calendarUpcoming(days?: number): Promise<CalendarView> {
+  const tail = days ? `?days=${days}` : "";
+  return request(`/calendar/upcoming${tail}`, undefined, 60_000);
+}

@@ -66,7 +66,8 @@ ALLOW = (
     "example",
     "xxxxxxxx",
     "203.0.113.",
-    # URL 경로는 시크릿이 아니다 — `TOKEN_… = "/admin/toss/warm"` 이 걸렸다(2026-09-11 · 옛 커밋에 남음)
+    # URL 경로는 시크릿이 아니다 — `TOKEN_… = "/admin/toss/warm"` 이 걸렸다
+    # (2026-09-11 · 옛 커밋에 남음)
     "/admin/toss/",
 )
 _IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_]*$")  # 값이 아니라 변수 이름 (`KEY=NVIDIA_API_KEY`)

@@ -28,6 +28,7 @@ import { Boundary } from "./Boundary";
 import { ChatPopout } from "./chat/ChatShell";
 import { ConsoleTab } from "./ConsoleTab";
 import { AuthTroubleNote, Gate, PendingNote, useMe } from "./Gate";
+import { CalendarPage } from "./Calendar";
 import { PaperTab } from "./PaperTab";
 // ⭐ 리포트 대시보드는 **늦게 받는다** — apexcharts(~150 kB gz)가 그 화면에만 쓰인다. 콘솔이 홈이라 첫 로딩이
 //    거기에 갇힐 이유가 없다 (T220 6단계 · 번들 1.78 MB 중 차트 몫을 뗀다).
@@ -119,6 +120,8 @@ function Shell() {
             <Route path="/accounts" element={<Accounts who={who} />} />
             <Route path="/tokens" element={<ApiTokens who={who} />} />
             <Route path="/ai-report" element={<AiReport who={who} />} />
+            {/* ⭐ T276 — 주요 일정 달력. 예정일만 · 방향 없음 · 실적 행은 재무 카드로. */}
+            <Route path="/calendar" element={<CalendarPage />} />
             <Route path="*" element={<Missing />} />
           </Routes>
         </Boundary>

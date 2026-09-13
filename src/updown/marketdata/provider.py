@@ -48,6 +48,9 @@ from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter
 from updown.marketdata.binance.adapter import BinanceAdapter
 from updown.marketdata.binance.client import BinanceClient
 from updown.marketdata.binance.venue import binance_base, binance_ws
+from updown.marketdata.calendar.adapter import CalendarAdapter
+from updown.marketdata.calendar.client import CalendarClient
+from updown.marketdata.calendar.config import CalendarConfig
 from updown.marketdata.fundamentals.adapter import FundamentalsAdapter
 from updown.marketdata.fundamentals.client import EdgarClient
 from updown.marketdata.fundamentals.edgar import EdgarAdapter
@@ -525,3 +528,19 @@ def fundamentals_adapter(settings: Settings, config: FundamentalsConfig) -> Fund
             "EDGAR_USER_AGENT 가 비었다 — SEC 는 이름·이메일 없는 요청을 403 으로 막는다"
         )
     return EdgarAdapter(EdgarClient(settings.edgar_user_agent), config)
+
+
+def calendar_adapter(settings: Settings, config: CalendarConfig) -> CalendarAdapter:
+    """주요 일정 어댑터 — **조회 경로의 유일한 획득 지점** (절대 규칙 #0 · T276).
+
+    Args:
+        settings: `fred_api_key` · `finnhub_api_key` 를 읽는다. 둘 다 비어도 만든다 — 그 출처만
+            요청 없이 실패 목록으로 간다(이유에 키 **이름**만 · 값은 없다).
+        config: 감시 목록 · 연준 일정 · 창.
+
+    Returns:
+        FRED · Finnhub 어댑터.
+    """
+    fred = settings.fred_api_key.get_secret_value() if settings.fred_api_key else None
+    finnhub = settings.finnhub_api_key.get_secret_value() if settings.finnhub_api_key else None
+    return CalendarAdapter(CalendarClient(fred, finnhub), config)

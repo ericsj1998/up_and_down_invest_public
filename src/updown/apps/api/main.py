@@ -42,6 +42,8 @@ from updown.apps.api.auth import attach_accounts
 from updown.apps.api.auth import guard as auth_guard
 from updown.apps.api.auth import router as auth_router
 from updown.apps.api.backtest import router as backtest_router
+from updown.apps.api.calendar import attach_calendar
+from updown.apps.api.calendar import router as calendar_router
 from updown.apps.api.chart_order import router as chart_order_router
 from updown.apps.api.evidence import router as evidence_router
 from updown.apps.api.exchange import router as exchange_router
@@ -214,6 +216,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         attach_state_store(DbStateStore(resolved_state.session_factory))
         # ⭐ 재무 사실(T243) — 같은 풀. 설정은 EDGAR User-Agent 때문에 넘긴다.
         attach_fundamentals(resolved_state.session_factory, resolved_state.settings)
+        # ⭐ 주요 일정 달력(T276) — FRED·Finnhub 키는 설정에서. 없으면 그 출처만 이유와 함께 빈다.
+        attach_calendar(resolved_state.settings)
         # ⭐ 저평가 1단계 캐시의 Redis 사본 — 배포·재시작 뒤에도 "준비 중 N종" 이 안 뜨게
         #    (2026-09-11).
         attach_quick_cache(getattr(resolved_state, "redis", None))
@@ -300,6 +304,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
             attach_store(None)
             attach_state_store(None)
             attach_fundamentals(None)
+            attach_calendar(None)
             attach_quick_cache(None)
             attach_candles(None)
             attach_accounts(None)
@@ -448,6 +453,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     app.include_router(fundamentals_router)
     # ⭐ 거시 지표(T262) — VIX·선물·환율·금리·물가. 시장 공개 값이라 읽기 권한.
     app.include_router(macro_router)
+    app.include_router(calendar_router)  # T276 주요 일정 달력 — 예정일만, 방향 없음
     # ⭐ 온보딩 위저드(T247) — 초안은 계정 저장소, 생성은 펀드 API 를 그대로 부른다.
     app.include_router(assistant_router)
     # ⭐ AI 채팅(T248) — 작업 레지스트리 + `/ai/jobs/{id}/events` SSE 를 그대로 쓴다.
