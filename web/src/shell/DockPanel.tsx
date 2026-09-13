@@ -13,7 +13,7 @@
  */
 
 import { ArrowsPointingOutIcon, ArrowTopRightOnSquareIcon, Squares2X2Icon, XMarkIcon } from "@heroicons/react/24/solid";
-import { useEffect, useState, type ComponentType, type ReactNode, type SVGProps } from "react";
+import { useEffect, useRef, useState, type ComponentType, type ReactNode, type SVGProps } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   clamp,
@@ -68,6 +68,10 @@ const EDGES: Array<{ edge: DockMode; glyph: string; title: string }> = [
 
 const BUBBLE = 56;
 const BUBBLE_GAP = 72;
+/** 작은 단추 — 큰 단추의 0.85 (사용자 2026-09-14). */
+const MINI_BUBBLE = Math.round(BUBBLE * 0.85);
+/** 마우스를 뗀 뒤 펼침을 유지하는 시간. */
+const LAUNCHER_LINGER_MS = 2000;
 
 type DragKind = "bubble" | "float" | "docked";
 
@@ -280,6 +284,20 @@ export function Launcher({ primary, others }: { primary: PanelSpec; others: Pane
   const shell = useShellStore(primary.store);
   const { pathname } = useLocation();
   const [hover, setHover] = useState(false);
+  // ⭐ 마우스를 떼도 2초는 펼친 채 둔다 — 큰 단추에서 작은 단추로 옮겨 가는 사이에 접히면 못 누른다 (사용자 2026-09-14).
+  const collapseTimer = useRef<number | null>(null);
+  const expand = () => {
+    if (collapseTimer.current !== null) window.clearTimeout(collapseTimer.current);
+    collapseTimer.current = null;
+    setHover(true);
+  };
+  const collapseLater = () => {
+    if (collapseTimer.current !== null) window.clearTimeout(collapseTimer.current);
+    collapseTimer.current = window.setTimeout(() => setHover(false), LAUNCHER_LINGER_MS);
+  };
+  useEffect(() => () => {
+    if (collapseTimer.current !== null) window.clearTimeout(collapseTimer.current);
+  }, []);
   const bubble = bubbleBase(shell.bubble, 0);
   const PrimaryIcon = primary.icon;
   const primaryOpen = shell.mode !== "closed" && shell.mode !== "popout";
@@ -290,8 +308,8 @@ export function Launcher({ primary, others }: { primary: PanelSpec; others: Pane
     <div
       className="fixed z-[60]"
       style={{ left: bubble.x, top: bubble.y, width: BUBBLE, height: BUBBLE }}
-      onPointerEnter={() => setHover(true)}
-      onPointerLeave={() => setHover(false)}
+      onPointerEnter={expand}
+      onPointerLeave={collapseLater}
     >
       {/* 작은 단추들 — 큰 단추 바로 위로 쌓인다. 펼쳐질 때만 보이고 누를 수 있다. */}
       <div
@@ -325,7 +343,8 @@ function MiniLauncher({ spec, pathname, active, idle }: { spec: PanelSpec; pathn
   return (
     <button
       type="button"
-      className={`grid h-10 w-10 select-none place-items-center rounded-full shadow-lg ${open ? active : idle} ${big ? "opacity-50" : ""}`}
+      className={`grid select-none place-items-center rounded-full shadow-lg ${open ? active : idle} ${big ? "opacity-50" : ""}`}
+      style={{ width: MINI_BUBBLE, height: MINI_BUBBLE }}
       aria-label={`${spec.label} ${open ? "닫기" : "열기"}`}
       aria-pressed={open}
       title={big ? `${spec.label} — 지금 큰 화면에 있다` : `${spec.label} — 누르면 ${open ? "닫는다" : "연다"}`}
@@ -333,7 +352,7 @@ function MiniLauncher({ spec, pathname, active, idle }: { spec: PanelSpec; pathn
         if (!big) togglePanel(spec.store);
       }}
     >
-      <Icon className="h-5 w-5" />
+      <Icon className="h-6 w-6" />
     </button>
   );
 }
