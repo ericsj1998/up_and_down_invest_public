@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hourLabel, isoDay, monthCells } from "./Calendar";
+import { hourLabel, isoDay, monthCells, moveWord, spanLabel, wallClock } from "./Calendar";
 
 describe("달력 격자 (T276)", () => {
   it("일요일부터 7의 배수로 채우고 이웃 달은 표시한다", () => {
@@ -27,5 +27,26 @@ describe("달력 격자 (T276)", () => {
     expect(hourLabel("bmo")).toBe("장 전");
     expect(hourLabel("")).toBe("");
     expect(hourLabel("xyz")).toBe("xyz");
+  });
+});
+
+
+describe("달력 글자 (T276)", () => {
+  it("움직임은 크기를 말로 — 예측이 아니다", () => {
+    expect(moveWord(0.12)).toBe("+0.12% 보합");
+    expect(moveWord(-0.55)).toBe("-0.55% 소폭 하락");
+    expect(moveWord(1.3)).toBe("+1.30% 큰 폭 상승");
+    expect(moveWord(null)).toBe("—");
+  });
+
+  it("남은 시간은 일·시·분·초", () => {
+    expect(spanLabel(90_061_000)).toBe("1일 01:01:01");
+    expect(spanLabel(-3_600_000)).toBe("01:00:00");
+  });
+
+  it("벽시계는 오프셋만 더한다 — Intl 없이", () => {
+    const utc = Date.parse("2026-10-14T12:30:00Z");
+    expect(wallClock(utc, -240)).toBe("08:30:00");
+    expect(wallClock(utc, 540, true)).toBe("2026-10-14 21:30:00");
   });
 });

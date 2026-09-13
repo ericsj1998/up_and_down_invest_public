@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
@@ -35,8 +36,15 @@ REFRESH_EVERY_S = 600.0
 _REFRESH_MARK = TtlCache[bool]("calendar.refresh", REFRESH_EVERY_S)
 """발표 뒤 값이 낡았을 때 BLS 를 다시 부르는 간격 — 하루 요청 상한이 있어 10분에 한 번만."""
 
+HISTORY_PATH = Path(__file__).resolve().parents[4] / "config" / "evidence" / "event_history.json"
+"""과거 반응 표 — 연구 PC 가 `scripts/research/event_reaction.py --history-out` 으로 만든다
+(서버는 봉을 창만 보관해 못 센다 · T278). 이미지에 실려 온다."""
+HISTORY_DEFAULT_DAYS = 365
+KST_OFFSET_MIN = 9 * 60
+
 _settings: Settings | None = None
 _adapter: CalendarAdapter | None = None
+_history_cache: tuple[float, dict[str, Any]] | None = None
 
 
 def attach_calendar(settings: Settings | None, *, adapter: CalendarAdapter | None = None) -> None:
@@ -183,7 +191,131 @@ async def upcoming_snapshot(
         }
 
     body = await _CACHE.get_or_fetch(cache_key, _build)
-    return {**body, "actuals": await _actuals(body["events"], start, clock)}
+    return {
+        **body,
+        "actuals": await _actuals(body["events"], start, clock),
+        "clock": server_clock(clock),
+    }
+
+
+def server_clock(now: datetime) -> dict[str, Any]:
+    """서버 시각 — 화면이 자기 시계 대신 이것으로 카운트다운을 잰다 (호스트 시계는 못 믿는다).
+
+    Args:
+        now: 지금(UTC).
+
+    Returns:
+        `{utc, ny, kst, ny_offset_min, ny_zone, kst_offset_min}`. 뉴욕 오프셋은 tz DB 가 준다
+        (서머타임).
+    """
+    ny = now.astimezone(NY)
+    offset = ny.utcoffset()
+    ny_offset_min = int(offset.total_seconds() // 60) if offset is not None else 0
+    return {
+        "utc": now.isoformat(),
+        "ny": ny.isoformat(),
+        "kst": (now + timedelta(minutes=KST_OFFSET_MIN)).strftime("%Y-%m-%dT%H:%M:%S+09:00"),
+        "ny_offset_min": ny_offset_min,
+        "ny_zone": ny.tzname() or "",
+        "kst_offset_min": KST_OFFSET_MIN,
+    }
+
+
+def _history_file() -> dict[str, Any]:
+    """과거 반응 표 파일 — mtime 으로 기억한다. 없으면 빈 표(이유는 응답에)."""
+    global _history_cache
+    try:
+        stamp = HISTORY_PATH.stat().st_mtime
+    except OSError:
+        return {}
+    if _history_cache is not None and _history_cache[0] == stamp:
+        return _history_cache[1]
+    try:
+        raw = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    loaded: dict[str, Any] = cast("dict[str, Any]", raw) if isinstance(raw, dict) else {}
+    _history_cache = (stamp, loaded)
+    return loaded
+
+
+def history_table(
+    kind: str, *, days: int = HISTORY_DEFAULT_DAYS, today: date | None = None
+) -> dict[str, Any]:
+    """한 발표 종류의 과거 반응 — 행은 사실, 묶음은 표본 수와 함께.
+
+    Args:
+        kind: `cpi` · `jobs` · `fomc`(설정의 `history` 값).
+        days: 행을 며칠 전까지 보여 주나. 묶음은 **전체 표본**으로 센다(창과 무관).
+        today: 기준일. None 이면 오늘(UTC).
+
+    Returns:
+        `{kind, label, value_label, value_unit, axis, first_minutes, h1_minutes, h2_minutes,
+        min_sample, generated_at, symbols, rows: [...], aggregate: {n, held_h1, ...}, reason}`.
+        표가 없으면 `rows` 가 비고 `reason` 이 왜 비었는지 말한다 — 조용히 0 으로 그리지 않는다
+        (규칙 #8).
+    """
+    file = _history_file()
+    kinds_raw: object = file.get("kinds")
+    kinds: dict[str, Any] = cast("dict[str, Any]", kinds_raw) if isinstance(kinds_raw, dict) else {}
+    table_raw: object = kinds.get(kind)
+    head: dict[str, Any] = {
+        "kind": kind,
+        "axis": file.get("axis"),
+        "first_minutes": file.get("first_minutes"),
+        "h1_minutes": file.get("h1_minutes"),
+        "h2_minutes": file.get("h2_minutes"),
+        "min_sample": file.get("min_sample", 30),
+        "generated_at": file.get("generated_at"),
+        "symbols": file.get("symbols") or [],
+    }
+    if not isinstance(table_raw, dict):
+        reason = "과거 반응 표가 없다 — 연구 PC 에서 event_reaction.py --history-out 을 돌려 넣는다"
+        if not file:
+            reason = "과거 반응 표 파일이 없다 (config/evidence/event_history.json)"
+        elif kind not in kinds:
+            reason = f"'{kind}' 는 아직 안 쟀다"
+        return {
+            **head,
+            "label": None,
+            "value_label": None,
+            "value_unit": None,
+            "rows": [],
+            "aggregate": {"n": 0},
+            "reason": reason,
+        }
+    table_dict = cast("dict[str, Any]", table_raw)
+    anchor = today or datetime.now(UTC).date()
+    floor = (anchor - timedelta(days=days)).isoformat()
+    all_rows = cast("list[dict[str, Any]]", table_dict.get("rows") or [])
+    rows = [r for r in all_rows if str(r.get("date", "")) >= floor]
+    rows.sort(key=lambda r: str(r.get("date", "")), reverse=True)
+    return {
+        **head,
+        "label": table_dict.get("label"),
+        "value_label": table_dict.get("value_label"),
+        "value_unit": table_dict.get("value_unit"),
+        "rows": rows,
+        "aggregate": table_dict.get("aggregate") or {"n": 0},
+        "reason": None,
+    }
+
+
+@router.get("/history")
+async def history(
+    kind: str = Query(..., min_length=1, max_length=20, pattern=r"^[a-z_]+$"),
+    days: int = Query(HISTORY_DEFAULT_DAYS, ge=30, le=3650),
+) -> dict[str, Any]:
+    """발표 종류의 과거 반응 표 — 발표일 · 그때 값 · BTC·ETH 첫 15분/60분/120분 움직임.
+
+    Args:
+        kind: `cpi` · `jobs` · `fomc`.
+        days: 행을 며칠 전까지 (기본 1년). 묶음 비율은 전체 표본으로 센다.
+
+    Returns:
+        `history_table()` 모양. 방향을 말하는 칸은 없다 — 사실과 표본 수뿐이다(규칙 #2 · #11).
+    """
+    return history_table(kind, days=days)
 
 
 @router.get("/upcoming")
@@ -201,4 +333,12 @@ async def upcoming(
     return await upcoming_snapshot(days)
 
 
-__all__ = ["attach_calendar", "cpi_actual", "expected_cpi_period", "router", "upcoming_snapshot"]
+__all__ = [
+    "attach_calendar",
+    "cpi_actual",
+    "expected_cpi_period",
+    "history_table",
+    "router",
+    "server_clock",
+    "upcoming_snapshot",
+]

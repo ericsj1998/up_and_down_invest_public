@@ -133,6 +133,8 @@ function Shell() {
 
   // ⭐ 크롬 새 탭 채팅(T257 U4) — 레이아웃 없이 창만. 로그인은 같은 쿠키라 그대로다.
   if (pathname === "/chat" && who?.signed_in) return <ChatPopout who={who} />;
+  // ⭐ T276 — 달력을 새 탭에 창만 (사용자 2026-09-13). 사이드바 없이 격자만.
+  if (pathname === "/calendar/popout" && who?.signed_in) return <CalendarPage popout />;
   // 로그인 전에는 사이드바를 보여 줄 이유가 없다 — 문(Gate)만 가운데 카드로.
   return who?.signed_in ? (
     <Layout who={who} onOut={refresh}>

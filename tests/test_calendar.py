@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -111,6 +111,8 @@ class TestParse:
         assert set(body) == {
             "kind",
             "date",
+            "at",
+            "history",
             "title",
             "source",
             "key",
@@ -318,3 +320,70 @@ class TestCpiActual:
             assert got["fresh"] is False and stub.forgotten == ["cpi"]
         finally:
             calendar_api.attach_calendar(None)
+
+
+class TestTimesAndHistory:
+    def test_release_time_is_new_york_local_converted_by_tz_db(self) -> None:
+        # 10-14 는 서머타임(EDT · UTC-4) → 08:30 ET = 12:30Z. 12-10 은 EST(UTC-5) → 13:30Z.
+        cpi = Watch(10, "미국 CPI", "", None, local_time=time(8, 30), history="cpi")
+        got = parse_fred_release_dates(_fixture("fred_release_dates_10.json"), cpi)
+        assert got[0].at == datetime(2026, 10, 14, 12, 30, tzinfo=UTC)
+        assert got[2].at == datetime(2026, 12, 10, 13, 30, tzinfo=UTC)
+        assert got[0].as_json()["at"] == "2026-10-14T12:30:00+00:00"
+        assert got[0].history == "cpi"
+        # 시각을 모르면 지어내지 않는다.
+        assert parse_fred_release_dates(_fixture("fred_release_dates_10.json"), CPI)[0].at is None
+
+    def test_earnings_hours_map_only_known_values(self) -> None:
+        body = {
+            "earningsCalendar": [
+                {"symbol": "COST", "date": "2026-09-25", "hour": "amc"},
+                {"symbol": "AAPL", "date": "2026-10-28", "hour": "dmh"},
+            ]
+        }
+        got = parse_finnhub_earnings(body, MARKET_OF, hours={"amc": time(16, 5)})
+        assert got[0].at == datetime(2026, 9, 25, 20, 5, tzinfo=UTC) and got[1].at is None
+
+    def test_real_config_carries_times_and_history_keys(self) -> None:
+        cfg = load_calendar_config(CONFIG)
+        assert {w.release_id: w.local_time for w in cfg.watch} == {
+            10: time(8, 30),
+            54: time(8, 30),
+            50: time(8, 30),
+        }
+        assert {w.release_id: w.history for w in cfg.watch} == {10: "cpi", 54: None, 50: "jobs"}
+        assert cfg.fomc.local_time == time(14, 0) and cfg.fomc.history == "fomc"
+        assert cfg.earnings_hours == {"bmo": time(7, 0), "amc": time(16, 5)}
+
+    def test_server_clock_uses_tz_db_for_new_york(self) -> None:
+        summer = calendar_api.server_clock(datetime(2026, 7, 1, 12, 0, tzinfo=UTC))
+        winter = calendar_api.server_clock(datetime(2026, 12, 1, 12, 0, tzinfo=UTC))
+        assert summer["ny_offset_min"] == -240 and summer["ny_zone"] == "EDT"
+        assert winter["ny_offset_min"] == -300 and winter["ny_zone"] == "EST"
+        assert summer["kst"] == "2026-07-01T21:00:00+09:00" and summer["kst_offset_min"] == 540
+
+    def test_history_table_rows_are_facts_and_aggregate_is_whole_sample(self) -> None:
+        got = calendar_api.history_table("cpi", days=365, today=date(2026, 9, 13))
+        assert (
+            got["reason"] is None
+            and got["axis"] == "15m"
+            and got["symbols"] == ["KRW-BTC", "KRW-ETH"]
+        )
+        rows = got["rows"]
+        assert 10 <= len(rows) <= 13  # 1년치 CPI
+        assert rows == sorted(rows, key=lambda r: r["date"], reverse=True)
+        newest = rows[0]
+        assert set(newest["moves"]) == {"KRW-BTC", "KRW-ETH"}
+        assert {"first", "h1", "h2", "spike"} <= set(newest["moves"]["KRW-BTC"])
+        assert got["value_label"] == "CPI 전년비" and got["value_unit"] == "%"
+        # 8월 12일 발표 = 7월 CPI. 값은 BLS 에서 왔다(전년비 · 전달 대비 %p).
+        august = next(r for r in rows if r["date"] == "2026-08-12")
+        assert isinstance(august["value"], float) and august["period"] == "2026-07"
+        assert isinstance(august["delta"], float)
+        # 묶음은 창과 무관하게 전체(2022~) — 표본 30 을 넘긴다.
+        assert got["aggregate"]["n"] >= 50 and got["min_sample"] == 30
+        assert not {"direction", "bias", "forecast"} & set(got)
+
+    def test_history_unknown_kind_says_why(self) -> None:
+        got = calendar_api.history_table("pce", today=date(2026, 9, 13))
+        assert got["rows"] == [] and "안 쟀다" in got["reason"] and got["aggregate"] == {"n": 0}

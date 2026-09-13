@@ -2775,6 +2775,10 @@ export type CalendarEvent = {
   kind: "macro" | "earnings";
   /** ISO 날짜 — 출처의 현지(미국) 기준. */
   date: string;
+  /** 발표 시각(UTC ISO). 모르면 null — 카운트다운을 걸지 않는다. */
+  at: string | null;
+  /** 과거 반응 표의 열쇠(`cpi` · `jobs` · `fomc`). 없으면 null. */
+  history: string | null;
   title: string;
   source: string;
   key: string;
@@ -2798,9 +2802,55 @@ export type CalendarView = {
     string,
     { label: string; value: string; unit: string; note: string; as_of: string | null; fresh: boolean }
   >;
+  /** 서버 시각 — 화면은 자기 시계 대신 이것으로 카운트다운을 잰다. 뉴욕 오프셋은 tz DB(서머타임). */
+  clock: {
+    utc: string;
+    ny: string;
+    kst: string;
+    ny_offset_min: number;
+    ny_zone: string;
+    kst_offset_min: number;
+  };
 };
 
 export function calendarUpcoming(days?: number): Promise<CalendarView> {
   const tail = days ? `?days=${days}` : "";
   return request(`/calendar/upcoming${tail}`, undefined, 60_000);
+}
+
+/** 과거 반응 표 (`/calendar/history`) — 행은 사실, 묶음은 표본 수와 함께. 방향 칸은 없다. */
+export type CalendarHistory = {
+  kind: string;
+  label: string | null;
+  value_label: string | null;
+  value_unit: string | null;
+  axis: string | null;
+  first_minutes: number | null;
+  h1_minutes: number | null;
+  h2_minutes: number | null;
+  min_sample: number;
+  generated_at: string | null;
+  symbols: string[];
+  rows: Array<{
+    date: string;
+    at: string;
+    /** 그날 나온 값(CPI 전년비 · 실업률). 없으면 없다. */
+    value?: number;
+    /** 전달 대비 변화(%p). */
+    delta?: number | null;
+    period?: string;
+    moves: Record<string, { first: number; h1: number; h2: number; spike: number }>;
+  }>;
+  aggregate: {
+    n: number;
+    held_h1?: Record<string, number | null>;
+    first_abs_median?: Record<string, number | null>;
+    spike_median?: Record<string, number | null>;
+  };
+  /** 표가 없을 때 이유. */
+  reason: string | null;
+};
+
+export function calendarHistory(kind: string, days = 365): Promise<CalendarHistory> {
+  return request(`/calendar/history?kind=${encodeURIComponent(kind)}&days=${days}`, undefined, 30_000);
 }

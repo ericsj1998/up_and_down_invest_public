@@ -70,7 +70,7 @@ class CalendarAdapter:
 
         async def _earnings() -> list[ScheduledEvent]:
             body = await self._client.finnhub_earnings(start, end)
-            return parse_finnhub_earnings(body, market_of)
+            return parse_finnhub_earnings(body, market_of, hours=self._config.earnings_hours)
 
         jobs.append(("finnhub", EARNINGS_LABEL, _earnings))
 
@@ -86,7 +86,16 @@ class CalendarAdapter:
                 found.extend(result)
 
         fomc = self._config.fomc
-        found.extend(fomc_events(fomc.dates, label=fomc.label, note=fomc.note, url=fomc.url))
+        found.extend(
+            fomc_events(
+                fomc.dates,
+                label=fomc.label,
+                note=fomc.note,
+                url=fomc.url,
+                local_time=fomc.local_time,
+                history=fomc.history,
+            )
+        )
         return sort_events(within(found, start, end)), failures
 
     def _fred_job(
