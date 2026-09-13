@@ -56,6 +56,10 @@ if [ "${SKIP_GAP_CHECK:-0}" != "1" ]; then
   fi
   echo "$GAP_OUT" | grep -v registry
 fi
+echo "=== 0b) 자료 출처 키 동기화 (허용 목록 · 서버에 없을 때만 · 값은 안 찍는다)"
+# 사용자 2026-09-14 "배포할 때 자동으로". 덮어쓰기 없음 · LIVE_ORDERS·거래소 키는 여전히 사람이.
+bash scripts/ops/sync_env_keys.sh
+
 echo "=== 1) 빌드 (app · web — web 은 라벨 탭 없음)"
 docker build -q -t "$IMG/app:$TAG" . >/dev/null
 docker build -q -t "$IMG/web:$TAG" web >/dev/null
