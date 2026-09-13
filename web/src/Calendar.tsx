@@ -1,9 +1,11 @@
 /**
  * 주요 일정 달력 — 지표 발표 예정일(FRED) · 연준 회의 · 유니버스 종목 실적 예정(Finnhub) (T276 · 2026-09-13).
  *
- * **달력 모양**이다 (사용자 2026-09-13: *"왼쪽 사이드바에서 캘린더 형태로"*). 한 달을 7열 격자로 그리고 날짜 칸에
- * 그날의 일정을 칩으로 싣는다. 칩을 누르면 격자 아래에 그 자리에서 펼쳐진다 — 팝업 없음. 크기(작게·보통·크게)는
- * 브라우저에 기억하고, `/calendar/popout` 은 사이드바 없이 격자만이라 새 탭에 띄운다.
+ * **AI 채팅과 같은 창**이다 (사용자 2026-09-14: *"채팅 조절하는 것마냥 위아래로 잡아끌고, 어디에 붙이고"*). 동그란 단추 ·
+ * 뜬 창(머리 드래그 · 네 변·네 모서리 손잡이) · 가장자리 도킹(경계 드래그) · 확대(`/calendar`) · 크롬 새 탭
+ * (`/calendar/popout`) 은 `shell/DockPanel` 이 하고, 자리는 `calendarShell` 저장소가 채팅과 따로 기억한다.
+ *
+ * 몸통은 한 달 7열 격자다. 날짜 칸에 그날 일정을 칩으로 싣고, 칩을 누르면 격자 아래에 그 자리에서 펼쳐진다 — 팝업 없음.
  *
  * 🔴 **서버 시각으로 잰다.** 카운트다운·"발표 지남"·뉴욕/서울 시계는 전부 서버가 준 `clock` 에 브라우저의 경과
  *    시간만 더한 것이다 — 호스트 시계는 못 믿는다(2026-09 실측 · 재동기화 +1.1s · RTC +2일). 뉴욕 오프셋은 서버의
@@ -15,7 +17,9 @@
  * 실적 칩은 저평가 후보 화면과 **같은 부품**(`FundamentalsDetail`)으로 재무를 보여 준다 — 새로 그리면 두 곳이 갈린다.
  */
 
+import { CalendarDaysIcon } from "@heroicons/react/24/solid";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   calendarHistory,
   calendarUpcoming,
@@ -23,6 +27,8 @@ import {
   type CalendarHistory,
   type CalendarView,
 } from "./api";
+import { calendarShell } from "./chat/shell";
+import { DockedPanel, FloatingPanel, PopoutFrame, type PanelSpec } from "./shell/DockPanel";
 import { ErrorCard, num, when } from "./ui";
 import { FundamentalsDetail } from "./ValueRanking";
 
@@ -30,13 +36,16 @@ const WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"];
 const MAX_DAYS = 90;
 const NEAR_MS = 3 * 60 * 60 * 1000;
 const POLL_MS = 30_000;
-const SIZE_KEY = "calendar.size";
+const CHIPS_PER_CELL = 3;
+const TITLE = "주요 일정 달력";
+const SUBTITLE = "예정일과 사실만 · 방향은 말하지 않는다";
 
-type Size = "s" | "m" | "l";
-const SIZES: Record<Size, { label: string; cell: number; font: number; chips: number }> = {
-  s: { label: "작게", cell: 52, font: 11, chips: 2 },
-  m: { label: "보통", cell: 72, font: 12, chips: 3 },
-  l: { label: "크게", cell: 112, font: 13, chips: 5 },
+export const CALENDAR_PANEL: PanelSpec = {
+  store: calendarShell,
+  label: TITLE,
+  icon: CalendarDaysIcon,
+  enlargeTo: "/calendar",
+  bubbleIndex: 1,
 };
 
 type Actual = CalendarView["actuals"][string];
@@ -106,34 +115,7 @@ export function wallClock(utcMs: number, offsetMin: number, withDate = false): s
   return withDate ? `${iso.slice(0, 10)} ${iso.slice(11, 19)}` : iso.slice(11, 19);
 }
 
-function readSize(): Size {
-  try {
-    const got = localStorage.getItem(SIZE_KEY);
-    return got === "s" || got === "m" || got === "l" ? got : "m";
-  } catch {
-    return "m";
-  }
-}
-
-function writeSize(size: Size): void {
-  try {
-    localStorage.setItem(SIZE_KEY, size);
-  } catch {
-    // 브라우저 저장이 막혀 있어도 화면은 돈다.
-  }
-}
-
-function Chip({
-  item,
-  selected,
-  font,
-  onClick,
-}: {
-  item: CalendarEvent;
-  selected: boolean;
-  font: number;
-  onClick: () => void;
-}) {
+function Chip({ item, selected, onClick }: { item: CalendarEvent; selected: boolean; onClick: () => void }) {
   const short = item.kind === "earnings" ? (item.symbol ?? item.title) : item.title.replace(/^미국 /, "");
   return (
     <button
@@ -150,7 +132,6 @@ function Chip({
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
         cursor: "pointer",
-        fontSize: font,
         outline: selected ? "2px solid var(--cyan-edge)" : "none",
       }}
     >
@@ -351,13 +332,18 @@ function localToday(): { y: number; m: number } {
   return { y: now.getFullYear(), m: now.getMonth() };
 }
 
-export function CalendarPage({ popout = false }: { popout?: boolean }) {
+/**
+ * 달력 몸통 — 큰 화면(`/calendar`)과 작은 창(뜬 창·도킹·새 탭)이 같이 쓴다.
+ *
+ * @param compact 작은 창 — 소개 문단을 줄이고 "작은 창으로" 단추를 뺀다(틀의 머리가 확대·새 탭을 준다).
+ */
+export function CalendarBody({ compact = false }: { compact?: boolean }) {
+  const navigate = useNavigate();
   const start = useMemo(localToday, []);
   const [cursor, setCursor] = useState(start);
   const [view, setView] = useState<CalendarView | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const [size, setSize] = useState<Size>(readSize);
   const offsetRef = useRef(0);
   const [now, setNow] = useState(() => Date.now());
 
@@ -410,7 +396,6 @@ export function CalendarPage({ popout = false }: { popout?: boolean }) {
   const isCurrent = cursor.y === start.y && cursor.m === start.m;
   const firstCell = cells[0];
   const beyond = firstCell !== undefined && view !== null && firstCell.iso > view.to;
-  const dims = SIZES[size];
   const clock = view?.clock ?? null;
 
   const move = (delta: number) => {
@@ -420,19 +405,21 @@ export function CalendarPage({ popout = false }: { popout?: boolean }) {
   };
 
   return (
-    <div className="page">
+    <div className={compact ? "min-h-0 flex-1 overflow-auto p-3" : "page"}>
       <section>
-        <h2>주요 일정 달력</h2>
+        {compact ? null : <h2>{TITLE}</h2>}
         {clock ? (
-          <p className="mono">
+          <p className="mono" style={{ fontSize: compact ? 12 : undefined }}>
             서버 시각 · 뉴욕 {wallClock(now, clock.ny_offset_min, true)} {clock.ny_zone} · 서울{" "}
             {wallClock(now, clock.kst_offset_min, true)} KST
           </p>
         ) : null}
-        <p className="faint">
-          지표 발표 예정일 · 연준 회의 · 유니버스 종목의 실적 예정. <b>예정일과 사실만 보여 주고 방향은 말하지 않는다.</b>{" "}
-          칩을 누르면 아래에 카운트다운·과거 반응·재무가 펼쳐진다.
-        </p>
+        {compact ? null : (
+          <p className="faint">
+            지표 발표 예정일 · 연준 회의 · 유니버스 종목의 실적 예정. <b>예정일과 사실만 보여 주고 방향은 말하지 않는다.</b>{" "}
+            칩을 누르면 아래에 카운트다운·과거 반응·재무가 펼쳐진다.
+          </p>
+        )}
         <p>
           <button type="button" className="chip" onClick={() => move(-1)} style={{ cursor: "pointer" }}>
             ◀ 지난달
@@ -457,27 +444,21 @@ export function CalendarPage({ popout = false }: { popout?: boolean }) {
               </button>
             </>
           ) : null}
-          {" · "}
-          {(Object.keys(SIZES) as Size[]).map((key) => (
-            <button
-              key={key}
-              type="button"
-              className={`chip ${size === key ? "live" : ""}`}
-              onClick={() => {
-                setSize(key);
-                writeSize(key);
-              }}
-              style={{ cursor: "pointer", marginRight: 2 }}
-            >
-              {SIZES[key].label}
-            </button>
-          ))}
-          {!popout ? (
+          {!compact ? (
             <>
               {" · "}
-              <a href="/calendar/popout" target="_blank" rel="noreferrer" className="chip">
-                새 탭으로 ↗
-              </a>
+              <button
+                type="button"
+                className="chip"
+                title="콘솔로 돌아가며 작은 창으로 띄운다 — 잡아 끌어 옮기고 가장자리에 붙인다"
+                onClick={() => {
+                  calendarShell.set((was) => ({ mode: was.last }));
+                  navigate("/console");
+                }}
+                style={{ cursor: "pointer" }}
+              >
+                작은 창으로 ◱
+              </button>
             </>
           ) : null}
           {view ? (
@@ -526,7 +507,7 @@ export function CalendarPage({ popout = false }: { popout?: boolean }) {
               style={{
                 background: "var(--stone-canvas)",
                 padding: "4px 6px",
-                fontSize: dims.font,
+                fontSize: 12,
                 textAlign: "center",
                 color: i === 0 ? "var(--loss)" : i === 6 ? "var(--cyan-edge)" : undefined,
               }}
@@ -544,7 +525,7 @@ export function CalendarPage({ popout = false }: { popout?: boolean }) {
                 role="gridcell"
                 style={{
                   background: "var(--pure-white)",
-                  minHeight: dims.cell,
+                  minHeight: compact ? 56 : 72,
                   padding: 4,
                   opacity: cell.inMonth ? 1 : 0.45,
                 }}
@@ -552,7 +533,7 @@ export function CalendarPage({ popout = false }: { popout?: boolean }) {
                 <div
                   className={past ? "faint" : ""}
                   style={{
-                    fontSize: dims.font,
+                    fontSize: 12,
                     fontWeight: isToday ? 700 : 400,
                     color: isToday ? "var(--cyan-edge)" : undefined,
                   }}
@@ -561,23 +542,22 @@ export function CalendarPage({ popout = false }: { popout?: boolean }) {
                   {isToday ? <span className="faint"> 오늘</span> : null}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 2 }}>
-                  {items.slice(0, dims.chips).map((item) => (
+                  {items.slice(0, CHIPS_PER_CELL).map((item) => (
                     <Chip
                       key={item.key}
                       item={item}
-                      font={dims.font}
                       selected={selected === item.key}
                       onClick={() => setSelected(selected === item.key ? null : item.key)}
                     />
                   ))}
-                  {items.length > dims.chips ? (
+                  {items.length > CHIPS_PER_CELL ? (
                     <button
                       type="button"
                       className="faint"
-                      onClick={() => setSelected(items[dims.chips]?.key ?? null)}
-                      style={{ fontSize: dims.font - 1, textAlign: "left", background: "none", border: 0, padding: 0, cursor: "pointer" }}
+                      onClick={() => setSelected(items[CHIPS_PER_CELL]?.key ?? null)}
+                      style={{ fontSize: 11, textAlign: "left", background: "none", border: 0, padding: 0, cursor: "pointer" }}
                     >
-                      +{items.length - dims.chips}
+                      +{items.length - CHIPS_PER_CELL}
                     </button>
                   ) : null}
                 </div>
@@ -590,7 +570,7 @@ export function CalendarPage({ popout = false }: { popout?: boolean }) {
       {view && !view.events.length && !view.failures.length ? (
         <p className="faint">앞으로 {MAX_DAYS}일 안에 감시 중인 일정이 없다.</p>
       ) : null}
-      {view ? (
+      {view && !compact ? (
         <section>
           <h3>감시 중인 발표</h3>
           <p className="faint">
@@ -614,5 +594,29 @@ export function CalendarPage({ popout = false }: { popout?: boolean }) {
         </section>
       ) : null}
     </div>
+  );
+}
+
+/** 큰 화면 — 사이드바 메뉴 '주요 일정 달력'. */
+export function CalendarPage() {
+  return <CalendarBody />;
+}
+
+/** 동그란 단추 + 뜬 창 — 채팅 단추 위에 선다. `Layout` 이 둔다. */
+export function CalendarShell() {
+  return <FloatingPanel spec={CALENDAR_PANEL} title={TITLE} subtitle={SUBTITLE} render={() => <CalendarBody compact />} />;
+}
+
+/** 가장자리에 붙은 창 — `Layout` 이 자리를 정한다. */
+export function DockedCalendar({ leftOffset = 0 }: { leftOffset?: number }) {
+  return <DockedPanel spec={CALENDAR_PANEL} title={TITLE} subtitle={SUBTITLE} leftOffset={leftOffset} render={() => <CalendarBody compact />} />;
+}
+
+/** 크롬 새 탭 — 레이아웃 없이 창만. */
+export function CalendarPopout() {
+  return (
+    <PopoutFrame spec={CALENDAR_PANEL} title={TITLE} subtitle={SUBTITLE}>
+      <CalendarBody compact />
+    </PopoutFrame>
   );
 }

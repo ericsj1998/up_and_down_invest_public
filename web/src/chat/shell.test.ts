@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SHELL, dockSizeAfterDrag, edgeAt, floatAfterResize, isDock, MIN_FLOAT, readShell, SHELL_SLOT } from "./shell";
+import { createShellStore, DEFAULT_SHELL, dockSizeAfterDrag, edgeAt, floatAfterResize, isDock, MIN_FLOAT, readShell, SHELL_SLOT } from "./shell";
 
 // 시험 환경(node)엔 localStorage 가 없다 — 메모리로 대신한다.
 if (typeof globalThis.localStorage === "undefined") {
@@ -76,5 +76,26 @@ describe("readShell", () => {
     expect(got.mode).toBe("closed");
     expect(got.last).toBe("right");
     expect(isDock("right") && !isDock("float")).toBe(true);
+  });
+});
+
+
+describe("createShellStore (T276 — 창마다 저장소)", () => {
+  it("자리를 따로 기억하고 서로 안 섞인다", () => {
+    const a = createShellStore("test-a", DEFAULT_SHELL, { path: "/a", name: "a", features: "" });
+    const b = createShellStore("test-b", { ...DEFAULT_SHELL, float: { ...DEFAULT_SHELL.float, w: 720 } }, { path: "/b", name: "b", features: "" });
+    a.set({ mode: "right" });
+    expect(a.get().mode).toBe("right");
+    expect(a.get().last).toBe("right");
+    expect(b.get().mode).toBe("closed");
+    expect(b.get().float.w).toBe(720);
+    expect(JSON.parse(localStorage.getItem("test-a") ?? "{}").mode).toBe("right");
+    expect(localStorage.getItem("test-b")).toBeNull();
+    // 끄는 동안(transient)은 저장하지 않는다.
+    b.setTransient({ mode: "float" });
+    expect(b.get().mode).toBe("float");
+    expect(localStorage.getItem("test-b")).toBeNull();
+    b.persist();
+    expect(JSON.parse(localStorage.getItem("test-b") ?? "{}").mode).toBe("float");
   });
 });

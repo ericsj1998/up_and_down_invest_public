@@ -6,8 +6,9 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import type { Who } from "../api";
+import { CalendarShell, DockedCalendar } from "../Calendar";
 import { ChatShell, DockedChat } from "../chat/ChatShell";
-import { useChatShell } from "../chat/shell";
+import { calendarShell, chatShell, useShellStore, type Mode } from "../chat/shell";
 import { SIDE_NARROW, SIDE_WIDE, useSidenavCollapsed } from "./sidenavState";
 import { AnalysisCluster } from "./AnalysisCluster";
 import { ChartField } from "./ChartField";
@@ -25,13 +26,26 @@ export function Layout({
   children: ReactNode;
 }) {
   const [drawer, setDrawer] = useState(false);
-  // ⭐ AI 채팅(T248 · T257) — 라우트 밖이라 화면을 옮겨도 대화가 안 끊긴다. 동그란 단추 · 뜬 창 · 가장자리 도킹은
-  //    `shell.ts` 가 기억하고, 도킹이면 여기서 본문을 밀어낸다(좌우 = 가로 flex · 상하 = 세로 flex).
-  const chat = useChatShell();
-  const dockRow = chat.mode === "right" || chat.mode === "left-inner";
-  const dockCol = chat.mode === "top" || chat.mode === "bottom";
-  // ⭐ 왼쪽 도킹은 사이드바까지 밀어낸다 (사용자 2026-09-10 "사이드바의 왼쪽에도") — 채팅 너비 + 여백만큼 전부 오른쪽으로.
-  const leftPad = chat.mode === "left" ? chat.dock.left + 16 : 0;
+  // ⭐ 뜬 창 둘 — AI 채팅(T248 · T257) 과 주요 일정 달력(T276). 라우트 밖이라 화면을 옮겨도 안 끊긴다. 동그란 단추 ·
+  //    뜬 창 · 가장자리 도킹은 `shell.ts` 의 저장소가 창마다 기억하고, 도킹이면 여기서 본문을 밀어낸다.
+  //    위/아래 = 세로 flex 의 앞뒤 · 사이드바 오른쪽/오른쪽 = 가로 flex 의 앞뒤 · 맨 왼쪽 = 화면에 고정하고 여백으로.
+  const chat = useShellStore(chatShell);
+  const cal = useShellStore(calendarShell);
+  const panels: Array<{ mode: Mode; left: number; node: (leftOffset: number) => ReactNode }> = [
+    { mode: chat.mode, left: chat.dock.left, node: (off) => <DockedChat key="chat" who={who} leftOffset={off} /> },
+    { mode: cal.mode, left: cal.dock.left, node: (off) => <DockedCalendar key="calendar" leftOffset={off} /> },
+  ];
+  const at = (mode: Mode) => panels.filter((p) => p.mode === mode).map((p) => p.node(0));
+  // ⭐ 왼쪽 도킹은 사이드바까지 밀어낸다 (사용자 2026-09-10 "사이드바의 왼쪽에도") — 창 너비 + 여백만큼 전부 오른쪽으로.
+  //    둘 다 맨 왼쪽이면 나란히 선다.
+  let leftPad = 0;
+  const leftNodes = panels
+    .filter((p) => p.mode === "left")
+    .map((p) => {
+      const node = p.node(leftPad);
+      leftPad += p.left + 16;
+      return node;
+    });
   const collapsed = useSidenavCollapsed();
   const sideW = collapsed ? SIDE_NARROW : SIDE_WIDE;
 
@@ -47,19 +61,24 @@ export function Layout({
         />
       ) : null}
       <ChatShell who={who} />
-      {chat.mode === "left" ? <DockedChat who={who} /> : null}
+      <CalendarShell />
+      {leftNodes}
       <div
-        className={`p-4 transition-[margin] duration-300 ml-[var(--chat-left)] xl:ml-[calc(var(--side-w)+var(--chat-left))] ${dockRow ? "flex min-h-screen items-stretch gap-2" : ""} ${dockCol ? "flex min-h-screen flex-col gap-2" : ""}`}
+        className="flex min-h-screen flex-col gap-2 p-4 transition-[margin] duration-300 ml-[var(--chat-left)] xl:ml-[calc(var(--side-w)+var(--chat-left))]"
         style={{ "--chat-left": `${leftPad}px`, "--side-w": `${sideW}px` } as React.CSSProperties}
       >
-        {chat.mode === "top" || chat.mode === "left-inner" ? <DockedChat who={who} /> : null}
-        <div className="min-w-0 flex-1">
-          <Navbar who={who} onOut={onOut} onMenu={() => setDrawer(true)} />
-          {/* ⚠️ min-w-0 + overflow-x-clip: 넓은 표·pre 는 자기 상자(.table-wrap) 안에서 스크롤한다 — 화면 전체가
-              가로로 밀리면 안 된다 (모바일 실측 2026-09-05: 옛 카드가 화면 밖으로 넘쳤다). */}
-          <main className="mt-4 min-w-0 overflow-x-clip">{children}</main>
+        {at("top")}
+        <div className="flex min-h-0 flex-1 items-stretch gap-2">
+          {at("left-inner")}
+          <div className="min-w-0 flex-1">
+            <Navbar who={who} onOut={onOut} onMenu={() => setDrawer(true)} />
+            {/* ⚠️ min-w-0 + overflow-x-clip: 넓은 표·pre 는 자기 상자(.table-wrap) 안에서 스크롤한다 — 화면 전체가
+                가로로 밀리면 안 된다 (모바일 실측 2026-09-05: 옛 카드가 화면 밖으로 넘쳤다). */}
+            <main className="mt-4 min-w-0 overflow-x-clip">{children}</main>
+          </div>
+          {at("right")}
         </div>
-        {chat.mode === "right" || chat.mode === "bottom" ? <DockedChat who={who} /> : null}
+        {at("bottom")}
       </div>
     </div>
   );

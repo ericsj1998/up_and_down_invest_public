@@ -1,8 +1,11 @@
 /**
- * 채팅 창 배치의 순수 조각 (T257) — 모드 · 위치/크기 기억 · 가장자리 붙이기 판정 · 탭 간 통지.
+ * 뜬 창·도킹 배치의 순수 조각 (T257 · T276 에서 창 둘로 일반화) — 모드 · 위치/크기 기억 · 가장자리 붙이기 판정.
  *
  * 모드: `closed`(동그란 단추만) · `float`(단추 위로 뜬 창 · 머리를 끌어 옮긴다) · `left|right|top|bottom`(화면을
  * 밀어내며 붙는다 · 경계를 끌어 크기) · `popout`(크롬 새 탭 페이지 자신의 모드 · 본 탭엔 저장되지 않는다).
+ *
+ * 창마다 **저장소 하나**(`createShellStore`) — 채팅(`chat-shell`)과 달력(`calendar-shell`)이 같은 조각을 쓰되 자리를
+ * 따로 기억한다. 채팅용 옛 이름(`getShell` · `setShell` · `useChatShell` …)은 채팅 저장소에 묶인 얇은 껍데기다.
  */
 
 import { useSyncExternalStore } from "react";
@@ -27,6 +30,7 @@ export type ShellState = {
 };
 
 export const SHELL_SLOT = "chat-shell";
+export const CALENDAR_SLOT = "calendar-shell";
 export const CHANNEL = "updown-chat";
 /** 가장자리에 이만큼 가까이 놓으면 붙는다(px). */
 export const SNAP_PX = 56;
@@ -41,6 +45,13 @@ export const DEFAULT_SHELL: ShellState = {
   float: { x: -1, y: -1, w: 416, h: 640 },
   dock: { left: 400, "left-inner": 400, right: 400, top: 360, bottom: 360 },
   ghost: null,
+};
+
+/** 달력은 7열 격자라 채팅보다 넓게 시작한다. */
+export const DEFAULT_CALENDAR_SHELL: ShellState = {
+  ...DEFAULT_SHELL,
+  float: { x: -1, y: -1, w: 720, h: 600 },
+  dock: { left: 520, "left-inner": 520, right: 520, top: 420, bottom: 420 },
 };
 
 export function isDock(mode: Mode): mode is DockMode {
@@ -126,78 +137,141 @@ export function floatAfterResize(
   return { x, y, w, h };
 }
 
-export function readShell(): ShellState {
+/** 저장된 배치를 읽는다 — 없거나 깨졌으면 기본. `popout` 은 다시 열 때 `closed`. */
+export function readShellFrom(slot: string, defaults: ShellState): ShellState {
   try {
-    const raw = localStorage.getItem(SHELL_SLOT);
-    if (!raw) return DEFAULT_SHELL;
+    const raw = localStorage.getItem(slot);
+    if (!raw) return defaults;
     const got = JSON.parse(raw) as Partial<ShellState>;
     const mode = got.mode && got.mode !== "popout" ? got.mode : "closed";
     return {
-      ...DEFAULT_SHELL,
+      ...defaults,
       ...got,
       mode,
-      dock: { ...DEFAULT_SHELL.dock, ...(got.dock ?? {}) },
-      float: { ...DEFAULT_SHELL.float, ...(got.float ?? {}) },
-      bubble: { ...DEFAULT_SHELL.bubble, ...(got.bubble ?? {}) },
+      dock: { ...defaults.dock, ...(got.dock ?? {}) },
+      float: { ...defaults.float, ...(got.float ?? {}) },
+      bubble: { ...defaults.bubble, ...(got.bubble ?? {}) },
       ghost: null,
     };
   } catch {
-    return DEFAULT_SHELL;
+    return defaults;
   }
 }
 
-let current: ShellState = DEFAULT_SHELL;
-let loaded = false;
-const listeners = new Set<() => void>();
-
-function ensure(): ShellState {
-  if (!loaded) {
-    current = readShell();
-    loaded = true;
-  }
-  return current;
+export function readShell(): ShellState {
+  return readShellFrom(SHELL_SLOT, DEFAULT_SHELL);
 }
 
+export type ShellPatch = Partial<ShellState> | ((was: ShellState) => Partial<ShellState>);
+
+/** 창 하나의 배치 저장소 — 읽기 · 갱신(저장) · 끄는 동안 갱신(저장 안 함) · 구독. */
+export type ShellStore = {
+  slot: string;
+  defaults: ShellState;
+  /** 크롬 새 탭 — 경로 · 창 이름 · 창 옵션. */
+  popout: { path: string; name: string; features: string };
+  get(): ShellState;
+  set(patch: ShellPatch): void;
+  setTransient(patch: ShellPatch): void;
+  persist(): void;
+  subscribe(fn: () => void): () => void;
+};
+
+export function createShellStore(
+  slot: string,
+  defaults: ShellState,
+  popout: { path: string; name: string; features: string },
+): ShellStore {
+  let current: ShellState = defaults;
+  let loaded = false;
+  const listeners = new Set<() => void>();
+  const ensure = (): ShellState => {
+    if (!loaded) {
+      current = readShellFrom(slot, defaults);
+      loaded = true;
+    }
+    return current;
+  };
+  const setTransient = (patch: ShellPatch): void => {
+    const was = ensure();
+    const next = { ...was, ...(typeof patch === "function" ? patch(was) : patch) };
+    if (next.mode !== "closed" && next.mode !== "popout") next.last = next.mode;
+    current = next;
+    listeners.forEach((fn) => fn());
+  };
+  const persist = (): void => {
+    try {
+      const { ghost: _ghost, ...rest } = ensure();
+      localStorage.setItem(slot, JSON.stringify(rest));
+    } catch {
+      // 기억만 못 한다.
+    }
+  };
+  return {
+    slot,
+    defaults,
+    popout,
+    get: ensure,
+    setTransient,
+    set: (patch) => {
+      setTransient(patch);
+      persist();
+    },
+    persist,
+    subscribe: (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+  };
+}
+
+/** 어느 컴포넌트에서나 같은 배치 상태를 본다 (`Layout` 은 밀어내기 · 창은 자기 자리). */
+export function useShellStore(store: ShellStore): ShellState {
+  return useSyncExternalStore(store.subscribe, store.get, () => store.defaults);
+}
+
+/** 새 탭 열기 — 본 탭 창은 닫고(단추로 다시 연다) 새 탭은 독립으로 산다. */
+export function openPopoutOf(store: ShellStore): Window | null {
+  const win = window.open(store.popout.path, store.popout.name, store.popout.features);
+  store.set({ mode: "closed" });
+  return win;
+}
+
+export const chatShell: ShellStore = createShellStore(SHELL_SLOT, DEFAULT_SHELL, {
+  path: "/chat",
+  name: "updown-chat",
+  features: "popup=yes,width=480,height=760",
+});
+
+export const calendarShell: ShellStore = createShellStore(CALENDAR_SLOT, DEFAULT_CALENDAR_SHELL, {
+  path: "/calendar/popout",
+  name: "updown-calendar",
+  features: "popup=yes,width=860,height=720",
+});
+
+// ── 채팅용 옛 이름 — 채팅 저장소에 묶인 껍데기 ──────────────────────────────
 export function getShell(): ShellState {
-  return ensure();
+  return chatShell.get();
 }
 
-export function setShell(patch: Partial<ShellState> | ((was: ShellState) => Partial<ShellState>)): void {
-  setShellTransient(patch);
-  persistShell();
+export function setShell(patch: ShellPatch): void {
+  chatShell.set(patch);
 }
 
 /** 끄는 동안의 갱신 — 화면은 따라오지만 저장하지 않는다. 놓을 때 `persistShell`. */
-export function setShellTransient(patch: Partial<ShellState> | ((was: ShellState) => Partial<ShellState>)): void {
-  const was = ensure();
-  const next = { ...was, ...(typeof patch === "function" ? patch(was) : patch) };
-  if (next.mode !== "closed" && next.mode !== "popout") next.last = next.mode;
-  current = next;
-  listeners.forEach((fn) => fn());
+export function setShellTransient(patch: ShellPatch): void {
+  chatShell.setTransient(patch);
 }
 
 export function persistShell(): void {
-  try {
-    const { ghost: _ghost, ...rest } = ensure();
-    localStorage.setItem(SHELL_SLOT, JSON.stringify(rest));
-  } catch {
-    // 기억만 못 한다.
-  }
+  chatShell.persist();
 }
 
-function subscribe(fn: () => void): () => void {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
-}
-
-/** 어느 컴포넌트에서나 같은 배치 상태를 본다 (`Layout` 은 밀어내기 · `ChatShell` 은 창). */
 export function useChatShell(): ShellState {
-  return useSyncExternalStore(subscribe, getShell, () => DEFAULT_SHELL);
+  return useShellStore(chatShell);
 }
 
-/** 새 탭 열기 — 본 탭 창은 닫고(단추로 다시 연다) 새 탭은 독립으로 산다. 같은 대화는 서버가 들고 있다. */
+/** 채팅 새 탭 — 같은 대화는 서버가 들고 있다. */
 export function openPopout(): Window | null {
-  const win = window.open("/chat", "updown-chat", "popup=yes,width=480,height=760");
-  setShell({ mode: "closed" });
-  return win;
+  return openPopoutOf(chatShell);
 }
