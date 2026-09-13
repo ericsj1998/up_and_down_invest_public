@@ -262,8 +262,84 @@ export function PanelFrame({
   );
 }
 
+/** 창 하나를 열고 닫는다 — 닫혀 있으면 마지막 자리로 열고, 열려 있으면 닫는다. */
+function togglePanel(store: ShellStore): void {
+  store.set((was) => ({ mode: was.mode === "closed" || was.mode === "popout" ? was.last : "closed" }));
+}
+
 /**
- * 동그란 단추 + 뜬 창 + 붙을 자리 미리보기. 창이 열려 있거나 큰 화면 경로면 단추는 숨는다.
+ * **단추는 하나다** (사용자 2026-09-14: "메인 화면에 단추가 2개 이상 있는 걸 안하고 싶거든"). 동그란 단추 하나(AI 어시스턴트)
+ * 만 떠 있고, 마우스를 올리면 그 위로 작은 단추들(달력 · 앞으로 더 붙을 것들)이 펼쳐지고 떼면 다시 접힌다 — 시야를 안
+ * 가린다. 단추를 누르면 그 창이 열리고 단추는 **회색으로 남는다** · 다시 누르면 닫힌다. 끌어서 옮기고 가장자리에 놓으면
+ * 첫 창(어시스턴트)이 그 변에 붙는다(자리는 첫 창의 저장소가 기억한다).
+ *
+ * @param primary 큰 단추의 창.
+ * @param others 위로 펼쳐지는 작은 단추들 — 아래에서 위 순서.
+ */
+export function Launcher({ primary, others }: { primary: PanelSpec; others: PanelSpec[] }) {
+  const shell = useShellStore(primary.store);
+  const { pathname } = useLocation();
+  const [hover, setHover] = useState(false);
+  const bubble = bubbleBase(shell.bubble, 0);
+  const PrimaryIcon = primary.icon;
+  const primaryOpen = shell.mode !== "closed" && shell.mode !== "popout";
+  const primaryBig = pathname === primary.enlargeTo;
+  const active = "bg-blue-gray-300 text-blue-gray-900 hover:bg-blue-gray-400 dark:bg-gray-600 dark:text-white dark:hover:bg-gray-500";
+  const idle = "bg-gray-900 text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200";
+  return (
+    <div
+      className="fixed z-[60]"
+      style={{ left: bubble.x, top: bubble.y, width: BUBBLE, height: BUBBLE }}
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
+    >
+      {/* 작은 단추들 — 큰 단추 바로 위로 쌓인다. 펼쳐질 때만 보이고 누를 수 있다. */}
+      <div
+        className="absolute left-1/2 flex -translate-x-1/2 flex-col-reverse items-center gap-2 transition-all duration-150"
+        style={{ bottom: BUBBLE + 8, opacity: hover ? 1 : 0, transform: `translate(-50%, ${hover ? 0 : 12}px)`, pointerEvents: hover ? "auto" : "none" }}
+        aria-hidden={!hover}
+      >
+        {others.map((spec) => (
+          <MiniLauncher key={spec.store.slot} spec={spec} pathname={pathname} active={active} idle={idle} />
+        ))}
+      </div>
+      <button
+        type="button"
+        className={`chat-bubble grid h-14 w-14 touch-none select-none place-items-center rounded-full shadow-xl ${primaryOpen ? active : idle} ${primaryBig ? "opacity-50" : ""}`}
+        aria-label={`${primary.label} ${primaryOpen ? "닫기" : "열기"}`}
+        aria-pressed={primaryOpen}
+        title={primaryBig ? `${primary.label} — 지금 큰 화면에 있다` : `${primary.label} — 누르면 ${primaryOpen ? "닫고" : "열고"}, 끌어서 옮기고, 가장자리에 놓으면 붙는다. 올리면 다른 창 단추가 펼쳐진다`}
+        onPointerDown={(e) => beginDrag(primary.store, 0, e, "bubble", primaryBig ? undefined : () => togglePanel(primary.store))}
+      >
+        <PrimaryIcon className="h-7 w-7" />
+      </button>
+    </div>
+  );
+}
+
+function MiniLauncher({ spec, pathname, active, idle }: { spec: PanelSpec; pathname: string; active: string; idle: string }) {
+  const shell = useShellStore(spec.store);
+  const Icon = spec.icon;
+  const open = shell.mode !== "closed" && shell.mode !== "popout";
+  const big = pathname === spec.enlargeTo;
+  return (
+    <button
+      type="button"
+      className={`grid h-10 w-10 select-none place-items-center rounded-full shadow-lg ${open ? active : idle} ${big ? "opacity-50" : ""}`}
+      aria-label={`${spec.label} ${open ? "닫기" : "열기"}`}
+      aria-pressed={open}
+      title={big ? `${spec.label} — 지금 큰 화면에 있다` : `${spec.label} — 누르면 ${open ? "닫는다" : "연다"}`}
+      onClick={() => {
+        if (!big) togglePanel(spec.store);
+      }}
+    >
+      <Icon className="h-5 w-5" />
+    </button>
+  );
+}
+
+/**
+ * 뜬 창 + 붙을 자리 미리보기. 여는 단추는 `Launcher` 가 하나로 모아 그린다.
  *
  * @param spec 창의 정체.
  * @param render 몸통 — 모드를 받아 그린다.
@@ -272,31 +348,15 @@ export function FloatingPanel({ spec, title, subtitle, render }: { spec: PanelSp
   const { store } = spec;
   const shell = useShellStore(store);
   const { pathname } = useLocation();
-  const Icon = spec.icon;
-  const bubble = bubbleBase(shell.bubble, spec.bubbleIndex);
   const float = floatBase(shell.float);
   const open = shell.mode === "float";
   const big = pathname === spec.enlargeTo;
   // 큰 화면에 들어오면 작은 창은 닫는다 — 같은 것이 두 곳에 뜨지 않게. (렌더 중 저장소를 바꾸지 않는다.)
   useOnBig(big, store);
-  const showBubble = !big && (shell.mode === "closed" || shell.mode === "popout");
-  const tap = () => store.set((was) => ({ mode: was.mode === "closed" || was.mode === "popout" ? was.last : "closed" }));
 
   return (
     <>
       {shell.ghost ? <div className={`chat-ghost chat-ghost-${shell.ghost}`} aria-hidden="true" /> : null}
-      {showBubble ? (
-        <button
-          type="button"
-          className="chat-bubble fixed z-[60] grid h-14 w-14 touch-none select-none place-items-center rounded-full bg-gray-900 text-white shadow-xl hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-          style={{ left: bubble.x, top: bubble.y }}
-          aria-label={`${spec.label} 열기`}
-          title={`${spec.label} — 누르면 열고, 끌어서 옮기고, 가장자리에 놓으면 붙는다`}
-          onPointerDown={(e) => beginDrag(store, spec.bubbleIndex, e, "bubble", tap)}
-        >
-          <Icon className="h-7 w-7" />
-        </button>
-      ) : null}
 
       {open && !big ? (
         <div

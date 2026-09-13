@@ -470,12 +470,13 @@ export function CalendarBody({ compact = false }: { compact?: boolean }) {
             칩을 누르면 아래에 카운트다운·과거 반응·재무가 펼쳐진다.
           </p>
         )}
-        <p>
-          <button type="button" className="chip" onClick={() => move(-1)} style={{ cursor: "pointer" }}>
+        {/* 달 이동 줄 — 크게 (사용자 2026-09-14 "이거 좀 크게"). */}
+        <p style={{ fontSize: 15, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+          <button type="button" className="chip" onClick={() => move(-1)} style={{ cursor: "pointer", fontSize: 14, padding: "4px 12px" }}>
             ◀ 지난달
-          </button>{" "}
-          <b>{monthLabel}</b>{" "}
-          <button type="button" className="chip" onClick={() => move(1)} style={{ cursor: "pointer" }}>
+          </button>
+          <b style={{ fontSize: 20 }}>{monthLabel}</b>
+          <button type="button" className="chip" onClick={() => move(1)} style={{ cursor: "pointer", fontSize: 14, padding: "4px 12px" }}>
             다음달 ▶
           </button>
           {!isCurrent ? (
@@ -488,33 +489,29 @@ export function CalendarBody({ compact = false }: { compact?: boolean }) {
                   setCursor(start);
                   setSelected(null);
                 }}
-                style={{ cursor: "pointer" }}
+                style={{ cursor: "pointer", fontSize: 14, padding: "4px 12px" }}
               >
                 오늘로
               </button>
             </>
           ) : null}
           {!compact ? (
-            <>
-              {" · "}
-              <button
-                type="button"
-                className="chip"
-                title="콘솔로 돌아가며 작은 창으로 띄운다 — 잡아 끌어 옮기고 가장자리에 붙인다"
-                onClick={() => {
-                  calendarShell.set((was) => ({ mode: was.last }));
-                  navigate("/console");
-                }}
-                style={{ cursor: "pointer" }}
-              >
-                작은 창으로 ◱
-              </button>
-            </>
+            <button
+              type="button"
+              className="chip"
+              title="콘솔로 돌아가며 작은 창으로 띄운다 — 잡아 끌어 옮기고 가장자리에 붙인다"
+              onClick={() => {
+                calendarShell.set((was) => ({ mode: was.last }));
+                navigate("/console");
+              }}
+              style={{ cursor: "pointer", fontSize: 14, padding: "4px 12px" }}
+            >
+              작은 창으로 ◱
+            </button>
           ) : null}
           {view ? (
-            <span className="faint">
-              {" "}
-              · 범위 {view.from} ~ {view.to} · 받은 시각 {when(view.at)}
+            <span className="faint" style={{ fontSize: 13 }}>
+              범위 {view.from} ~ {view.to} · 받은 시각 {when(view.at)}
             </span>
           ) : null}
         </p>

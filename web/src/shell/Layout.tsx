@@ -6,9 +6,10 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import type { Who } from "../api";
-import { CalendarShell, DockedCalendar } from "../Calendar";
-import { ChatShell, DockedChat } from "../chat/ChatShell";
+import { CALENDAR_PANEL, CalendarShell, DockedCalendar } from "../Calendar";
+import { CHAT_PANEL, ChatShell, DockedChat } from "../chat/ChatShell";
 import { calendarShell, chatShell, useShellStore, type Mode } from "../chat/shell";
+import { Launcher } from "./DockPanel";
 import { SIDE_NARROW, SIDE_WIDE, useSidenavCollapsed } from "./sidenavState";
 import { AnalysisCluster } from "./AnalysisCluster";
 import { ChartField } from "./ChartField";
@@ -62,6 +63,8 @@ export function Layout({
       ) : null}
       <ChatShell who={who} />
       <CalendarShell />
+      {/* ⭐ 여는 단추는 하나 — 올리면 달력(과 앞으로 붙을 것들)이 위로 펼쳐진다 (사용자 2026-09-14). */}
+      <Launcher primary={CHAT_PANEL} others={[CALENDAR_PANEL]} />
       {leftNodes}
       <div
         className="flex min-h-screen flex-col gap-2 p-4 transition-[margin] duration-300 ml-[var(--chat-left)] xl:ml-[calc(var(--side-w)+var(--chat-left))]"
