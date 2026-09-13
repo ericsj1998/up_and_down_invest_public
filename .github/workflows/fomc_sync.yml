@@ -1,0 +1,45 @@
+# 연준 회의 일정 동기화 (T276 · 2026-09-13).
+#
+# 연준은 FOMC 일정을 API 로 주지 않아 `config/calendar.yml` 의 `fomc.dates` 를 배치가 채운다.
+# 달마다 페이지를 읽어 다르면 dev 에 커밋한다. 앱은 파일만 읽는다 — 페이지가 죽어도 달력은 산다.
+#
+# ⚠️ 커밋이 생기면 로컬은 `git pull` 이 필요하다. 한 파일·한 절만 바꾸므로 충돌은 거의 없다.
+#    커밋 메시지의 [skip ci] 는 이 저장소 규약이다.
+
+name: fomc-sync
+
+on:
+  schedule:
+    # 매달 1일 09:00 UTC (KST 18:00). 연준은 일정을 1년쯤 앞서 내고 바뀌는 일이 드물다.
+    - cron: "0 9 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+      - name: 의존성
+        run: uv sync --locked
+      - name: 페이지 → calendar.yml
+        run: uv run python scripts/ops/sync_fomc.py
+      - name: 바뀌었으면 커밋
+        run: |
+          if git diff --quiet -- config/calendar.yml; then
+            echo "변화 없음"
+            exit 0
+          fi
+          git config user.name "fomc-sync"
+          git config user.email "actions@users.noreply.github.com"
+          git add config/calendar.yml
+          git commit -m "T276 — 연준 회의 일정 갱신 (fomc-sync 배치) [skip ci]"
+          git push origin dev

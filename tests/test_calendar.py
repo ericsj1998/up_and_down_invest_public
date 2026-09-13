@@ -125,7 +125,9 @@ class TestConfig:
         cfg = load_calendar_config(CONFIG)
         assert [w.release_id for w in cfg.watch] == [10, 54, 50]
         assert all(w.url for w in cfg.watch)
-        assert len(cfg.fomc.dates) == 8 and cfg.fomc.dates == tuple(sorted(cfg.fomc.dates))
+        # 올해 8회 + 다음 해 — 배치(sync_fomc)가 페이지에서 채운다. 정확한 수는 페이지가 정한다.
+        assert len(cfg.fomc.dates) >= 8 and cfg.fomc.dates == tuple(sorted(cfg.fomc.dates))
+        assert sum(d.year == 2026 for d in cfg.fomc.dates) == 8
         assert cfg.earnings_scope == "universe" and cfg.days_ahead == 30
 
     def test_bad_config_is_loud(self, tmp_path: Path) -> None:

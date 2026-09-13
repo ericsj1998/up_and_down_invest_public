@@ -24,7 +24,9 @@ fred:
       url: https://www.bls.gov/ces/
 fomc:
   # 연준 FOMC 회의 — 둘째 날이 결정·성명 발표일이다. 출처는 연준 공표 일정(아래 url).
-  # 🔴 손으로 옮긴 값이다. 연준이 일정을 바꾸면 사람이 고친다 — API 가 없다(FRED 101 은 위 이유로 못 쓴다).
+  # 🔴 API 가 없다(FRED 101 은 위 이유로 못 쓴다). 연준 페이지를 읽어 이 목록을 다시 쓰는 배치가 있다 —
+  #    `make sync-fomc` (scripts/ops/sync_fomc.py) · GitHub Actions 가 달마다 돌려 바뀌면 커밋한다.
+  #    아래 줄은 그 배치가 쓴다. 손으로 고치면 다음 배치가 페이지 값으로 되돌린다.
   label: FOMC 금리 결정
   note: 연준 정책 발표문 — 기준금리와 성명 (회의 둘째 날)
   url: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
@@ -37,6 +39,14 @@ fomc:
     - 2026-09-16
     - 2026-10-28
     - 2026-12-09
+    - 2027-01-27
+    - 2027-03-17
+    - 2027-04-28
+    - 2027-06-09
+    - 2027-07-28
+    - 2027-09-15
+    - 2027-10-27
+    - 2027-12-08
 earnings:
   # 실적 예정은 유니버스(config/fundamentals/universe.yml) 종목만 보여 준다 — Finnhub 는 한 번에
   # 전 종목을 주므로 **호출은 한 번**이고 여기서 거른다. (착수 전 #4 · 2026-09-13)

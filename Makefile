@@ -150,6 +150,9 @@ secrets-history: ## 시크릿 스캔 — 모든 브랜치·태그의 전체 이�
 hooks: ## git 훅 설치 — pre-commit(린트) + post-commit(공개 저장소 동기화)
 	uv run pre-commit install --hook-type pre-commit --hook-type post-commit
 
+sync-fomc: ## 연준 회의 일정 → config/calendar.yml (T276 · 페이지를 읽어 다르면 고친다 · --check 는 CI 용)
+	uv run python scripts/ops/sync_fomc.py
+
 sync-public: ## 공개 저장소 동기화 — 마지막으로 옮긴 커밋 다음부터 지금 HEAD 까지 (커밋마다 스캔 · 걸리면 멈춤)
 	uv run python scripts/dev/sync_public.py --push
 
