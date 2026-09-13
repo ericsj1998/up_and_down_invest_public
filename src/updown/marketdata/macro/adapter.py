@@ -264,6 +264,14 @@ class MacroAdapter:
         as_of = datetime(int(year), int(month), 1, tzinfo=UTC)
         if yoy is None:
             raise ValueError(f"CPI {period} 의 전년 동월이 없다")
+        # ⭐ 전달 값도 같이 — 발표 당일 "이전 → 실제" 를 보여 주려면 둘이 필요하다 (T276 2단계 #3).
+        #    방향이 아니라 사실이다(규칙 #2).
+        earlier = [p for p in points if p[0] != period]
+        prev_note = ""
+        if earlier:
+            prev_period, _prev_index, prev_yoy = cpi_yoy(earlier)
+            if prev_yoy is not None:
+                prev_note = f" · 전달({prev_period}) {prev_yoy.quantize(Decimal('0.01'))}%"
         return Indicator(
             key="cpi",
             label="미국 CPI (전년 대비)",
@@ -271,8 +279,20 @@ class MacroAdapter:
             unit="%",
             source="BLS (CPI-U · 비계절조정)",
             as_of=as_of,
-            note=f"{period} 지수 {index}",
+            note=f"{period} 지수 {index}{prev_note}",
         )
+
+    def forget(self, key: str) -> None:
+        """느린 출처(CPI·EFFR)의 기억을 지운다 — 발표 시각을 지났는데 값이 낡았을 때 한 번 (T276).
+
+        Args:
+            key: 지표 열쇠(`cpi` · `effr`).
+
+        Note:
+            BLS 는 하루 요청 상한이 있다(2026-09-11 실측). 부르는 쪽이 "발표 시각 뒤 · 값이 낡음 ·
+            10분에 한 번" 을 지켜야 한다 — 여기서는 지우기만 한다.
+        """
+        self._slow.forget(key)
 
     async def _toss_batch(self, rows: list[tuple[str, str, str, str]]) -> list[Indicator]:
         if self._toss is None:

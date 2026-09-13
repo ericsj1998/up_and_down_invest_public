@@ -2793,6 +2793,11 @@ export type CalendarView = {
   /** 못 받은 출처 — 이유와 함께. 조용히 빠지지 않는다. */
   failures: Array<{ key: string; label: string; reason: string }>;
   watch: Array<{ key: string; label: string; note: string; url: string | null }>;
+  /** 오늘 발표 중 값을 아는 것 (지금은 CPI) — 열쇠 → 거시 지표 모양 + `fresh`(발표분이 실렸나). */
+  actuals: Record<
+    string,
+    { label: string; value: string; unit: string; note: string; as_of: string | null; fresh: boolean }
+  >;
 };
 
 export function calendarUpcoming(days?: number): Promise<CalendarView> {

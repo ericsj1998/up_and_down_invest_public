@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
@@ -14,6 +15,7 @@ import httpx
 import pytest
 
 from updown.apps.api import calendar as calendar_api
+from updown.common.domain.macro import Indicator
 from updown.marketdata.calendar.adapter import CalendarAdapter
 from updown.marketdata.calendar.client import CalendarClient
 from updown.marketdata.calendar.config import CalendarConfig, Fomc, load_calendar_config
@@ -237,9 +239,82 @@ async def test_api_snapshot_shape_and_cache() -> None:
         assert {e["key"] for e in body["events"]} >= {"fomc:2026-09-16", "fred:10:2026-10-14"}
         assert [w["key"] for w in body["watch"]] == ["fred:10", "fred:50", "fred:54", "fomc"]
         again = await calendar_api.upcoming_snapshot(45, today=TODAY)
-        assert again is body and len(seen) == 4  # 30분 캐시 — 같은 창은 다시 부르지 않는다
+        assert again["at"] == body["at"] and len(seen) == 4  # 30분 캐시 — 같은 창은 다시 안 부른다
+        assert body["actuals"] == {}  # 오늘(09-13)은 발표일이 아니다
         # 기본 창은 설정(30일)에서 온다.
         default = await calendar_api.upcoming_snapshot(today=TODAY)
         assert default["days"] == 30 and default["to"] == "2026-10-13"
     finally:
         calendar_api.attach_calendar(None)
+
+
+class _MacroStub:
+    """거시 어댑터 흉내 — CPI 지표 하나. `forget` 뒤에는 새 달 값을 준다."""
+
+    def __init__(self, stale_period: str, fresh_period: str) -> None:
+        self.period = stale_period
+        self.fresh_period = fresh_period
+        self.forgotten: list[str] = []
+        self.calls = 0
+
+    async def indicators(
+        self, keys: tuple[str, ...] | None = None
+    ) -> tuple[list[Indicator], list[Any]]:
+        assert keys == ("cpi",)  # 달력은 CPI 만 묻는다
+        self.calls += 1
+        year, month = self.period.split("-")
+        made = Indicator(
+            "cpi",
+            "미국 CPI (전년 대비)",
+            Decimal("2.9"),
+            "%",
+            "BLS",
+            as_of=datetime(int(year), int(month), 1, tzinfo=UTC),
+            note=f"{self.period} 지수 330 · 전달 2.7%",
+        )
+        return [made], []
+
+    def forget(self, key: str) -> None:
+        self.forgotten.append(key)
+        self.period = self.fresh_period
+
+
+class TestCpiActual:
+    def test_expected_period_is_previous_month(self) -> None:
+        assert calendar_api.expected_cpi_period(date(2026, 10, 14)) == "2026-09"
+        assert calendar_api.expected_cpi_period(date(2026, 1, 13)) == "2025-12"
+
+    @pytest.mark.asyncio
+    async def test_before_release_time_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub = _MacroStub("2026-08", "2026-09")
+        monkeypatch.setattr(calendar_api, "macro_adapter", lambda: stub)
+        calendar_api.attach_calendar(None, adapter=CalendarAdapter(_client(), _config()))
+        try:
+            # 10-14 08:00 ET = 12:00 UTC — 아직 안 나왔다.
+            early = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
+            got = await calendar_api.cpi_actual(date(2026, 10, 14), early)
+            assert got is None and stub.calls == 0 and stub.forgotten == []
+        finally:
+            calendar_api.attach_calendar(None)
+
+    @pytest.mark.asyncio
+    async def test_after_release_stale_value_is_refreshed_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub = _MacroStub("2026-08", "2026-09")
+        monkeypatch.setattr(calendar_api, "macro_adapter", lambda: stub)
+        calendar_api.attach_calendar(None, adapter=CalendarAdapter(_client(), _config()))
+        try:
+            # 10-14 09:00 ET = 13:00 UTC — 발표 뒤. 캐시는 8월 값 → 한 번 비우고 9월 값.
+            later = datetime(2026, 10, 14, 13, 0, tzinfo=UTC)
+            body = await calendar_api.upcoming_snapshot(1, today=date(2026, 10, 14), now=later)
+            got = body["actuals"]["fred:10:2026-10-14"]
+            assert got["value"] == "2.9" and got["fresh"] is True and "전달" in got["note"]
+            assert stub.forgotten == ["cpi"] and stub.calls == 2
+            # 같은 10분 안에서는 다시 비우지 않는다 — BLS 하루 상한.
+            stub.period = "2026-08"
+            body = await calendar_api.upcoming_snapshot(1, today=date(2026, 10, 14), now=later)
+            got = body["actuals"]["fred:10:2026-10-14"]
+            assert got["fresh"] is False and stub.forgotten == ["cpi"]
+        finally:
+            calendar_api.attach_calendar(None)

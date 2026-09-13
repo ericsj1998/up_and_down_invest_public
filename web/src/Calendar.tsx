@@ -47,10 +47,24 @@ function localToday(): string {
   return `${y}-${m}-${d}`;
 }
 
-function Row({ item, open, onToggle }: { item: CalendarEvent; open: boolean; onToggle: () => void }) {
+type Actual = CalendarView["actuals"][string];
+
+function Row({
+  item,
+  actual,
+  open,
+  onToggle,
+}: {
+  item: CalendarEvent;
+  actual?: Actual;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const note = typeof item.detail.note === "string" ? item.detail.note : "";
   const hour = hourLabel(item.detail.hour);
   const eps = item.detail.eps_estimate;
+  // 발표 뒤 Finnhub 가 실제값을 채운다 — 예상과 나란히. 방향이 아니라 사실이다(규칙 #2).
+  const epsActual = item.detail.eps_actual;
   return (
     <>
       <tr onClick={onToggle} style={{ cursor: "pointer" }} aria-expanded={open}>
@@ -66,9 +80,25 @@ function Row({ item, open, onToggle }: { item: CalendarEvent; open: boolean; onT
             <span className="faint">
               {hour ? ` · ${hour}` : ""}
               {typeof eps === "number" ? ` · EPS 예상 ${num(eps, 2)}` : ""}
+              {typeof epsActual === "number" ? (
+                <>
+                  {" · "}
+                  <b>실제 {num(epsActual, 2)}</b>
+                </>
+              ) : (
+                ""
+              )}
             </span>
           ) : note ? (
             <span className="faint"> · {note}</span>
+          ) : null}
+          {/* 발표 뒤 실제값 — "이전 → 실제" 는 사실이고 방향이 아니다(규칙 #2). fresh 가 아니면 아직 전달 값이다. */}
+          {actual ? (
+            <span className={actual.fresh ? "" : "faint"}>
+              {" · "}
+              {actual.fresh ? <b>실제 {actual.value}{actual.unit}</b> : `아직 전달 값 ${actual.value}${actual.unit} (BLS 갱신 대기)`}
+              {actual.note ? <span className="faint"> · {actual.note}</span> : null}
+            </span>
           ) : null}
         </td>
         <td className="faint">
@@ -199,6 +229,7 @@ export function CalendarPage() {
                     <Row
                       key={item.key}
                       item={item}
+                      actual={view?.actuals?.[item.key]}
                       open={open === item.key}
                       onToggle={() => setOpen(open === item.key ? null : item.key)}
                     />
