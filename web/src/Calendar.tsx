@@ -37,7 +37,28 @@ const MAX_DAYS = 90;
 const NEAR_MS = 3 * 60 * 60 * 1000;
 const POLL_MS = 30_000;
 const CHIPS_PER_CELL = 3;
+const GRID_HEIGHT_KEY = "calendar.grid-height";
+const MIN_GRID_HEIGHT = 240;
 const TITLE = "주요 일정 달력";
+
+/** 큰 화면 격자의 기본 높이 — 화면에 맞추되, 끌어서 바꾼 값이 있으면 그것. */
+function readGridHeight(): number {
+  try {
+    const got = Number(localStorage.getItem(GRID_HEIGHT_KEY));
+    if (Number.isFinite(got) && got >= MIN_GRID_HEIGHT) return got;
+  } catch {
+    // 기억이 없으면 화면 크기로.
+  }
+  return typeof window === "undefined" ? 600 : Math.max(MIN_GRID_HEIGHT, window.innerHeight - 320);
+}
+
+function writeGridHeight(height: number): void {
+  try {
+    localStorage.setItem(GRID_HEIGHT_KEY, String(Math.round(height)));
+  } catch {
+    // 기억만 못 한다.
+  }
+}
 const SUBTITLE = "예정일과 사실만 · 방향은 말하지 않는다";
 
 export const CALENDAR_PANEL: PanelSpec = {
@@ -346,6 +367,29 @@ export function CalendarBody({ compact = false }: { compact?: boolean }) {
   const [selected, setSelected] = useState<string | null>(null);
   const offsetRef = useRef(0);
   const [now, setNow] = useState(() => Date.now());
+  // 큰 화면의 격자 높이 — 아래 손잡이를 끌어 바꾼다 (사용자 2026-09-14: "주요일정 달력 쪽에서도 늘리고 줄일 수").
+  //    작은 창에서는 창 높이를 그대로 채우므로 이 값을 안 쓴다.
+  const [gridHeight, setGridHeight] = useState(readGridHeight);
+  const beginHeightDrag = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startY = e.clientY;
+    const base = gridHeight;
+    let last = base;
+    const onMove = (ev: PointerEvent) => {
+      last = Math.max(MIN_GRID_HEIGHT, base + ev.clientY - startY);
+      setGridHeight(last);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      writeGridHeight(last);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
 
   const load = () =>
     // 서버는 오늘부터 앞으로만 준다 — 한 번에 90일을 받아 세 달치 격자를 채운다 (서버 30분 캐시 · actuals 는 밖).
@@ -405,7 +449,13 @@ export function CalendarBody({ compact = false }: { compact?: boolean }) {
   };
 
   return (
-    <div className={compact ? "min-h-0 flex-1 overflow-auto p-3" : "page"}>
+    // ⭐ 작은 창은 창 높이를 격자가 **채운다** — 바깥은 스크롤 상자, 안쪽은 최소 100% 높이의 세로 flex 라 격자가 남은
+    //    자리를 다 갖고(행이 같이 늘어난다), 칩을 펼치면 그 아래로 스크롤된다 (사용자 2026-09-14 "위아래로 늘어나야지").
+    <div
+      className={compact ? "min-h-0 flex-1 overflow-auto p-3" : "page"}
+      style={compact ? { display: "flex", flexDirection: "column" } : undefined}
+    >
+      <div style={compact ? { display: "flex", flexDirection: "column", minHeight: "100%", flex: "1 0 auto" } : undefined}>
       <section>
         {compact ? null : <h2>{TITLE}</h2>}
         {clock ? (
@@ -485,18 +535,22 @@ export function CalendarBody({ compact = false }: { compact?: boolean }) {
       {beyond ? (
         <p className="faint">서버는 오늘부터 {MAX_DAYS}일까지만 준다 — 이 달은 아직 비어 있다.</p>
       ) : null}
-      <section>
+      <section style={compact ? { flex: "1 1 auto", display: "flex", flexDirection: "column", minHeight: 0 } : undefined}>
         <div
           role="grid"
           aria-label={monthLabel}
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
+            // 첫 줄(요일)은 글자 높이, 나머지 줄은 남은 높이를 똑같이 나눠 갖는다 — 창을 늘리면 칸이 같이 커진다.
+            gridTemplateRows: "auto",
+            gridAutoRows: "minmax(44px, 1fr)",
             gap: 1,
             background: "var(--stone-border)",
             border: "1px solid var(--stone-border)",
             borderRadius: 8,
             overflow: "hidden",
+            ...(compact ? { flex: "1 1 auto", minHeight: 0 } : { height: gridHeight }),
           }}
         >
           {WEEKDAY.map((w, i) => (
@@ -525,7 +579,8 @@ export function CalendarBody({ compact = false }: { compact?: boolean }) {
                 role="gridcell"
                 style={{
                   background: "var(--pure-white)",
-                  minHeight: compact ? 56 : 72,
+                  minHeight: 0,
+                  overflow: "hidden",
                   padding: 4,
                   opacity: cell.inMonth ? 1 : 0.45,
                 }}
@@ -565,7 +620,18 @@ export function CalendarBody({ compact = false }: { compact?: boolean }) {
             );
           })}
         </div>
+        {compact ? null : (
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            title="끌어서 달력 높이를 바꾼다"
+            className="chat-splitter touch-none rounded bg-blue-gray-100 hover:bg-blue-gray-300 dark:bg-gray-800 dark:hover:bg-gray-600"
+            style={{ height: 8, marginTop: 4, cursor: "row-resize" }}
+            onPointerDown={beginHeightDrag}
+          />
+        )}
       </section>
+      </div>
       {picked ? <Detail item={picked} actual={view?.actuals?.[picked.key]} now={now} clock={clock} /> : null}
       {view && !view.events.length && !view.failures.length ? (
         <p className="faint">앞으로 {MAX_DAYS}일 안에 감시 중인 일정이 없다.</p>
