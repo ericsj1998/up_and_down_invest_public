@@ -25,6 +25,7 @@
 | `GOOGLE_CLIENT_ID` · `GOOGLE_CLIENT_SECRET` | Settings(auth) | dev 와 **같은 OAuth 클라이언트** (콘솔에 배포 콜백이 등록돼 있어야 한다) | ✅ |
 | `GOOGLE_REDIRECT_URI` | Settings(auth) | `https://<PUBLIC_DOMAIN>/api/auth/callback` — dev 와 **다르다** | ✅ |
 | `SESSION_SECRET` | Settings(auth) | **서버 전용** (`openssl rand -base64 48`) · 데모 API(`.env.demo`)와는 같은 값 | ✅ |
+| `FRED_API_KEY` · `FINNHUB_API_KEY` | T276 주요 일정 달력(지표 발표 예정일 · 실적 예정일) | 둘 다 무료 키 — FRED 는 세인트루이스 연준, Finnhub 는 분당 60콜. 배포 전엔 줄이 없어도 되고, 없으면 달력이 **이유와 함께 빈 칸**이어야 한다(규칙 #8) | ⬜ T276 배포 때 사용자가 넣는다 |
 | `ADMIN_EMAILS` | Settings(auth) | 첫 로그인에 admin 이 될 이메일 · dev 와 같아도 된다 | ✅ |
 | `SMTP_HOST` · `SMTP_PORT` · `SMTP_USER` · `SMTP_PASSWORD` · `NOTIFY_FROM_EMAIL` | Settings → `report/daily.py` | dev 와 **같은 값** (같은 메일 계정) | ✅ (2026-09-06 `env_sync.sh` 로 채움 — 그 전엔 비어 있었고 `SMTP_PORT` 는 줄이 없었다) |
 | `REPORT_TO` | Settings → 일간 리포트 수신자 | 받을 주소 | ✅ |
