@@ -42,6 +42,7 @@ dependencies = [
 # 예시 매매법 — 공개 저장소에 남는 유일한 탐지기 (T224)
 sample_ma_cross = "updown.analysis.detectors.sample_ma_cross:register"
 # 시초가 후보 셋 (T241) — 한 모듈이 세 룰 id 를 등록한다.
+# 거래량 돌파 추종 (T279 축 AB · 2026-09-15) — 세션 엔진 재현용.
 
 [dependency-groups]
 dev = [
