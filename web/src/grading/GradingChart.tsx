@@ -53,6 +53,8 @@ type Props = {
   /** 상자 통째로 옮기기 — 가격 차이 · 시각 차이(초). */
   onMove: (dPrice: number, dTime: number) => void;
   onPick: (positionId: string) => void;
+  /** 상자 오른쪽 위 ✕ — 그 수기 포지션을 지운다 (사용자 2026-09-14). */
+  onRemove: (positionId: string) => void;
   height?: number;
   lookAt?: { from: number; to: number } | null;
   follow?: boolean;
@@ -73,6 +75,7 @@ export function GradingChart({
   onDrag,
   onMove,
   onPick,
+  onRemove,
   height = 520,
   lookAt = null,
   follow = false,
@@ -305,16 +308,16 @@ export function GradingChart({
         shape: t.side === 1 ? "arrowUp" : "arrowDown",
         color: t.side === 1 ? c.up : c.down,
         text: label,
-        size: strong ? 2 : 1,
+        size: strong ? 3 : 2,
       });
       const t0 = snap(t.openedTs, step);
       const t1 = Math.max(snap(t.closedTs, step), t0 + step);
       if (t.reason !== "open") {
-        rows.push({ time: t1 as Time, position: t.side === 1 ? "aboveBar" : "belowBar", shape: "circle", color, text: "", size: strong ? 1.5 : 0.8 });
+        rows.push({ time: t1 as Time, position: t.side === 1 ? "aboveBar" : "belowBar", shape: "square", color: c.text, text: "", size: strong ? 1.2 : 0.7 });
       }
       const seg = made.addSeries(LineSeries, {
         color,
-        lineWidth: strong ? 3 : 2,
+        lineWidth: strong ? 4 : 3,
         lineStyle: t.reason === "open" ? LineStyle.Dotted : LineStyle.Solid,
         priceLineVisible: false,
         lastValueVisible: false,
@@ -382,10 +385,75 @@ export function GradingChart({
     made.timeScale().setVisibleRange({ from: Math.max(first, lookAt.from) as Time, to: Math.min(last, lookAt.to) as Time });
   }, [lookAt, bars, ready]);
 
+  // ── 수기 포지션의 ✕ 단추 — 상자 오른쪽 위에 HTML 로 얹는다 (캔버스에는 누를 수 있는 것이 없다).
+  //    스크롤·확대·봉 갱신마다 자리를 다시 잰다.
+  const [pins, setPins] = useState<{ id: string; x: number; y: number }[]>([]);
+  const [layout, setLayout] = useState(0);
+  useEffect(() => {
+    const made = chart.current;
+    if (made === null) return;
+    const bump = () => setLayout((n) => n + 1);
+    made.timeScale().subscribeVisibleLogicalRangeChange(bump);
+    return () => made.timeScale().unsubscribeVisibleLogicalRangeChange(bump);
+  }, [ready]);
+  useEffect(() => {
+    const made = chart.current;
+    const drawn = series.current;
+    const box = holder.current;
+    if (made === null || drawn === null || box === null) return;
+    const width = box.clientWidth;
+    const next: { id: string; x: number; y: number }[] = [];
+    for (const p of positions) {
+      const hi = Math.max(p.entry, p.stop, p.target);
+      const y = drawn.priceToCoordinate(hi);
+      let x = made.timeScale().timeToCoordinate(p.to as Time);
+      if (x === null) {
+        const at = made.timeScale().timeToCoordinate(p.from as Time);
+        if (at === null) continue;
+        x = Math.min(width - 4, at + 60);
+      }
+      if (y === null || x < 0 || x > width) continue;
+      next.push({ id: p.id, x: Math.min(width - 10, x), y: Math.max(2, y) });
+    }
+    setPins(next);
+  }, [positions, bars, layout, ready]);
+
   const shown = legend(overlaySeries);
   return (
     <div>
-      <div ref={holder} style={{ width: "100%", height, cursor: placing ? "crosshair" : active ? "move" : "default" }} />
+      <div style={{ position: "relative" }}>
+        <div ref={holder} style={{ width: "100%", height, cursor: placing ? "crosshair" : active ? "move" : "default" }} />
+        {pins.map((pin) => (
+          <button
+            key={pin.id}
+            type="button"
+            title="이 포지션 지우기"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(pin.id);
+            }}
+            style={{
+              position: "absolute",
+              left: pin.x - 18,
+              top: pin.y - 18,
+              width: 18,
+              height: 18,
+              lineHeight: "16px",
+              fontSize: 12,
+              borderRadius: 9,
+              border: "1px solid #b4423a",
+              background: "#fff",
+              color: "#b4423a",
+              cursor: "pointer",
+              zIndex: 5,
+              padding: 0,
+            }}
+          >
+            ✕
+          </button>
+        ))}
+      </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-blue-gray-500 dark:text-blue-gray-300">
         {shown.map((s) => (
           <span key={s.label} className="inline-flex items-center gap-1">

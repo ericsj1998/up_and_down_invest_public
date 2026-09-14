@@ -296,10 +296,16 @@ export function GradingPage({ who }: { who: Who | null }) {
     setDirty(true);
   };
 
+  const removePosition = useCallback(
+    (id: string) => {
+      setMarks((m) => ({ ...m, positions: m.positions.filter((p) => p.id !== id) }));
+      setActiveId((now) => (now === id ? null : now));
+      setDirty(true);
+    },
+    [],
+  );
   const removeActive = () => {
-    setMarks((m) => ({ ...m, positions: m.positions.filter((p) => p.id !== activeId) }));
-    setActiveId(null);
-    setDirty(true);
+    if (activeId !== null) removePosition(activeId);
   };
 
   const download = () => {
@@ -509,6 +515,7 @@ export function GradingPage({ who }: { who: Who | null }) {
         onDrag={drag}
         onMove={move}
         onPick={setActiveId}
+        onRemove={removePosition}
         lookAt={lookAt}
         follow={playing}
       />
@@ -560,6 +567,20 @@ export function GradingPage({ who }: { who: Who | null }) {
           </span>
         ))}
         <span className="faint">수기 포지션 {marks.positions.length}</span>
+        {marks.positions.map((p) => (
+          <span
+            key={p.id}
+            className={`inline-flex items-center gap-1 rounded border px-1 ${p.id === activeId ? "font-semibold" : ""}`}
+          >
+            <button type="button" className="cursor-pointer" onClick={() => setActiveId(p.id)} title="차트에서 고르기">
+              {p.side === 1 ? "롱" : "숏"} {fmtPrice(p.entry)} · {whenUtc(p.from).slice(5, 16)}
+              {p.note ? ` · ${p.note.slice(0, 20)}` : ""}
+            </button>
+            <button type="button" className="text-red-600" onClick={() => removePosition(p.id)} title="지우기">
+              ✕
+            </button>
+          </span>
+        ))}
         <span className="faint">⚠️ O/X 와 수기 포지션은 규칙을 끌어내는 예시다 — 성과가 아니다</span>
       </div>
 
