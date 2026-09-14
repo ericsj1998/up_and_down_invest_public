@@ -1,17 +1,21 @@
 /**
- * 채점 차트(dev · T281) — 봉 + 지표(BB 20/2 · BB 4/4 · EMA) + 엔진 매매 표기 + 사람이 그린 포지션 + 클릭·끌기.
+ * 채점 차트(dev · T281) — 봉 + 지표(BB 20/2 · BB 4/4 · EMA) + 엔진 매매(진입 ▲▼ · 진입→청산 선 · 청산 ●) + 수기 포지션 + 클릭·끌기.
  *
- * `PriceChart.tsx`(끝난 자료 · 읽기 전용)와 다른 점 셋:
+ * `PriceChart.tsx`(끝난 자료 · 읽기 전용)와 다른 점:
  *   1. 봉 배열이 **재생 커서에 따라 바뀐다** — 마지막 봉은 만드는 중 봉이고 지표도 그 봉을 포함해 다시 계산된다.
- *   2. 클릭으로 진입가·시각을 잡고(`onPlace`), 선택한 수기 포지션의 진입·손절·목표 선을 **끌 수 있다**(`onDrag` ·
- *      `Chart.tsx` 의 계획선과 같은 방식 — 라이브러리에 끄는 선이 없어 마우스를 직접 듣는다).
- *   3. 수기 포지션은 전부 영역으로 칠한다(진입↔손절 붉게 · 진입↔목표 초록) — 엔진 매매는 선택한 하나만.
+ *   2. 매매는 **진입→청산 선**(승 초록 · 패 빨강)으로 그린다 — 연구 그림(`_plot_n.py`)과 같은 표기 (사용자 2026-09-14:
+ *      화살표+글자가 너무 지저분). 글자는 고른(또는 마우스 올린) 매매에만 `TL -0.40% trend_end` 로.
+ *   3. 마우스를 올린 봉에 진입한 매매를 `onHover` 로 알린다 — 아래 표가 그 행으로 간다.
+ *   4. 수기 포지션: 클릭으로 놓고(`onPlace`), 고른 포지션은 진입·손절·목표 선을 끌고(`onDrag`), **상자 안을 꾹 누른 채 끌면
+ *      통째로 옮긴다**(`onMove` · 가격·시각 함께). 끄는 동안 차트 스크롤·확대를 잠근다 — 잠그지 않으면 선이 아니라
+ *      차트가 끌린다(첫 판 실측 2026-09-14: 상태가 바뀔 때마다 잠금이 풀려 차트가 따라 움직였다 → 잠금은 ref 로만).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CandlestickSeries,
   createChart,
   createSeriesMarkers,
+  LineSeries,
   LineStyle,
   type IChartApi,
   type IPriceLine,
@@ -25,9 +29,9 @@ import { buildEnabled, type IndicatorSpec, type Ohlc } from "../chart/indicators
 import { applyOverlays, computeOverlays, legend, type OverlayHandle } from "../chart/overlays";
 import { pricePrecision } from "../chart/PriceChart";
 import { onThemeChange, palette, wash } from "../chart/theme";
-import { tradeLevels, tradeMarkers, tradeZones, type TradeMark } from "../chart/trades";
+import { snap, type TradeMark } from "../chart/trades";
 import { ZonesPrimitive, type Rect } from "../chart/ZonesPrimitive";
-import { positionZones, type UserPosition } from "./grading";
+import { positionZones, tag, type UserPosition } from "./grading";
 
 export type DragKey = "entry" | "stop" | "target";
 
@@ -37,6 +41,8 @@ type Props = {
   specs: readonly IndicatorSpec[];
   trades: TradeMark[];
   focusId: string | null;
+  hoverId: string | null;
+  onHover: (id: string | null) => void;
   positions: UserPosition[];
   /** 선택한 수기 포지션 — 선을 끌 수 있고 축 라벨이 붙는다. */
   activeId: string | null;
@@ -44,15 +50,13 @@ type Props = {
   placing: boolean;
   onPlace: (price: number, time: number) => void;
   onDrag: (key: DragKey, price: number) => void;
+  /** 상자 통째로 옮기기 — 가격 차이 · 시각 차이(초). */
+  onMove: (dPrice: number, dTime: number) => void;
   onPick: (positionId: string) => void;
   height?: number;
-  /** 보이는 범위를 이 시각 근처로 — 매매 행을 눌렀을 때. */
   lookAt?: { from: number; to: number } | null;
-  /** 재생 중이면 오른쪽 끝을 따라간다. */
   follow?: boolean;
 };
-
-const TONES = { entry: "entry", gain: "up", loss: "down" } as const;
 
 export function GradingChart({
   bars,
@@ -60,11 +64,14 @@ export function GradingChart({
   specs,
   trades,
   focusId,
+  hoverId,
+  onHover,
   positions,
   activeId,
   placing,
   onPlace,
   onDrag,
+  onMove,
   onPick,
   height = 520,
   lookAt = null,
@@ -76,13 +83,12 @@ export function GradingChart({
   const zones = useRef<ZonesPrimitive | null>(null);
   const badges = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const overlays = useRef<OverlayHandle[]>([]);
-  const levels = useRef<IPriceLine[]>([]);
+  const segLines = useRef<ISeriesApi<"Line">[]>([]);
   const draftLines = useRef<IPriceLine[]>([]);
-  const held = useRef<DragKey | null>(null);
   const [ready, setReady] = useState(0);
-  // 최신 콜백을 ref 로 — 차트 구독은 한 번만 건다.
-  const latest = useRef({ placing, onPlace, onPick, positions });
-  latest.current = { placing, onPlace, onPick, positions };
+  // 최신 값을 ref 로 — 차트 구독·마우스 리스너는 한 번만 걸고, 상태가 바뀌어도 잠금이 풀리지 않게.
+  const latest = useRef({ placing, onPlace, onPick, onDrag, onMove, onHover, positions, activeId, trades, step });
+  latest.current = { placing, onPlace, onPick, onDrag, onMove, onHover, positions, activeId, trades, step };
 
   useEffect(() => {
     if (holder.current === null) return;
@@ -109,9 +115,10 @@ export function GradingChart({
     zones.current = rug;
     badges.current = createSeriesMarkers(candles, []);
     overlays.current = [];
-    levels.current = [];
+    segLines.current = [];
     draftLines.current = [];
     setReady((n) => n + 1);
+
     const click = (param: MouseEventParams<Time>) => {
       const { placing: armed, onPlace: place, onPick: pick, positions: drawn } = latest.current;
       if (param.point === undefined) return;
@@ -122,7 +129,6 @@ export function GradingChart({
         place(Number(price), time);
         return;
       }
-      // 놓는 중이 아니면: 포지션 영역 안을 누르면 그것을 고른다.
       const p = Number(price);
       const hit = drawn.find(
         (pos) =>
@@ -134,6 +140,93 @@ export function GradingChart({
       if (hit) pick(hit.id);
     };
     made.subscribeClick(click);
+    // 마우스가 올라간 봉에 진입한 매매 → 아래 표로.
+    const hover = (param: MouseEventParams<Time>) => {
+      const { trades: rows, step: st, onHover: tell } = latest.current;
+      const time = typeof param.time === "number" ? param.time : null;
+      if (time === null) {
+        tell(null);
+        return;
+      }
+      const at = rows.find((t) => snap(t.openedTs, st) === time) ?? null;
+      tell(at?.id ?? null);
+    };
+    made.subscribeCrosshairMove(hover);
+
+    // ── 끌기: 선(진입·손절·목표) 또는 상자 통째로. 잠금은 down/up 에서만 — 상태 변화와 무관.
+    const box = holder.current;
+    let held: DragKey | "move" | null = null;
+    let last: { price: number; logical: number } | null = null;
+    const priceAt = (event: MouseEvent): number | null => {
+      const rect = box.getBoundingClientRect();
+      const got = candles.coordinateToPrice(event.clientY - rect.top);
+      return got === null ? null : Number(got);
+    };
+    const logicalAt = (event: MouseEvent): number | null => {
+      const rect = box.getBoundingClientRect();
+      const got = made.timeScale().coordinateToLogical(event.clientX - rect.left);
+      return got === null ? null : Number(got);
+    };
+    const down = (event: MouseEvent) => {
+      const { positions: drawn, activeId: id, placing: armed } = latest.current;
+      if (armed) return;
+      const active = drawn.find((p) => p.id === id) ?? null;
+      if (active === null) return;
+      const price = priceAt(event);
+      const logical = logicalAt(event);
+      if (price === null || logical === null) return;
+      const rect = box.getBoundingClientRect();
+      const near = Math.abs(Number(candles.coordinateToPrice(0) ?? 0) - Number(candles.coordinateToPrice(rect.height * 0.02) ?? 0));
+      const rows: [DragKey, number][] = [
+        ["entry", active.entry],
+        ["stop", active.stop],
+        ["target", active.target],
+      ];
+      let best: [DragKey, number] | null = null;
+      for (const row of rows) {
+        if (Math.abs(row[1] - price) > near) continue;
+        if (best === null || Math.abs(row[1] - price) < Math.abs(best[1] - price)) best = row;
+      }
+      if (best !== null) {
+        held = best[0];
+      } else {
+        // 상자 안(시각·가격 모두)이면 통째로 옮긴다.
+        const t = made.timeScale().coordinateToTime(event.clientX - rect.left);
+        const time = typeof t === "number" ? t : null;
+        const lo = Math.min(active.entry, active.stop, active.target);
+        const hi = Math.max(active.entry, active.stop, active.target);
+        if (time === null || time < active.from || time > active.to || price < lo || price > hi) return;
+        held = "move";
+      }
+      last = { price, logical };
+      made.applyOptions({ handleScroll: false, handleScale: false });
+      event.preventDefault();
+    };
+    const moveTo = (event: MouseEvent) => {
+      if (held === null || last === null) return;
+      const price = priceAt(event);
+      const logical = logicalAt(event);
+      if (price === null || logical === null) return;
+      if (held === "move") {
+        const dt = (logical - last.logical) * latest.current.step;
+        // 봉 하나 이상 움직였을 때만 시각을 옮긴다 — 가격은 매번.
+        const whole = Math.trunc(dt / latest.current.step) * latest.current.step;
+        latest.current.onMove(price - last.price, whole);
+        last = { price, logical: whole === 0 ? last.logical : logical };
+      } else {
+        latest.current.onDrag(held, price);
+      }
+    };
+    const up = () => {
+      if (held === null) return;
+      held = null;
+      last = null;
+      made.applyOptions({ handleScroll: true, handleScale: true });
+    };
+    box.addEventListener("mousedown", down);
+    window.addEventListener("mousemove", moveTo);
+    window.addEventListener("mouseup", up);
+
     const off = onThemeChange(() => {
       const p = palette();
       made.applyOptions({
@@ -145,18 +238,22 @@ export function GradingChart({
     return () => {
       off();
       made.unsubscribeClick(click);
+      made.unsubscribeCrosshairMove(hover);
+      box.removeEventListener("mousedown", down);
+      window.removeEventListener("mousemove", moveTo);
+      window.removeEventListener("mouseup", up);
       badges.current = null;
       zones.current = null;
       series.current = null;
       chart.current = null;
       overlays.current = [];
-      levels.current = [];
+      segLines.current = [];
       draftLines.current = [];
       made.remove();
     };
   }, [height, step]);
 
-  // ── 봉 (재생이면 매 틱 바뀐다 — setData 로 통째로 · 봉 수가 천 단위라 충분히 빠르다) ──
+  // ── 봉 ──
   const fitted = useRef(false);
   useEffect(() => {
     const drawn = series.current;
@@ -173,7 +270,7 @@ export function GradingChart({
     }
   }, [bars, ready, follow]);
 
-  // ── 지표 (만드는 중 봉까지 넣어 계산 → 라이브 밴드) ──
+  // ── 지표 ──
   const overlaySeries = useMemo(() => computeOverlays(buildEnabled(specs), bars), [specs, bars]);
   useEffect(() => {
     const made = chart.current;
@@ -181,70 +278,84 @@ export function GradingChart({
     overlays.current = applyOverlays(made, overlays.current, overlaySeries);
   }, [overlaySeries, ready]);
 
-  // ── 엔진 매매 마커 ──
+  // ── 엔진 매매: 진입 ▲▼(작게) · 진입→청산 선 · 청산 ● · 글자는 고른/올린 것에만 ──
   const focus = useMemo(() => trades.find((t) => t.id === focusId) ?? null, [trades, focusId]);
   useEffect(() => {
     const plugin = badges.current;
-    if (plugin === null) return;
+    const made = chart.current;
+    if (plugin === null || made === null) return;
     const c = palette();
-    const rows: SeriesMarker<Time>[] = tradeMarkers(
-      trades,
-      step,
-      { entry: true, exit: true, lines: true, zones: true, labels: true },
-      focus?.id ?? null,
-    ).map((m) => ({
-      time: m.time as Time,
-      position: m.position,
-      shape: m.shape,
-      color: c[TONES[m.tone]],
-      text: m.text,
-      size: m.size,
-    }));
+    for (const line of segLines.current) {
+      try {
+        made.removeSeries(line);
+      } catch {
+        // 이미 지워진 차트
+      }
+    }
+    segLines.current = [];
+    const rows: SeriesMarker<Time>[] = [];
+    for (const t of trades) {
+      const strong = t.id === focusId || t.id === hoverId;
+      const win = (t.pnl ?? 0) >= 0;
+      const color = t.reason === "open" ? c.entry : win ? c.up : c.down;
+      const label = strong ? `${tag(t.leg ?? "", t.side)} ${(t.pnl ?? 0).toFixed(2)}% ${t.reason}` : "";
+      rows.push({
+        time: snap(t.openedTs, step) as Time,
+        position: t.side === 1 ? "belowBar" : "aboveBar",
+        shape: t.side === 1 ? "arrowUp" : "arrowDown",
+        color: t.side === 1 ? c.up : c.down,
+        text: label,
+        size: strong ? 2 : 1,
+      });
+      const t0 = snap(t.openedTs, step);
+      const t1 = Math.max(snap(t.closedTs, step), t0 + step);
+      if (t.reason !== "open") {
+        rows.push({ time: t1 as Time, position: t.side === 1 ? "aboveBar" : "belowBar", shape: "circle", color, text: "", size: strong ? 1.5 : 0.8 });
+      }
+      const seg = made.addSeries(LineSeries, {
+        color,
+        lineWidth: strong ? 3 : 2,
+        lineStyle: t.reason === "open" ? LineStyle.Dotted : LineStyle.Solid,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      seg.setData([
+        { time: t0 as Time, value: t.entry },
+        { time: t1 as Time, value: t.exit },
+      ]);
+      segLines.current.push(seg);
+    }
+    rows.sort((a, b) => Number(a.time) - Number(b.time));
     plugin.setMarkers(rows);
-  }, [trades, step, focus, ready]);
+  }, [trades, step, focusId, hoverId, ready]);
 
-  // ── 영역: 선택한 엔진 매매 + 수기 포지션 전부 · 가로선: 선택한 엔진 매매 ──
+  // ── 영역: 고른 엔진 매매의 손절·손익 + 수기 포지션 전부 ──
   const active = useMemo(() => positions.find((p) => p.id === activeId) ?? null, [positions, activeId]);
   useEffect(() => {
-    const drawn = series.current;
     const rug = zones.current;
-    if (drawn === null || rug === null) return;
-    for (const line of levels.current) drawn.removePriceLine(line);
-    levels.current = [];
+    if (rug === null) return;
     const c = palette();
-    const marks = { entry: true, exit: true, lines: true, zones: true, labels: true };
     const rects: Rect[] = [];
     if (focus !== null) {
-      levels.current = tradeLevels(focus, marks).map((l) =>
-        drawn.createPriceLine({
-          price: l.price,
-          color: c[TONES[l.tone]],
-          lineWidth: 1,
-          lineStyle: l.dashed ? LineStyle.Dashed : LineStyle.Solid,
-          axisLabelVisible: true,
-          title: l.title,
-        }),
-      );
-      for (const z of tradeZones(focus, step, marks)) {
-        rects.push({ from: z.from, to: z.to, low: z.low, high: z.high, color: wash(z.tone === "gain" ? c.up : c.down, z.alpha) });
+      const from = snap(focus.openedTs, step);
+      const to = Math.max(snap(focus.closedTs, step) + step, from + step);
+      if (focus.stop !== focus.entry) {
+        rects.push({ from, to, low: Math.min(focus.entry, focus.stop), high: Math.max(focus.entry, focus.stop), color: wash(c.down, 0.12) });
       }
+      const win = (focus.exit - focus.entry) * focus.side > 0;
+      rects.push({ from, to, low: Math.min(focus.entry, focus.exit), high: Math.max(focus.entry, focus.exit), color: wash(win ? c.up : c.down, 0.16) });
     }
     for (const p of positions) {
       const strong = p.id === activeId;
       for (const z of positionZones(p)) {
-        rects.push({
-          from: z.from,
-          to: z.to,
-          low: z.low,
-          high: z.high,
-          color: wash(z.tone === "gain" ? c.up : c.down, strong ? 0.3 : 0.16),
-        });
+        rects.push({ from: z.from, to: z.to, low: z.low, high: z.high, color: wash(z.tone === "gain" ? c.up : c.down, strong ? 0.3 : 0.16) });
       }
     }
     rug.set(rects);
   }, [focus, positions, activeId, step, ready]);
 
-  // ── 선택한 수기 포지션의 끄는 선 ──
+  // ── 고른 수기 포지션의 끄는 선 ──
   useEffect(() => {
     const drawn = series.current;
     if (drawn === null) return;
@@ -254,65 +365,13 @@ export function GradingChart({
     const c = palette();
     const rows: [string, number, string][] = [
       ["손절 ⇕", active.stop, c.down],
-      [`${active.side === 1 ? "롱" : "숏"} 진입 ⇕`, active.entry, c.entry],
+      [`${active.side === 1 ? "롱" : "숏"} 진입 ⇕ (상자 안 끌면 이동)`, active.entry, c.entry],
       ["목표 ⇕", active.target, c.up],
     ];
     draftLines.current = rows.map(([title, price, color]) =>
       drawn.createPriceLine({ price, color, lineWidth: 2, lineStyle: LineStyle.Solid, axisLabelVisible: true, title }),
     );
   }, [active, ready]);
-
-  // ── 끌기 (Chart.tsx 계획선과 같은 방식) ──
-  useEffect(() => {
-    const box = holder.current;
-    const made = chart.current;
-    const drawn = series.current;
-    if (box === null || made === null || drawn === null || active === null) return;
-    const priceAt = (event: MouseEvent): number | null => {
-      const rect = box.getBoundingClientRect();
-      const got = drawn.coordinateToPrice(event.clientY - rect.top);
-      return got === null ? null : Number(got);
-    };
-    const down = (event: MouseEvent) => {
-      const price = priceAt(event);
-      if (price === null) return;
-      const rect = box.getBoundingClientRect();
-      const near = Math.abs(Number(drawn.coordinateToPrice(0) ?? 0) - Number(drawn.coordinateToPrice(rect.height * 0.02) ?? 0));
-      const rows: [DragKey, number][] = [
-        ["entry", active.entry],
-        ["stop", active.stop],
-        ["target", active.target],
-      ];
-      let best: [DragKey, number] | null = null;
-      for (const row of rows) {
-        if (Math.abs(row[1] - price) > near) continue;
-        if (best === null || Math.abs(row[1] - price) < Math.abs(best[1] - price)) best = row;
-      }
-      if (best === null) return;
-      held.current = best[0];
-      made.applyOptions({ handleScroll: false, handleScale: false });
-      event.preventDefault();
-    };
-    const moveTo = (event: MouseEvent) => {
-      if (held.current === null) return;
-      const price = priceAt(event);
-      if (price !== null) onDrag(held.current, price);
-    };
-    const up = () => {
-      if (held.current === null) return;
-      held.current = null;
-      made.applyOptions({ handleScroll: true, handleScale: true });
-    };
-    box.addEventListener("mousedown", down);
-    window.addEventListener("mousemove", moveTo);
-    window.addEventListener("mouseup", up);
-    return () => {
-      box.removeEventListener("mousedown", down);
-      window.removeEventListener("mousemove", moveTo);
-      window.removeEventListener("mouseup", up);
-      made.applyOptions({ handleScroll: true, handleScale: true });
-    };
-  }, [active, onDrag]);
 
   // ── 보이는 범위 ──
   useEffect(() => {
@@ -326,7 +385,7 @@ export function GradingChart({
   const shown = legend(overlaySeries);
   return (
     <div>
-      <div ref={holder} style={{ width: "100%", height, cursor: placing ? "crosshair" : "default" }} />
+      <div ref={holder} style={{ width: "100%", height, cursor: placing ? "crosshair" : active ? "move" : "default" }} />
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-blue-gray-500 dark:text-blue-gray-300">
         {shown.map((s) => (
           <span key={s.label} className="inline-flex items-center gap-1">
@@ -334,7 +393,9 @@ export function GradingChart({
             {s.label}
           </span>
         ))}
-        <span className="text-blue-gray-400">· 지표는 보이는 봉(만드는 중 봉 포함)으로 계산 = 라이브 밴드</span>
+        <span className="text-blue-gray-400">
+          · ▲▼ 진입 · 선 = 진입→청산(초록 승 · 빨강 패 · 점선 = 아직 열림) · ● 청산 · 지표는 보이는 봉으로 계산(라이브 밴드)
+        </span>
       </div>
     </div>
   );

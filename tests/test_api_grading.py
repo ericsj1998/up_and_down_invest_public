@@ -14,7 +14,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
 
-from updown.apps.api.grading import ENV_DIRS, list_runs, marks_path, router, trade_rows
+from updown.apps.api.grading import (
+    ENV_DIRS,
+    list_runs,
+    marks_path,
+    router,
+    summarize,
+    trade_rows,
+)
 from updown.common import paths
 
 RESULT: dict[str, Any] = {
@@ -175,6 +182,30 @@ def test_marks_roundtrip_and_filtering(root: Path, client: TestClient) -> None:
         marks_path("run1.json", "base", "KRW-BTC")
         == root / "grading" / "marks" / "run1__base__KRW-BTC.json"
     )
+
+
+def test_summarize_counts_stops_and_mdd() -> None:
+    rows = trade_rows(RESULT, "base", None)
+    assert [r["symbol"] for r in rows] == ["KRW-BTC", "KRW-ETH"]  # 진입 시각이 같으면 원래 순서
+    got = summarize(rows)
+    assert got["n"] == 2
+    assert got["net_sum"] == pytest.approx(0.8)  # pyright: ignore[reportUnknownMemberType]
+    assert got["win_rate"] == 50.0
+    assert got["exits"] == {"breakout": 1, "opp_band": 1}
+    assert got["stops"] == 0
+    # 청산 순: ETH(-1.1) 먼저 → 낙폭 1.1, 그 뒤 BTC(+1.9) 로 회복
+    assert got["mdd"] == pytest.approx(1.1)  # pyright: ignore[reportUnknownMemberType]
+    assert got["worst"] == pytest.approx(-1.1)  # pyright: ignore[reportUnknownMemberType]
+    assert summarize([])["n"] == 0
+
+
+@pytest.mark.usefixtures("root")
+def test_trades_endpoint_carries_summary(client: TestClient) -> None:
+    body = body_of(
+        fetch(client, "/admin/grading/trades", file="run1.json", config="base", symbol="KRW-BTC")
+    )
+    assert body["summary"]["config"]["n"] == 2
+    assert body["summary"]["symbol"]["n"] == 1
 
 
 def test_candles_rejects_unknown_market_and_bad_range(client: TestClient) -> None:

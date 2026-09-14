@@ -18,6 +18,7 @@ import {
   EMPTY_MARKS,
   exportPayload,
   gradeSummary,
+  movePosition,
   newPosition,
   nextCursor,
   rewardRisk,
@@ -27,6 +28,7 @@ import {
   type Grade,
   type GradingTrade,
   type Marks,
+  type Summary,
   type UserPosition,
 } from "./grading";
 import { GradingChart, type DragKey } from "./GradingChart";
@@ -76,6 +78,9 @@ export function GradingPage({ who }: { who: Who | null }) {
 
   const [specs, setSpecs] = useState<IndicatorSpec[]>(SPECS);
   const [focusId, setFocusId] = useState<string | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [summary, setSummary] = useState<{ config: Summary; symbol: Summary } | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLTableRowElement>());
   const [activeId, setActiveId] = useState<string | null>(null);
   const [placing, setPlacing] = useState<1 | -1 | null>(null);
   const [lookAt, setLookAt] = useState<{ from: number; to: number } | null>(null);
@@ -126,6 +131,7 @@ export function GradingPage({ who }: { who: Who | null }) {
     try {
       const got = await gradingTrades(file, config, symbol);
       setAllTrades(got.trades);
+      setSummary(got.summary);
       setMarket(got.market);
       const saved = await gradingMarks(file, config, symbol);
       setMarks(saved);
@@ -261,6 +267,23 @@ export function GradingPage({ who }: { who: Who | null }) {
     [activeId],
   );
 
+  const move = useCallback(
+    (dPrice: number, dTime: number) => {
+      setMarks((m) => ({
+        ...m,
+        positions: m.positions.map((p) => (p.id === activeId ? movePosition(p, dPrice, dTime, step) : p)),
+      }));
+      setDirty(true);
+    },
+    [activeId, step],
+  );
+
+  // 차트에서 마우스를 올린 매매 → 표의 그 행으로.
+  const hover = useCallback((id: string | null) => {
+    setHoverId(id);
+    if (id !== null) rowRefs.current.get(id)?.scrollIntoView({ block: "nearest" });
+  }, []);
+
   const patchActive = (patch: Partial<UserPosition>) => {
     setMarks((m) => ({ ...m, positions: m.positions.map((p) => (p.id === activeId ? { ...p, ...patch } : p)) }));
     setDirty(true);
@@ -284,7 +307,7 @@ export function GradingPage({ who }: { who: Who | null }) {
   };
 
   const active = marks.positions.find((p) => p.id === activeId) ?? null;
-  const summary = gradeSummary(trades, marks.grades);
+  const gradeRows = gradeSummary(trades, marks.grades);
 
   if (!who?.may_admin) {
     return <p className="faint p-4">관리자만 쓰는 dev 화면이다.</p>;
@@ -355,6 +378,29 @@ export function GradingPage({ who }: { who: Who | null }) {
       </div>
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
       {subNote ? <p className="faint text-sm">{subNote}</p> : null}
+      {summary ? (
+        <div className="flex flex-wrap gap-x-6 gap-y-1 rounded border px-2 py-1 text-xs">
+          {(
+            [
+              ["이 설정 전체(전 종목)", summary.config],
+              [`이 종목 ${symbol}`, summary.symbol],
+            ] as const
+          ).map(([name, s]) => (
+            <span key={name} className="inline-flex flex-wrap items-center gap-x-3">
+              <span className="font-semibold">{name}</span>
+              <span>매매 {s.n}</span>
+              <span className={s.net_sum >= 0 ? "text-green-700" : "text-red-600"}>총 손익 {s.net_sum >= 0 ? "+" : ""}{s.net_sum.toFixed(1)}%</span>
+              <span>평균 {s.avg_net >= 0 ? "+" : ""}{s.avg_net.toFixed(3)}%</span>
+              <span>승률 {s.win_rate.toFixed(0)}%</span>
+              <span>손절 {s.stops}</span>
+              <span>청산 {Object.entries(s.exits).map(([k, v]) => `${k} ${v}`).join(" · ") || "—"}</span>
+              <span>MDD {s.mdd.toFixed(1)}%p</span>
+              <span>최악 {s.worst.toFixed(2)}%</span>
+            </span>
+          ))}
+          <span className="faint">명목 1배 · 단리 합 · 비용 뒤. 배율 계좌 경로는 측정 문서의 portfolio 표</span>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="faint">지표</span>
@@ -421,11 +467,14 @@ export function GradingPage({ who }: { who: Who | null }) {
         specs={specs}
         trades={shownTrades}
         focusId={focusId}
+        hoverId={hoverId}
+        onHover={hover}
         positions={marks.positions}
         activeId={activeId}
         placing={placing !== null}
         onPlace={place}
         onDrag={drag}
+        onMove={move}
         onPick={setActiveId}
         lookAt={lookAt}
         follow={playing}
@@ -472,7 +521,7 @@ export function GradingPage({ who }: { who: Who | null }) {
       ) : null}
 
       <div className="flex flex-wrap gap-4 text-xs">
-        {summary.map((s) => (
+        {gradeRows.map((s) => (
           <span key={s.kind} className="faint">
             {s.kind}: O {s.o} · X {s.x} · 미채점 {s.none}
           </span>
@@ -503,7 +552,11 @@ export function GradingPage({ who }: { who: Who | null }) {
               return (
                 <tr
                   key={t.id}
-                  className={`cursor-pointer border-t ${focusId === t.id ? "bg-amber-50 dark:bg-blue-gray-800" : ""} ${hidden ? "opacity-40" : ""}`}
+                  ref={(el) => {
+                    if (el) rowRefs.current.set(t.id, el);
+                    else rowRefs.current.delete(t.id);
+                  }}
+                  className={`cursor-pointer border-t ${focusId === t.id ? "bg-amber-50 dark:bg-blue-gray-800" : hoverId === t.id ? "bg-blue-gray-50 dark:bg-blue-gray-800/60" : ""} ${hidden ? "opacity-40" : ""}`}
                   onClick={() => {
                     setFocusId(t.id);
                     setLookAt({ from: t.opened_ts - 40 * step, to: t.closed_ts + 20 * step });

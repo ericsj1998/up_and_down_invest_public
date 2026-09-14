@@ -175,13 +175,60 @@ def _run_of(payload: dict[str, Any], config: str) -> dict[str, Any]:
     raise HTTPException(404, f"설정이 없다: {config}")
 
 
-def trade_rows(payload: dict[str, Any], config: str, symbol: str) -> list[dict[str, Any]]:
-    """설정 하나 · 종목 하나의 매매를 화면 모양으로.
+def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """매매 묶음의 요약 — 총 손익 · 승률 · 청산 사유별 수 · MDD (사용자 요구: 화면 상단).
+
+    Args:
+        rows: `trade_rows` 모양.
+
+    Returns:
+        `{n, net_sum, gross_sum, win_rate, avg_net, exits: {사유: 수}, stops, mdd, worst}`.
+        `net_sum` 은 순손익(%)의 합(명목 1배 · 단리), `mdd` 는 그 누적 곡선의 최대 낙폭(% 포인트),
+        `stops` 는 사유에 "stop" 이 든 청산 수(손절 + 본전 손절).
+    """
+    if not rows:
+        return {
+            "n": 0,
+            "net_sum": 0.0,
+            "gross_sum": 0.0,
+            "win_rate": 0.0,
+            "avg_net": 0.0,
+            "exits": {},
+            "stops": 0,
+            "mdd": 0.0,
+            "worst": 0.0,
+        }
+    ordered = sorted(rows, key=lambda r: (r["closed_ts"], r["opened_ts"]))
+    exits: dict[str, int] = {}
+    equity = peak = 0.0
+    mdd = 0.0
+    for r in ordered:
+        reason = str(r["reason"])
+        exits[reason] = exits.get(reason, 0) + 1
+        equity += float(r["pnl"])
+        peak = max(peak, equity)
+        mdd = max(mdd, peak - equity)
+    net = [float(r["pnl"]) for r in rows]
+    return {
+        "n": len(rows),
+        "net_sum": sum(net),
+        "gross_sum": sum(float(r["gross_pct"]) for r in rows),
+        "win_rate": sum(1 for x in net if x > 0) / len(rows) * 100,
+        "avg_net": sum(net) / len(rows),
+        "exits": exits,
+        "stops": sum(v for k, v in exits.items() if "stop" in k or k == "breakeven"),
+        "mdd": mdd,
+        "worst": min(net),
+    }
+
+
+def trade_rows(payload: dict[str, Any], config: str, symbol: str | None) -> list[dict[str, Any]]:
+    """설정 하나 · 종목 하나(또는 전부)의 매매를 화면 모양으로.
 
     Args:
         payload: 결과 JSON.
         config: 설정 이름.
-        symbol: 종목.
+        symbol: 종목. None 이면 전 종목.
 
     Returns:
         `{id, symbol, kind, side, entry, exit, stop, opened_ts, closed_ts, pnl, gross_pct, reason,
@@ -195,8 +242,9 @@ def trade_rows(payload: dict[str, Any], config: str, symbol: str) -> list[dict[s
     rows: list[dict[str, Any]] = []
     for index, raw in enumerate(_list(run.get("trades")) or []):
         tr = _dict(raw)
-        if tr is None or tr.get("symbol") != symbol:
+        if tr is None or (symbol is not None and tr.get("symbol") != symbol):
             continue
+        row_symbol = str(tr.get("symbol", ""))
         try:
             opened = datetime.fromisoformat(str(tr["entry_ts"]))
             closed = datetime.fromisoformat(str(tr["exit_ts"]))
@@ -207,8 +255,8 @@ def trade_rows(payload: dict[str, Any], config: str, symbol: str) -> list[dict[s
             continue
         rows.append(
             {
-                "id": f"{symbol}:{tr['entry_ts']}:{index}",
-                "symbol": symbol,
+                "id": f"{row_symbol}:{tr['entry_ts']}:{index}",
+                "symbol": row_symbol,
                 "kind": str(tr.get("kind", "")),
                 "side": side,
                 "entry": entry,
@@ -324,13 +372,19 @@ async def trades(file: str, config: str, symbol: str) -> dict[str, Any]:
     payload = _read_json(path)
     venue = str(payload.get("venue", "")).lower()
     market = VENUE_MARKET.get(venue)
+    rows = trade_rows(payload, config, symbol)
     return {
         "file": path.name,
         "config": config,
         "symbol": symbol,
         "venue": venue,
         "market": market.value if market is not None else None,
-        "trades": trade_rows(payload, config, symbol),
+        "trades": rows,
+        # ⭐ 상단 요약 — 설정 전체(전 종목)와 이 종목. 총 손익 · 승률 · 손절 · 청산 사유 · MDD.
+        "summary": {
+            "config": summarize(trade_rows(payload, config, None)),
+            "symbol": summarize(rows),
+        },
     }
 
 
@@ -442,5 +496,6 @@ __all__ = [
     "router",
     "run_summary",
     "save_marks",
+    "summarize",
     "trade_rows",
 ]

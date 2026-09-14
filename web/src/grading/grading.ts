@@ -31,6 +31,31 @@ export interface GradingTrade {
 
 export type Grade = "O" | "X";
 
+/** 서버 요약(`summarize`) — 설정 전체와 이 종목. */
+export interface Summary {
+  n: number;
+  net_sum: number;
+  gross_sum: number;
+  win_rate: number;
+  avg_net: number;
+  exits: Record<string, number>;
+  stops: number;
+  mdd: number;
+  worst: number;
+}
+
+/** 다리·방향 짧은 꼬리표 — `TL` 추종 롱 · `RS` 반전 숏 (그림 스크립트와 같은 표기). */
+export function tag(kind: string, side: 1 | -1): string {
+  const k = kind === "trend" ? "T" : kind === "fade" ? "R" : kind === "impulse" ? "I" : "?";
+  return `${k}${side === 1 ? "L" : "S"}`;
+}
+
+/** 시각·가격을 옮긴 포지션 — 봉 간격 단위로 시간을 맞춘다. */
+export function movePosition(p: UserPosition, dPrice: number, dTime: number, step: number): UserPosition {
+  const dt = Math.round(dTime / step) * step;
+  return { ...p, entry: p.entry + dPrice, stop: p.stop + dPrice, target: p.target + dPrice, from: p.from + dt, to: p.to + dt };
+}
+
 /** 사람이 그린 포지션 — 진입선 가운데 · 손절까지 붉게 · 목표까지 초록. */
 export interface UserPosition {
   id: string;

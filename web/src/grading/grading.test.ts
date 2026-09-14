@@ -4,11 +4,13 @@ import {
   aggregate,
   exportPayload,
   gradeSummary,
+  movePosition,
   newPosition,
   nextCursor,
   positionZones,
   rewardRisk,
   startCursor,
+  tag,
   toMark,
   visibleBars,
   visibleTrades,
@@ -114,6 +116,19 @@ describe("positions", () => {
     const s = newPosition(-1, 100, 0, H, "p2");
     expect(s.stop).toBe(101);
     expect(s.target).toBe(98);
+  });
+});
+
+describe("tag · move", () => {
+  it("꼬리표와 옮기기(시간은 봉 단위로 맞춤)", () => {
+    expect(tag("trend", 1)).toBe("TL");
+    expect(tag("fade", -1)).toBe("RS");
+    const p = newPosition(1, 100, H, H, "p");
+    const moved = movePosition(p, 2, 1.4 * H, H);
+    expect(moved.entry).toBe(102);
+    expect(moved.stop).toBe(101);
+    expect(moved.from).toBe(2 * H);
+    expect(moved.to).toBe(p.to + H);
   });
 });
 

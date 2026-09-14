@@ -3,7 +3,7 @@
  */
 import { request } from "../api";
 import type { Ohlc } from "../chart/indicators";
-import type { GradingTrade, Marks } from "./grading";
+import type { GradingTrade, Marks, Summary } from "./grading";
 
 export interface RunSummary {
   file: string;
@@ -23,7 +23,15 @@ export function gradingTrades(
   file: string,
   config: string,
   symbol: string,
-): Promise<{ file: string; config: string; symbol: string; venue: string; market: string | null; trades: GradingTrade[] }> {
+): Promise<{
+  file: string;
+  config: string;
+  symbol: string;
+  venue: string;
+  market: string | null;
+  trades: GradingTrade[];
+  summary: { config: Summary; symbol: Summary };
+}> {
   const q = new URLSearchParams({ file, config, symbol });
   return request(`/admin/grading/trades?${q.toString()}`);
 }
