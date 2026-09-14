@@ -176,6 +176,17 @@ export function nextCursor(subs: readonly Ohlc[], bars: readonly Ohlc[], cursor:
   return (bars[j]?.time ?? cursor + step);
 }
 
+/** 이전 커서 — 하위 봉이 있으면 이전 하위 봉, 없으면 이전 기준봉. 처음이면 null (사용자: 역으로 가는 것도). */
+export function prevCursor(subs: readonly Ohlc[], bars: readonly Ohlc[], cursor: number): number | null {
+  const pool = subs.length > 0 ? subs : bars;
+  let found: number | null = null;
+  for (const b of pool) {
+    if (b.time >= cursor) break;
+    found = b.time;
+  }
+  return found;
+}
+
 /** 새 수기 포지션 — 클릭한 가격이 진입, 손절·목표는 1%·2% 로 시작(끌어서 고친다). 기간은 기준봉 24개. */
 export function newPosition(side: 1 | -1, entry: number, at: number, step: number, id: string): UserPosition {
   const risk = entry * 0.01;

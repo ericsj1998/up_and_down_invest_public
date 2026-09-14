@@ -21,6 +21,7 @@ import {
   movePosition,
   newPosition,
   nextCursor,
+  prevCursor,
   rewardRisk,
   startCursor,
   visibleBars,
@@ -194,13 +195,15 @@ export function GradingPage({ who }: { who: Who | null }) {
   const shownTrades = useMemo(() => visibleTrades(trades, cursor, subStep), [trades, cursor, subStep]);
 
   // 재생 틱
+  // 방향: +1 앞으로 · -1 뒤로 (사용자: 역으로 가는 것도)
+  const [direction, setDirection] = useState<1 | -1>(1);
   const tick = useRef<number | null>(null);
   useEffect(() => {
     if (!playing || cursor === null) return;
     tick.current = window.setInterval(() => {
       setCursor((now) => {
         if (now === null) return now;
-        const next = nextCursor(subs, bars, now, step);
+        const next = direction === 1 ? nextCursor(subs, bars, now, step) : prevCursor(subs, bars, now);
         if (next === null) setPlaying(false);
         return next ?? now;
       });
@@ -208,16 +211,20 @@ export function GradingPage({ who }: { who: Who | null }) {
     return () => {
       if (tick.current !== null) window.clearInterval(tick.current);
     };
-  }, [playing, speed, subs, bars, step, cursor === null]);
+  }, [playing, speed, direction, subs, bars, step, cursor === null]);
 
   const startReplay = () => {
     const at = startCursor(bars, subs, WARM, step);
     if (at === null) return;
     setCursor(at);
+    setDirection(1);
     setPlaying(true);
   };
-  const stepOnce = () => {
-    setCursor((now) => (now === null ? startCursor(bars, subs, WARM, step) : (nextCursor(subs, bars, now, step) ?? now)));
+  const stepOnce = (dir: 1 | -1) => {
+    setCursor((now) => {
+      if (now === null) return startCursor(bars, subs, WARM, step);
+      return (dir === 1 ? nextCursor(subs, bars, now, step) : prevCursor(subs, bars, now)) ?? now;
+    });
   };
 
   // 저장 (2초 뒤 · 바뀌었을 때만)
@@ -430,11 +437,33 @@ export function GradingPage({ who }: { who: Who | null }) {
           </button>
         ) : (
           <>
-            <button type="button" className="btn" onClick={() => setPlaying((p) => !p)}>
-              {playing ? "멈춤" : "계속"}
+            <button type="button" className="btn" onClick={() => stepOnce(-1)} title="한 칸 뒤로">
+              ◀ 한 칸
             </button>
-            <button type="button" className="btn" onClick={stepOnce}>
-              한 칸
+            <button
+              type="button"
+              className={`btn ${playing && direction === -1 ? "font-bold" : ""}`}
+              onClick={() => {
+                setDirection(-1);
+                setPlaying((p) => !(p && direction === -1));
+              }}
+              title="역재생"
+            >
+              {playing && direction === -1 ? "멈춤" : "◀◀ 역재생"}
+            </button>
+            <button
+              type="button"
+              className={`btn ${playing && direction === 1 ? "font-bold" : ""}`}
+              onClick={() => {
+                setDirection(1);
+                setPlaying((p) => !(p && direction === 1));
+              }}
+              title="재생"
+            >
+              {playing && direction === 1 ? "멈춤" : "재생 ▶▶"}
+            </button>
+            <button type="button" className="btn" onClick={() => stepOnce(1)} title="한 칸 앞으로">
+              한 칸 ▶
             </button>
             <button
               type="button"

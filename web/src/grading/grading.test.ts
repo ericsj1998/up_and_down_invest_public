@@ -8,6 +8,7 @@ import {
   newPosition,
   nextCursor,
   positionZones,
+  prevCursor,
   rewardRisk,
   startCursor,
   tag,
@@ -99,6 +100,9 @@ describe("cursor", () => {
     expect(nextCursor(subs, bars, 2 * H, H)).toBe(2 * H + Q);
     expect(nextCursor(subs, bars, 11 * Q, H)).toBeNull();
     expect(nextCursor([], bars, 0, H)).toBe(H);
+    expect(prevCursor(subs, bars, 2 * H)).toBe(2 * H - Q);
+    expect(prevCursor(subs, bars, 0)).toBeNull();
+    expect(prevCursor([], bars, 2 * H)).toBe(H);
   });
 });
 
