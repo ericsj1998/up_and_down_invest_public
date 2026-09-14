@@ -50,6 +50,7 @@ from updown.apps.api.exchange import router as exchange_router
 from updown.apps.api.fundamentals import attach_fundamentals, attach_quick_cache
 from updown.apps.api.fundamentals import router as fundamentals_router
 from updown.apps.api.gates import router as gates_router
+from updown.apps.api.grading import router as grading_router
 from updown.apps.api.health import (
     DependencyStatus,
     HealthReport,
@@ -454,6 +455,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     # ⭐ 거시 지표(T262) — VIX·선물·환율·금리·물가. 시장 공개 값이라 읽기 권한.
     app.include_router(macro_router)
     app.include_router(calendar_router)  # T276 주요 일정 달력 — 예정일만, 방향 없음
+    # ⭐ 차트 채점(dev · T281) — 연구 결과 JSON 을 차트에 놓고 O/X·수기 포지션. 관리자만.
+    app.include_router(grading_router)
     # ⭐ 온보딩 위저드(T247) — 초안은 계정 저장소, 생성은 펀드 API 를 그대로 부른다.
     app.include_router(assistant_router)
     # ⭐ AI 채팅(T248) — 작업 레지스트리 + `/ai/jobs/{id}/events` SSE 를 그대로 쓴다.
