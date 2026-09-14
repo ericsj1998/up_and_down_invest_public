@@ -39,6 +39,10 @@ guard-env:
 	@test -f $(ENV_FILE) || { \
 		echo "ERROR: $(ENV_FILE) 가 없다. .env.example 을 복사해 값을 채운다."; exit 1; }
 
+# ⭐ Docker Desktop 이 꺼져 있으면 켜고 기다린다 (2026-09-14) — up · rebuild 가 먼저 거친다. 사람이 켜 주던 일.
+ensure-docker: ## Docker Desktop 이 꺼져 있으면 켜고 데몬이 답할 때까지 기다린다
+	@bash scripts/ops/docker_ensure.sh
+
 # ── 개발 스택 ────────────────────────────────────────────
 # ⚠️ **운영 경로가 아니다** (2026-08-20). 여기서 뜨는 vite(5173)는 즉시 반영이 되는 대신
 #    Ctrl-C 로 죽고 **아무도 되살리지 않는다.** 판을 돌려 둘 때는 `make up` 이다.
@@ -51,7 +55,7 @@ dev: guard-env ## 개발용 화면(vite 5173) — 즉시 반영. 운영은 make 
 # ── 컨테이너 ─────────────────────────────────────────────
 # ⭐ **여기가 운영 경로다** — 화면·API·엔진·DB 가 전부 컨테이너로 뜨고, 무엇이 죽든
 #    `restart: unless-stopped` 가 데려온다. `make dev` 는 개발 편의(vite 즉시 반영)다.
-up: guard-env ## 전체 기동 — 화면·API·엔진·DB (healthy 까지 대기)
+up: guard-env ensure-docker ## 전체 기동 — 화면·API·엔진·DB (healthy 까지 대기)
 	$(COMPOSE) up -d --wait
 
 # 🔴 **`up` 은 이미지를 다시 안 만든다.** 소스를 고쳤으면 이쪽이다 — 안 그러면 옛
@@ -59,7 +63,7 @@ up: guard-env ## 전체 기동 — 화면·API·엔진·DB (healthy 까지 대�
 #
 # ⚠️ 파이썬(api·engine)은 `dev` 에서 `src/` 를 마운트하므로 다시 안 만들어도 되지만,
 #    **화면은 이미지 안에서 빌드**하므로 반드시 여기를 거쳐야 바뀐다.
-rebuild: guard-env ## 이미지를 다시 만들고 기동 (화면을 고쳤으면 이것)
+rebuild: guard-env ensure-docker ## 이미지를 다시 만들고 기동 (화면을 고쳤으면 이것)
 	$(COMPOSE) up -d --build --wait
 
 down: guard-env ## 컨테이너 정지 (볼륨은 보존한다 — `-v` 를 절대 넣지 않는다)

@@ -49,6 +49,10 @@ bash scripts/deploy/ship.sh                 # main 에서만 · 태그 = v<버�
 
 되돌리기: `IMAGE_TAG=<이전 태그> ENV=live bash scripts/deploy/bluegreen.sh` (서버에서 · 이미지는 남아 있다).
 
+⭐ **Docker Desktop 이 꺼져 있으면 `make up`·`make rebuild` 가 먼저 켠다** (`scripts/ops/docker_ensure.sh` · 2026-09-14). WSL 에서
+Windows 실행 파일을 띄우고 `docker info` 가 "Server Version" 을 찍을 때까지 최대 180초 기다린다 — 사람이 켜 주던 일이다.
+`ship.sh` 는 여전히 `docker info` 로만 본다(배포는 사람이 지켜보는 자리라 자동으로 켜지 않는다).
+
 백테스트는 서버가 아니라 연구 PC 에서 돈다 — [backtest_guide.md](backtest_guide.md). 매매법을 새로 쓰는 법은 [strategy_authoring.md](strategy_authoring.md).
 
 ## 2. 서버에 명령을 보내는 법 — **파일로**
