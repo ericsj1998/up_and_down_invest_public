@@ -57,4 +57,18 @@ def stored_quotes(
     return StoredCandles(adapter, _candles, calendar=load_calendar() if regular_only else None)
 
 
-__all__ = ["attach_candles", "stored_quotes"]
+def candle_store() -> CandleRepository | None:
+    """붙어 있는 봉 저장소 — DB **만** 읽어야 하는 곳(차트 채점 · T281)이 쓴다.
+
+    Returns:
+        저장소. 기동 전·시험이면 None.
+
+    Note:
+        `stored_quotes` 는 빈 구간을 브로커에서 받는다 — 연구 결과를 차트에 놓는 채점 화면은 연구가
+        읽은 봉 그대로여야 하고, Gate 는 오래된 15m 을 주지 못해(`GateHistoryTooOldError`) 브로커로
+        가면 500 이 났다 (2026-09-14 실측).
+    """
+    return _candles
+
+
+__all__ = ["attach_candles", "candle_store", "stored_quotes"]

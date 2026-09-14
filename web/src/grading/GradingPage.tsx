@@ -63,6 +63,7 @@ export function GradingPage({ who }: { who: Who | null }) {
   const [days, setDays] = useState(12);
   const [anchor, setAnchor] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const [subNote, setSubNote] = useState("");
   const [busy, setBusy] = useState(false);
 
   const [market, setMarket] = useState<string | null>(null);
@@ -152,14 +153,22 @@ export function GradingPage({ who }: { who: Who | null }) {
     let alive = true;
     const from = windowRange.from - WARM * step;
     setBusy(true);
-    Promise.all([
-      gradingCandles(market, symbol, timeframe, from, windowRange.to),
-      subTf ? gradingCandles(market, symbol, subTf, from, windowRange.to) : Promise.resolve(null),
-    ])
-      .then(([main, lower]) => {
+    // 하위 봉은 없어도 된다(그때 재생은 기준봉 단위) — 그 실패가 기준봉까지 막지 않게 따로 받는다.
+    const lower = subTf
+      ? gradingCandles(market, symbol, subTf, from, windowRange.to).catch((exc: unknown) => {
+          setSubNote(`하위 봉(${subTf}) 없음 — 재생은 ${timeframe} 단위: ${String(exc).slice(0, 120)}`);
+          return null;
+        })
+      : Promise.resolve(null);
+    Promise.all([gradingCandles(market, symbol, timeframe, from, windowRange.to), lower])
+      .then(([main, sub]) => {
         if (!alive) return;
         setBars(main.candles.map((c) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
-        setSubs(lower ? lower.candles.map((c) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })) : []);
+        const subRows = sub ? sub.candles : [];
+        setSubs(subRows.map((c) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
+        if (sub && subRows.length === 0) setSubNote(`하위 봉(${subTf}) 적재가 없다 — 재생은 ${timeframe} 단위`);
+        else if (sub) setSubNote("");
+        if (main.candles.length === 0) setError(`${symbol} ${timeframe} 봉이 이 구간에 적재돼 있지 않다 — 창 기준 시각을 옮긴다`);
         setLookAt({ from: windowRange.from, to: windowRange.to });
       })
       .catch((exc: unknown) => alive && setError(String(exc)))
@@ -345,6 +354,7 @@ export function GradingPage({ who }: { who: Who | null }) {
         </span>
       </div>
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {subNote ? <p className="faint text-sm">{subNote}</p> : null}
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="faint">지표</span>

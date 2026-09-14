@@ -26,10 +26,10 @@ from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Body, HTTPException
 
-from updown.apps.api.quotes import stored_quotes
+from updown.apps.api.quotes import candle_store
 from updown.common import paths
 from updown.common.domain.instrument import Market, Timeframe
-from updown.marketdata.provider import MarketDataProvider
+from updown.marketdata.ingest.repository import InstrumentNotFoundError
 
 router = APIRouter(prefix="/admin/grading", tags=["grading"])
 
@@ -336,7 +336,7 @@ async def trades(file: str, config: str, symbol: str) -> dict[str, Any]:
 
 @router.get("/candles")
 async def candles(market: str, symbol: str, timeframe: str, start: int, end: int) -> dict[str, Any]:
-    """구간의 봉 — DB 를 먼저 보고 빈 곳만 브로커에서(`stored_quotes`).
+    """구간의 봉 — **DB 만** 읽는다 (연구가 읽은 봉 그대로 · 브로커에 가지 않는다).
 
     Args:
         market: 시장 이름(`Market`).
@@ -347,10 +347,16 @@ async def candles(market: str, symbol: str, timeframe: str, start: int, end: int
 
     Returns:
         `{market, symbol, timeframe, candles: [{time, open, high, low, close, volume}]}`
-        — 숫자 그대로.
+        — 숫자 그대로. 적재가 없는 구간은 빈 배열(화면이 "없다" 로 그린다).
 
     Raises:
-        HTTPException: 400 — 시장·간격이 아니거나 봉이 상한을 넘는다.
+        HTTPException: 400 — 시장·간격이 아니거나 봉이 상한을 넘는다. 404 — 적재된 적 없는
+            종목. 503 — 봉 저장소가 안 붙어 있다.
+
+    Note:
+        `stored_quotes` 로 가면 빈 구간을 브로커에서 받는데, Gate 는 오래된 15m 을 못 줘
+        `GateHistoryTooOldError` 로 500 이 났다 (2026-09-14 실측). 채점은 연구 자료 위의 일이라
+        DB 에 없는 봉은 없는 채로 보여 주는 것이 맞다.
     """
     try:
         chosen_market = Market(market.upper())
@@ -359,16 +365,20 @@ async def candles(market: str, symbol: str, timeframe: str, start: int, end: int
         raise HTTPException(400, f"시장·간격을 모른다: {market} {timeframe}") from exc
     if end <= start:
         raise HTTPException(400, "end 는 start 뒤여야 한다")
-    from updown.apps.api.admin import instrument_of
-
-    instrument = instrument_of(symbol, chosen_market)
-    async with MarketDataProvider() as provider:
-        rows = await stored_quotes(provider, chosen_market).get_candles(
-            instrument,
-            chosen_tf,
-            datetime.fromtimestamp(start, tz=UTC),
-            datetime.fromtimestamp(end, tz=UTC),
-        )
+    store = candle_store()
+    if store is None:
+        raise HTTPException(503, "봉 저장소가 안 붙어 있다 — API 기동 뒤에 부른다")
+    try:
+        instrument_id, instrument = await store.resolve_instrument(chosen_market, symbol)
+    except InstrumentNotFoundError as exc:
+        raise HTTPException(404, f"{chosen_market.value} {symbol}: 적재된 종목이 아니다") from exc
+    rows = await store.fetch_candles(
+        instrument,
+        instrument_id,
+        chosen_tf,
+        datetime.fromtimestamp(start, tz=UTC),
+        datetime.fromtimestamp(end, tz=UTC),
+    )
     if len(rows) > MAX_CANDLES:
         raise HTTPException(400, f"봉이 {len(rows)}개다 — 창을 줄인다 (상한 {MAX_CANDLES})")
     return {

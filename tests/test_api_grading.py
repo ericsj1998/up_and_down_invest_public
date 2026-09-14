@@ -202,3 +202,16 @@ def test_candles_rejects_unknown_market_and_bad_range(client: TestClient) -> Non
         ).status_code
         == 400
     )
+    # 저장소가 안 붙은 시험 앱 — 브로커로 가지 않고 503 으로 말한다.
+    assert (
+        fetch(
+            client,
+            "/admin/grading/candles",
+            market="UPBIT",
+            symbol="X",
+            timeframe="1h",
+            start=1,
+            end=2,
+        ).status_code
+        == 503
+    )
