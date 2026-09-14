@@ -380,7 +380,11 @@ export function GradingPage({ who }: { who: Who | null }) {
           JSON 내보내기
         </button>
         <span className="faint">
-          {dirs.length === 0 ? "결과 디렉터리가 없다 — UPDOWN_GRADING_DIRS 를 확인" : `저장 ${savedAt ? whenUtc(Date.parse(savedAt) / 1000) : "—"}${dirty ? " · 저장 대기" : ""}`}
+          {runs.length === 0 && dirs.length === 0 && !error
+            ? "결과 목록 읽는 중… (처음 한 번은 파일을 전부 훑어 오래 걸린다 · 그 뒤엔 색인)"
+            : dirs.length === 0
+              ? "결과 디렉터리가 없다 — UPDOWN_GRADING_DIRS 를 확인"
+              : `저장 ${savedAt ? whenUtc(Date.parse(savedAt) / 1000) : "—"}${dirty ? " · 저장 대기" : ""}${busy ? " · 읽는 중…" : ""}`}
         </span>
       </div>
       {error ? <p className="text-sm text-red-600">{error}</p> : null}

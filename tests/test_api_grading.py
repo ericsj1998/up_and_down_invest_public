@@ -17,6 +17,7 @@ from httpx import Response
 from updown.apps.api.grading import (
     ENV_DIRS,
     list_runs,
+    load_payload,
     marks_path,
     router,
     summarize,
@@ -106,6 +107,28 @@ def test_list_runs_skips_non_result_json(root: Path) -> None:
     assert [r["file"] for r in got] == ["run1.json"]
     assert got[0]["configs"] == [{"name": "base", "trades": 2}]
     assert got[0]["symbols"] == ["KRW-BTC"]
+
+
+def test_list_runs_index_skips_unchanged_files(root: Path) -> None:
+    index = root / "grading" / "index.json"
+    first = list_runs([root / "research"], index)
+    assert index.is_file()
+    written = json.loads(index.read_text(encoding="utf-8"))
+    assert len(written) == 2  # 결과 파일 + 결과 모양이 아닌 파일(요약 null)도 기억한다
+    assert [r["file"] for r in first] == ["run1.json"]
+    # 색인 요약에 표시를 남기면 파일이 그대로(mtime·size 같음)일 때 그 표시가 돌아온다 = 안 읽었다
+    key = str((root / "research" / "run1.json").resolve())
+    written[key]["summary"]["venue"] = "from-index"
+    index.write_text(json.dumps(written), encoding="utf-8")
+    again = list_runs([root / "research"], index)
+    assert again[0]["venue"] == "from-index"
+
+
+def test_load_payload_reuses_same_file(root: Path) -> None:
+    path = (root / "research" / "run1.json").resolve()
+    one = load_payload(path)
+    two = load_payload(path)
+    assert one is two
 
 
 def test_runs_endpoint_lists_existing_dirs_only(root: Path, client: TestClient) -> None:

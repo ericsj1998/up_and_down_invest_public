@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -132,25 +133,87 @@ def run_summary(path: Path, payload: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def list_runs(dirs: list[Path]) -> list[dict[str, Any]]:
+INDEX_FILE = "grading/index.json"
+"""결과 파일 요약 색인 — `{경로: {mtime, size, summary|null}}`. 결과 JSON 이 64개 · 1.7GB 라 매번 다
+파싱하면 첫 로딩이 13초를 넘었다(2026-09-14 실측). 같은 mtime·size 면 다시 읽지 않는다."""
+
+_PAYLOADS: dict[str, tuple[float, int, dict[str, Any]]] = {}
+"""최근 파싱한 결과 JSON — `{경로: (mtime, size, payload)}`. 설정·종목을 바꿀 때마다 300MB 를 다시
+읽지 않게 두 개까지 든다."""
+_PAYLOAD_KEEP = 2
+
+
+def _stamp(path: Path) -> tuple[float, int]:
+    st = path.stat()
+    return st.st_mtime, st.st_size
+
+
+def load_payload(path: Path) -> dict[str, Any]:
+    """결과 JSON 을 읽는다 — 같은 파일(mtime·size)이면 기억한 것을 준다.
+
+    Args:
+        path: 결과 파일.
+
+    Returns:
+        파싱된 JSON.
+    """
+    key = str(path)
+    mtime, size = _stamp(path)
+    held = _PAYLOADS.get(key)
+    if held is not None and held[0] == mtime and held[1] == size:
+        return held[2]
+    payload = _read_json(path)
+    if len(_PAYLOADS) >= _PAYLOAD_KEEP:
+        oldest = next(iter(_PAYLOADS))
+        del _PAYLOADS[oldest]
+    _PAYLOADS[key] = (mtime, size, payload)
+    return payload
+
+
+def _read_index(index_path: Path | None) -> dict[str, Any]:
+    if index_path is None or not index_path.is_file():
+        return {}
+    try:
+        return _dict(json.loads(index_path.read_text(encoding="utf-8"))) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def list_runs(dirs: list[Path], index_path: Path | None = None) -> list[dict[str, Any]]:
     """디렉터리들의 결과 JSON 요약 — 최신 파일 먼저.
 
     Args:
         dirs: 찾을 디렉터리.
+        index_path: 요약 색인 파일. 주면 같은 mtime·size 인 파일은 다시 읽지 않고, 훑은 결과를
+            써 둔다.
 
     Returns:
         `run_summary` 목록. 결과 모양이 아닌 JSON(예: 구간표)은 건너뛴다.
     """
+    index = _read_index(index_path)
+    fresh: dict[str, Any] = {}
     found: list[tuple[float, dict[str, Any]]] = []
     for base in dirs:
         for path in base.glob("*.json"):
-            try:
-                payload = _read_json(path)
-            except HTTPException:
-                continue
-            summary = run_summary(path, payload)
+            key = str(path)
+            mtime, size = _stamp(path)
+            known = _dict(index.get(key))
+            if known is not None and known.get("mtime") == mtime and known.get("size") == size:
+                summary = _dict(known.get("summary"))
+            else:
+                try:
+                    summary = run_summary(path, _read_json(path))
+                except HTTPException:
+                    summary = None
+            fresh[key] = {"mtime": mtime, "size": size, "summary": summary}
             if summary is not None:
-                found.append((path.stat().st_mtime, summary))
+                found.append((mtime, summary))
+    if index_path is not None and fresh != index:
+        try:
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            index_path.write_text(json.dumps(fresh, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass  # 색인은 편의다 — 못 써도 목록은 준다
     found.sort(key=lambda item: item[0], reverse=True)
     return [item[1] for item in found]
 
@@ -353,7 +416,9 @@ async def runs() -> dict[str, Any]:
         `{dirs, runs: [run_summary...]}`. `dirs` 가 비면 env 를 확인하라는 뜻이다.
     """
     dirs = research_dirs()
-    return {"dirs": [str(d) for d in dirs], "runs": list_runs(dirs)}
+    # ⚠️ 파싱은 스레드로 — 1.7GB 를 이벤트 루프에서 읽으면 다른 요청이 같이 멈춘다.
+    runs_found = await asyncio.to_thread(list_runs, dirs, paths.under(INDEX_FILE))
+    return {"dirs": [str(d) for d in dirs], "runs": runs_found}
 
 
 @router.get("/trades")
@@ -369,7 +434,7 @@ async def trades(file: str, config: str, symbol: str) -> dict[str, Any]:
         `{file, config, symbol, venue, market, trades: [...]}`.
     """
     path = _find_file(file)
-    payload = _read_json(path)
+    payload = await asyncio.to_thread(load_payload, path)
     venue = str(payload.get("venue", "")).lower()
     market = VENUE_MARKET.get(venue)
     rows = trade_rows(payload, config, symbol)
@@ -491,6 +556,7 @@ __all__ = [
     "ENV_DIRS",
     "list_runs",
     "load_marks",
+    "load_payload",
     "marks_path",
     "research_dirs",
     "router",
