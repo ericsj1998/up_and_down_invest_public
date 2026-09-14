@@ -405,15 +405,16 @@ export function GradingChart({
     const next: { id: string; x: number; y: number }[] = [];
     for (const p of positions) {
       const hi = Math.max(p.entry, p.stop, p.target);
-      const y = drawn.priceToCoordinate(hi);
-      let x = made.timeScale().timeToCoordinate(p.to as Time);
+      const yRaw = drawn.priceToCoordinate(hi);
+      const toX = made.timeScale().timeToCoordinate(p.to as Time);
+      const fromX = made.timeScale().timeToCoordinate(p.from as Time);
+      let x: number | null = toX === null ? null : Number(toX);
       if (x === null) {
-        const at = made.timeScale().timeToCoordinate(p.from as Time);
-        if (at === null) continue;
-        x = Math.min(width - 4, at + 60);
+        if (fromX === null) continue;
+        x = Math.min(width - 4, Number(fromX) + 60);
       }
-      if (y === null || x < 0 || x > width) continue;
-      next.push({ id: p.id, x: Math.min(width - 10, x), y: Math.max(2, y) });
+      if (yRaw === null || x < 0 || x > width) continue;
+      next.push({ id: p.id, x: Math.min(width - 10, x), y: Math.max(2, Number(yRaw)) });
     }
     setPins(next);
   }, [positions, bars, layout, ready]);
