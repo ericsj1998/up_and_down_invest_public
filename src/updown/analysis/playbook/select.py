@@ -247,6 +247,14 @@ def _load_file(target: Path) -> list[Playbook]:
                     hold_level=bool(body.get("hold_level", False)),
                     ratchet_boxes=bool(body.get("ratchet_boxes", False)),
                     trail_ma=(None if body.get("trail_ma") is None else int(body["trail_ma"])),
+                    trail_pad_atr=(
+                        None
+                        if body.get("trail_pad_atr") is None
+                        else Decimal(str(body["trail_pad_atr"]))
+                    ),
+                    trail_lookback=(
+                        None if body.get("trail_lookback") is None else int(body["trail_lookback"])
+                    ),
                     adx_exit_long=(
                         None if body.get("adx_exit_long") is None else int(body["adx_exit_long"])
                     ),

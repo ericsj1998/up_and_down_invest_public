@@ -1712,9 +1712,29 @@ class Session:
                 if state is not None:
                     swings = find_pivots(state.rows, self.playbook.timeframe)
                     kind = SwingKind.LOW if long else SwingKind.HIGH
-                    anchors = [item.price for item in swings if item.kind is kind]
+                    picks = [item for item in swings if item.kind is kind]
+                    # ⭐ T279 28차 C2 — 연구 엔진 `confirmed_swing_low(i, 10)` 과 같게: 마지막 N 봉
+                    #    안의 확정 스윙 중 가장 낮은 저점(롱)을 앵커로, 거기서 pad x ATR(직전 봉)
+                    #    만큼 뺀다. 둘 다 None 이면 T32 동결 동작(가장 최근 스윙 · 여유 없음)이다.
+                    if book.trail_lookback is not None:
+                        floor_index = len(state.rows) - 1 - book.trail_lookback
+                        picks = [item for item in picks if item.index >= floor_index]
+                    anchors = [item.price for item in picks]
                     if anchors:
-                        found = anchors[-1]
+                        if book.trail_lookback is not None:
+                            found = min(anchors) if long else max(anchors)
+                        else:
+                            found = anchors[-1]
+                        if book.trail_pad_atr is not None:
+                            spans = atr_series(
+                                [row.high for row in state.rows],
+                                [row.low for row in state.rows],
+                                [row.close for row in state.rows],
+                            )
+                            prior = spans[-2] if len(spans) >= 2 else None
+                            if prior is not None and prior > 0:
+                                pad = book.trail_pad_atr * prior
+                                found = found - pad if long else found + pad
                         better = found > held.planned_stop if long else found < held.planned_stop
                         safe = found < bar.close if long else found > bar.close
                         if better and safe:
