@@ -106,7 +106,12 @@ class LockConfig:
     renew_interval_seconds: float = DEFAULT_RENEW_INTERVAL_SECONDS
 
     def __post_init__(self) -> None:
-        """설정 불변식을 검증한다."""
+        """설정 불변식을 검증한다.
+
+        Raises:
+            LockConfigError: 키가 비었거나, TTL·갱신 주기가 0 이하이거나, 갱신 주기가
+                `ttl / MIN_RENEW_ATTEMPTS_PER_TTL` 을 넘는 경우 (클래스 docstring).
+        """
         if not self.key:
             raise LockConfigError("락 키가 비었다")
         if self.ttl_seconds <= 0 or self.renew_interval_seconds <= 0:

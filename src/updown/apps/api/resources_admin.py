@@ -61,6 +61,7 @@ async def _db_stats(factory: Any) -> dict[str, Any]:
 
 
 async def _redis_stats(redis: Any) -> dict[str, Any]:
+    """Redis 메모리 사용량. 못 읽으면 `error` 를 담는다 — 0 으로 꾸미지 않는다 (규칙 #8)."""
     try:
         info = await redis.info("memory")
         return {"used_memory": int(info.get("used_memory", 0)), "error": None}
@@ -69,6 +70,15 @@ async def _redis_stats(redis: Any) -> dict[str, Any]:
 
 
 async def _engine_snapshot(redis: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """엔진 자원 비트 — 다른 프로세스라 Redis 로만 본다. 없으면 이유를 문장으로 준다.
+
+    Args:
+        redis: 앱 상태의 Redis.
+
+    Returns:
+        `(스냅샷 + age_s, None)` 또는 `(None, 사유)`. 비트가 없는 것은 죽음·락 대기·dev 에서
+        안 띄움 중 무엇이든 "모른다" 이지 정상이 아니다 — 화면이 사유를 그대로 보여 준다.
+    """
     try:
         raw = await redis.get(ENGINE_KEY)
     except Exception as exc:

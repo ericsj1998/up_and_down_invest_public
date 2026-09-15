@@ -17,7 +17,8 @@
 - 지정가: 대기. 시세가 가격을 건드리면(매수 ≤ · 매도 ≥) **그 가격**에 체결.
 - 조건부 손절(`stops_for`): 시세가 트리거 이하로 내려오면 시장가로 전량 청산.
   갭으로 건너뛰면 트리거가 아니라 **지금 시세**에 체결된다 — 세션 `_gap_stop_fill` 과 같은 눈.
-- 수수료·거래세는 비용표(`fee_pct` · `tax_pct_sell`)로 뗀다. 결제 T+n 은 **모형화하지 않는다**
+- 수수료·거래세는 비용표(`taker_fee_pct` · 없으면 `fee_pct` · 매도에 `tax_pct_sell`)로 뗀다.
+  결제 T+n 은 **모형화하지 않는다**
   (T240 결정 · 체결 즉시 현금 · 실주문 전에 넣는다).
 
 ## 상태는 DB 에 산다
@@ -193,14 +194,24 @@ class _Book:
 
 
 def _now() -> float:
+    """체결·주문 시각 — 전송 계층의 벽시계다 (판정은 봉 시각을 쓴다 · 규칙 #5 무관)."""
     return time.time()
 
 
 def _text(value: Decimal) -> str:
+    """Decimal 을 지수 표기 없는 문자열로 — JSON 에 `1E+2` 가 남으면 콘솔·감사가 못 읽는다."""
     return format(value.normalize(), "f") if value else "0"
 
 
 def _book_from(raw: dict[str, Any]) -> _Book:
+    """저장된 JSON 을 계좌로 되살린다 (`_book_payload` 의 역).
+
+    Args:
+        raw: `StateStore.load` 가 돌려준 문서.
+
+    Returns:
+        계좌. 하위 컬렉션이 빠진 옛 문서도 빈 것으로 읽는다.
+    """
     book = _Book(
         market=str(raw["market"]),
         currency=str(raw["currency"]),
@@ -219,6 +230,15 @@ def _book_from(raw: dict[str, Any]) -> _Book:
 
 
 def _book_payload(book: _Book) -> dict[str, Any]:
+    """계좌를 저장 문서로 — 매 변경마다 통째로 쓰이므로 이력 꼬리를 자른다.
+
+    Args:
+        book: 계좌.
+
+    Returns:
+        JSON 직렬화 가능한 dict. `closes` 는 최근 200 · `ledger` 는 최근 400 만 남긴다 —
+        행 하나(JSONB)를 매번 다시 쓰기 때문에 무한히 자라면 저장이 느려진다.
+    """
     return {
         "market": book.market,
         "currency": book.currency,
@@ -525,7 +545,8 @@ class StockPaperAdapter:
 
         Note:
             러너는 판을 띄울 때 `get_balance().cash` 를 예산 상한으로 읽는다. 시장을
-            아직 하나도 안 만졌으면 능력표에 있는 첫 토스 시장(KRX)의 시작 현금이다.
+            아직 하나도 안 만졌으면 `_current_book` 의 기본 시장(`seed_cash` 의 첫 시장 ·
+            없으면 NASDAQ)의 시작 현금이다.
         """
         book = await self._current_book()
         await self._settle_all(book)
@@ -939,6 +960,19 @@ class StockPaperAdapter:
     # ------------------------------------------------------------------
 
     async def _book(self, market: Market) -> _Book:
+        """시장의 계좌 — 메모리에 없으면 저장소에서, 저장소에도 없으면 새로 연다.
+
+        Args:
+            market: 시장.
+
+        Returns:
+            계좌. 처음 열 때는 능력표의 결제 통화와 시작 현금으로 만들고 **즉시 저장**한다 —
+            개설 사실이 저장소에 남아야 다음 프로세스가 같은 계좌를 잇는다.
+
+        Note:
+            마지막으로 만진 시장을 기억해 `get_balance` 같은 시장 인자 없는 호출이 그 시장으로
+            답한다 (클래스 docstring — 어댑터 하나가 세 시장을 받는다).
+        """
         found = self._books.get(market)
         if found is not None:
             return found
@@ -961,11 +995,24 @@ class StockPaperAdapter:
     _last_market: Market | None = None
 
     async def _current_book(self) -> _Book:
+        """시장 인자가 없는 호출(잔고·장부)이 볼 계좌 — 마지막 시장, 없으면 기본 시장."""
         if self._last_market is not None:
             return await self._book(self._last_market)
         return await self._book(next(iter(self._seed)) if self._seed else Market.NASDAQ)
 
     def _seed_for(self, market: Market) -> Decimal:
+        """시장의 시작 현금 — 생성자 인자가 있으면 그것, 없으면 `config/markets.yml`.
+
+        Args:
+            market: 시장.
+
+        Returns:
+            시작 현금.
+
+        Raises:
+            StockPaperRejectedError: 생성자에 시장별 시작 현금을 넘겼는데 이 시장이 빠진 경우 —
+                설정으로 조용히 떨어지지 않는다 (규칙 #8).
+        """
         if self._seed is not None:
             found = self._seed.get(market)
             if found is None:
@@ -976,26 +1023,44 @@ class StockPaperAdapter:
         return paper_seed_cash(market)
 
     def _capabilities(self, market: Market) -> MarketCapabilities:
+        """능력표 — 시장당 한 번만 읽는다 (주문마다 YAML 을 열지 않는다)."""
         found = self._caps.get(market)
         if found is None:
             found = self._caps[market] = capabilities_of(market)
         return found
 
     def _cost(self, market: Market) -> MarketCosts:
+        """비용표 블록 — 시장당 한 번만 읽는다."""
         found = self._costs.get(market)
         if found is None:
             found = self._costs[market] = load_cost_table().for_market(market)
         return found
 
     async def _persist(self, book: _Book) -> None:
+        """계좌를 통째로 저장한다 — 상태를 바꾼 공개 메서드가 끝에서 한 번 부른다."""
         await self._store.save(Market(book.market), _book_payload(book))
 
     @staticmethod
     def _locked(book: _Book) -> Decimal:
+        """포지션에 묶인 돈 — 매입 원가 합 (배율 1 이라 증거금 = 원가)."""
         return sum((Decimal(p.entry) * p.size for p in book.positions.values()), Decimal(0))
 
     @staticmethod
     def _reserved(book: _Book) -> Decimal:
+        """대기 지정가 **매수**가 잡아 둔 현금 — 가용 현금은 `cash - 이 값` 이다.
+
+        Args:
+            book: 계좌.
+
+        Returns:
+            `open` 상태인 지정가 매수의 `가격 x 남은 수량` 합. 시장가는 즉시 체결돼 현금에서 이미
+            빠졌고, 매도는 현금을 쓰지 않으므로 세지 않는다.
+
+        Note:
+            상태가 `open` 인 동안만 잡힌다 — `_fill` 이 `finished` 로 바꾸는 순간 예약이 풀리고
+            실제 현금 차감이 그 자리를 대신한다. `submit_order` 는 새 주문을 장부에 넣은 **뒤**
+            이 값을 보므로, 가용 현금을 계산할 때 자기 몫(`need`)을 도로 더한다.
+        """
         return sum(
             (
                 Decimal(o.price or "0") * o.left
@@ -1006,6 +1071,7 @@ class StockPaperAdapter:
         )
 
     def _instrument_of(self, market: Market, symbol: str) -> Instrument:
+        """장부의 (시장, 종목 코드) 를 도메인 종목으로 — 저장 문서는 코드만 갖고 있다."""
         from updown.common.domain.instrument import AssetType
 
         currency = capabilities_of(market).quote_currency  # 능력표 (T269 #6)
@@ -1016,28 +1082,33 @@ class StockPaperAdapter:
     # ------------------------------------------------------------------
 
     async def _mark(self, instrument: Instrument) -> Quote:
+        """표시가 — `QUOTE_TTL_SECONDS` 캐시. 같은 초의 체결·감사·콘솔이 같은 값을 본다."""
         key = f"{instrument.market.value}:{instrument.symbol}"
         return await self._quote_cache.get_or_fetch(key, lambda: self._quotes.get_quote(instrument))
 
     async def _market_status(self, instrument: Instrument) -> MarketStatus | None:
+        """장 상태 — 조회 어댑터가 못 답하면(NotImplementedError) None 이라 폐장 검사를 건너뛴다."""
         try:
             return await self._quotes.get_market_status(instrument)
         except NotImplementedError:
             return None
 
     def _slipped(self, market: Market, mark: Decimal, *, buy: bool) -> Decimal:
+        """시장가 체결가 — 시세에 편도 슬리피지를 불리하게 얹고 호가 눈금으로 내린다."""
         slip = self._cost(market).slippage_pct_one_way
         raw = mark * (1 + slip) if buy else mark * (1 - slip)
         tick = self._tick(market, mark)
         return (raw / tick).quantize(Decimal(1), rounding=ROUND_DOWN) * tick
 
     def _tick(self, market: Market, price: Decimal) -> Decimal:
+        """이 가격대의 호가 눈금 — KRX 는 가격 구간별, 그 외는 비용표 `price_tick`."""
         from updown.common.costs import resolve_tick
 
         # T250 — 눈금의 단일 출처는 config/costs.yml(`price_tick` · NASDAQ 0.01).
         return resolve_tick(self._cost(market), "", price, krw=market is Market.KRX)
 
     async def _settle_all(self, book: _Book) -> None:
+        """계좌 전체 정산 — 대기 주문·조건부·포지션이 있는 종목만 시세를 본다 (잔고 조회 전)."""
         symbols = {o.symbol for o in book.orders.values() if o.status == "open"}
         symbols |= {s.symbol for s in book.stops.values()}
         symbols |= {p.symbol for p in book.positions.values() if p.size}
@@ -1098,6 +1169,39 @@ class StockPaperAdapter:
             await self._persist(book)
 
     def _fill(self, book: _Book, order: _Order, price: Decimal) -> None:
+        """주문 하나를 `price` 에 전량 체결한다 — 포지션·현금·장부·마감 손익을 한 번에 옮긴다.
+
+        Args:
+            book: 계좌. 메모리만 바꾼다 — 저장은 부르는 쪽이 `_persist` 로 한다.
+            order: 체결할 주문. 부분 체결은 없다 (모형 · 시세가 닿으면 전량).
+            price: 체결가. 슬리피지·눈금 처리는 부르는 쪽이 끝냈다 (`_slipped` 또는 지정가).
+
+        Raises:
+            StockPaperRejectedError: 보유보다 많이 파는 매도. 주식 현물은 롱 온리라(능력표
+                `short_allowed: false` · 규칙 #10) 어떤 경로로 와도 여기서 한 번 더 막는다 —
+                `submit_order` 만이 아니라 조건부 발동·`close_position` 도 이 함수를 지난다.
+
+        Note:
+            순서가 곧 정합성이다 — 바꾸면 값이 틀어진다.
+
+            1. **거절이 먼저**, 변경은 그 뒤. 매도 초과는 아무것도 바꾸기 전에 던지므로 예외 뒤의
+               계좌는 부르기 전과 같다 (반쪽 상태가 저장되지 않는다).
+            2. **포지션 → 현금 → 장부.** 평단은 `기존 평단 x 기존 수량 + 이번 대금` 을 새 수량으로
+               나눈 값이라 수량을 먼저 늘리면 평단이 틀린다. 정수 주 · 롱 온리(능력표) 전제라
+               FIFO 없이 평단 하나로 실현손익을 잰다.
+            3. **수수료는 편도 테이커**(`taker` · 없으면 `fee_pct`), 매도에는 `tax_pct_sell` 이
+               더해진다. 포지션 `fees` 에 매수·매도 몫을 누적해 마감 때 순손익을 만든다.
+            4. **장부 행은 Gate `account_book` 의 열쇠**(`type` = `fee` / `pnl`)를 따른다 —
+               `fee` 행은 매수·매도 모두, `pnl` 행은 매도만. 콘솔이 코인과 같은 렌즈로 읽는다.
+            5. **마감 행(`closes`)은 수량이 0 이 될 때만** — 부분 청산은 `pnl` 행으로만 남는다.
+               `pnl` = 실현손익 - 누적 수수료, `pnl_pnl`/`pnl_fee` 로 분해 (Gate `position_closes`
+               와 같은 모양). 그 뒤 포지션을 지우고 **그 종목의 조건부도 전부 지운다** — 팔 것이
+               없는 손절이 남아 있으면 다음 시세에 `_settle` 이 빈 매도를 만든다.
+            6. **주문 상태는 맨 끝에** `finished` 로. 지정가 매수의 예약금(`_reserved`)은 `open`
+               인 동안만 잡히므로, 현금 차감이 끝난 뒤 상태를 바꿔야 예약과 차감이 겹치지 않는다.
+
+            결제 T+n 은 모형화하지 않는다 — 체결 즉시 현금이다 (모듈 docstring · T240 결정).
+        """
         market = Market(book.market)
         costs = self._cost(market)
         notional = price * order.size
@@ -1168,6 +1272,17 @@ class StockPaperAdapter:
 
     @staticmethod
     def _ledger_row(kind: str, change: Decimal, order: _Order, now: float) -> dict[str, str]:
+        """장부 행 — Gate `account_book` 과 같은 열쇠(`type`·`change`·`time`·`text`·`contract`).
+
+        Args:
+            kind: `fee` 또는 `pnl`.
+            change: 현금 변화. 수수료는 음수로 넣는다.
+            order: 원인 주문 — 멱등키(`text`)와 종목이 여기서 온다.
+            now: 기록 시각 (epoch 초).
+
+        Returns:
+            문자열 값만 든 행 (JSON 저장 · 콘솔 표시 공용).
+        """
         return {
             "type": kind,
             "change": _text(change),
@@ -1178,6 +1293,15 @@ class StockPaperAdapter:
 
     @staticmethod
     def _order_row(row: _Order) -> dict[str, str]:
+        """주문을 Gate `open_orders`/`recent_orders` 의 행 모양으로.
+
+        Args:
+            row: 주문.
+
+        Returns:
+            문자열 행. `size`·`left` 는 Gate 처럼 **매도를 음수**로 적는다 — 러너·콘솔이 부호로
+            방향을 읽기 때문이다.
+        """
         return {
             "id": row.id,
             "size": str(row.size if row.side == "buy" else -row.size),
@@ -1194,6 +1318,14 @@ class StockPaperAdapter:
 
     @staticmethod
     def _status_of(row: _Order) -> OrderStatus:
+        """장부의 (`status`, `finish_as`) 쌍을 도메인 상태로.
+
+        Args:
+            row: 주문.
+
+        Returns:
+            열려 있으면 SUBMITTED, 끝났으면 `finish_as` 대로 FILLED/CANCELLED, 모르는 값은 FAILED.
+        """
         if row.status == "open":
             return OrderStatus.SUBMITTED
         if row.finish_as == "filled":
@@ -1203,6 +1335,14 @@ class StockPaperAdapter:
         return OrderStatus.FAILED
 
     def _result(self, row: _Order) -> OrderResult:
+        """주문을 게이트가 돌려주는 `OrderResult` 로 — 멱등키는 `text` 에 있다.
+
+        Args:
+            row: 주문.
+
+        Returns:
+            체결 수량은 `size - left`, 평균가는 체결 전이면 None.
+        """
         return OrderResult(
             broker_order_id=row.id,
             idempotency_key=row.text,
@@ -1215,6 +1355,11 @@ class StockPaperAdapter:
 
     @staticmethod
     def _log_order(row: _Order) -> None:
+        """주문의 최종 모습을 로그로 — 접수·체결·조건부 발동 모두 이 한 이벤트로 남는다.
+
+        Args:
+            row: 상태가 확정된 주문.
+        """
         _logger.info(
             "stock_paper_order",
             payload={

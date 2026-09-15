@@ -329,9 +329,18 @@ class StoredCandles:
         return True
 
     def _status_quotes(self) -> _StatusQuotes:
+        """안쪽 어댑터를 `get_market_status` 를 가진 것으로 본다 — 타입 좁히기용."""
         return self._quotes  # type: ignore[return-value]
 
     async def _instrument_id(self, instrument: Instrument) -> int:
+        """`instruments` 행 id — 없으면 만들고, 세션 안에서는 한 번만 DB 에 묻는다.
+
+        Args:
+            instrument: 종목.
+
+        Returns:
+            DB 의 종목 id.
+        """
         key = f"{instrument.market.value}:{instrument.symbol}"
         found = self._ids.get(key)
         if found is not None:

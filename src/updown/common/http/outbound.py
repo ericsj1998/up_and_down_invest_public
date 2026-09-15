@@ -248,6 +248,7 @@ class Outbound:
         self._client = self._new_client()
 
     def _new_client(self) -> httpx.AsyncClient:
+        """연결 풀을 연다 — 생성 때와, `aclose()` 뒤 첫 `request()` 가 다시 열 때 같은 설정으로."""
         return httpx.AsyncClient(
             base_url=self._base_url,
             timeout=self._timeout,
@@ -309,6 +310,16 @@ class Outbound:
         return None if tally is None else tally.used
 
     def _count(self, path: str) -> None:
+        """요청 하나를 센다 — 클라이언트 총량과, 예산 블록 안이면 이 작업의 눈금.
+
+        보내기 **전에** 부른다 — 상한을 넘는 요청은 나가지 않는다 (`budget`).
+
+        Args:
+            path: 예외 메시지에 실을 경로.
+
+        Raises:
+            RequestBudgetExceededError: 예산 블록의 상한을 넘은 경우. 상한 0 이면 세기만 한다.
+        """
         self.requests += 1
         tally = _BUDGET.get()
         if tally is None:

@@ -52,6 +52,7 @@ def snapshot_path() -> Path:
 
 
 def _dec(value: object) -> Decimal | None:
+    """JSON 칸을 `Decimal` 로 — null 이거나 못 읽으면 None (0 으로 꾸미지 않는다 · 규칙 #8)."""
     if value is None:
         return None
     try:
@@ -61,6 +62,7 @@ def _dec(value: object) -> Decimal | None:
 
 
 def _str(value: Decimal | None) -> str | None:
+    """`_dec` 의 역 — JSON 에는 Decimal 을 문자열로 적는다 (float 오차를 안 남긴다)."""
     return None if value is None else str(value)
 
 
@@ -97,6 +99,18 @@ def to_rows(points: Iterable[EquityPoint]) -> list[dict[str, Any]]:
 
 
 def _from_row(raw: dict[str, Any]) -> EquityPoint | None:
+    """`to_row` 의 역 — 파일 한 줄을 점으로.
+
+    시각이 없거나 깨진 줄은 점이 아니므로 None(호출처가 건너뛴다). 시각에 시간대가 없으면 UTC
+    로 본다 — 적는 쪽이 늘 UTC ISO 로 적기 때문이다(규칙 #7). 금액 칸은 하나가 깨져도 나머지는
+    살린다(`_dec` 가 None).
+
+    Args:
+        raw: JSON 한 줄.
+
+    Returns:
+        점. 시각을 못 읽으면 None.
+    """
     try:
         at = datetime.fromisoformat(str(raw["at"]))
     except (KeyError, ValueError):

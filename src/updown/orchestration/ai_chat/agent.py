@@ -31,6 +31,7 @@ _logger = get_logger("orchestration.ai_chat.agent")
 
 PROMPT_VERSION = "chat-1.7"
 MAX_ROUNDS = 6
+"""도구 왕복 상한 — 넘으면 지금까지의 근거로 답을 마감한다."""
 EVIDENCE_CHARS = 6_000
 """근거 세미 창에 저장하는 도구 결과 길이 상한 — 대화 표(JSONB)에 남는다.
 
@@ -43,7 +44,6 @@ SUGGEST_PROMPT = (
 FALLBACK_KINDS = frozenset({FailureKind.UNKNOWN_MODEL, FailureKind.TRANSPORT, FailureKind.TIMEOUT})
 """이 실패는 다음 모델로 넘어간다 — 스키마·계획 위반은 모델 탓이 아니라 답의 문제라 안 넘어간다.
 2026-09-09 실측: 풀 상위 5개 중 4개가 답을 못 했다(410 폐기 3 · 500 · 60초 타임아웃)."""
-"""도구 왕복 상한 — 넘으면 지금까지의 근거로 답을 마감한다."""
 
 SYSTEM_PROMPT = """너는 '업 앤 다운' 의 AI 투자 어시스턴트다. 한국어로 답한다.
 
@@ -148,10 +148,12 @@ class ChatResult:
 
 
 def _quiet(_: str) -> None:
+    """`report` 가 없을 때의 진행 콜백 — 아무것도 하지 않는다."""
     return None
 
 
 def _digest(result: dict[str, Any]) -> str:
+    """도구 결과 한 줄 요약 — 큰 덩어리 키(봉·축·지표·후보)는 빼고 앞 6개 키만."""
     keys = [k for k in result if k not in {"ohlc", "frames", "metrics", "candidates"}][:6]
     return ", ".join(f"{k}={str(result[k])[:40]}" for k in keys)
 
@@ -159,6 +161,20 @@ def _digest(result: dict[str, Any]) -> str:
 async def _run_tool(
     call: ToolCall, ctx: ToolContext, tools: Sequence[Tool]
 ) -> tuple[ToolEvent, dict[str, Any]]:
+    """도구 호출 하나를 돌리고 기록과 결과를 함께 돌려준다.
+
+    모르는 도구·예외는 **실패 기록 + `{"error": ...}` 결과**로 바뀐다 — 도구 하나가 죽어도
+    턴은 이어지고, 모델은 그 사실을 보고 답을 마감한다.
+
+    Args:
+        call: 모델이 낸 호출.
+        ctx: 도구 자원.
+        tools: 찾을 도구들.
+
+    Returns:
+        `(기록, 결과)`. 기록의 `result` 는 근거 창용으로 잘린 JSON 이고, 결과는 원본이라
+        `turn_results`·`proposals` 에는 원본이 들어간다.
+    """
     tool = find_tool(call.name, tools)
     started = time.perf_counter()
     if tool is None:
@@ -331,6 +347,19 @@ async def _suggest(
 
 
 def _compact(value: Any, list_cap: int, text_cap: int) -> Any:
+    """값을 재귀로 줄인다 — 목록은 앞 `list_cap` 개, 문자열은 `text_cap` 자.
+
+    구조를 지키고 잎만 자르므로 결과는 늘 JSON 으로 직렬화된다 (`compact_json` 이 상한에
+    맞을 때까지 캡을 줄이며 부른다).
+
+    Args:
+        value: 도구 결과의 일부 (dict · list · 스칼라).
+        list_cap: 목록에 남길 개수. 넘치면 "… 외 n개" 한 칸을 덧붙인다.
+        text_cap: 문자열 길이 상한.
+
+    Returns:
+        줄인 값. 숫자·불리언·None 은 그대로다.
+    """
     if isinstance(value, dict):
         items = cast("dict[str, Any]", value)
         return {str(k): _compact(v, list_cap, text_cap) for k, v in items.items()}
@@ -390,6 +419,7 @@ def parse_suggestions(text: str) -> list[str]:
 
 
 def _accumulate(result: ChatResult, reply: ChatReply) -> None:
+    """왕복마다 토큰 사용량을 더한다 — 모델이 안 알려 주면 0 으로 센다."""
     result.prompt_tokens += reply.prompt_tokens or 0
     result.completion_tokens += reply.completion_tokens or 0
 

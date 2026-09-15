@@ -116,6 +116,18 @@ BINANCE_PATH_WEIGHT: dict[str, int] = {
 
 
 def _count_path(venue: str, path: str, used: int, now: float) -> None:
+    """응답 하나를 60초 창 둘에 적는다 — 경로별 공식 weight 와 헤더의 `used`.
+
+    Args:
+        venue: 거래소 이름.
+        path: 엔드포인트 경로. 빈 값이면 `?` 로 센다.
+        used: 이 응답 헤더가 말한 소모량.
+        now: 응답 시각 (epoch 초).
+
+    Note:
+        경로 몫은 헤더 증분이 아니라 **건수 x 공식 weight**(`BINANCE_PATH_WEIGHT`)다 — 동시 요청이
+        겹치면 헤더 증분이 비단조라 쓸 수 없었다 (실측 · 표 docstring). Gate 는 표가 없어 1 이다.
+    """
     weight = BINANCE_PATH_WEIGHT.get(path, 1) if venue == "BINANCE" else 1
     with _LOCK:
         box = _PATHS.setdefault(venue, deque())
@@ -168,6 +180,17 @@ def paths_1m(venue: str) -> list[dict[str, object]]:
 
 
 def _maybe_report(venue: str, now: float) -> None:
+    """경로별 집계를 `PATH_REPORT_EVERY_S` 마다 한 번 로그로 — 응답마다 찍으면 로그가 요율을 삼킨다.
+
+    Args:
+        venue: 거래소 이름.
+        now: 응답 시각 (epoch 초).
+
+    Note:
+        `estimated_weight`(우리 건수 x 공식 weight)와 `peak_used`(헤더 최댓값 = IP 전체)를 나란히
+        둔다. 차이(`unexplained`)가 크면 같은 IP 의 다른 클라이언트가 먹는 것이다 — 우리 코드를
+        줄여도 안 내려가는 이유가 거기 있다.
+    """
     last = _LAST_REPORT.get(venue, 0.0)
     if now - last < PATH_REPORT_EVERY_S:
         return

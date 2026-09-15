@@ -75,7 +75,8 @@ params:
 ```
 
 허용 키는 `rule_id · version · enabled · buckets · params` 다섯뿐이다(`detectors/rules.py`). `params` 는 자유형이고
-탐지기가 `_iparam/_dparam` 같은 읽기 함수로 꺼낸다 — 기본값은 코드에 두되 설정이 있으면 설정이 이긴다.
+탐지기가 `RuleParams.as_int(key, default)` · `as_decimal(key, "default")` 로 꺼낸다(`detectors/base.py` · 2026-09-16 에
+탐지기마다 복제하던 `_iparam/_dparam` 헬퍼를 여기로 모았다) — 기본값은 코드에 두되 설정이 있으면 설정이 이긴다.
 
 ### ③ 플레이북 선언 — `config/playbooks.yml` (비공개 패키지면 그 안의 `playbooks.yml`)
 

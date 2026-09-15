@@ -167,6 +167,19 @@ class MacroAdapter:
         return ordered, failures
 
     async def _yahoo(self, spec: YahooSpec) -> Indicator:
+        """야후 차트로 지표 하나 — 비공식 API 라 언제든 막힐 수 있다.
+
+        Args:
+            spec: 야후 심볼·단위·배율.
+
+        Returns:
+            현재가와 전일 대비. VIX 는 `_vix` 로 띠·색을 붙인다.
+
+        Raises:
+            Exception: 야후 호출·파싱 실패. VIX **만** CBOE 일별 CSV(장 마감 값)로 폴백하고,
+                나머지는 그대로 올려 `indicators` 가 실패 목록에 이유와 함께 넣는다 — 다른 출처로
+                대신하면 단위·시점이 달라 같은 지표가 아니다.
+        """
         try:
             price, prev, as_of = parse_yahoo_chart(await self._client.yahoo_chart(spec.symbol))
         except Exception:
@@ -196,6 +209,17 @@ class MacroAdapter:
     def _vix(
         value: Decimal, prev: Decimal | None, as_of: datetime | None, source: str
     ) -> Indicator:
+        """VIX 지표 — 값에 공포 띠(`vix_band`)와 색을 붙인다. 야후·CBOE 가 같은 모양으로 온다.
+
+        Args:
+            value: 지수 값.
+            prev: 전일 값. 없으면 변화율도 없다.
+            as_of: 시점.
+            source: 표시할 출처 이름 — 폴백이면 그 사실이 화면에 보여야 한다.
+
+        Returns:
+            띠·색·설명이 붙은 지표.
+        """
         band, tone = vix_band(value)
         return Indicator(
             key="vix",
@@ -211,6 +235,16 @@ class MacroAdapter:
         )
 
     async def _usdkrw(self) -> Indicator:
+        """원달러 환율 — 토스 매매기준율이 먼저, 토스 자격증명이 없으면 야후 `KRW=X`.
+
+        Returns:
+            지표. 토스는 `midRate`(없으면 `rate`)를 값으로, 매수 환율을 설명에 적는다 — 국내 계좌가
+            실제로 쓰는 환율이라 야후 중간값보다 우리 손익에 가깝다. 야후 경로는 설명에 그 이유를
+            남긴다.
+
+        Raises:
+            Exception: 출처 호출·파싱 실패 — `indicators` 가 실패 목록으로 넘긴다.
+        """
         if self._toss is None:
             price, prev, as_of = parse_yahoo_chart(await self._client.yahoo_chart("KRW=X"))
             return Indicator(
@@ -238,9 +272,18 @@ class MacroAdapter:
         )
 
     async def _effr(self) -> Indicator:
+        """EFFR — 한 시간 기억 (`EFFR_TTL_S`). 실제 조회는 `_effr_fetch`."""
         return await self._slow.get_or_fetch("effr", self._effr_fetch, ttl_s=EFFR_TTL_S)
 
     async def _effr_fetch(self) -> Indicator:
+        """뉴욕연준 EFFR 마지막 1건 — 하루 한 값이라 캐시 뒤에서만 불린다.
+
+        Returns:
+            실효연방기금금리와 목표범위(있으면 설명에).
+
+        Raises:
+            Exception: 출처 호출·파싱 실패 — 캐시에 남지 않고 `indicators` 가 실패 목록으로 넘긴다.
+        """
         rate, low, high, day = parse_effr(await self._client.nyfed_effr())
         as_of = datetime.fromisoformat(day).replace(tzinfo=UTC) if day else None
         target = f"목표범위 {low}~{high}%" if low is not None and high is not None else ""
@@ -255,9 +298,20 @@ class MacroAdapter:
         )
 
     async def _cpi(self) -> Indicator:
+        """CPI — 12시간 기억 (`CPI_TTL_S`). 실제 조회는 `_cpi_fetch`."""
         return await self._slow.get_or_fetch("cpi", self._cpi_fetch, ttl_s=CPI_TTL_S)
 
     async def _cpi_fetch(self) -> Indicator:
+        """BLS CPI-U 시계열에서 전년 동월 대비 — 공개 v1 API 는 하루 상한이 있어 캐시 뒤에서만.
+
+        Returns:
+            최신 달의 전년 대비(%)와, 설명에 지수·전달 값. 전달 값을 같이 두는 이유는 발표 당일
+            "이전 → 실제" 를 보여 주기 위해서다 (T276) — 방향 판단이 아니라 사실이다 (규칙 #2).
+
+        Raises:
+            ValueError: 최신 달의 전년 동월이 시계열에 없다 (3년치 응답이라 정상이면 있다).
+            Exception: 출처 호출·파싱 실패 — `indicators` 가 실패 목록으로 넘긴다.
+        """
         points = parse_bls_series(await self._client.bls_series())
         period, index, yoy = cpi_yoy(points)
         year, month = period.split("-")
@@ -295,6 +349,19 @@ class MacroAdapter:
         self._slow.forget(key)
 
     async def _toss_batch(self, rows: list[tuple[str, str, str, str]]) -> list[Indicator]:
+        """토스 시장지표(코스피·코스닥·국채)를 **한 번의 호출**로 — 지표마다 부르면 요율만 쓴다.
+
+        Args:
+            rows: `TOSS_INDICATORS` 중 요청된 것들 (열쇠 · 이름 · 토스 심볼 · 단위).
+
+        Returns:
+            응답에 있고 `lastPrice` 가 빈 값이 아닌 것만. 빠진 것은 여기서 실패로 만들지 않는다 —
+            `indicators` 가 "응답에 없음" 으로 적는다 (묶음 하나가 지표 여럿이라 실패도 나눠
+            적는다).
+
+        Raises:
+            RuntimeError: 토스 자격증명이 없다 — 묶음 전체가 실패 목록으로 간다.
+        """
         if self._toss is None:
             raise RuntimeError("토스 자격증명이 없다")
         symbols = [s for _k, _l, s, _u in rows]

@@ -90,7 +90,11 @@ class TwrLedger:
     flows: list[CashFlow] = field(default_factory=list[CashFlow])
 
     def __post_init__(self) -> None:
-        """시작금 검증 + 투입 원금 초기화."""
+        """시작금 검증 + 투입 원금 초기화 — `contributed` 를 안 주면 시작금이 곧 첫 투입이다.
+
+        Raises:
+            TwrError: 시작 자본이 음수인 경우.
+        """
         if self.equity < 0:
             raise TwrError(f"시작 자본이 음수다: {self.equity}")
         if self.contributed == 0:

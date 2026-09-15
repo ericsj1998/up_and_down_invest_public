@@ -231,7 +231,14 @@ def parse_submissions(body: Mapping[str, Any], *, limit: int = 1000) -> list[Rec
     recent = cast("Mapping[str, Any]", filings.get("recent") or {})
 
     def column(name: str) -> list[Any]:
-        """열 하나 — 배열이 아니면 빈 열."""
+        """열 하나 — 배열이 아니면 빈 열.
+
+        Args:
+            name: `filings.recent` 의 열 이름.
+
+        Returns:
+            그 열. 없거나 배열이 아니면 빈 목록 — 응답 모양이 바뀌어도 한 열만 비게 한다.
+        """
         got = recent.get(name)
         return cast("list[Any]", got) if isinstance(got, list) else []
 
@@ -243,7 +250,15 @@ def parse_submissions(body: Mapping[str, Any], *, limit: int = 1000) -> list[Rec
     descriptions = column("primaryDocDescription")
 
     def at(rows: list[Any], index: int) -> str:
-        """열의 i 번째 — 짧은 열이면 빈 값."""
+        """열의 i 번째 — 짧은 열이면 빈 값.
+
+        Args:
+            rows: 열.
+            index: 행 번호.
+
+        Returns:
+            문자열 값. 열이 짧거나 `null` 이면 빈 문자열 (Note — 배열 길이를 믿지 않는다).
+        """
         return str(rows[index]) if index < len(rows) and rows[index] is not None else ""
 
     out: list[RecentFiling] = []

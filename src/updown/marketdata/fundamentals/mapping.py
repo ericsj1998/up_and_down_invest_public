@@ -35,6 +35,7 @@ MAX_FLOW_DAYS = 400
 
 
 def _date(raw: object) -> date | None:
+    """ISO 날짜 문자열을 날짜로 — 아니면 None (행을 버리는 신호)."""
     if not isinstance(raw, str):
         return None
     try:
@@ -44,6 +45,14 @@ def _date(raw: object) -> date | None:
 
 
 def _decimal(raw: object) -> Decimal | None:
+    """`val` 을 Decimal 로 — 유한한 숫자만.
+
+    Args:
+        raw: JSON 값.
+
+    Returns:
+        Decimal. `bool`(int 의 하위형이라 따로 막는다) · 파싱 실패 · NaN/Infinity 는 None.
+    """
     if isinstance(raw, bool) or not isinstance(raw, int | float | str):
         return None
     try:
@@ -118,6 +127,22 @@ def _row(
     symbol: str,
     entity_id: str,
 ) -> FinancialFact | None:
+    """EDGAR companyfacts 의 값 행 하나를 사실로 — 못 믿을 행은 None.
+
+    Args:
+        raw: `units.<unit>` 배열의 원소.
+        spec_name: 설정의 개념 이름 (`revenue` 처럼 태그와 무관한 우리 이름).
+        kind: 시점(INSTANT) 값인가 기간(FLOW) 값인가.
+        tag: 이 행이 온 XBRL 태그 (`us-gaap:Revenues`).
+        unit: 단위 (`USD` · `shares`).
+        symbol: 종목 코드 — EDGAR 는 CIK 만 알아 행에 새긴다.
+        entity_id: 10자리 CIK.
+
+    Returns:
+        사실. 다음은 None — 날짜·값·접수번호가 깨진 행, 시점 값인데 `start != end` 인 행(태그
+        설정이 틀린 것), 기간 값인데 길이가 `MIN_FLOW_DAYS`~`MAX_FLOW_DAYS` 밖인 행(전환기 조각).
+        `fy`/`fp`/`form` 은 없어도 산다 — 기말 연도·빈 문자열로 채운다.
+    """
     if not isinstance(raw, dict):
         return None
     row = cast("Mapping[str, object]", raw)

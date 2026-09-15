@@ -2031,6 +2031,14 @@ class _Actor:
 
 
 def _actor_of(request: Request) -> _Actor | None:
+    """권한 변경 감사 기록의 주체 — 미들웨어가 붙인 호출자. 시험 우회(호출자 없음)는 None.
+
+    Args:
+        request: 요청.
+
+    Returns:
+        이메일 + 쥔 기능. None 이면 기록에 `?` 로 남는다.
+    """
     who = getattr(request.state, "caller", None)
     if who is None:
         return None
@@ -2277,6 +2285,24 @@ async def _grant_route(
     add: Iterable[Cap],
     remove: Iterable[Cap],
 ) -> dict[str, Any]:
+    """권한 변경 끝점들의 공통 몸통 — 계정을 찾아 한 트랜잭션 안에서 `_apply_grant` 에 넘긴다.
+
+    끝점 다섯(묶음 · 개별 기능 · 옛 등급 호환)이 전부 여기를 지나므로 검사(`may_assign` · 마지막
+    슈퍼 관리자)는 한 곳에만 있다.
+
+    Args:
+        request: 요청 — 감사 기록의 주체(`_actor_of`).
+        email: 대상. 소문자로 맞춘다.
+        collection: 새 묶음 이름. None 이면 그대로.
+        add: 개별로 더 줄 기능.
+        remove: 개별에서 뺄 기능.
+
+    Returns:
+        갱신된 계정 행.
+
+    Raises:
+        HTTPException: 404 계정 없음 · 그 외는 `_apply_grant` 의 것(400 · 403).
+    """
     factory = _store()
     target = email.strip().lower()
     async with factory() as session, session.begin():
@@ -2289,6 +2315,18 @@ async def _grant_route(
 
 
 def _caps_in(payload: dict[str, Any], key: str) -> list[Cap]:
+    """요청 몸의 기능 이름 목록 → `Cap`. 모르는 이름은 조용히 버리지 않고 400 이다.
+
+    Args:
+        payload: 요청 몸.
+        key: 목록이 든 칸 이름 (`add` · `remove` · `caps`). 없으면 빈 목록.
+
+    Returns:
+        기능 목록.
+
+    Raises:
+        HTTPException: 400 목록이 아니거나 모르는 기능 이름.
+    """
     out: list[Cap] = []
     raw: object = payload.get(key) or []
     if not isinstance(raw, list):
@@ -2958,6 +2996,14 @@ async def token_owner(token: str) -> str | None:
 
 
 def _token_row(row: ApiToken) -> dict[str, Any]:
+    """토큰 행 → 응답 JSON — 값(해시)은 싣지 않는다. 값은 만들 때 한 번만 보여 준다.
+
+    Args:
+        row: 토큰 행.
+
+    Returns:
+        `{id, name, created_at, last_used_at, revoked_at}`.
+    """
     return {
         "id": str(row.id),
         "name": row.name,
@@ -2968,6 +3014,17 @@ def _token_row(row: ApiToken) -> dict[str, Any]:
 
 
 def _signed_in_or_401(request: Request) -> Caller:
+    """토큰 끝점의 문 — 미들웨어가 붙인 호출자만 받는다 (시험 우회처럼 호출자가 없으면 401).
+
+    Args:
+        request: 요청.
+
+    Returns:
+        호출자.
+
+    Raises:
+        HTTPException: 401 로그인 없음.
+    """
     who = getattr(request.state, "caller", None)
     if not isinstance(who, Caller):
         raise HTTPException(401, "로그인이 필요하다")

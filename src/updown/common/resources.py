@@ -270,6 +270,7 @@ def start_loop_lag(tick_s: float = LOOP_LAG_TICK_S) -> LoopLag:
     gauge = LoopLag()
 
     async def _sample() -> None:
+        """`tick_s` 마다 자고 일어나, 예정 시각보다 얼마나 늦게 깨어났는지(ms)를 눈금에 넣는다."""
         loop = asyncio.get_running_loop()
         while True:
             planned = loop.time() + tick_s

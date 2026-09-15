@@ -142,6 +142,9 @@ class NewStructure:
     def __post_init__(self) -> None:
         """타임존 불변식을 강제한다 (절대 규칙 #7).
 
+        Raises:
+            StructureRepositoryError: `detected_ts` 가 naive 이거나 UTC 가 아닌 경우.
+
         Note:
             naive 를 통과시키면 as-of 경계 비교가 조용히 어긋난다 — 그 오류는 "과거
             차트가 이상하다"로만 드러나고 원인 추적이 어렵다.

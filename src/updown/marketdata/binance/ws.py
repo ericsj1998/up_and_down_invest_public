@@ -94,6 +94,18 @@ class BinanceCandleStream:
         return [f"{symbol.lower()}@kline_{self._interval}" for symbol in self.contracts]
 
     def _to_live(self, data: dict[str, Any]) -> LiveCandle | None:
+        """웹소켓 kline 프레임 하나를 `LiveCandle` 로.
+
+        Args:
+            data: `e == "kline"` 인 프레임 — 심볼은 `s`, 봉은 `k` 에 있다.
+
+        Returns:
+            봉. 구독하지 않은 심볼이거나 `k` 가 비어 있으면 None (버린다). `closed` 는 `x` 다.
+
+        Raises:
+            BinanceWebSocketError: `k` 안의 열쇠·숫자가 규격과 다른 경우 — 형식 변경은 재연결로
+                덮지 않고 던진다 (클래스 docstring · 규칙 #8).
+        """
         symbol = str(data.get("s", ""))
         instrument = self._by_symbol.get(symbol)
         kline = cast("dict[str, Any]", data.get("k") or {})

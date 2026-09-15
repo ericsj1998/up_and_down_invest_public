@@ -139,7 +139,11 @@ class RetestParams:
     confirm_bars: int = 1
 
     def __post_init__(self) -> None:
-        """확인 봉이 0 이면 ④ 봉마감 조건 자체가 사라진다."""
+        """확인 봉이 0 이면 ④ 봉마감 조건 자체가 사라진다.
+
+        Raises:
+            ValueError: `confirm_bars` 가 1 미만이거나 `pullback_atr_multiple` 이 음수인 경우.
+        """
         if self.confirm_bars < 1:
             raise ValueError(
                 f"retest.confirm_bars 는 1 이상이어야 한다 — 0 이면 §4.3.2 ④ 봉마감 확정이 "

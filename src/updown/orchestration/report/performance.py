@@ -36,7 +36,11 @@ class Window:
     until: datetime
 
     def __post_init__(self) -> None:
-        """naive·빈 구간을 거부한다 — 조용히 틀린 구간으로 집계하지 않는다 (규칙 #8)."""
+        """naive·빈 구간을 거부한다 — 조용히 틀린 구간으로 집계하지 않는다 (규칙 #8).
+
+        Raises:
+            ValueError: 어느 한쪽이 naive datetime 이거나(규칙 #7) `since >= until` 인 경우.
+        """
         if self.since.tzinfo is None or self.until.tzinfo is None:
             raise ValueError("집계 구간은 UTC aware 여야 한다 (규칙 #7)")
         if self.since >= self.until:

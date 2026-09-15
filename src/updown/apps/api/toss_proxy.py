@@ -142,6 +142,17 @@ async def toss_result(
 
 
 def _stock_market(raw: str) -> Market:
+    """시장 이름 → 토스가 대는 주식 시장. 갈래는 `MarketGroup.of` 가 말한다(시장 이름 분기 없음).
+
+    Args:
+        raw: 요청의 시장 이름.
+
+    Returns:
+        시장.
+
+    Raises:
+        HTTPException: 400 모르는 시장 · 코인 시장.
+    """
     try:
         market = Market(raw)
     except ValueError as exc:
@@ -152,6 +163,18 @@ def _stock_market(raw: str) -> Market:
 
 
 def _utc(raw: str, name: str) -> datetime:
+    """쿼리의 시각 → aware `datetime`. naive 는 받지 않는다 — 저장·비교가 전부 UTC 다(규칙 #7).
+
+    Args:
+        raw: ISO 시각.
+        name: 오류 문장에 쓸 인자 이름.
+
+    Returns:
+        aware 시각.
+
+    Raises:
+        HTTPException: 400 ISO 가 아니거나 시간대 없음.
+    """
     try:
         parsed = datetime.fromisoformat(raw)
     except ValueError as exc:

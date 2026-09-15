@@ -111,6 +111,17 @@ def sleeve_returns(
 
 
 def _metrics(equity: list[float]) -> tuple[float, float, float]:
+    """자본곡선 → `(총수익률 %, MDD %, 칼마)`.
+
+    MDD 는 0 이하(음수)로 두고, 낙폭이 없으면 칼마는 0 이다 — 무한대로 두면 표에서 "최고" 로
+    정렬돼 매매 없는 칸이 이긴다.
+
+    Args:
+        equity: 시작 1.0 인 자본곡선.
+
+    Returns:
+        `TrendResult` 의 앞 세 필드. 빈 곡선이면 전부 0.
+    """
     total = (equity[-1] / equity[0] - 1) * 100 if equity else 0.0
     peak = equity[0] if equity else 1.0
     mdd = 0.0

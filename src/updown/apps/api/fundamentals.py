@@ -129,12 +129,28 @@ def attach_fundamentals(
 
 
 def _repo_or_503() -> FundamentalsRepository:
+    """붙은 재무 저장소 — 없으면 503 (기동 훅 `attach_fundamentals` 이 안 돌았다).
+
+    Returns:
+        저장소.
+
+    Raises:
+        HTTPException: 503 저장소 없음.
+    """
     if _repo is None:
         raise HTTPException(status_code=503, detail="재무 저장소가 붙지 않았다")
     return _repo
 
 
 def _config_or_503() -> FundamentalsConfig:
+    """재무 설정 — 첫 호출에 읽어 프로세스에 든다. 깨진 설정은 503 이지 기본값이 아니다(규칙 #8).
+
+    Returns:
+        설정.
+
+    Raises:
+        HTTPException: 503 설정 파일을 못 읽음.
+    """
     global _config
     if _config is None:
         try:
@@ -145,6 +161,19 @@ def _config_or_503() -> FundamentalsConfig:
 
 
 def _market_or_400(raw: str) -> Market:
+    """시장 이름 → `Market`. 재무 출처가 있는 갈래(미국주식 · EDGAR)만 받는다.
+
+    갈래는 `MarketGroup.of` 가 말한다 — 시장 이름으로 분기하지 않는다.
+
+    Args:
+        raw: 요청의 시장 이름.
+
+    Returns:
+        시장.
+
+    Raises:
+        HTTPException: 400 모르는 시장 · 재무 출처가 아직 없는 갈래.
+    """
     try:
         market = Market(raw)
     except ValueError as exc:
@@ -157,6 +186,17 @@ def _market_or_400(raw: str) -> Market:
 
 
 def _as_of_or_400(raw: str | None) -> datetime:
+    """쿼리의 `as_of` → UTC 시각. 비우면 지금 — 시점을 고정해야 과거 표를 재현할 수 있다(규칙 #5).
+
+    Args:
+        raw: ISO 시각. 시간대가 없으면 UTC 로 본다.
+
+    Returns:
+        aware 시각.
+
+    Raises:
+        HTTPException: 400 ISO 가 아님.
+    """
     if raw is None:
         return datetime.now(UTC)
     try:
@@ -167,6 +207,14 @@ def _as_of_or_400(raw: str | None) -> datetime:
 
 
 def _adapter_or_503() -> FundamentalsAdapter:
+    """재무 어댑터 — 첫 호출에 `provider` 가 만들고 프로세스에 든다 (규칙 #0 · 획득 지점은 하나).
+
+    Returns:
+        어댑터.
+
+    Raises:
+        HTTPException: 503 설정이 안 붙었거나 자격(EDGAR User-Agent 등)이 빠짐.
+    """
     global _adapter
     if _settings is None:
         raise HTTPException(status_code=503, detail="설정이 붙지 않았다")
@@ -327,6 +375,7 @@ async def _ranking_forget() -> None:
 
 
 def _ranking_finished(task: asyncio.Task[Any]) -> None:
+    """백그라운드 순위표 작업의 끝 — 예외를 꺼내 로그에 남긴다 (안 꺼내면 조용히 사라진다 · #8)."""
     if task.cancelled():
         return
     exc = task.exception()
@@ -346,6 +395,10 @@ def _ranking_start(market: str, build: Callable[[], Awaitable[dict[str, Any]]]) 
         return
 
     async def _run() -> None:
+        """작업 본체 — 표를 만들어 메모리·Redis 에 같이 둔다 (재시작 뒤에도 "준비 중" 이 안 뜨게).
+
+        Redis 쓰기 실패는 로그만 — 메모리 표는 이미 있으니 요청은 답을 받는다.
+        """
         table = await build()
         _RANKING_CACHE.put(market, table)
         await _ranking_save(market, table)
@@ -410,6 +463,13 @@ async def ranking(market: str = "NASDAQ") -> dict[str, Any]:
     found = _market_or_400(market)
 
     async def _build() -> dict[str, Any]:
+        """순위표 한 장 — `_ranking_or_build` 가 뒤에서 돌린다. 요청 안에서는 부르지 않는다.
+
+        종목마다 60개월 표를 다시 만드는 일이라 시장 하나에 분 단위다.
+
+        Returns:
+            `{rows, at, market, label, recommended, window_days, note}`.
+        """
         when = datetime.now(UTC)
         broker = MarketDataProvider().broker_of(found)
         rows: list[dict[str, Any]] = []
@@ -838,6 +898,7 @@ async def _quick_or_warm(
 
 
 def _warm_finished(task: asyncio.Task[Any]) -> None:
+    """백그라운드 예열 작업의 끝 — 예외를 꺼내 로그에 남긴다 (`_ranking_finished` 와 같은 이유)."""
     if task.cancelled():
         return
     exc = task.exception()
@@ -1059,6 +1120,12 @@ async def recent_filings(
     cache_key = f"{ticker}:{int(material)}:{limit}"
 
     async def _build() -> dict[str, Any]:
+        """캐시 미스 때만 EDGAR 를 부른다 — `TtlCache.get_or_fetch` 에 넘기는 팩토리.
+
+        Returns:
+            `{symbol, cik, name, at, filings, reason: None}`. 실패는 호출자가 예외로 받아
+            `reason` 을 채운다.
+        """
         adapter = _adapter_or_503()
         body = await adapter.submissions(ticker)
         rows = [f for f in parse_submissions(body) if f.material or not material][:limit]
@@ -1114,6 +1181,14 @@ def snapshot_payload(made: FundamentalSnapshot, filings: Sequence[Filing]) -> di
     by_accession = {f.accession: f for f in filings}
 
     def _source(accession: str) -> dict[str, Any]:
+        """지표의 출처 접수 번호 → 공시 링크. 목록에 없으면 번호만 남긴다(링크를 지어내지 않는다).
+
+        Args:
+            accession: 접수 번호.
+
+        Returns:
+            `{accession, form, filed_at, url}`.
+        """
         filing = by_accession.get(accession)
         return {
             "accession": accession,

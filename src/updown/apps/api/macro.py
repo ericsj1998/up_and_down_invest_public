@@ -34,6 +34,11 @@ async def macro_snapshot(keys: tuple[str, ...] | None = None) -> dict[str, Any]:
     cache_key = ",".join(sorted(keys)) if keys else "*"
 
     async def _build() -> dict[str, Any]:
+        """캐시 미스 때만 출처를 부른다 — `TtlCache.get_or_fetch` 에 넘기는 팩토리.
+
+        Returns:
+            `{at, indicators, failures, vix_bands, vix_note, keys}`.
+        """
         adapter = macro_adapter()
         found, failures = await adapter.indicators(keys)
         return {

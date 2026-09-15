@@ -95,6 +95,15 @@ class RotatingJsonlFile:
                 print(json.dumps(notice, ensure_ascii=False), file=sys.stderr, flush=True)
 
     def _rollover(self, day: str) -> None:
+        """그 날짜의 파일로 갈아탄다 — 이전 파일을 닫고, 디렉터리를 보장하고, 상한을 정리한다.
+
+        Args:
+            day: `YYYY-MM-DD` (UTC).
+
+        Note:
+            `write_line` 의 락 안에서만 부른다. 예외를 여기서 잡지 않는 것은 의도다 — 삼키는
+            자리는 `write_line` 하나여야 "한 번만 알린다" 가 지켜진다.
+        """
         if self._fh is not None:
             self._fh.close()
         self.directory.mkdir(parents=True, exist_ok=True)

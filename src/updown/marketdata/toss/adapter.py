@@ -689,6 +689,15 @@ class TossAdapter:
         return TossCandleStream(self, instruments, timeframe, calendar=self._calendar_or_raise())
 
     def _calendar_or_raise(self) -> MarketCalendar:
+        """마켓 캘린더 — 처음 필요할 때 `config/market_sessions.yml` 에서 읽고 기억한다.
+
+        Returns:
+            캘린더 (생성자에 넘긴 것이 있으면 그것).
+
+        Raises:
+            MarketCalendarRequiredError: 설정을 못 읽는다. 캘린더 없이 "열렸다" 고 답하면 휴장·
+                조기마감에 주문이 나가므로 지어내지 않는다 (규칙 #8 · C2-3·C2-4).
+        """
         if self._calendar is None:
             try:
                 self._calendar = load_calendar()
@@ -699,6 +708,15 @@ class TossAdapter:
         return self._calendar
 
     def _tick_for(self, instrument: Instrument, price: Decimal) -> Decimal:
+        """이 가격대의 호가단위 — KRX 는 가격 구간표(비용표), 미국 주식은 `US_TICK`.
+
+        Args:
+            instrument: 종목.
+            price: 기준 가격 — KRX 는 구간마다 눈금이 다르다.
+
+        Returns:
+            호가단위.
+        """
         if instrument.market is Market.KRX:
             from updown.common.costs import load_cost_table, resolve_tick
 

@@ -54,6 +54,17 @@ def group_of(market: Market) -> Group:
 
 
 def _scope_from(raw: object) -> Scope:
+    """표 값 하나를 범위로 — `"*"`/`"all"` 은 전부, 목록은 **아는 갈래만**, 그 밖은 빈 범위.
+
+    None·오타·모르는 갈래 이름이 문을 여는 쪽으로 읽히면 안 된다 — 모르는 모양은 전부 "없음" 이다
+    (`MarketPolicy.from_json` 과 같은 원칙).
+
+    Args:
+        raw: JSON 에서 읽은 값.
+
+    Returns:
+        `"*"` 또는 갈래 집합.
+    """
     if raw == ALL or raw == "all":
         return ALL
     if isinstance(raw, list | tuple | set | frozenset):
@@ -63,6 +74,7 @@ def _scope_from(raw: object) -> Scope:
 
 
 def _scope_json(scope: Scope) -> str | list[str]:
+    """범위를 표·API 모양으로 — 목록은 정렬해 같은 정책이 같은 글자가 되게."""
     return ALL if scope == ALL else sorted(cast("frozenset[str]", scope))
 
 

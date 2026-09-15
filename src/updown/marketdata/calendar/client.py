@@ -116,6 +116,19 @@ class CalendarClient:
         )
 
     async def _get_json(self, url: str, secret: str, *, params: dict[str, str]) -> dict[str, Any]:
+        """GET 하고 객체 JSON 을 돌려준다 — 실패 이유에서 키 값을 지운다.
+
+        Args:
+            url: 출처 URL.
+            secret: 이 호출에 실린 키. 오류 문자열에 되돌아오면 `***` 로 바꾼다.
+            params: 쿼리 (키 포함).
+
+        Returns:
+            JSON 객체.
+
+        Raises:
+            CalendarSourceError: 호출 실패 또는 본문이 객체가 아닌 경우.
+        """
         try:
             body = await self._http.get_json(url, params=params)
         except OutboundError as exc:

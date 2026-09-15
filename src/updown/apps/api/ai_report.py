@@ -57,9 +57,9 @@ from updown.orchestration.walkforward.ledger import Actor
 router = APIRouter(prefix="/ai/report", tags=["ai-report"])
 
 TOURNAMENT_SIZE = 3
+"""첫 토너먼트 참가 모델 수 — 규칙 #12(최대 3 후보 · 한 축씩)."""
 EVAL_EVENT = "ai_chat_eval"
 """채팅 시험 묶음 결과 — 추가만. 리포트는 마지막 것을 보여 준다."""
-"""첫 토너먼트 참가 모델 수 — 규칙 #12(최대 3 후보 · 한 축씩)."""
 
 
 async def _started() -> dict[str, Any] | None:
@@ -78,6 +78,7 @@ async def _started() -> dict[str, Any] | None:
 
 
 async def _participants() -> list[AiParticipant]:
+    """얼린 참가자 전부 (얼린 순) — 매매가 아직 없는 참가자도 성적표에 n=0 으로 서야 한다."""
     factory = auth._store()  # pyright: ignore[reportPrivateUsage]
     async with factory() as session:
         rows = await session.scalars(sa.select(AiParticipant).order_by(AiParticipant.frozen_at))
@@ -116,6 +117,11 @@ async def ensure_participant(key: str, *, note: str = "") -> bool:
 
 
 async def _turns() -> dict[str, TurnStats]:
+    """참가자별 턴 통계(토큰 원가) — `event_logs.ai_chat_turn` 전부를 한 번에 읽는다.
+
+    Returns:
+        참가자 키 → 턴·토큰 합계.
+    """
     factory = auth._store()  # pyright: ignore[reportPrivateUsage]
     async with factory() as session:
         rows = await session.scalars(
@@ -152,6 +158,14 @@ async def _trades(*, ai: bool) -> list[AiTrade]:
 
 
 async def _report() -> dict[str, Any]:
+    """성적표 몸통 — 원료(AI 매매 · 기준선 매매 · 턴 · 참가자)를 모아 순수 채점기에 넘긴다.
+
+    `default_model` 은 실험이 켜진 뒤에만 고른다 — 켜지기 전의 매매는 토너먼트 표본이 아니다.
+
+    Returns:
+        `{started, prompt, snapshot, min_sample, participants, baseline, default_model, journal,
+        reason_hits, eval, tools, generated_at}`.
+    """
     ai_trades = await _trades(ai=True)
     baseline_trades = await _trades(ai=False)
     turns = await _turns()
@@ -241,6 +255,17 @@ async def start_eval(request: Request) -> dict[str, Any]:
     email = who.email
 
     async def _work(report: Reporter) -> dict[str, Any]:
+        """작업 본체 — 사례마다 실제 모델을 부르는 긴 일이라 요청 밖(작업 레지스트리)에서 돈다.
+
+        결과는 `event_logs.ai_chat_eval` 에 **추가**한다(되돌리지 않는다) — 리포트는 마지막 것을
+        보여 준다.
+
+        Args:
+            report: 진행 줄 — SSE 로 나간다.
+
+        Returns:
+            시험 결과 JSON (이벤트 페이로드와 같은 것).
+        """
         client = NvidiaClient(endpoint=pool.endpoint or NvidiaClient.endpoint)
         async with MarketDataProvider() as provider:
 

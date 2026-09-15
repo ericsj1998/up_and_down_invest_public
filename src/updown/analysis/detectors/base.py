@@ -59,6 +59,39 @@ class RuleParams:
     version: str
     values: Mapping[str, ParamValue]
 
+    def as_int(self, key: str, default: int) -> int:
+        """정수 파라미터를 읽는다 — 설정에 없으면 기본값.
+
+        Args:
+            key: 파라미터 이름.
+            default: 설정에 없을 때 쓰는 값. 룰 명세의 표준값을 그대로 적는다.
+
+        Returns:
+            정수. `Decimal` 로 들어온 값은 `int()` 로 내림한다.
+
+        Note:
+            기본값이 코드에 있으면 "임계값을 코드에 박지 않는다"(spec §4.3.1)와 어긋나
+            보이지만, 이 값은 설정이 **없을 때만** 쓰는 안전망이고 실제 값의 주인은 룰
+            YAML 이다. 탐지기마다 같은 헬퍼(`_iparam`·`_param_int`)를 복제하던 것을
+            여기로 모았다 (2026-09-16).
+        """
+        value = self.values.get(key)
+        return int(value) if value is not None else default
+
+    def as_decimal(self, key: str, default: str) -> Decimal:
+        """소수 파라미터를 `Decimal` 로 읽는다 — 설정에 없으면 기본값.
+
+        Args:
+            key: 파라미터 이름.
+            default: 설정에 없을 때 쓰는 값. **문자열**로 받는다 — `Decimal(0.7)` 은
+                이진 오차를 그대로 가져오므로 리터럴은 항상 `"0.7"` 처럼 적는다.
+
+        Returns:
+            `Decimal`. float 로 들어온 값도 `str()` 을 거쳐 십진 그대로 옮긴다.
+        """
+        value = self.values.get(key)
+        return Decimal(str(value)) if value is not None else Decimal(default)
+
 
 @dataclass(frozen=True, slots=True)
 class MarketContext:

@@ -28,7 +28,12 @@ class BinanceApiError(RuntimeError):
     """바이낸스 호출 실패 — 상태코드·본문을 담는다 (규칙 #8: 조용한 실패 금지)."""
 
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
-        """메시지와 상태코드를 담는다."""
+        """메시지와 상태코드를 담는다.
+
+        Args:
+            message: 사람이 읽을 이유 — 경로와 응답 요약.
+            status_code: HTTP 상태. 전송 실패(타임아웃·연결)면 None.
+        """
         super().__init__(message)
         self.status_code = status_code
 
@@ -83,6 +88,11 @@ class BinanceClient:
             self._http = None
 
     def _session(self) -> Outbound:
+        """연결 풀 — 처음 쓸 때 만든다 (생성자에서 열면 시험·미사용 경로도 소켓을 잡는다).
+
+        Returns:
+            429/5xx 만 재시도하는 `Outbound`. 응답마다 요율 헤더를 `ratelimit.observe` 로 넘긴다.
+        """
         if self._http is None:
             # T217 — 공개 경로(klines·depth)도 같은 IP 가중치를 쓴다. 서명 클라이언트만
             #    헤더를 읽으면 klines 가 얼마나 먹는지 영영 모른다 (실측으로 잡은 구멍).

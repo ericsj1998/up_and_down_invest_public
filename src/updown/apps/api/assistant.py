@@ -54,6 +54,14 @@ _GROUP_OF: dict[str, MarketGroup] = {
 
 
 def _draft_json(row: AssistantDraft | None) -> dict[str, Any] | None:
+    """초안 행 → 응답 JSON. None(초안 없음 = 처음)은 그대로 None.
+
+    Args:
+        row: 초안 행.
+
+    Returns:
+        `{step, answers, consent_version, consent_at, fund_id, updated_at}` 또는 None.
+    """
     if row is None:
         return None
     return {
@@ -67,6 +75,14 @@ def _draft_json(row: AssistantDraft | None) -> dict[str, Any] | None:
 
 
 async def _who(request: Request) -> Caller | None:
+    """호출자 — 미들웨어가 채운 것을 우선하고 없으면 쿠키에서 푼다. 비로그인은 None(막지 않는다).
+
+    Args:
+        request: 요청.
+
+    Returns:
+        호출자 또는 None. 게스트 흐름은 서버에 초안을 두지 않으므로 여기서 거르지 않는다.
+    """
     found = getattr(request.state, "caller", None)
     if isinstance(found, Caller):
         return found

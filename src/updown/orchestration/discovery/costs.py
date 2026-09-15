@@ -146,6 +146,9 @@ class Funding:
     def moments(self) -> list[datetime]:
         """정산 시각들, 오름차순 — **이분 탐색용**.
 
+        Returns:
+            `schedule` 의 키를 정렬한 목록. 인스턴스마다 한 번만 만든다.
+
         Note:
             🔴 이것이 없으면 `crossings` 가 매번 전체 이력(4년 x 3회/일 = 5,000건)을
             훑는다. 스캔은 이 함수를 **수십만 번** 부르므로 그것만으로 죽는다 —
@@ -265,7 +268,13 @@ class Overnight:
     tail_pct_per_day: float
 
     def __post_init__(self) -> None:
-        """가정이 유리한 쪽으로 기울지 않았는지 확인한다."""
+        """가정이 유리한 쪽으로 기울지 않았는지 확인한다.
+
+        Raises:
+            ValueError: 스프레드 배수가 1 미만 · 테일 페널티가 음수 · 시간이 0~23 밖.
+                앞의 둘은 야간이 **더 싸다**는 모델이라 근거가 없고, 시간 범위 밖은
+                `is_night` 가 영영 참이 안 되는 조용한 오타다.
+        """
         if self.spread_multiple < 1:
             raise ValueError(f"야간 스프레드 배수는 1 이상이어야 한다: {self.spread_multiple}")
         if self.tail_pct_per_day < 0:

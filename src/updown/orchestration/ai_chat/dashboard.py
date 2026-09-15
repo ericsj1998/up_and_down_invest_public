@@ -121,6 +121,25 @@ def resolve(spec: dict[str, Any], results: dict[str, Any]) -> Resolved:
 def _block(
     kind: str, block: dict[str, Any], results: dict[str, Any], out: Resolved
 ) -> dict[str, Any] | None:
+    """블록 하나를 종류별 규칙으로 채운다.
+
+    - `text` 는 참조가 없다(글만).
+    - `cards` 는 항목의 `value` 칸마다 `_fill` — 리터럴 숫자는 여기서 거부된다.
+    - `chips` · `sparkline` · `table` 은 `from` 목록 참조 하나에서 행을 받는다. 표의 열은
+      그 행의 키(`a.b` 꼴 허용)다.
+
+    참조가 없거나 못 찾으면 블록을 버리지 않고 **빈 항목**으로 그린다 — 근거 없는 칸이
+    비어 보이는 것이 곧 채점 신호다.
+
+    Args:
+        kind: `KINDS` 안의 부품 종류 (호출 전에 걸러진다).
+        block: 모델이 낸 블록 명세.
+        results: 이번 턴의 도구 이름 → 결과.
+        out: `missing` · `dropped` 를 쌓는 곳.
+
+    Returns:
+        화면이 그릴 블록. 지금은 늘 값을 돌려주지만 서명은 버릴 여지를 남긴다.
+    """
     title = str(block.get("title") or "")
     if kind == "text":
         text = block.get("text")
@@ -190,6 +209,19 @@ def _block(
 def _from_list(
     block: dict[str, Any], results: dict[str, Any], out: Resolved
 ) -> tuple[bool, list[Any]]:
+    """블록의 `from` 참조를 목록으로 푼다.
+
+    참조 자체가 없으면 명세 결함이라 `dropped` 에, 있는데 못 찾거나 목록이 아니면 환각
+    후보라 `missing` 에 적는다 — 둘은 채점에서 다른 뜻이다.
+
+    Args:
+        block: `from` 을 가진 블록 명세.
+        results: 이번 턴의 도구 이름 → 결과.
+        out: 사유를 쌓는 곳.
+
+    Returns:
+        `(찾았나, 행들)`. 못 찾으면 `(False, [])`.
+    """
     ref = block.get("from")
     if not isinstance(ref, str):
         out.dropped.append(f"{block.get('kind')} 블록에 from 참조가 없다")

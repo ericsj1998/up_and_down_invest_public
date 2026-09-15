@@ -69,7 +69,12 @@ class BinanceTradeError(RuntimeError):
     """바이낸스 서명 호출 실패 — 코드·본문을 담는다 (규칙 #8)."""
 
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
-        """메시지와 상태코드를 담는다."""
+        """메시지와 상태코드를 담는다.
+
+        Args:
+            message: 사람이 읽을 이유 — 경로·거래소 코드·본문 요약.
+            status_code: HTTP 상태. 전송 실패(타임아웃·연결)면 None.
+        """
         super().__init__(message)
         self.status_code = status_code
 
@@ -166,6 +171,12 @@ class BinanceTradeClient:
             self._http = None
 
     def _session(self) -> Outbound:
+        """연결 풀 — 처음 쓸 때 만든다.
+
+        Returns:
+            재시도 없는 `Outbound`. 주문 경로의 재시도는 체결 여부를 먼저 조회한 뒤 부르는 쪽이
+            한다 (절대 규칙 #6) — 전송 계층이 조용히 재전송하면 그 규칙이 깨진다.
+        """
         if self._http is None:
             # 🔴 `NO_RETRY` — 주문은 층이 재시도하지 않는다. -1021(시계) 한 번 재전송은
             #    아래 `_request` 가 스스로 한다(집행 전 거절이라 멱등 규칙과 충돌 없음).

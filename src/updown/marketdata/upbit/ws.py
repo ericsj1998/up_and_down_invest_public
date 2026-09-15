@@ -303,6 +303,7 @@ async def collect_quotes(stream: UpbitTickerStream, *, limit: int, timeout: floa
     collected: list[Quote] = []
 
     async def _pump() -> None:
+        """`limit` 개까지 모으고 제너레이터를 닫는다 — `wait_for` 가 시간으로 끊는 대상."""
         async with aclosing(stream.stream()) as quotes:
             async for quote in quotes:
                 collected.append(quote)

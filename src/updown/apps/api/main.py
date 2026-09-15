@@ -172,6 +172,11 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     Returns:
         구성된 앱.
 
+    Raises:
+        Exception: 앱을 만드는 동안은 던지지 않는다 — 자원 오류(설정 · DB · Redis)는 `lifespan`
+            기동 때 난다. 유일한 `raise` 는 5xx 로그 처리기(`_log_5xx`)가 `HTTPException` 이
+            아닌 예외를 그대로 되던지는 방어선이며, 등록 조건상 거기에 오지 않는다.
+
     Note:
         팩토리로 두는 이유는 테스트다. 모듈 임포트 시점에 앱을 만들면 그 순간 DB·Redis
         연결이 생겨, 컨테이너 없이는 임포트조차 못 하게 된다.

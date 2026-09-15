@@ -82,6 +82,18 @@ def parse_fomc_page(html: str) -> list[FomcMeeting]:
 
 
 def _meeting(year: int, month_text: str, days: str, star: bool) -> FomcMeeting | None:
+    """달·날짜 토큰 한 쌍을 회의로.
+
+    Args:
+        year: 직전 연도 머리.
+        month_text: `January` 또는 달이 걸치는 `October/November`.
+        days: `27-28` 또는 하루짜리 `15`.
+        star: 페이지의 `*` — 경제전망(SEP) 동반.
+
+    Returns:
+        회의. 모르는 달 이름이거나 날짜가 성립하지 않으면(`31-1` 을 2월에 두는 식) None — 페이지
+        모양이 바뀐 것이므로 호출자가 빈 목록으로 실패를 알아차린다.
+    """
     names = month_text.lower().split("/")
     first = MONTHS.get(names[0])
     last = MONTHS.get(names[-1])

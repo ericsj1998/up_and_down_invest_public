@@ -50,7 +50,11 @@ class InprocEngine:
     """리더가 될 때 시작하고 내려갈 때 멈추는 작은 스케줄러."""
 
     def __init__(self, redis: Any) -> None:
-        """비트를 쓸 Redis 를 받는다. 스케줄러는 `start` 에서 만든다."""
+        """비트를 쓸 Redis 를 받는다. 스케줄러는 `start` 에서 만든다.
+
+        Args:
+            redis: 자원 비트를 쓸 `redis.asyncio` 클라이언트 — 앱 상태의 것을 그대로 받는다.
+        """
         self._redis = redis
         self._scheduler: AsyncIOScheduler | None = None
 

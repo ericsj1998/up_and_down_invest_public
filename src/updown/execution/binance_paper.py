@@ -97,6 +97,7 @@ class BinancePaperAdapter:
     # ── 단위 변환 (계약 = stepSize 코인) ─────────────────────────────
 
     async def _step(self, instrument: Instrument) -> Decimal:
+        """종목의 stepSize(계약 1 = 코인 몇 개) — 심볼당 한 번 명세를 읽고 기억한다."""
         symbol = to_symbol(instrument)
         if symbol not in self._steps:
             spec = await self._trade.contract(symbol)

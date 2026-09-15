@@ -52,6 +52,14 @@ _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _load() -> lm.Paths:
+    """45미래 경로 파일 — 첫 호출에 한 번 읽어 프로세스에 든다 (1 GB 서버 · ~3.6 MB).
+
+    Returns:
+        경로 묶음.
+
+    Raises:
+        HTTPException: 503 파일 없음 — 만드는 스크립트 이름을 같이 적는다.
+    """
     global _paths
     if _paths is None:
         if not PATHS_FILE.exists():
@@ -128,6 +136,18 @@ async def _closes_since(
 
 
 def _parse_since(raw: str | None) -> datetime | None:
+    """쿼리의 `since` → UTC 시각. 비우면 None(호출자가 펀드 시작으로 대신한다).
+
+    Args:
+        raw: ISO 8601. 시간대가 없으면 UTC 로 본다.
+
+    Returns:
+        시각 또는 None.
+
+    Raises:
+        HTTPException: 400 ISO 가 아니거나 `EARLIEST`~지금 밖 — 캐시 키가 되는 값이라 아무
+            시각이나 받지 않는다.
+    """
     if not raw:
         return None
     try:
@@ -208,6 +228,18 @@ async def live_match(since: str | None = None) -> dict[str, Any]:
 
 
 def _index_of(paths: lm.Paths, m: lm.Match) -> int:
+    """매치(시나리오 · 씨앗) → 경로 파일의 번호.
+
+    Args:
+        paths: 경로 묶음.
+        m: 매치 결과.
+
+    Returns:
+        0 부터의 번호.
+
+    Raises:
+        KeyError: 매치가 경로 파일에 없다 — 같은 파일에서 나온 매치라 정상이면 안 난다.
+    """
     for i in range(paths.count):
         if paths.scenario[i] == m.scenario and paths.seed[i] == m.seed:
             return i
@@ -239,6 +271,14 @@ _backtests: dict[str, ec.Store] = {}
 
 
 def _detail_store() -> ec.Store:
+    """합성 상세 저장소 — 첫 호출에 한 번 읽어 프로세스에 든다 (`_load` 와 같은 이유).
+
+    Returns:
+        저장소.
+
+    Raises:
+        HTTPException: 503 파일 없음.
+    """
     global _detail
     if _detail is None:
         if not DETAIL_FILE.exists():
@@ -257,6 +297,17 @@ def _detail_store() -> ec.Store:
 
 
 def _backtest_store(bt_id: str) -> ec.Store:
+    """백테스트 저장소 — 이름으로 찾아 한 번 읽고 프로세스에 든다. 어시스턴트 · 채팅도 쓴다.
+
+    Args:
+        bt_id: `BACKTESTS` 의 키 (`backtest_<이름>.json` 의 이름).
+
+    Returns:
+        저장소.
+
+    Raises:
+        HTTPException: 404 모르는 이름 · 503 발견은 됐는데 파일이 사라짐.
+    """
     path = BACKTESTS.get(bt_id)
     if path is None:
         raise HTTPException(404, f"모르는 백테스트: {bt_id}")
@@ -276,6 +327,18 @@ def _backtest_store(bt_id: str) -> ec.Store:
 
 
 def _future_index(store: ec.Store, k: int) -> int:
+    """미래 번호 검사 — 범위 밖은 404 (배열 인덱스 오류를 500 으로 흘리지 않는다).
+
+    Args:
+        store: 합성 저장소.
+        k: 미래 번호.
+
+    Returns:
+        `k` 그대로.
+
+    Raises:
+        HTTPException: 404 범위 밖.
+    """
     n = int(store.head.get("futures", 0))
     if k < 0 or k >= n:
         raise HTTPException(404, f"미래 번호가 범위 밖이다: {k} (0~{n - 1})")
@@ -283,6 +346,18 @@ def _future_index(store: ec.Store, k: int) -> int:
 
 
 def _symbol_of(symbols: list[str], symbol: str | None) -> str:
+    """쿼리의 종목 → 저장소의 종목. 비우면 첫 종목.
+
+    Args:
+        symbols: 저장소가 아는 종목들.
+        symbol: 요청한 종목. None 이면 첫 것.
+
+    Returns:
+        종목.
+
+    Raises:
+        HTTPException: 404 저장소에 종목이 없거나 모르는 종목.
+    """
     if symbol is None:
         if not symbols:
             raise HTTPException(404, "종목이 없다")

@@ -128,10 +128,23 @@ class Tool:
 
 
 def _obj(properties: dict[str, Any], required: Sequence[str] = ()) -> dict[str, Any]:
+    """도구 인자 JSON 스키마 한 벌 — `TOOLS` 선언의 반복을 줄인다."""
     return {"type": "object", "properties": properties, "required": list(required)}
 
 
 def _decimal(raw: object) -> Decimal | None:
+    """모델이 준 숫자 인자를 `Decimal` 로 — 못 읽으면 None (호출처가 결정한다).
+
+    `bool` 은 숫자로 안 받는다 — JSON 의 `true` 가 `Decimal(1)` 로 조용히 통과하면 예산·가격
+    자리에 1 이 들어간다. `str(raw)` 를 거치는 것은 float 의 이진 오차를 그대로 옮기지 않기
+    위해서다.
+
+    Args:
+        raw: 모델 인자 값 (숫자 · 문자열 · None).
+
+    Returns:
+        값. None · 불리언 · 파싱 실패는 None.
+    """
     if raw is None or isinstance(raw, bool):
         return None
     try:
@@ -197,6 +210,19 @@ def market_for(group: str, live: Sequence[str]) -> Market | None:
 
 
 def _market(args: dict[str, Any], ctx: ToolContext) -> Market:
+    """인자의 `market`, 없으면 첫 라이브 시장 — 시장을 짐작하지 않는다.
+
+    Args:
+        args: 모델 인자.
+        ctx: `live_markets` 를 가진 자원.
+
+    Returns:
+        시장.
+
+    Raises:
+        ValueError: 인자에도 없고 열린 라이브 시장도 없다 — 모델에게 `market` 을 달라고
+            돌려보내는 문장이다.
+    """
     raw = str(args.get("market") or "")
     if raw:
         return Market(raw)
@@ -209,6 +235,19 @@ def _market(args: dict[str, Any], ctx: ToolContext) -> Market:
 
 
 async def _symbol_resolve(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`symbol_resolve` — 사람이 말한 이름을 별칭 사전으로 코드·시장에 맞춘다.
+
+    코인은 그 갈래의 첫 라이브 시장 표기(`coin_symbol`)로 바꿔 주므로 모델은 표기를 짐작할
+    필요가 없다. 라이브 시장이 없는 갈래는 `tradable_now=False` 로 남긴다.
+
+    Args:
+        args: `query`.
+        ctx: 별칭 사전 · 라이브 시장.
+
+    Returns:
+        `{query, candidates: [{symbol, name, group, market, confidence, tradable_now}]}`.
+        사전에 없으면 후보가 비고 `note` 로 종목 코드를 다시 물으라고 한다.
+    """
     query = str(args.get("query") or "")
     found = ctx.aliases.resolve(query)
     rows: list[dict[str, Any]] = []
@@ -245,6 +284,20 @@ async def _symbol_resolve(args: dict[str, Any], ctx: ToolContext) -> dict[str, A
 async def _candles(
     ctx: ToolContext, instrument: Instrument, frame: Timeframe, bars: int
 ) -> list[Candle]:
+    """최근 `bars` 봉 + 지표 워밍업(`WARMUP_BARS`) — **확정 봉만**.
+
+    마지막 봉은 진행 중일 수 있어 뗀다 — 진행 중인 봉으로 요약하면 값이 조회 시각마다 흔들리고
+    "현재 구조" 가 예측처럼 읽힌다.
+
+    Args:
+        ctx: 조회 어댑터·봉 캐시.
+        instrument: 종목.
+        frame: 축.
+        bars: 요약에 쓸 봉 수 (워밍업은 여기 더한다).
+
+    Returns:
+        시각 순 봉. 어댑터가 빈 목록을 주면 빈 목록.
+    """
     adapter = _quotes(ctx, instrument.market)
     now = datetime.now(UTC)
     rows = await adapter.get_candles(
@@ -272,6 +325,28 @@ def _quotes(ctx: ToolContext, market: Market) -> Any:
 
 
 async def _market_view(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`market_view` — 축별 현재 구조 요약 + 전고/전저 + 현재가 위아래 첫 지지/저항.
+
+    모르는 축은 예외 대신 `{"note": "모르는 축"}` 으로 남겨 나머지 축은 살린다. 레벨·계획선은
+    `ctx.frame`(`/analysis/frame`)이 있을 때만 붙고, 그 실패는 `levels_error` 로 적는다 — 봉
+    요약까지 같이 죽이지 않는다.
+
+    Args:
+        args: `symbol` · `market` · `timeframes`(기본 `["1h", "1d"]`).
+        ctx: 봉 캐시 · 레벨 콜백.
+
+    Returns:
+        `{symbol, market, frames: {축: 요약}, swings?, levels?, nearest_support?,
+        nearest_resistance?, levels_raw?, plan?, note?, round_trip_pct?, levels_error?}`.
+        `swings` 는 첫 축 기준이다 (T270 #2).
+
+    Raises:
+        ValueError: `symbol` 이 없다 — 먼저 `symbol_resolve` 를 부르라는 뜻.
+
+    Note:
+        예측이 아니라 지금 구조의 서술이다. 계획선(`plan`)은 분석의 제안이고 집행값이 아니다
+        (절대 규칙 #2·#4).
+    """
     market = _market(args, ctx)
     symbol = str(args.get("symbol") or "")
     if not symbol:
@@ -313,6 +388,18 @@ async def _market_view(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
 
 
 async def _extremes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`extremes` — 일봉 252개(1년)로 52주 고저 대비 거리 · SMA200 이격 · RSI 극단.
+
+    Args:
+        args: `symbol` · `market`.
+        ctx: 봉 캐시.
+
+    Returns:
+        `{symbol, market, **extremes_of(일봉)}`.
+
+    Raises:
+        ValueError: `symbol` 이 없다.
+    """
     market = _market(args, ctx)
     symbol = str(args.get("symbol") or "")
     if not symbol:
@@ -324,6 +411,21 @@ async def _extremes(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 async def _base_rate(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`base_rate` — "오를 확률" 질문에 예측 대신 **과거 빈도**를 준다.
+
+    `horizon` 은 1~250 봉으로 자른다 — 너무 길면 표본이 겹쳐 n 이 뜻을 잃는다. 봉은
+    `BASE_RATE_BARS` 만큼 받되 적재분이 적으면 그만큼만이고, 그 사실은 결과의 n 이 말한다.
+
+    Args:
+        args: `symbol` · `market` · `timeframe`(기본 1d) · `horizon`(기본 `DEFAULT_HORIZON`).
+        ctx: 봉 캐시.
+
+    Returns:
+        `{symbol, market, timeframe, **base_rate(...)}` — `sentence` 를 모델이 그대로 옮긴다.
+
+    Raises:
+        ValueError: `symbol` 이 없거나 축 이름을 모른다.
+    """
     market = _market(args, ctx)
     symbol = str(args.get("symbol") or "")
     if not symbol:
@@ -349,6 +451,15 @@ async def _base_rate(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 async def _macro_view(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`macro_view` — 거시 지표 묶음(`/macro` 모양)을 주입 콜백에서 그대로 받는다.
+
+    Args:
+        args: `keys`(고를 지표 열쇠 목록 · 비면 전부).
+        ctx: `macro` 콜백. 없으면 "출처가 없다" 쪽지.
+
+    Returns:
+        콜백 결과. 못 받은 지표는 그 안의 `failures` 에 이유가 있다.
+    """
     if ctx.macro is None:
         return {"note": "거시 지표 출처가 이 서버에 없다"}
     raw = args.get("keys")
@@ -360,6 +471,15 @@ async def _macro_view(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 async def _valuation(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`valuation` — 종목 하나의 재무 표(배수·백분위·깃발·점수)를 주입 콜백에서 받는다.
+
+    Args:
+        args: `symbol` · `market`.
+        ctx: `valuation` 콜백. 없으면 "출처가 없다" 쪽지.
+
+    Returns:
+        콜백 결과 그대로.
+    """
     if ctx.valuation is None:
         return {"note": "재무 출처가 이 서버에 없다"}
     market = _market(args, ctx)
@@ -369,6 +489,18 @@ async def _valuation(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 async def _positions(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`positions` — 거래소가 말하는 잔고·포지션·조건부·주문·판 + 펀드 목록.
+
+    Args:
+        args: `symbol`(비면 전체) · `market`.
+        ctx: `exchange_state` 콜백(없으면 쪽지) · `funds` 콜백(없으면 빈 목록).
+
+    Returns:
+        `{market, balance, positions, position, stops, orders, runs, funds, note}`.
+
+    Note:
+        값은 거래소 응답이지 원장이 아니다 — 원장·거래소 대조는 판 화면의 감사가 한다.
+    """
     if ctx.exchange_state is None:
         return {"note": "거래소 연결이 이 서버에 없다"}
     market = _market(args, ctx)
@@ -390,6 +522,15 @@ async def _positions(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 async def _playbook_expectation(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`playbook_expectation` — 매매법 하나의 저장소 실측(과거 창)을 그대로 돌려준다.
+
+    Args:
+        args: `playbook`(매매법 id).
+        ctx: `evidence` 콜백. 없으면 "저장소가 없다" 쪽지.
+
+    Returns:
+        콜백 결과 그대로 — 예상이 아니라 과거다.
+    """
     if ctx.evidence is None:
         return {"note": "저장소가 이 서버에 없다"}
     playbook = str(args.get("playbook") or "")
@@ -406,6 +547,14 @@ MIN_COIN_MARGIN = Decimal(50)
 
 
 def _group_default(ctx: ToolContext) -> str:
+    """모델이 갈래를 안 줬을 때의 기본 — 열린 라이브 시장으로 해외 → 국내 → 코인 순.
+
+    Args:
+        ctx: `live_markets`.
+
+    Returns:
+        `foreign` · `domestic` · `coin`.
+    """
     live = tuple(m.upper() for m in ctx.live_markets)
     if any(m in live for m in ("NASDAQ", "NYSE")):
         return "foreign"
@@ -415,6 +564,28 @@ def _group_default(ctx: ToolContext) -> str:
 
 
 async def _recommend_by_budget(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`recommend_by_budget` — 예산·갈래·성향에 맞는 매매법 후보와 최소 단위, 저평가 후보.
+
+    고르는 것은 `/assistant/preview` 콜백(`ctx.candidates`)이다 — 여기서는 `chosen` 과 나머지를
+    갈라 모델이 읽기 좋게 줄일 뿐이다. 주식 갈래면 저평가 순위(`ctx.ranking`) 상위 3 을 덧붙이고,
+    그 실패는 `value_error` 로 남겨 본 추천은 살린다.
+
+    Args:
+        args: `budget`(필수) · `currency`(기본 KRW) · `group`(기본 `_group_default`) ·
+            `tier`(기본 balanced).
+        ctx: `candidates` 콜백(없으면 쪽지) · `ranking` 콜백.
+
+    Returns:
+        `{budget, currency, group, tier, tier_label, market, chosen, alternatives(≤5), min_unit,
+        note, value_candidates?, value_note?, value_error?}`.
+
+    Raises:
+        ValueError: `budget` 이 없거나 0 이하.
+
+    Note:
+        수량·금액 배분을 정하지 않는다 — `min_unit` 은 "이 예산으로 살 수 있나" 의 안내 문장이고,
+        숫자는 저장소 과거 창 실측이라 "예상" 이 아니다 (절대 규칙 #2).
+    """
     if ctx.candidates is None:
         return {"note": "매매법 저장소가 이 서버에 없다"}
     budget = _decimal(args.get("budget"))
@@ -477,6 +648,25 @@ async def _recommend_by_budget(args: dict[str, Any], ctx: ToolContext) -> dict[s
 
 
 async def _portfolio_exposure(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`portfolio_exposure` — 살아 있는 판의 증거금을 갈래·매매법 등급별로 나눠 쏠림을 본다.
+
+    분모(총자본)는 라이브 시장마다 거래소 잔고 `total` 을 더한 것이고, 못 읽은 시장은 0 으로
+    센다 — 그래서 `total <= 0` 이면 비율은 None 이다. 등급은 매매법마다 저장소를 한 번만
+    묻고(`tiers` 캐시), 못 구하면 `"?"` 로 따로 센다. 공격적 등급이 `AGGRESSIVE_WARN_PCT` 를
+    넘으면 반대 성향(safe) 후보를 하나 붙인다.
+
+    Args:
+        args: 안 쓴다 (인자 없는 도구).
+        ctx: `open_runs` · `exchange_state`(둘 다 있어야 한다) · `evidence` · `candidates`.
+
+    Returns:
+        `{total, totals_by_market, runs, by_group, by_tier, ai_margin, ai_share_pct, warnings,
+        opposite_tier_pick, note}` — 금액은 문자열, 비율은 소수 1자리 문자열.
+
+    Note:
+        상관계수는 재지 않는다 — 갈래·등급 비중만이다. 경고 문턱(`EXPOSURE_WARN_PCT` 등)은 이
+        도구의 문장을 정할 뿐 어떤 판도 줄이지 않는다.
+    """
     del args
     if ctx.open_runs is None or ctx.exchange_state is None:
         return {"note": "판 원장·거래소 연결이 이 서버에 없다"}
@@ -518,6 +708,7 @@ async def _portfolio_exposure(args: dict[str, Any], ctx: ToolContext) -> dict[st
             ai_margin += margin
 
     def _share(value: Decimal) -> str | None:
+        """총자본 대비 비율(%) 문자열 — 분모가 없으면 None (0% 로 꾸미지 않는다)."""
         return None if total <= 0 else f"{value / total * 100:.1f}"
 
     warnings: list[str] = []
@@ -559,6 +750,24 @@ SCREEN_LIMIT = 50
 
 
 async def _screen(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`screen` — 서버가 거르고 정렬한 스크리닝 표를 모델 예산에 맞게 납작하게 만든다.
+
+    정렬 방향 기본값은 열에 따른다 — 배수(PER·PBR·PSR·부채비율)는 낮을수록 싸니 `asc`, 점수·
+    모멘텀·시총은 `desc`. `limit` 은 1~`SCREEN_LIMIT`. `metrics.<키>.value` 를 상위 키로 끌어올려
+    모델이 중첩을 안 읽게 한다.
+
+    Args:
+        args: `market` · `sort`(기본 score) · `order` · `min_score` · `no_flags` · `limit`(기본 10).
+        ctx: `screen` 콜백. 없으면 쪽지.
+
+    Returns:
+        `{market, sort, order, total, rows: [{symbol, stage, score, price, market_cap, flags, per,
+        pbr, psr, fcf_yield, momentum_60d, why}], note}`.
+
+    Note:
+        순위는 코드가 매기고 모델은 읽기만 한다 — 표 밖의 순위나 숫자를 만들지 않게 `note` 로
+        못 박는다.
+    """
     if ctx.screen is None:
         return {"note": "재무 스크리닝이 이 서버에 없다"}
     market = _market(args, ctx)
@@ -579,6 +788,7 @@ async def _screen(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     rows = cast("list[dict[str, Any]]", got.get("rows") or [])
 
     def _metric(row: dict[str, Any], key: str) -> Any:
+        """`row.metrics[key].value` — 없으면 None."""
         metrics = cast("dict[str, Any]", row.get("metrics") or {})
         cell = cast("dict[str, Any]", metrics.get(key) or {})
         return cell.get("value")
@@ -615,6 +825,19 @@ async def _screen(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
 
 async def _render_dashboard(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`render_dashboard` — 모델의 명세를 이번 턴 도구 결과(`ctx.turn_results`)로 채운다 (T256).
+
+    Args:
+        args: `spec` = `{title, blocks: [...]}`.
+        ctx: `turn_results` — 이 턴에 성공한 도구의 마지막 결과.
+
+    Returns:
+        `{dashboard, missing, dropped, note}` — `dashboard` 는 화면이 그대로 그리고, `missing`
+        은 근거 없는 참조(환각 후보 · T249 채점 원료), `dropped` 는 버린 블록 사유.
+
+    Raises:
+        ValueError: `spec` 이 객체가 아니다.
+    """
     raw = args.get("spec")
     if not isinstance(raw, dict):
         raise ValueError("spec 이 없다 — {title, blocks: [...]} 객체를 준다")
@@ -632,6 +855,15 @@ async def _render_dashboard(args: dict[str, Any], ctx: ToolContext) -> dict[str,
 
 
 async def _trade_journal(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`trade_journal` — 끝난 AI 매매의 최근 `limit` 건과 근거별 적중 수.
+
+    Args:
+        args: `limit`(기본 10) — 끝에서 센다(최근순).
+        ctx: `journal` 콜백. 없으면 쪽지.
+
+    Returns:
+        `{rows, reason_hits, n, note}`. `n` 은 자르기 전 전체 건수다.
+    """
     if ctx.journal is None:
         return {"note": "매매일지가 이 서버에 없다"}
     limit = int(args.get("limit") or 10)
@@ -647,6 +879,31 @@ async def _trade_journal(args: dict[str, Any], ctx: ToolContext) -> dict[str, An
 
 
 async def _propose_order(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """`propose_order` — 모델이 낸 진입·손절·1차·목표를 RiskManager(`confirm`)로 확정한 **제안**.
+
+    주문을 내지 않는다. 결과는 `ChatResult.proposals` 로 화면에 가고 사람이 확인해야 판이 뜬다.
+    코인이 아니면 배율은 1 로 고정하고 숏은 `blocked` 로 돌려보낸다(현물 롱 온리 · 절대 규칙
+    #10). `confirm` 이 기하 결함으로 `ValueError` 를 내면 그것도 `blocked` 한 줄이다 — 모델에게
+    예외 대신 사실로 넘긴다.
+
+    Args:
+        args: `symbol` · `market` · `entry` · `stop` · `target`(셋 필수) · `first`(없으면 진입과
+            목표의 가운데) · `leverage`(코인만) · `short` · `reasons`.
+        ctx: `risk`(RiskSettings) · `round_trip`(시장 왕복 비용).
+
+    Returns:
+        `{ok, symbol, market, group, long, entry, stop, stop_moved, first, target, leverage, rr,
+        need_pct, stop_pct, blocked, warnings, reasons, note}`. 막혔으면
+        `{ok: False, blocked, symbol}` 만.
+
+    Raises:
+        ValueError: `entry` · `stop` · `target` 중 하나라도 못 읽었다.
+
+    Note:
+        🔴 집행값의 SSoT 는 `confirm` 이 돌려준 `stop` 이다 — 모델이 낸 손절이 청산 안쪽으로
+        당겨졌으면 `stop_moved=True` 로 드러나고, 모델은 그 사실을 사람에게 말해야 한다
+        (절대 규칙 #2·#4). 수량은 여기서 정하지 않는다.
+    """
     market = _market(args, ctx)
     symbol = str(args.get("symbol") or "")
     entry, stop, first, target = (

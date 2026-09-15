@@ -56,11 +56,13 @@ def discovered_detectors() -> tuple[tuple[str, DetectorFactory], ...]:
 
 
 def _from_env(name: str) -> list[Path]:
+    """환경 변수의 `os.pathsep` 구분 경로 목록. 비었거나 없으면 빈 목록."""
     raw = os.environ.get(name, "")
     return [Path(part) for part in raw.split(os.pathsep) if part.strip()]
 
 
 def _from_entry_points(group: str) -> list[Path]:
+    """그 그룹의 entry point 들이 가리키는 경로 — 이름순이라 순서가 설치 순서에 안 흔들린다."""
     found: list[Path] = []
     for point in sorted(entry_points(group=group), key=lambda item: item.name):
         locate = point.load()
@@ -69,6 +71,18 @@ def _from_entry_points(group: str) -> list[Path]:
 
 
 def _unique(paths: Iterable[Path]) -> tuple[Path, ...]:
+    """같은 곳을 가리키는 경로를 한 번만 남긴다 — 순서는 첫 등장 기준.
+
+    entry point 와 환경 변수·기본값이 같은 디렉토리를 가리키면(로컬 개발에서 흔하다) 같은 룰이
+    두 번 읽힌다. 같음은 `resolve()` 로 재되 돌려주는 것은 원래 표기다 — 로그·오류에 그 표기가
+    실린다.
+
+    Args:
+        paths: 우선순위 순의 경로들.
+
+    Returns:
+        중복을 뺀 경로들 (원래 표기 · 원래 순서).
+    """
     seen: set[Path] = set()
     out: list[Path] = []
     for path in paths:

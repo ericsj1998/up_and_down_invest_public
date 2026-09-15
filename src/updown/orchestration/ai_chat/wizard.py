@@ -126,6 +126,7 @@ def blockers(step: str, answers: dict[str, Any], *, consented: bool) -> list[str
 
 
 def _fmt_pct(value: object) -> str:
+    """저장소 수치를 `+1.2%` 꼴로 — 없으면 "—", 숫자가 아니면 원문 (0 으로 꾸미지 않는다)."""
     if value is None:
         return "—"
     try:
@@ -135,6 +136,18 @@ def _fmt_pct(value: object) -> str:
 
 
 def _candidate_options(preview: dict[str, Any] | None, chosen: str) -> list[dict[str, Any]]:
+    """`setup` 단계의 매매법 선택지 — `/assistant/preview` 후보를 카드 옵션 모양으로.
+
+    힌트 한 줄은 저장소 실측(연수 · 손익 · MDD · 매매 수)이고 저장소가 없으면 그렇다고 적는다.
+    `selected` 는 사용자가 고른 것, 없으면 미리보기의 `chosen`(기본값)이다.
+
+    Args:
+        preview: `/assistant/preview` 응답. None 이면 빈 목록.
+        chosen: 사용자가 이미 고른 매매법 id (비면 기본값을 선택 상태로).
+
+    Returns:
+        `[{value, label, hint, recommended, default, selected}]`.
+    """
     if not preview:
         return []
     rows = cast("list[dict[str, Any]]", preview.get("candidates") or [])

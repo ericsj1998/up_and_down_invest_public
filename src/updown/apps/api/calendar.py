@@ -62,6 +62,15 @@ def attach_calendar(settings: Settings | None, *, adapter: CalendarAdapter | Non
 
 
 def _adapter_or_503() -> CalendarAdapter:
+    """달력 어댑터 — 첫 요청 때 `provider` 가 만들고 프로세스에 든다 (규칙 #0 · 획득 지점은 하나).
+
+    Returns:
+        어댑터. 시험이 `attach_calendar(adapter=...)` 로 넣은 것이 있으면 그것.
+
+    Raises:
+        HTTPException: 503 설정이 안 붙었거나 `config/calendar.yml` 이 깨짐 — 조용히 빈 달력을
+            주지 않는다(규칙 #8).
+    """
     global _adapter
     if _adapter is not None:
         return _adapter
@@ -168,6 +177,13 @@ async def upcoming_snapshot(
     cache_key = f"{start.isoformat()}:{span}"
 
     async def _build() -> dict[str, Any]:
+        """캐시 미스 때만 출처를 부른다 — `TtlCache.get_or_fetch` 에 넘기는 팩토리.
+
+        `actuals` 는 여기 넣지 않는다 — 발표 뒤 30분을 기다리게 하지 않으려고 캐시 밖에서 붙인다.
+
+        Returns:
+            `{at, from, to, days, events, failures, watch}`.
+        """
         events, failures = await adapter.upcoming(start, end, _market_of())
         return {
             "at": datetime.now(UTC).isoformat(),

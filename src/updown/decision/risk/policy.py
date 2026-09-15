@@ -96,7 +96,12 @@ class RiskAnchor:
     daily_loss_limit_pct: Decimal
 
     def __post_init__(self) -> None:
-        """앵커 자체의 불변식 — 설정 오타가 정책으로 흘러가지 않게 한다."""
+        """앵커 자체의 불변식 — 설정 오타가 정책으로 흘러가지 않게 한다.
+
+        Raises:
+            RiskConfigError: `risk_pct`·`min_rr` 이 0 이하, `max_positions` 가 1 미만,
+                `daily_loss_limit_pct` 가 0 이상(손실 한도는 음수다)인 경우.
+        """
         if self.risk_pct <= 0:
             raise RiskConfigError(f"risk_pct 는 0 보다 커야 한다: {self.risk_pct}")
         if self.min_rr <= 0:
@@ -196,7 +201,13 @@ class RiskSettings:
     funding_shortfall_tolerance_pct: Decimal = Decimal("0.02")
 
     def __post_init__(self) -> None:
-        """앵커 3개가 전부 있어야 보간이 성립한다."""
+        """앵커 3개가 전부 있어야 보간이 성립한다 — 나머지 칸의 범위도 여기서 한 번에 막는다.
+
+        Raises:
+            RiskConfigError: 앵커가 빠졌거나 · `stop_min_pct` 가 (0, 1) 밖 · β 가 (0, 1] 밖 ·
+                `stop_protect_ratio` 가 (0, 1] 밖이거나 β 이하 · ATR 배수 후보가 §6.1 범위
+                (1.5~3.0) 밖 · 어느 앵커의 `risk_pct` 가 `risk_pct_hard_cap` 을 넘는 경우.
+        """
         missing = set(RiskPresetName) - set(self.anchors)
         if missing:
             raise RiskConfigError(

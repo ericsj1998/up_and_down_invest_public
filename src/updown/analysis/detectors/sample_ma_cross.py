@@ -138,16 +138,6 @@ def ma_cross_setup(
     )
 
 
-def _iparam(params: RuleParams, key: str, default: int) -> int:
-    value = params.values.get(key)
-    return int(value) if value is not None else default  # type: ignore[arg-type]
-
-
-def _dparam(params: RuleParams, key: str, default: str) -> Decimal:
-    value = params.values.get(key)
-    return Decimal(str(value)) if value is not None else Decimal(default)
-
-
 @dataclass(frozen=True, slots=True)
 class SampleMaCrossDetector(RuleDetectorBase):
     """이동평균 교차 탐지기 — 시간축마다 `ma_cross_setup` 을 부른다.
@@ -178,10 +168,10 @@ class SampleMaCrossDetector(RuleDetectorBase):
                 list(candles),
                 timeframe,
                 round_trip,
-                fast=_iparam(p, "fast", 20),
-                slow=_iparam(p, "slow", 50),
-                sl_atr=_dparam(p, "sl_atr", "2.0"),
-                rr=_dparam(p, "rr", "2.0"),
+                fast=p.as_int("fast", 20),
+                slow=p.as_int("slow", 50),
+                sl_atr=p.as_decimal("sl_atr", "2.0"),
+                rr=p.as_decimal("rr", "2.0"),
                 allow_short=bool(p.values.get("allow_short", False)),
             )
             if made is not None:

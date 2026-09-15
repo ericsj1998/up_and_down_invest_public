@@ -248,6 +248,15 @@ class ScreenQuery:
 
 
 def _sort_value(row: dict[str, Any], key: str) -> float | None:
+    """정렬 키의 값 — 최상위 칸(점수 · 모멘텀 · 시총)과 지표 칸(`metrics[key].value`)을 한 길로.
+
+    Args:
+        row: `ranking_row` 모양.
+        key: `SORTS` 의 키.
+
+    Returns:
+        숫자. 없거나 숫자가 아니면 None — 호출자가 뒤로 보낸다.
+    """
     if key == "score":
         found = row.get("score")
     elif key in ("momentum_60d", "market_cap"):

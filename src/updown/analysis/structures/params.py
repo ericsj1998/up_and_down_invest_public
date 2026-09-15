@@ -73,7 +73,11 @@ class SwingParams:
     right_bars: int = 2
 
     def __post_init__(self) -> None:
-        """양쪽 비교 봉이 최소 1개는 있어야 극값 판정이 성립한다."""
+        """양쪽 비교 봉이 최소 1개는 있어야 극값 판정이 성립한다.
+
+        Raises:
+            StructureConfigError: `left_bars` 또는 `right_bars` 가 1 미만인 경우.
+        """
         if self.left_bars < 1 or self.right_bars < 1:
             raise StructureConfigError(
                 f"swing.left_bars/right_bars 는 1 이상이어야 한다 — "
@@ -178,7 +182,11 @@ class TrendlineParams:
     anchor_slack_bars: int = 2
 
     def __post_init__(self) -> None:
-        """2점 미만으로는 직선이 정의되지 않는다."""
+        """2점 미만으로는 직선이 정의되지 않는다.
+
+        Raises:
+            StructureConfigError: `min_touches` 가 2 미만이거나 `touch_atr_multiple` 이 음수인 경우.
+        """
         if self.min_touches < 2:
             raise StructureConfigError(
                 f"trendline.min_touches 는 2 이상이어야 한다 (직선은 2점으로 정의된다) — "
@@ -220,7 +228,11 @@ class BoxParams:
     min_touches: int = 2
 
     def __post_init__(self) -> None:
-        """1점은 레벨이 아니다 — 최소 2번은 닿아야 지지·저항이라 부를 수 있다."""
+        """1점은 레벨이 아니다 — 최소 2번은 닿아야 지지·저항이라 부를 수 있다.
+
+        Raises:
+            StructureConfigError: `min_touches` 가 2 미만인 경우.
+        """
         if self.min_touches < 2:
             raise StructureConfigError(
                 f"box.min_touches 는 2 이상이어야 한다 (1점은 레벨이 아니다) — "

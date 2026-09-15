@@ -62,7 +62,11 @@ class Basket:
     version: str = "v1"
 
     def __post_init__(self) -> None:
-        """경계에서 한 번 검증한다 — 잘못된 바스켓은 만드는 순간 터진다 (규칙 #8)."""
+        """경계에서 한 번 검증한다 — 잘못된 바스켓은 만드는 순간 터진다 (규칙 #8).
+
+        Raises:
+            BasketError: 비었거나, 종목이 중복이거나, 비중이 0 이하인 경우.
+        """
         if not self.members:
             raise BasketError("바스켓이 비었다 — 최소 한 종목")
         symbols = [m.symbol for m in self.members]

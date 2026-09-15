@@ -37,6 +37,7 @@ MONO = "'SFMono-Regular',Consolas,'Liberation Mono',monospace"
 
 
 def _esc(text: str) -> str:
+    """HTML 이스케이프 — 종목·매매법 이름은 사용자 입력이라 그대로 박지 않는다."""
     return _html.escape(str(text))
 
 
@@ -53,6 +54,7 @@ def _usdt(value: Decimal | None, digits: int = 2) -> str:
 
 
 def _pct(value: Decimal | None) -> str:
+    """부호 붙은 % — None 이면 '—' (모른다)."""
     return "—" if value is None else f"{value:+.2f}%"
 
 
@@ -146,6 +148,11 @@ class FundSection:
 
 
 def _fund_card(fund: FundSection) -> str:
+    """펀드 카드 — 제목줄 · 4칸 수치(잔고·TWR·MDD·금액 손익) · 그 펀드의 판 카드들.
+
+    MDD 0 은 "—" 로 그린다(낙폭 없음). 이 구간 주문이 없는 펀드는 빈 카드 대신 그 사실을 한
+    줄로 적는다.
+    """
     cells = [
         ("펀드 잔고", _usdt(fund.balance), INK),
         ("성과 (TWR)", _pct(fund.twr_pct), _sign(fund.twr_pct)),
@@ -179,6 +186,7 @@ def _fund_card(fund: FundSection) -> str:
 
 
 def _equity_block(equity_b64: str | None) -> str:
+    """계좌 총액 시계열 PNG 블록 — 기록이 없으면 그 사실을 한 줄로 (빈 그림을 안 그린다)."""
     if equity_b64 is None:
         return (
             f'<div style="color:{FAINT};font-size:12px;margin:10px 4px 0;">'
@@ -192,6 +200,7 @@ def _equity_block(equity_b64: str | None) -> str:
 
 
 def _chart_img(section: RunSection) -> str:
+    """판 차트 — base64 를 data URI 로 인라인 (이메일은 외부 이미지를 막는다)."""
     src = f"data:image/png;base64,{section.chart_b64}"
     return (
         f'<img src="{src}" alt="{_esc(section.symbol)} 차트" '
@@ -201,6 +210,7 @@ def _chart_img(section: RunSection) -> str:
 
 
 def _stat_grid(section: RunSection) -> str:
+    """판 카드의 4칸 수치줄 — 24h 전 잔고 · 손익률 · 익절 수 · 손절 수."""
     g = _sign(section.gain_pct)
     tk = UP if section.takes else MUTED
     st = DOWN if section.stops else MUTED
@@ -224,6 +234,7 @@ def _stat_grid(section: RunSection) -> str:
 
 
 def _trade_table(section: RunSection) -> str:
+    """판 카드의 주문 내역 표 — 방향·진입·청산·손익·결말·배율·시각. 주문이 없으면 빈 문자열."""
     if not section.trades:
         return ""
     head = "".join(
@@ -269,6 +280,7 @@ def _trade_table(section: RunSection) -> str:
 
 
 def _run_card(section: RunSection) -> str:
+    """판 카드 — 제목줄(종목·매매법·손익률) · 구간 · 차트 · 수치줄 · 주문표."""
     g = _sign(section.gain_pct)
     return (
         f'<div style="border:1px solid {LINE};border-radius:14px;overflow:hidden;'
@@ -286,6 +298,7 @@ def _run_card(section: RunSection) -> str:
 
 
 def _band(title: str, when: str) -> str:
+    """머리띠 — 왼쪽 제목 · 오른쪽 시각."""
     return (
         f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
         f'style="background:{BAND};"><tr>'
@@ -297,6 +310,7 @@ def _band(title: str, when: str) -> str:
 
 
 def _shell(inner: str) -> str:
+    """바깥 틀 — 회색 바탕 위 가운데 정렬된 680px 패널."""
     return (
         f'<div style="background:#eef1f5;padding:24px 12px;font-family:{FONT};">'
         f'<div style="max-width:680px;margin:0 auto;background:{PANEL};border:1px solid {LINE};'
@@ -305,6 +319,7 @@ def _shell(inner: str) -> str:
 
 
 def _hero(account: AccountSummary) -> str:
+    """계좌 요약 3칸 — 전체 금액 · 24h 손익(실현+미실현) · 금고. 각 칸에 공식 한 줄을 붙인다."""
     cells = [
         ("계좌 전체 금액", _usdt(account.total), INK, "잔액 + 모든 판 증거금"),
         (
@@ -337,12 +352,14 @@ def _hero(account: AccountSummary) -> str:
 
 
 def _add(a: Decimal | None, b: Decimal | None) -> Decimal | None:
+    """둘 다 모르면 None, 하나라도 알면 아는 것만 더한다 — 모르는 값을 0 으로 꾸미지 않는다."""
     if a is None and b is None:
         return None
     return (a or Decimal(0)) + (b or Decimal(0))
 
 
 def _subrow(account: AccountSummary) -> str:
+    """요약 아래 한 줄 — 잔액 · 승률 · 매매 수 · 판 수 · 원장/거래소 대조 결과."""
     ok_col = UP if not account.diverged else DOWN
     ok_txt = "원장·거래소 대조 일치" if not account.diverged else "🔴 원장·거래소 대조 불일치"
     wr = "—" if account.win_rate is None else f"{account.win_rate:.0f}%"
@@ -426,6 +443,7 @@ def render_run_email(section: RunSection, *, when: str) -> str:
 
 
 def _doc(inner: str) -> str:
+    """완결 HTML 문서 — doctype · charset · viewport 만 얹는다."""
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'

@@ -49,10 +49,27 @@ EQUITY_KEYS: frozenset[str] = frozenset({"value", "fund"})
 
 
 def _is_md_table(obj: dict[str, Any]) -> bool:
+    """마크다운 표 노드인가 — `{heading, columns, rows}` 셋을 다 갖고 `rows` 가 목록."""
     return {"heading", "columns", "rows"} <= obj.keys() and isinstance(obj.get("rows"), list)
 
 
 def _walk(obj: Any, *, under_equity: bool) -> Any:
+    """응답 트리를 재귀로 걸으며 손익 열쇠를 None 으로 바꾼 사본을 만든다.
+
+    재귀인 이유: 손익 열쇠는 응답의 정해진 자리에 있지 않다 — 요약·연차별·매매별 목록·중첩 dict
+    어디에나 있어서(`PNL_KEYS` "어디에 있든"), 자리를 열거하면 새 응답 하나에 새는 구멍이 생긴다.
+    모양을 모르는 채 열쇠 이름으로만 가리는 것이 이 함수의 전부다.
+
+    Args:
+        obj: 응답의 한 노드 (dict · list · 스칼라).
+        under_equity: `equity` 아래를 걷는 중인가 — 그 안에서만 `EQUITY_KEYS`(`value` · `fund`)
+            도 가린다. 같은 이름이라도 `equity` 밖(시장 지수 곡선)의 값은 공개 가격이라 남긴다.
+
+    Returns:
+        같은 모양의 새 객체 — 원본은 건드리지 않는다. dict 는 `PNL_KEYS` 열쇠의 값이 None 이고,
+        마크다운 표는 행을 비우고 `redacted: True` 를 찍는다 (문장 속 수익률은 열쇠로 못 잡는다).
+        스칼라는 그대로.
+    """
     if isinstance(obj, dict):
         d = cast("dict[str, Any]", obj)
         if _is_md_table(d):

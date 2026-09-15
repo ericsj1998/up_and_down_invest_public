@@ -208,6 +208,15 @@ def price_lookup(
     table = sorted(closes)
 
     def _at(on: date) -> Decimal | None:
+        """기준일 이하의 가장 최근 종가 — 휴장일이면 직전 거래일로 내려간다.
+
+        Args:
+            on: 기준일.
+
+        Returns:
+            종가. 직전 거래일이 `stale_days` 보다 멀면 None — 상장폐지·결측 구간에 옛 가격을
+            "그날 가격" 으로 끌어오지 않는다 (`PRICE_STALE_DAYS`).
+        """
         found: tuple[date, Decimal] | None = None
         for row in table:
             if row[0] <= on:
@@ -222,10 +231,12 @@ def price_lookup(
 
 
 def _sources(*points: Point | None) -> tuple[str, ...]:
+    """지표에 쓰인 점들의 공시 접수 번호 — 중복 없이, 처음 나온 순서대로."""
     return tuple(dict.fromkeys(s for p in points if p is not None for s in p.sources))
 
 
 def _val(point: Point | None) -> Decimal | None:
+    """없는 점은 None 값으로 — 비율 함수(`safe_div` 등)가 None 을 자료 없음으로 받는다."""
     return None if point is None else point.value
 
 
@@ -419,6 +430,16 @@ def compute_metrics(
 
 
 def _flags(metrics: Mapping[str, MetricValue], config: FundamentalsConfig) -> tuple[Flag, ...]:
+    """부채 깃발 — 설정 문턱(`config.score.debt`)을 넘은 지표만 든다.
+
+    Args:
+        metrics: `compute_metrics` 가 낸 지표.
+        config: 문턱이 들어 있는 설정.
+
+    Returns:
+        넘은 지표의 깃발 (부채비율 · 순부채/EBITDA · 이자보상 · 유동비율 순). 값이 None 인
+        지표는 판정하지 않는다 — "자료 없음" 을 "위험" 으로 읽지 않는다.
+    """
     debt = config.score.debt
     out: list[Flag] = []
     d_e = metrics["debt_to_equity"].value
@@ -439,6 +460,7 @@ def _flags(metrics: Mapping[str, MetricValue], config: FundamentalsConfig) -> tu
 
 
 def _negative_equity(known: Sequence[FinancialFact]) -> Flag | None:
+    """자본잠식 깃발 — 최신 자본이 0 이하면. 자본 자료가 없으면 깃발도 없다."""
     equity = latest_instant(known, "equity")
     if equity is not None and equity.value <= 0:
         return Flag("negative_equity", "자본잠식", equity.value, Decimal(0))

@@ -80,6 +80,17 @@ FRAME_FLAGS = "trend.structure,structure.swing_trendline"
 
 
 async def _who_or_403(request: Request) -> Caller:
+    """로그인한 사람만 통과시킨다 — 대화를 저장하려면 이메일이 있어야 하고 토큰이 든다.
+
+    Args:
+        request: 요청. 미들웨어가 `request.state.caller` 를 채웠으면 그것을 쓴다(쿠키 재해석 없음).
+
+    Returns:
+        호출자.
+
+    Raises:
+        HTTPException: 403 비로그인 · 게스트(공유 계정은 대화를 남길 곳이 없다).
+    """
     found = getattr(request.state, "caller", None)
     who = found if isinstance(found, Caller) else await caller_of(request)
     if who is None:
@@ -97,6 +108,16 @@ async def _who_or_403(request: Request) -> Caller:
 
 
 def _thread_json(row: ChatThread, *, with_messages: bool) -> dict[str, Any]:
+    """대화 행 → 응답 JSON.
+
+    Args:
+        row: 대화 행.
+        with_messages: 메시지 본문까지 싣나. 목록(최근 50건)은 건수만 — 본문은 도구 결과까지
+            들어 있어 무겁다.
+
+    Returns:
+        `{id, title, model, created_at, updated_at, count, messages?}`.
+    """
     out: dict[str, Any] = {
         "id": row.id,
         "title": row.title,
@@ -294,6 +315,18 @@ def _history_of(messages: list[Any]) -> list[ChatMessage]:
 
 
 def _message_json(message: ChatMessage, **extra: Any) -> dict[str, Any]:
+    """모델 메시지 → 저장용 dict — `_history_of` 가 다음 턴에 되살릴 수 있는 모양.
+
+    도구 호출(`tool_calls`)과 그 응답의 짝(`tool_call_id`)을 남겨야 한다 — 짝이 끊긴 대화는 모델이
+    거부한다.
+
+    Args:
+        message: 이번 턴에 오간 메시지 하나.
+        **extra: 덧붙일 칸(모델·근거 등). 같은 키면 덮어쓴다.
+
+    Returns:
+        `{role, content, at, tool_calls?, tool_call_id?, ...extra}`.
+    """
     out: dict[str, Any] = {
         "role": message.role,
         "content": message.content,
@@ -329,6 +362,14 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
         return await exchange_api._state_fresh(symbol or exchange_api.DEFAULT_SYMBOL, market)  # pyright: ignore[reportPrivateUsage]
 
     async def _evidence(playbook: str) -> dict[str, Any]:
+        """매매법의 백테스트 요약 — 저장소가 없으면 아는 이름을 돌려주고, 권한 없으면 손익을 가린다.
+
+        Args:
+            playbook: 매매법 id. 판이 넘기는 id 는 `@버전` 이 붙어 있어 떼고 찾는다 (T248 3차).
+
+        Returns:
+            `bt_summary` 모양. 저장소가 없으면 `{note, known}`.
+        """
         if playbook not in ev.BACKTESTS and playbook.split("@", 1)[0] in ev.BACKTESTS:
             playbook = playbook.split("@", 1)[0]  # 판의 매매법 id 는 버전이 붙는다 (T248 3차)
         if playbook not in ev.BACKTESTS:
@@ -346,7 +387,15 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
         return assistant_api.preview_for(who, group, tier)
 
     async def _wizard(action: str) -> dict[str, Any]:
-        # T271 — 카드를 띄우기만 한다. 초안이 중간이면 이어서, 끝났으면 start 는 처음부터.
+        """온보딩 카드를 띄우기만 한다 (T271) — 단계 이동은 `wizard_step` 끝점이 한다.
+
+        Args:
+            action: 도구가 고른 동작. 초안이 중간이면 이어서 보여 주고, 끝난 초안에 `start` 가
+                오면 처음(동의)부터.
+
+        Returns:
+            `{card, step}`.
+        """
         row = await assistant_api.draft_of(who)
         answers = wizard.merge_answers(dict(row.answers) if row is not None else {}, {})
         step = "consent" if row is None else row.step
@@ -374,6 +423,19 @@ def _context(who: Caller, report: Reporter, provider: MarketDataProvider) -> Too
         no_flags: bool,
         limit: int,
     ) -> dict[str, Any]:
+        """재무 스크리너 — 도구 인자를 끝점 인자로 옮긴다 (`Decimal` → float · `limit` → `size`).
+
+        Args:
+            market: 시장.
+            sort: 정렬 키.
+            order: `asc` · `desc`.
+            min_score: 이 점수 미만은 뺀다. None 이면 안 거른다.
+            no_flags: 부채 깃발이 있으면 뺀다.
+            limit: 몇 줄.
+
+        Returns:
+            `fundamentals.screen` 의 응답.
+        """
         return await fundamentals_api.screen(
             market=market,
             sort=sort,
@@ -450,6 +512,17 @@ async def ask(
     email = who.email
 
     async def _work(report: Reporter) -> dict[str, Any]:
+        """작업 본체 — 요청 밖(작업 레지스트리)에서 돈다. 탭을 닫아도 답은 끝까지 대화에 남는다.
+
+        모델 클라이언트·시세 제공자는 작업 안에서 열고 닫는다 — 요청 수명과 다르다. 저장은
+        `_persist` 가 한 트랜잭션으로(대화 + `ai_chat_turn`).
+
+        Args:
+            report: 진행 줄 — SSE 로 나간다.
+
+        Returns:
+            저장한 assistant 메시지 (`auto` 결과 포함).
+        """
         client = NvidiaClient(endpoint=pool.endpoint or NvidiaClient.endpoint)
         async with MarketDataProvider() as provider:
             ctx = _context(who, report, provider)

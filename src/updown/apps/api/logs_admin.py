@@ -48,6 +48,18 @@ MAX_ZIP_BYTES = 2 * 1024**3
 
 
 def _parse_day(text: str, name: str) -> date:
+    """쿼리의 날짜 문자열 → `date`. 정규식으로 모양부터 거른다 — 파일 이름 글로브에 들어가는 값이다.
+
+    Args:
+        text: `YYYY-MM-DD`.
+        name: 오류 문장에 쓸 인자 이름.
+
+    Returns:
+        날짜.
+
+    Raises:
+        HTTPException: 422 모양이 아니거나 없는 날짜.
+    """
     if not _DATE.match(text):
         raise HTTPException(422, f"{name} 은 YYYY-MM-DD 다 — 받은 값: {text!r}")
     try:
@@ -57,6 +69,17 @@ def _parse_day(text: str, name: str) -> date:
 
 
 def _parse_kinds(text: str | None) -> tuple[str, ...]:
+    """쿼리의 `kinds` (쉼표 구분) → 로그 종류 묶음. 비우면 전부.
+
+    Args:
+        text: `api,engine` 같은 목록. None · 빈 문자열이면 `KINDS` 전부.
+
+    Returns:
+        종류 묶음.
+
+    Raises:
+        HTTPException: 422 모르는 종류 — 허용 목록을 같이 적는다.
+    """
     if not text:
         return KINDS
     picked = tuple(k.strip() for k in text.split(",") if k.strip())

@@ -21,6 +21,18 @@ from typing import Any, cast
 
 
 def _array(path: Path, code: str) -> array[float] | array[int]:
+    """원시 배열 파일(리틀엔디언)을 `array` 로 — 없으면 빈 배열.
+
+    파일은 연구 PC 가 LE 로 남기므로 빅엔디언 호스트에서만 바이트를 뒤집는다. 없는 파일을
+    빈 배열로 두는 것은 `.i32` 가 없는 산출물(매매 없음)이 정상이기 때문이다.
+
+    Args:
+        path: `.f32` · `.i32` 파일.
+        code: `array` 타입코드 (`"f"` · `"i"`).
+
+    Returns:
+        읽은 배열.
+    """
     arr: array[Any] = array(code)
     if path.exists():
         arr.frombytes(path.read_bytes())

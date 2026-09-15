@@ -48,6 +48,9 @@ class Candle:
     def __post_init__(self) -> None:
         """타임존 불변식을 강제한다 (spec §12.3).
 
+        Raises:
+            ValueError: `ts` 가 naive 이거나 UTC 가 아닌 경우 (클래스 docstring).
+
         Note:
             이것은 구현 로직이 아니라 **타입 계약의 일부**다. 파이썬 타입 힌트로는
             "UTC aware datetime"을 표현할 수 없어 런타임 가드로 보완한다.

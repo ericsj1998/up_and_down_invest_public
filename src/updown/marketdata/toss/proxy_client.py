@@ -284,6 +284,15 @@ class TossProxyClient:
 
     @staticmethod
     def _detail(response: httpx.Response) -> str:
+        """오류 응답에서 사람이 읽을 이유 — 프록시(FastAPI)의 `detail` 이 있으면 그것.
+
+        Args:
+            response: 200 이 아닌 응답.
+
+        Returns:
+            `detail`(300자) 또는 본문 앞 200자. 던지지 않는다 — 이유를 만드는 자리에서 또 실패하면
+            원래 오류가 묻힌다.
+        """
         try:
             body: object = response.json()
         except ValueError:
@@ -296,6 +305,18 @@ class TossProxyClient:
 
     @staticmethod
     def _unwrap(response: httpx.Response, path: str) -> object:
+        """프록시 봉투 `{"result": ...}` 를 벗긴다 — 직접 클라이언트와 같은 본문을 돌려주기 위해.
+
+        Args:
+            response: 프록시 응답.
+            path: 오류 메시지에 적을 경로.
+
+        Returns:
+            `result` 값 — 모양은 경로마다 다르다 (호출자가 안다).
+
+        Raises:
+            TossApiError: JSON 이 아니거나, 객체가 아니거나, `result` 가 없다.
+        """
         try:
             body: object = response.json()
         except ValueError as exc:

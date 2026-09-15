@@ -57,6 +57,18 @@ class MacroClient:
         await self._http.aclose()
 
     async def _get_json(self, url: str, **params: str) -> dict[str, Any]:
+        """GET 하고 객체 JSON 을 돌려준다.
+
+        Args:
+            url: 출처 URL.
+            **params: 쿼리. 없으면 안 붙인다.
+
+        Returns:
+            JSON 객체.
+
+        Raises:
+            MacroSourceError: 호출 실패 또는 본문이 객체가 아닌 경우 — 이유를 160자로 자른다.
+        """
         try:
             body = await self._http.get_json(url, params=params or None)
         except OutboundError as exc:

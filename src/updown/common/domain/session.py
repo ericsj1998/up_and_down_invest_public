@@ -717,6 +717,20 @@ def parse_calendar(raw: Mapping[str, object]) -> MarketCalendar:
         )
 
     def _per_market(node: object, field: str) -> dict[Market, frozenset[date]]:
+        """시장별 날짜 목록 절(`holidays` · `early_close_days`)을 읽는다.
+
+        Args:
+            node: 파싱된 YAML 값. None 이면 빈 매핑 — 절이 없는 것은 허용한다
+                (코인처럼 휴장이 없는 시장만 있을 수 있다).
+            field: 오류 메시지에 실을 절 이름.
+
+        Returns:
+            시장 → 날짜 집합.
+
+        Raises:
+            SessionConfigError: 시장별 매핑이 아니거나 날짜 형식이 틀린 경우.
+            ValueError: 키가 `Market` 에 없는 시장 이름인 경우.
+        """
         if node is None:
             return {}
         if not isinstance(node, dict):

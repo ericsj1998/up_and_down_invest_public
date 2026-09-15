@@ -191,6 +191,15 @@ def evaluate(f: Facts) -> list[Gate]:
 
 
 async def _db_counts(factory: Any) -> tuple[int, int]:
+    """라이브 판의 끝난 매매 수와 캘리브레이션 행 수 — 100회 판정(T157)의 분모.
+
+    Args:
+        factory: DB 세션 팩토리.
+
+    Returns:
+        `(끝난 라이브 매매, 캘리브레이션 행)`. DB 를 못 읽으면 `(-1, -1)` — 0 은 "아직 없음" 이라
+        못 읽음과 섞이면 안 된다.
+    """
     try:
         async with factory() as session:
             trades = (
@@ -229,6 +238,11 @@ def _live_branch_blocked() -> bool:
 
 
 def _slippage_sources() -> dict[str, str]:
+    """코인 시장별 슬리피지 출처(실측 · 가정) — 비용표를 못 읽으면 빈 dict (판정은 `evaluate` 가).
+
+    Returns:
+        시장 이름 → `SlippageSource` 값.
+    """
     try:
         table = load_cost_table(DEFAULT_CONFIG_PATH)
     except Exception:
@@ -267,6 +281,11 @@ def _decision() -> dict[str, Any] | None:
 
 
 def _breaker_wired() -> bool:
+    """세션에 브레이커 필드(`breaker_tripped_at`)가 배선돼 있나 — 코드 사실이라 import 로 본다.
+
+    Returns:
+        있으면 True. 모듈을 못 읽으면 False (배선 안 됨과 같은 판정).
+    """
     try:
         session_mod = importlib.import_module("updown.orchestration.walkforward.session")
         return "breaker_tripped_at" in getattr(

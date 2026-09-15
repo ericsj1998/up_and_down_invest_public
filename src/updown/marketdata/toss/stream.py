@@ -168,6 +168,16 @@ class TossCandleStream:
             await asyncio.sleep(self._poll if opened else CLOSED_POLL_SECONDS)
 
     def _is_open(self, instrument: Instrument, now: datetime) -> bool:
+        """캘린더가 `OPEN` 인가 — 상태가 **바뀔 때만** 로그를 남긴다 (폴링마다 찍으면 넘친다).
+
+        Args:
+            instrument: 종목 (시장으로 캘린더를 본다).
+            now: 지금.
+
+        Returns:
+            열려 있으면 True. 휴장·시간외·`UNKNOWN` 은 전부 False — 모르는 것을 열렸다고 하지
+            않는다.
+        """
         state, why = self._calendar.tradability(instrument.market, now)
         is_open = state is Tradability.OPEN
         if self._was_open.get(instrument.symbol) != is_open:
@@ -179,6 +189,10 @@ class TossCandleStream:
         return is_open
 
     async def _fetch(self, instrument: Instrument, now: datetime) -> list[Candle]:
+        """최근 세 봉(진행 중 + 두 개 전)을 정규장만 남겨 오름차순으로.
+
+        두 봉 전까지 보는 것은 여유다 — 폴링 한 번이 늦어도 직전 봉의 마감을 놓치지 않는다.
+        """
         start = floor_to_interval(now, self._timeframe) - self._span * 2
         rows = await self._quotes.get_candles(instrument, self._timeframe, start, now)
         # ⚠️ 시간외 봉을 거른다 — 정규장만 걷는 세션(T239 `regular_only`)과 같은 눈.
@@ -187,6 +201,19 @@ class TossCandleStream:
     def _advance(
         self, instrument: Instrument, rows: list[Candle], now: datetime
     ) -> list[LiveCandle]:
+        """조회 결과를 마지막으로 본 봉과 비교해 **바뀐 것만** 낸다.
+
+        Args:
+            instrument: 종목.
+            rows: `_fetch` 가 준 오름차순 봉.
+            now: 지금 — 시계 기준 마감 판정에 쓴다.
+
+        Returns:
+            낼 봉들. 더 새 봉이 보이면 직전 봉을 `closed=True` 로 한 번 내고 새 봉을 연다. 같은
+            봉의 값이 바뀌면 열린 채로 다시 낸다. 마지막으로, 마지막 봉의 끝을 시계가 지났으면
+            그 봉을 닫는다 — 이것이 없으면 하루의 마지막 봉은 다음 거래일 아침까지 안 닫힌다
+            (모듈 docstring). 한 봉의 마감은 `_closed` 로 한 번만 낸다.
+        """
         key = instrument.symbol
         out: list[LiveCandle] = []
         for candle in rows:

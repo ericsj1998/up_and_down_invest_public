@@ -156,7 +156,12 @@ class Plan:
     limit: float | None = None
 
     def __post_init__(self) -> None:
-        """방향과 가격의 관계를 확인한다."""
+        """방향과 가격의 관계를 확인한다.
+
+        Raises:
+            ValueError: 배율이 0 이하 · 롱인데 손절이 익절 이상 · 숏인데 익절이 손절 이상.
+                방향과 어긋난 가격은 부호 실수이고, 그대로 돌리면 손익이 통째로 뒤집힌다.
+        """
         if self.leverage <= 0:
             raise ValueError(f"배율은 0 보다 커야 한다: {self.leverage}")
         if self.direction is Direction.LONG and not self.stop < self.target:

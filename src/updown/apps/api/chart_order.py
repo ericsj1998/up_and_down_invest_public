@@ -91,6 +91,17 @@ RULE_PREFIX = "structure@"
 
 
 def _bucket(key: str) -> Bucket:
+    """갈래 이름 → 갈래 설정 (`load_buckets` 표). 모르는 이름은 400 에 아는 이름을 같이 적는다.
+
+    Args:
+        key: 갈래 이름 (`swing` 등).
+
+    Returns:
+        갈래 설정 — 진입 축 · 유효 봉 수 · 라벨.
+
+    Raises:
+        HTTPException: 503 갈래 표를 못 읽음 · 400 모르는 갈래.
+    """
     try:
         table = load_buckets()
     except BucketConfigError as exc:
@@ -102,6 +113,14 @@ def _bucket(key: str) -> Bucket:
 
 
 def _dec(raw: object) -> Decimal | None:
+    """응답 JSON 의 값 → Decimal. 비었거나 숫자가 아니면 None — 지어낸 0 은 가격이 된다.
+
+    Args:
+        raw: 문자열·숫자·None.
+
+    Returns:
+        Decimal 또는 None.
+    """
     if raw in (None, ""):
         return None
     try:
@@ -111,6 +130,7 @@ def _dec(raw: object) -> Decimal | None:
 
 
 def _band(level: dict[str, Any] | None) -> tuple[Decimal, Decimal] | None:
+    """구조물 레벨 dict → `(low, high)`. 한쪽이라도 없으면 None (반쪽 띠는 쓰지 않는다)."""
     if level is None:
         return None
     low, high = _dec(level.get("low")), _dec(level.get("high"))
@@ -531,6 +551,17 @@ async def _assemble(
 
 
 def _market(raw: str) -> Market:
+    """시장 이름 → `Market`. 모르면 400.
+
+    Args:
+        raw: 요청의 시장 이름.
+
+    Returns:
+        시장.
+
+    Raises:
+        HTTPException: 400 모르는 시장.
+    """
     try:
         return Market(raw)
     except ValueError as exc:
@@ -621,6 +652,18 @@ async def analyze_job(payload: Annotated[dict[str, Any], Body()]) -> dict[str, A
 
 
 async def _login_not_guest(request: Request) -> str:
+    """모델을 부르는(토큰이 드는) 끝점의 문 — 게스트는 막고, 호출자의 이메일을 상한 열쇠로 준다.
+
+    Args:
+        request: 요청.
+
+    Returns:
+        이메일. 시험 우회(호출자 없음)는 고정값 `bypass@local` — 미들웨어가 이미 통과시킨 요청만
+        여기 온다.
+
+    Raises:
+        HTTPException: 403 게스트.
+    """
     who = await caller_of(request)
     if who is None:
         return "bypass@local"  # 시험 우회 — 미들웨어가 이미 통과시킨 요청만 여기 온다
@@ -688,6 +731,24 @@ async def run(request: Request, payload: Annotated[dict[str, Any], Body()]) -> d
     _RUNS_TODAY.put(email, used + 1)
 
     async def _work(report: Reporter) -> dict[str, Any]:
+        """작업 본체 — 모델 호출이 분 단위라 요청 밖(작업 레지스트리)에서 돈다.
+
+        Args:
+            report: 진행 줄 — SSE 로 나간다.
+
+        Returns:
+            `{analysis, participants, run_id?, matures_at?}` — 원장 저장이 실패하면 `run_id` 가
+            없고 참가자는 우리-구조 하나뿐이다(실패 이유는 진행 줄에).
+
+        Note:
+            흐름은 넷이다. ① 규칙 분석(`_assemble`) — 구조·후보·계획을 만들고 걸린 시간을
+            우리-구조 참가자의 지연으로 적는다. ② 근거 문장(`evidence_note_of`) — 같은 구조를
+            "AI+근거" 참가자에게 줄 말로 바꾼다. ③ 스냅샷 한 번 고정 뒤 모델 호출 둘을 **동시에**
+            (`asyncio.gather`) — 같은 봉을 봐야 비교이고, 순차는 18초 + 87초였다(2026-09-11).
+            ④ 원장 저장(`save_result`) — AI 단독·AI+근거는 이름(`EVIDENCE_SUFFIX`)으로 가르고
+            우리-구조는 `extra_proposals` 로 같은 회차에 붙인다. 저장 실패는 삼키고 진행 줄에
+            남긴다 — 분석 결과까지 잃게 하지 않는다.
+        """
         started = time.perf_counter()
         report(f"구조 읽기 — {symbol} {chosen.label}({chosen.entry.value})")
         analysis, cands = await _assemble(symbol, mk, chosen, report)
@@ -799,6 +860,15 @@ def _recent_cycle(symbol: str, mk: Market, bucket: str, within: timedelta) -> Cy
 
 
 def _judgement_by(ledger: Ledger, run_id: str) -> dict[str, dict[str, Any]]:
+    """회차의 판정을 참가자 이름으로 찾게 — 아직 안 익었으면 빈 dict.
+
+    Args:
+        ledger: 실험 원장.
+        run_id: 회차.
+
+    Returns:
+        참가자 → 판정 줄.
+    """
     verdict = ledger.verdict(run_id)
     if verdict is None:
         return {}
@@ -933,6 +1003,14 @@ async def resolve(request: Request) -> dict[str, Any]:
     await _login_not_guest(request)
 
     async def _work(report: Reporter) -> dict[str, Any]:
+        """작업 본체 — 회차마다 봉을 받아 판정하므로 요청 안에서 기다리게 하지 않는다.
+
+        Args:
+            report: 진행 줄 — SSE 로 나간다.
+
+        Returns:
+            `{judged: [run_id, ...]}`.
+        """
         async with MarketDataProvider() as provider:
             done = await resolve_due(
                 provider,

@@ -88,6 +88,17 @@ def _safe_name(value: str, what: str) -> str:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    """결과 JSON 파일을 읽는다 — 못 읽거나 dict 가 아니면 400 (파일 이름은 사용자 입력이다).
+
+    Args:
+        path: 파일.
+
+    Returns:
+        파싱된 dict.
+
+    Raises:
+        HTTPException: 400 읽기 실패 · JSON 아님 · dict 모양 아님.
+    """
     try:
         got = _dict(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError) as exc:
@@ -144,6 +155,7 @@ _PAYLOAD_KEEP = 2
 
 
 def _stamp(path: Path) -> tuple[float, int]:
+    """파일의 `(mtime, size)` — 색인·페이로드 캐시가 "같은 파일" 을 판정하는 열쇠."""
     st = path.stat()
     return st.st_mtime, st.st_size
 
@@ -171,6 +183,14 @@ def load_payload(path: Path) -> dict[str, Any]:
 
 
 def _read_index(index_path: Path | None) -> dict[str, Any]:
+    """요약 색인을 읽는다 — 없거나 깨졌으면 빈 dict (색인은 편의라 실패해도 목록은 만든다).
+
+    Args:
+        index_path: 색인 파일. None 이면 색인을 안 쓴다.
+
+    Returns:
+        `{경로: {mtime, size, summary}}`.
+    """
     if index_path is None or not index_path.is_file():
         return {}
     try:
@@ -219,6 +239,17 @@ def list_runs(dirs: list[Path], index_path: Path | None = None) -> list[dict[str
 
 
 def _find_file(name: str) -> Path:
+    """이름으로 결과 파일을 찾는다 — 연구 디렉터리들을 순서대로. 이름은 먼저 `_safe_name` 을 거친다.
+
+    Args:
+        name: 파일 이름(경로 아님).
+
+    Returns:
+        찾은 파일.
+
+    Raises:
+        HTTPException: 400 이상한 이름 · 404 어느 디렉터리에도 없음(찾은 곳을 같이 적는다).
+    """
     name = _safe_name(name, "파일")
     for base in research_dirs():
         candidate = base / name
@@ -230,6 +261,18 @@ def _find_file(name: str) -> Path:
 
 
 def _run_of(payload: dict[str, Any], config: str) -> dict[str, Any]:
+    """결과 JSON 의 `runs` 에서 설정 이름이 맞는 실행 하나.
+
+    Args:
+        payload: 결과 JSON.
+        config: `runs[].config.name`.
+
+    Returns:
+        그 실행.
+
+    Raises:
+        HTTPException: 404 설정 이름 없음.
+    """
     for raw in _list(payload.get("runs")) or []:
         run = _dict(raw)
         cfg = _dict(run.get("config")) if run is not None else None

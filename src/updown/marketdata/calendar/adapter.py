@@ -101,6 +101,19 @@ class CalendarAdapter:
     def _fred_job(
         self, watch: Watch, start: date, end: date
     ) -> Callable[[], Awaitable[list[ScheduledEvent]]]:
+        """감시 항목 하나의 FRED 조회를 코루틴 팩토리로 묶는다.
+
+        Args:
+            watch: 감시 항목 (발표 id · 표시 이름).
+            start: 창 첫날.
+            end: 창 마지막 날.
+
+        Returns:
+            부르면 그 발표의 예정일을 사건 목록으로 돌려주는 함수. 팩토리로 만드는 이유는 `watch`
+            를 **호출 시점이 아니라 생성 시점에** 묶기 위해서다 — 루프 안 람다는 마지막 항목만
+            본다.
+        """
+
         async def _run() -> list[ScheduledEvent]:
             body = await self._client.fred_release_dates(watch.release_id, start, end)
             return parse_fred_release_dates(body, watch)
