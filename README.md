@@ -346,6 +346,19 @@ flowchart LR
 
 ## 1. 전체 구조
 
+![Architecture Overview](docs/readmeimage/Architecture%20Overview.png)
+
+그림 읽는 순서는 왼쪽에서 오른쪽이다. 사람은 구글 로그인이나 게스트로 HTTPS 를 타고 들어오고, MCP 클라이언트(Claude Desktop, Cursor, ChatGPT)는
+개인 Bearer 토큰으로 읽기만 한다. Caddy 가 인증서를 자동으로 받고 갱신하며 nginx 가 그 뒤에서 라우팅한다. api 는 **블루그린 짝**이다 —
+한쪽이 거래 리더로 떠 있고 다른 쪽은 배포 때 교대로 뜬다. `api_demo` 는 세 번째 컨테이너로, 테스트넷 키와 자기 DB 만 갖고 게스트와 데모
+사용자를 받는다. PostgreSQL 은 원장·봉·재무 사실·AI 실험 기록·감사 로그를, Redis 는 리더 락과 캐시를 든다.
+
+바깥으로 나가는 호출은 전부 `common/http` 한 층을 지난다. 그 너머가 시세·재무·거시 데이터(TradingView 차트 베이스, FRED, Gate 실계좌·테스트넷,
+Binance 테스트넷·시세, Upbit 백테스트 다양성, 토스 KRX·NASDAQ·NYSE, SEC EDGAR 재무제표, 야후·CBOE·BLS), 인증(Google OAuth), 그리고 LLM
+호출(NVIDIA NIM 모델 풀)이다. 배포는 GitHub → GitHub Actions CI → Docker 이미지 → AWS Lightsail 한 대(Docker Compose)로 간다.
+
+같은 그림을 Mermaid 로 그리면 아래와 같다 — 프로세스와 데이터 흐름의 방향이 보인다.
+
 ```mermaid
 flowchart LR
     U[사람 · 브라우저] --> WEB[web · nginx<br/>React + TradingView Lightweight Charts<br/>updown_mode 쿠키로 갈림]
