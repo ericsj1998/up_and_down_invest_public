@@ -15,6 +15,7 @@
 |---|---|
 | 지금 서버에서 무엇이 도나 | [runtime_architecture.md](docs/platform/runtime_architecture.md) |
 | 왜 이렇게 설계했나 | [architecture/](docs/architecture/README.md) |
+| 무엇이 깨졌고 어떻게 고쳤나 · 무엇을 왜 골랐나 | [problems_and_decisions.md](docs/architecture/problems_and_decisions.md) |
 | AI 는 무엇을 하고 무엇을 못 하나 | [ai_agents_and_mcp.md](docs/architecture/ai_agents_and_mcp.md) |
 | 매매법을 어떻게 붙이나 | [strategy_authoring.md](docs/platform/strategy_authoring.md) |
 | 서버를 어떻게 돌리나 | [ops_runbook.md](docs/platform/ops_runbook.md) |
@@ -823,6 +824,7 @@ NVIDIA NIM. Docker Compose, Caddy, Lightsail. uv, ruff, pyright, pytest, import-
 | 문서 | 내용 |
 |---|---|
 | [README.md](docs/architecture/README.md) | 설계 기록 묶음 |
+| [problems_and_decisions.md](docs/architecture/problems_and_decisions.md) | 겪은 문제와 내린 판단 — 사고 30건 중요도 순, 네 단계 실패담, 질문별 답, 문서-코드 어긋남 정정표 |
 | [tech_stack.md](docs/architecture/tech_stack.md) | 기술 스택 — 기술마다 설명, 장점, **단점**, 채택 이유, 쓰지 않기로 한 것 |
 | [diagrams.md](docs/architecture/diagrams.md) | ERD, 시퀀스, 스윔레인, 플로우차트 |
 | [ai_agents_and_mcp.md](docs/architecture/ai_agents_and_mcp.md) | AI 는 무엇을 하고 무엇을 못 하나 |
