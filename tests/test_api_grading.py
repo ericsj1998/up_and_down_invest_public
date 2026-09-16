@@ -283,3 +283,72 @@ def test_list_runs_marks_main_from_env_and_sorts_first(
     assert [r["main"] for r in got] == [True, False]
     monkeypatch.delenv("UPDOWN_GRADING_MAIN")
     assert all(r["main"] is False for r in list_runs([research]))
+
+
+def test_parity_json_is_normalized_into_session_and_research_runs(root: Path) -> None:
+    research = root / "research"
+    parity = {
+        "args": {"symbols": "KRW-XRP", "name": "OOS", "playbook": "private_strategy", "cost": "doc"},
+        "summary": {"symbol": "KRW-XRP"},
+        "research": {
+            "trades": [
+                {
+                    "symbol": "KRW-XRP",
+                    "kind": "trend",
+                    "direction": 1,
+                    "entry_ts": "2024-07-12T09:00:00+00:00",
+                    "exit_ts": "2024-07-12T16:00:00+00:00",
+                    "entry": 659.6,
+                    "stop": 649.7,
+                    "gross_pct": -1.56,
+                    "net_pct": -1.65,
+                    "exit_reason": "stop",
+                    "bars_held": 7,
+                }
+            ]
+        },
+        "session": {
+            "records": [
+                {
+                    "trade_id": "a",
+                    "outcome": "손절",
+                    "direction": "롱",
+                    "opened_at": "2024-07-12T08:00:00+00:00",
+                    "closed_at": "2024-07-12T15:00:00+00:00",
+                    "entry": "659.3",
+                    "stop": "649.66",
+                    "stop0": "649.66",
+                    "gain_pct": "-1.619",
+                    "cost_pct": "0.00157212",
+                },
+                {
+                    "trade_id": "b",
+                    "outcome": "open",
+                    "direction": "롱",
+                    "opened_at": "2024-07-13T03:00:00+00:00",
+                    "closed_at": None,
+                    "entry": "694",
+                    "stop": "680",
+                    "gain_pct": None,
+                },
+            ]
+        },
+    }
+    (research / "ab_parity_OOS_KRW-XRP.json").write_text(json.dumps(parity), encoding="utf-8")
+    got = [r for r in list_runs([research]) if r["file"].startswith("ab_parity")]
+    assert len(got) == 1
+    assert got[0]["venue"] == "upbit" and got[0]["symbols"] == ["KRW-XRP"]
+    assert got[0]["configs"] == [
+        {"name": "session", "trades": 1},
+        {"name": "research", "trades": 1},
+    ]
+    rows = trade_rows(load_payload(research / "ab_parity_OOS_KRW-XRP.json"), "session", "KRW-XRP")
+    assert len(rows) == 1
+    row = rows[0]
+    assert (
+        row["side"] == 1
+        and row["stop"] == 649.66
+        and row["reason"] == "손절"
+        and row["bars_held"] == 7
+    )
+    assert abs(row["pnl"] - (-1.619)) < 1e-9 and abs(row["gross_pct"] - (-1.619 + 0.157212)) < 1e-9

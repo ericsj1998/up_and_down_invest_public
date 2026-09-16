@@ -108,7 +108,72 @@ def _read_json(path: Path) -> dict[str, Any]:
         raise HTTPException(400, f"{path.name} 을 읽지 못했다: {exc}") from exc
     if got is None:
         raise HTTPException(400, f"{path.name} 은 결과 JSON 모양이 아니다")
-    return got
+    return _normalize(got)
+
+
+def _normalize(payload: dict[str, Any]) -> dict[str, Any]:
+    """세션 재현(parity) JSON 을 결과 JSON 모양으로 — 그 외는 그대로.
+
+    `t279_parity.py` 가 남기는 `{args, summary, research: {trades}, session: {records}}` 는 세션
+    엔진(= 백테스트 = 라이브)의 거래가 들어 있어 채점의 본체인데, 화면이 읽는 모양(`runs`)이 아니라
+    목록에 안 떴다(2026-09-18 실측). 설정 둘로 편다 — `session`(세션 기록 · 채택 근거) ·
+    `research`(연구 엔진 · 대조).
+
+    Args:
+        payload: 읽은 JSON.
+
+    Returns:
+        `runs` 가 있으면 그대로. parity 모양이면 `{venue, symbols, generated_at, cost, runs}`.
+    """
+    if "runs" in payload or "session" not in payload:
+        return payload
+    summary = _dict(payload.get("summary")) or {}
+    args = _dict(payload.get("args")) or {}
+    symbol = str(summary.get("symbol") or args.get("symbols") or "")
+    venue = "upbit" if symbol.startswith("KRW-") else "gate" if symbol.endswith("_USDT") else ""
+    kind = str(args.get("playbook", ""))
+    rows: list[dict[str, Any]] = []
+    session = _dict(payload.get("session")) or {}
+    for raw in _list(session.get("records")) or []:
+        rec = _dict(raw)
+        if rec is None or not rec.get("opened_at") or not rec.get("closed_at"):
+            continue
+        try:
+            gain = float(rec.get("gain_pct") or 0.0)
+            cost = float(rec.get("cost_pct") or 0.0) * 100  # 기록은 비율(0.00157) · 화면은 %
+            opened = datetime.fromisoformat(str(rec["opened_at"]))
+            closed = datetime.fromisoformat(str(rec["closed_at"]))
+            entry = float(rec["entry"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "kind": kind,
+                "direction": -1 if str(rec.get("direction", "")) == "숏" else 1,
+                "entry_ts": rec["opened_at"],
+                "exit_ts": rec["closed_at"],
+                "entry": entry,
+                "stop": float(rec.get("stop0") or rec.get("stop") or 0.0),
+                "gross_pct": gain + cost,
+                "net_pct": gain,
+                "exit_reason": str(rec.get("outcome", "")),
+                "bars_held": max(0, int((closed - opened).total_seconds() // 3600)),
+            }
+        )
+    research = _dict(payload.get("research")) or {}
+    runs: list[dict[str, Any]] = [{"config": {"name": "session"}, "trades": rows}]
+    research_trades = _list(research.get("trades"))
+    if research_trades is not None:
+        runs.append({"config": {"name": "research"}, "trades": research_trades})
+    return {
+        "venue": venue,
+        "symbols": [symbol] if symbol else [],
+        "generated_at": str(payload.get("generated_at", "")),
+        "cost": str(args.get("cost", "")),
+        "window": str(args.get("name", "")),
+        "runs": runs,
+    }
 
 
 def run_summary(path: Path, payload: dict[str, Any]) -> dict[str, Any] | None:
