@@ -16,7 +16,8 @@ import type {
   Time,
 } from "lightweight-charts";
 
-export type Rect = { from: number; to: number; low: number; high: number; color: string };
+/** `stroke` 가 있으면 테두리도 그린다(고른 매매 상자) · `dashed` 면 점선 테두리(아직 열린 매매). */
+export type Rect = { from: number; to: number; low: number; high: number; color: string; stroke?: string; dashed?: boolean };
 
 type Scope = {
   context: CanvasRenderingContext2D;
@@ -89,13 +90,20 @@ export class ZonesPrimitive implements ISeriesPrimitive<Time> {
                   const right = owner.x(r.to, cssWidth);
                   if (top === null || bottom === null || left === null || right === null) continue;
                   if (right <= left) continue;
+                  const x = left * horizontalPixelRatio;
+                  const y = top * verticalPixelRatio;
+                  const w = Math.max(1, (right - left) * horizontalPixelRatio);
+                  const h = Math.max(1, (bottom - top) * verticalPixelRatio);
                   context.fillStyle = r.color;
-                  context.fillRect(
-                    left * horizontalPixelRatio,
-                    top * verticalPixelRatio,
-                    Math.max(1, (right - left) * horizontalPixelRatio),
-                    Math.max(1, (bottom - top) * verticalPixelRatio),
-                  );
+                  context.fillRect(x, y, w, h);
+                  if (r.stroke !== undefined) {
+                    context.save();
+                    context.strokeStyle = r.stroke;
+                    context.lineWidth = Math.max(1, horizontalPixelRatio);
+                    context.setLineDash(r.dashed === true ? [4 * horizontalPixelRatio, 3 * horizontalPixelRatio] : []);
+                    context.strokeRect(x + 0.5, y + 0.5, Math.max(1, w - 1), Math.max(1, h - 1));
+                    context.restore();
+                  }
                 }
               });
             },

@@ -1,10 +1,10 @@
 /**
- * 채점 차트(dev · T281) — 봉 + 지표(BB 20/2 · BB 4/4 · EMA) + 엔진 매매(진입 ▲▼ · 진입→청산 선 · 청산 ●) + 수기 포지션 + 클릭·끌기.
+ * 채점 차트(dev · T281) — 봉 + 지표(BB 20/2 · BB 4/4 · EMA) + 엔진 매매(상자 · 2026-09-18) + 수기 포지션 + 클릭·끌기.
  *
  * `PriceChart.tsx`(끝난 자료 · 읽기 전용)와 다른 점:
  *   1. 봉 배열이 **재생 커서에 따라 바뀐다** — 마지막 봉은 만드는 중 봉이고 지표도 그 봉을 포함해 다시 계산된다.
- *   2. 매매는 **진입→청산 선**(승 초록 · 패 빨강)으로 그린다 — 연구 그림(`_plot_n.py`)과 같은 표기 (사용자 2026-09-14:
- *      화살표+글자가 너무 지저분). 글자는 고른(또는 마우스 올린) 매매에만 `TL -0.40% trend_end` 로.
+ *   2. 매매는 **상자**(진입→청산 구간 x 진입↔청산 가격 · 승 초록 · 패 빨강 · 열린 매매 점선)로 그린다 (사용자 2026-09-18: 삼각형·점이
+ *      너무 복잡 → 박스 영역으로 · 2026-09-14: 화살표+글자 지저분). 글자는 고른(또는 마우스 올린) 매매에만 `TL -0.40% trend_end` 로.
  *   3. 마우스를 올린 봉에 진입한 매매를 `onHover` 로 알린다 — 아래 표가 그 행으로 간다.
  *   4. 수기 포지션: 클릭으로 놓고(`onPlace`), 고른 포지션은 진입·손절·목표 선을 끌고(`onDrag`), **상자 안을 꾹 누른 채 끌면
  *      통째로 옮긴다**(`onMove` · 가격·시각 함께). 끄는 동안 차트 스크롤·확대를 잠근다 — 잠그지 않으면 선이 아니라
@@ -15,7 +15,6 @@ import {
   CandlestickSeries,
   createChart,
   createSeriesMarkers,
-  LineSeries,
   LineStyle,
   type IChartApi,
   type IPriceLine,
@@ -86,7 +85,6 @@ export function GradingChart({
   const zones = useRef<ZonesPrimitive | null>(null);
   const badges = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const overlays = useRef<OverlayHandle[]>([]);
-  const segLines = useRef<ISeriesApi<"Line">[]>([]);
   const draftLines = useRef<IPriceLine[]>([]);
   const [ready, setReady] = useState(0);
   // 최신 값을 ref 로 — 차트 구독·마우스 리스너는 한 번만 걸고, 상태가 바뀌어도 잠금이 풀리지 않게.
@@ -118,7 +116,6 @@ export function GradingChart({
     zones.current = rug;
     badges.current = createSeriesMarkers(candles, []);
     overlays.current = [];
-    segLines.current = [];
     draftLines.current = [];
     setReady((n) => n + 1);
 
@@ -250,7 +247,6 @@ export function GradingChart({
       series.current = null;
       chart.current = null;
       overlays.current = [];
-      segLines.current = [];
       draftLines.current = [];
       made.remove();
     };
@@ -282,72 +278,55 @@ export function GradingChart({
   }, [overlaySeries, ready]);
 
   // ── 엔진 매매: 진입 ▲▼(작게) · 진입→청산 선 · 청산 ● · 글자는 고른/올린 것에만 ──
-  const focus = useMemo(() => trades.find((t) => t.id === focusId) ?? null, [trades, focusId]);
   useEffect(() => {
     const plugin = badges.current;
-    const made = chart.current;
-    if (plugin === null || made === null) return;
+    if (plugin === null || chart.current === null) return;
     const c = palette();
-    for (const line of segLines.current) {
-      try {
-        made.removeSeries(line);
-      } catch {
-        // 이미 지워진 차트
-      }
-    }
-    segLines.current = [];
+    // 글자는 고른(또는 마우스 올린) 매매 하나에만 — 진입 봉 위에 `TL -0.40% trend_end`. 상자는 아래 영역 효과가 그린다.
     const rows: SeriesMarker<Time>[] = [];
     for (const t of trades) {
       const strong = t.id === focusId || t.id === hoverId;
-      const win = (t.pnl ?? 0) >= 0;
-      const color = t.reason === "open" ? c.entry : win ? c.up : c.down;
-      const label = strong ? `${tag(t.leg ?? "", t.side)} ${(t.pnl ?? 0).toFixed(2)}% ${t.reason}` : "";
+      if (!strong) continue;
       rows.push({
         time: snap(t.openedTs, step) as Time,
         position: t.side === 1 ? "belowBar" : "aboveBar",
         shape: t.side === 1 ? "arrowUp" : "arrowDown",
         color: t.side === 1 ? c.up : c.down,
-        text: label,
-        size: strong ? 3 : 2,
+        text: `${tag(t.leg ?? "", t.side)} ${(t.pnl ?? 0).toFixed(2)}% ${t.reason}`,
+        size: 1,
       });
-      const t0 = snap(t.openedTs, step);
-      const t1 = Math.max(snap(t.closedTs, step), t0 + step);
-      if (t.reason !== "open") {
-        rows.push({ time: t1 as Time, position: t.side === 1 ? "aboveBar" : "belowBar", shape: "square", color: c.text, text: "", size: strong ? 1.2 : 0.7 });
-      }
-      const seg = made.addSeries(LineSeries, {
-        color,
-        lineWidth: strong ? 4 : 3,
-        lineStyle: t.reason === "open" ? LineStyle.Dotted : LineStyle.Solid,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      seg.setData([
-        { time: t0 as Time, value: t.entry },
-        { time: t1 as Time, value: t.exit },
-      ]);
-      segLines.current.push(seg);
     }
     rows.sort((a, b) => Number(a.time) - Number(b.time));
     plugin.setMarkers(rows);
   }, [trades, step, focusId, hoverId, ready]);
 
-  // ── 영역: 고른 엔진 매매의 손절·손익 + 수기 포지션 전부 ──
+  // ── 영역: 엔진 매매 전부를 상자로(진입→청산 구간 x 진입↔청산 가격 · 승 초록 · 패 빨강 · 열린 매매 점선 테두리 · 사용자
+  //    2026-09-18: "삼각형·점 표시가 너무 복잡 — 박스 영역으로") + 고른 매매는 손절 구간·테두리 + 수기 포지션 전부 ──
   const active = useMemo(() => positions.find((p) => p.id === activeId) ?? null, [positions, activeId]);
   useEffect(() => {
     const rug = zones.current;
     if (rug === null) return;
     const c = palette();
     const rects: Rect[] = [];
-    if (focus !== null) {
-      const from = snap(focus.openedTs, step);
-      const to = Math.max(snap(focus.closedTs, step) + step, from + step);
-      if (focus.stop !== focus.entry) {
-        rects.push({ from, to, low: Math.min(focus.entry, focus.stop), high: Math.max(focus.entry, focus.stop), color: wash(c.down, 0.12) });
+    for (const t of trades) {
+      const strong = t.id === focusId || t.id === hoverId;
+      const from = snap(t.openedTs, step);
+      const to = Math.max(snap(t.closedTs, step) + step, from + step);
+      const open = t.reason === "open";
+      const win = (t.exit - t.entry) * t.side > 0;
+      const tone = open ? c.entry : win ? c.up : c.down;
+      if (strong && t.stop !== t.entry) {
+        rects.push({ from, to, low: Math.min(t.entry, t.stop), high: Math.max(t.entry, t.stop), color: wash(c.down, 0.1) });
       }
-      const win = (focus.exit - focus.entry) * focus.side > 0;
-      rects.push({ from, to, low: Math.min(focus.entry, focus.exit), high: Math.max(focus.entry, focus.exit), color: wash(win ? c.up : c.down, 0.16) });
+      rects.push({
+        from,
+        to,
+        low: Math.min(t.entry, t.exit),
+        high: Math.max(t.entry, t.exit),
+        color: wash(tone, strong ? 0.42 : 0.2),
+        stroke: strong || open ? tone : wash(tone, 0.55),
+        dashed: open,
+      });
     }
     for (const p of positions) {
       const strong = p.id === activeId;
@@ -356,7 +335,7 @@ export function GradingChart({
       }
     }
     rug.set(rects);
-  }, [focus, positions, activeId, step, ready]);
+  }, [trades, focusId, hoverId, positions, activeId, step, ready]);
 
   // ── 고른 수기 포지션의 끄는 선 ──
   useEffect(() => {
@@ -463,7 +442,7 @@ export function GradingChart({
           </span>
         ))}
         <span className="text-blue-gray-400">
-          · ▲▼ 진입 · 선 = 진입→청산(초록 승 · 빨강 패 · 점선 = 아직 열림) · ● 청산 · 지표는 보이는 봉으로 계산(라이브 밴드)
+          · 상자 = 엔진 매매(진입→청산 구간 x 진입↔청산 가격 · 초록 승 · 빨강 패 · 점선 테두리 = 아직 열림) · 고른 매매는 진하게 + 손절 구간 + 글자 · 지표는 보이는 봉으로 계산(라이브 밴드)
         </span>
       </div>
     </div>
