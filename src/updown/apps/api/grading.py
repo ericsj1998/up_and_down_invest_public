@@ -22,6 +22,7 @@ import json
 import os
 import re
 from datetime import UTC, datetime
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -35,6 +36,8 @@ from updown.marketdata.ingest.repository import InstrumentNotFoundError
 router = APIRouter(prefix="/admin/grading", tags=["grading"])
 
 ENV_DIRS = "UPDOWN_GRADING_DIRS"
+ENV_MAIN = "UPDOWN_GRADING_MAIN"
+"""주력(★) 파일 이름 글롭 — 쉼표 구분. 목록 맨 위 + 화면 ★ (사용자 2026-09-18)."""
 MARKS_DIR = "grading/marks"
 """사람이 남긴 O/X·수기 포지션 — 로그 루트 아래. 결과 JSON 디렉터리에는 쓰지 않는다."""
 
@@ -117,6 +120,7 @@ def run_summary(path: Path, payload: dict[str, Any]) -> dict[str, Any] | None:
 
     Returns:
         `{file, dir, venue, generated_at, cost, symbols, configs: [{name, trades}]}`.
+        `main`(★)은 `list_runs` 가 env 로 붙인다.
     """
     runs = _list(payload.get("runs"))
     if runs is None:
@@ -234,8 +238,24 @@ def list_runs(dirs: list[Path], index_path: Path | None = None) -> list[dict[str
             index_path.write_text(json.dumps(fresh, ensure_ascii=False), encoding="utf-8")
         except OSError:
             pass  # 색인은 편의다 — 못 써도 목록은 준다
-    found.sort(key=lambda item: item[0], reverse=True)
+    # 주력 표시는 색인이 아니라 지금의 env 로 — env 를 바꾸면 다음 목록에 바로 반영된다.
+    patterns = main_patterns()
+    for _, summary in found:
+        summary["main"] = any(fnmatch(str(summary.get("file", "")), pat) for pat in patterns)
+    found.sort(key=lambda item: (not item[1]["main"], -item[0]))
     return [item[1] for item in found]
+
+
+def main_patterns() -> list[str]:
+    """주력(★) 결과 파일 이름 글롭 — `UPDOWN_GRADING_MAIN`(쉼표 구분). 비면 없음.
+
+    매매법 이름이 든 패턴은 코드가 아니라 env 에만 산다(`research_dirs` 와 같은 이유).
+
+    Returns:
+        글롭 패턴 목록. env 가 비면 빈 목록.
+    """
+    raw = os.environ.get(ENV_MAIN, "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
 
 
 def _find_file(name: str) -> Path:
@@ -597,9 +617,11 @@ async def put_marks(
 __all__ = [
     "EMPTY_MARKS",
     "ENV_DIRS",
+    "ENV_MAIN",
     "list_runs",
     "load_marks",
     "load_payload",
+    "main_patterns",
     "marks_path",
     "research_dirs",
     "router",

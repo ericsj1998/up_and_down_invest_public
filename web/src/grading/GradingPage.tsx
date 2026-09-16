@@ -334,7 +334,7 @@ export function GradingPage({ who }: { who: Who | null }) {
           <select value={file} onChange={(e) => setFile(e.target.value)}>
             {runs.map((r) => (
               <option key={r.file} value={r.file}>
-                {r.file} · {r.venue} · {r.cost}
+                {r.main === true ? "★ " : ""}{r.file} · {r.venue} · {r.cost}
               </option>
             ))}
           </select>

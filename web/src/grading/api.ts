@@ -13,6 +13,8 @@ export interface RunSummary {
   cost: string;
   symbols: string[];
   configs: { name: string; trades: number }[];
+  /** 주력(★) — 서버 env `UPDOWN_GRADING_MAIN` 글롭에 맞는 파일. 목록 맨 위. */
+  main?: boolean;
 }
 
 export function gradingRuns(): Promise<{ dirs: string[]; runs: RunSummary[] }> {

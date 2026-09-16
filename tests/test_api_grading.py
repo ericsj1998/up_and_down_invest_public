@@ -269,3 +269,17 @@ def test_candles_rejects_unknown_market_and_bad_range(client: TestClient) -> Non
         ).status_code
         == 503
     )
+
+
+def test_list_runs_marks_main_from_env_and_sorts_first(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    research = root / "research"
+    other = json.loads((research / "run1.json").read_text(encoding="utf-8"))
+    (research / "zzz_main.json").write_text(json.dumps(other), encoding="utf-8")
+    monkeypatch.setenv("UPDOWN_GRADING_MAIN", "zzz_*, nothing_*")
+    got = list_runs([research])
+    assert [r["file"] for r in got] == ["zzz_main.json", "run1.json"]
+    assert [r["main"] for r in got] == [True, False]
+    monkeypatch.delenv("UPDOWN_GRADING_MAIN")
+    assert all(r["main"] is False for r in list_runs([research]))
