@@ -10,7 +10,7 @@
  * dev 빌드(`VITE_LABELS=1`)에서만 메뉴에 뜬다. 서버는 관리자만 통과시킨다.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Who } from "../api";
+import { modeCookie, switchMode, type Who } from "../api";
 import { type IndicatorSpec, type Ohlc } from "../chart/indicators";
 import { fmtPrice } from "../chart/trades";
 import { gradingCandles, gradingMarks, gradingRuns, gradingTrades, saveGradingMarks, type RunSummary } from "./api";
@@ -59,6 +59,8 @@ function uid(): string {
 export function GradingPage({ who }: { who: Who | null }) {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [dirs, setDirs] = useState<string[]>([]);
+  /** 목록 응답이 한 번 왔나 — 오기 전엔 "읽는 중", 온 뒤 디렉터리가 비면 그 이유(데모 API)를 말한다. */
+  const [listed, setListed] = useState(false);
   const [file, setFile] = useState("");
   const [config, setConfig] = useState("");
   const [symbol, setSymbol] = useState("");
@@ -100,6 +102,7 @@ export function GradingPage({ who }: { who: Who | null }) {
     if (!who?.may_admin) return;
     gradingRuns()
       .then((body) => {
+        setListed(true);
         setRuns(body.runs);
         setDirs(body.dirs);
         const first = body.runs[0];
@@ -109,7 +112,10 @@ export function GradingPage({ who }: { who: Who | null }) {
           setSymbol(first.symbols[0] ?? "");
         }
       })
-      .catch((exc: unknown) => setError(String(exc)));
+      .catch((exc: unknown) => {
+        setListed(true);
+        setError(String(exc));
+      });
   }, [who]);
 
   // 파일이 바뀌면 설정·종목을 그 파일 것으로
@@ -386,11 +392,22 @@ export function GradingPage({ who }: { who: Who | null }) {
           JSON 내보내기
         </button>
         <span className="faint">
-          {runs.length === 0 && dirs.length === 0 && !error
-            ? "결과 목록 읽는 중… (처음 한 번은 파일을 전부 훑어 오래 걸린다 · 그 뒤엔 색인)"
-            : dirs.length === 0
-              ? "결과 디렉터리가 없다 — UPDOWN_GRADING_DIRS 를 확인"
-              : `저장 ${savedAt ? whenUtc(Date.parse(savedAt) / 1000) : "—"}${dirty ? " · 저장 대기" : ""}${busy ? " · 읽는 중…" : ""}`}
+          {!listed && !error ? (
+            "결과 목록 읽는 중…"
+          ) : dirs.length === 0 && modeCookie() === "demo" ? (
+            // 데모 API(테스트넷 · logs_demo)에는 연구 결과가 없다 — 채점은 dev(실계좌 모드) API 가 읽는다 (2026-09-18 실측: 데모
+            // 모드에서 "읽는 중" 에 멈춰 보였다).
+            <>
+              데모 API 에는 결과 디렉터리가 없다 — 채점은 실계좌(dev) 모드에서 읽는다.{" "}
+              <button type="button" className="btn" onClick={() => switchMode("live")}>
+                실계좌 모드로 전환
+              </button>
+            </>
+          ) : dirs.length === 0 ? (
+            "결과 디렉터리가 없다 — UPDOWN_GRADING_DIRS 를 확인"
+          ) : (
+            `저장 ${savedAt ? whenUtc(Date.parse(savedAt) / 1000) : "—"}${dirty ? " · 저장 대기" : ""}${busy ? " · 읽는 중…" : ""}`
+          )}
         </span>
       </div>
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
