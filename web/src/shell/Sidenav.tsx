@@ -176,11 +176,11 @@ export function Sidenav({
 
   return (
     <aside
-      className={`${open ? "translate-x-0" : "-translate-x-80"} fixed inset-0 z-50 my-4 ml-4 h-[calc(100vh-32px)] ${collapsed ? "xl:w-16" : ""} w-72 overflow-y-auto rounded-xl border border-blue-gray-100 bg-white shadow-sm transition-[transform,width] duration-300 xl:translate-x-0 dark:border-gray-800 dark:bg-gray-900`}
+      className={`${open ? "translate-x-0" : "-translate-x-80"} fixed inset-0 z-50 my-4 ml-4 h-[calc(100vh-32px)] ${collapsed ? "xl:w-16" : ""} flex w-72 flex-col overflow-hidden rounded-xl border border-blue-gray-100 bg-white shadow-sm transition-[transform,width] duration-300 xl:translate-x-0 dark:border-gray-800 dark:bg-gray-900`}
       aria-label="화면 목록"
       style={offsetLeft ? { left: offsetLeft } : undefined}
     >
-      <div className="relative">
+      <div className="relative shrink-0">
         <NavLink to="/console" className={`flex items-center gap-3 pb-2 pt-6 ${collapsed ? "xl:justify-center xl:px-2" : "px-6"}`} onClick={onClose}>
           <img src="/brand/up_and_down_logo.png" alt="" className="h-8 w-8" />
           <Typography variant="h6" color="blue-gray" className={`dark:text-white ${collapsed ? "xl:hidden" : ""}`}>
@@ -213,7 +213,10 @@ export function Sidenav({
         </button>
       </div>
 
-      <nav className="m-4">
+      {/* ⭐ 열린 판이 많아지면 **여기만** 스크롤된다 (사용자 2026-09-17 — 판이 늘자 목록이 아래 상태 표시를
+          덮었다). aside 전체가 아니라 nav 가 남은 높이를 차지하고 넘치면 안에서 스크롤한다 · 상태 표시는
+          absolute 가 아니라 흐름의 마지막 항목이라 절대 안 겹친다. */}
+      <nav className="m-4 min-h-0 flex-1 overflow-y-auto">
         <ul className="mb-4 flex flex-col gap-1">
           {pages.map((page) => (
             <li key={page.to}>
@@ -269,7 +272,7 @@ export function Sidenav({
 
       {/* 🔴 매매는 서버에서 돈다 — 이 화면을 꺼도 계속된다. 글자가 아니라 **상태**다: /health 가 답하면 초록,
           못 받으면 빨강 + 마지막 응답 시각 (UX 점검 2026-09-05). */}
-      <div className="absolute bottom-4 left-0 right-0 px-6">
+      <div className="shrink-0 px-6 pb-4">
         <ServerState />
       </div>
     </aside>
