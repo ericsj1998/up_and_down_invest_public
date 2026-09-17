@@ -25,7 +25,7 @@ import json
 import logging
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
@@ -58,6 +58,16 @@ from updown.orchestration.rebalancer import (
     SessionBridge,
     SlotGate,
 )
+from updown.orchestration.rebalancer.anchor import (
+    MODE_ACCOUNT,
+    Anchored,
+    AnchorState,
+    anchored,
+    dnw_since,
+    initial_state,
+    manual_flow,
+)
+from updown.orchestration.rebalancer.coordinator import TickReport
 from updown.portfolio.performance import CashFlow, TwrLedger
 
 router = APIRouter(prefix="/rebalancer", tags=["rebalancer"])
@@ -97,6 +107,13 @@ class Fund:
     """P3 같은 날 연속 손절 정지 문턱(§24 · 2). 0 = 없음."""
     notional_cap: Decimal | None = None
     """총 명목 상한(자본 배수 · 93차 V2 = 2). None = 없음."""
+    anchor: AnchorState | None = None
+    """자동 앵커 상태 (T285) — 첫 틱에서 잡히고 펀드 파일에 저장된다. None = 아직 앵커 전."""
+    anchor_skipped: str | None = None
+    """마지막 틱에서 앵커를 못 한 이유(다른 펀드·단독 판·계좌 못 읽음).
+
+    None = 앵커됨. 화면에 그대로 보여 준다.
+    """
 
 
 FUNDS: dict[str, Fund] = {}
@@ -270,8 +287,7 @@ async def rebalance_loop() -> None:
                 # rank60 — 하루 한 번(00 UTC 경계) 비중을 랭크로 갱신 (측정과 같은 일 리밸)
                 if fund.weight_mode == "rank60" and _next_tick_at.hour == 0:
                     await _refresh_rank(fund)
-                fund.coordinator.tick()
-                _save_fund(fund)
+                await _tick(fund)
             except Exception as exc:
                 _logger.warning("fund_auto_tick_failed: %s %s", fund.fund_id, exc)
         if FUNDS:
@@ -320,6 +336,7 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
             if handle in SESSIONS
         },
         "marks": {sym: str(mark) for sym, mark in fund.coordinator.marks.items()},
+        "anchor": None if fund.anchor is None else fund.anchor.to_dict(),
     }
 
 
@@ -422,6 +439,12 @@ async def restore_funds() -> int:
             await _restore_one(data)
             restored += 1
             PENDING_FUNDS.discard(path.name)
+            # ⭐ 복원 직후 한 번 틱 — 거래소 계좌에 총자본을 맞추고(자동 앵커 · T285) 예산을 준다.
+            #    실패해도 복원은 된 것이다 — 다음 4h 경계가 다시 시도한다.
+            try:
+                await _tick(FUNDS[str(data["fund_id"])])
+            except Exception as exc:
+                _logger.warning("fund_restore_tick_failed: %s %s", data.get("fund_id"), exc)
         except Exception as exc:
             PENDING_FUNDS.add(path.name)
             _logger.warning("fund_restore_failed: %s %s", path.name, exc)
@@ -572,6 +595,9 @@ async def _restore_one(data: dict[str, Any]) -> None:
         halt_after_stops=halt_after_stops,
         notional_cap=notional_cap,
     )
+    raw_anchor = data.get("anchor")
+    if isinstance(raw_anchor, dict):
+        fund.anchor = AnchorState.from_dict(cast("dict[str, Any]", raw_anchor))
     FUNDS[fund.fund_id] = fund
 
 
@@ -741,8 +767,8 @@ async def _create_fund(
     if weight_mode == "rank60":
         # 첫 비중부터 랭크로 — 실패하면 입력 비중으로 시작하고 다음 00 UTC 에 다시 시도한다.
         await _refresh_rank(fund)
-        fund.coordinator.tick()
-    _save_fund(fund)
+    # 첫 틱 — 앵커 모드를 정하고(계좌가 곧 펀드인가 · 펀드 밖 유휴 현금이 있나) 예산을 준다 (T285).
+    await _tick(fund)
     return fund
 
 
@@ -882,6 +908,19 @@ async def _status(fund: Fund) -> dict[str, Any]:
         "drawdown_pct": str(coord.engine.ledger.drawdown_pct),
         "max_drawdown_pct": str(coord.engine.ledger.max_drawdown_pct),
         "next_tick": _next_tick_at.isoformat() if _next_tick_at else None,
+        # ⭐ 자동 앵커 (T285) — 총자본이 거래소 계좌에 맞춰졌나 · 못 맞췄으면 이유.
+        "anchor": (
+            None
+            if fund.anchor is None and fund.anchor_skipped is None
+            else {
+                "mode": None if fund.anchor is None else fund.anchor.mode,
+                "at": None
+                if fund.anchor is None or fund.anchor.at is None
+                else fund.anchor.at.isoformat(),
+                "idle": None if fund.anchor is None else str(fund.anchor.idle),
+                "skipped": fund.anchor_skipped,
+            }
+        ),
         "per_symbol": per_symbol,
     }
 
@@ -1241,8 +1280,7 @@ async def tick(fund_id: str) -> dict[str, Any]:
         자동 4h 루프는 testnet 검증 뒤에 켠다. 그전엔 이 수동 틱으로 동작을 확인한다.
     """
     fund = _fund_or_404(fund_id)
-    report = fund.coordinator.tick()
-    _save_fund(fund)
+    report = await _tick(fund)
     return {
         "budgets": {s: str(b) for s, b in report.budgets.items()},
         "balance": str(report.balance),
@@ -1321,7 +1359,7 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
         if handle:
             await _close_live_position(handle)
     engine.basket = new_basket
-    report = fund.coordinator.tick()
+    report = await _tick(fund)
 
     added: list[str] = []
     try:
@@ -1400,7 +1438,7 @@ async def change_playbook(
     if new_pb == fund.playbook:
         return await _status(fund)
 
-    fund.coordinator.tick()  # 총자본 갱신 (청산 전 값으로 재배분)
+    await _tick(fund)  # 총자본 갱신 (청산 전 값으로 재배분 · 앵커 포함)
     total = fund.coordinator.engine.balance
     basket = fund.coordinator.engine.basket
     wsum = basket.weight_sum
@@ -1434,8 +1472,7 @@ async def change_playbook(
     _attach_gate(
         fund.coordinator, fund.slots, fund.halt_after_stops, fund.notional_cap
     )  # 갈아 끼운 세션에도
-    fund.coordinator.tick()
-    _save_fund(fund)
+    await _tick(fund)
     return await _status(fund)
 
 
@@ -1478,8 +1515,7 @@ async def resync(fund_id: str) -> dict[str, Any]:
         with contextlib.suppress(Exception):
             await runner.resync_ledger()
             resynced.append(sym)
-    fund.coordinator.tick()  # 재정렬된 equity 로 총자본·TWR 갱신
-    _save_fund(fund)
+    await _tick(fund)  # 재정렬된 실현으로 총자본·TWR 갱신 (앵커 포함)
     status = await _status(fund)
     status["resynced"] = resynced
     return status
@@ -1522,6 +1558,105 @@ async def _account_headroom(market: str) -> tuple[Decimal, Decimal] | None:
         if runner is not None and runner.instrument.market.value == market:
             pooled += live.session.ledger.equity
     return total, pooled
+
+
+async def _anchor_for(fund: Fund) -> Anchored | None:
+    """이번 틱의 자동 앵커 — 유일한 소유자일 때 계좌 총액과 입출금을 읽는다 (T285).
+
+    Args:
+        fund: 펀드.
+
+    Returns:
+        앵커 결과. 못 하면 None — 이유는 `fund.anchor_skipped` 에 남기고 화면이 그대로 보여 준다.
+
+    Note:
+        🔴 거래소는 "이 펀드의 돈" 을 모른다. 같은 거래소에 다른 펀드나 펀드 밖 단독 판이
+        있으면 계좌 총액을 나눌 근거가 없어 앵커하지 않는다(증분 모형 그대로 · 조용히 넘기지
+        않고 이유를 적는다).
+        첫 앵커는 모드만 정하고 과거 입출금은 세지 않는다 — 그 전 돈은 이미 장부(투입 원금)에 있다.
+    """
+    market = fund.market
+    others = [f.fund_id for f in FUNDS.values() if f.fund_id != fund.fund_id and f.market == market]
+    if others:
+        fund.anchor_skipped = f"같은 거래소에 다른 펀드 {len(others)}개"
+        return None
+    mine = set(fund.handles.values())
+    strangers = 0
+    for handle in SESSIONS:
+        runner = LIVE_RUNNERS.get(handle)
+        if handle not in mine and runner is not None and runner.instrument.market.value == market:
+            strangers += 1
+    if strangers:
+        fund.anchor_skipped = f"펀드 밖 단독 판 {strangers}개"
+        return None
+    facts = await _account_headroom(market)
+    if facts is None:
+        fund.anchor_skipped = "거래소 계좌를 읽을 수 없음"
+        return None
+    total, _pooled = facts
+    try:
+        from updown.apps.api.exchange import _orders_adapter  # pyright: ignore[reportPrivateUsage]
+
+        rows: list[dict[str, Any]] = await _orders_adapter(market).account_book(limit=100)
+    except Exception as exc:
+        fund.anchor_skipped = f"자금 원장을 읽을 수 없음: {str(exc)[:60]}"
+        return None
+    now = datetime.now(UTC)
+    ledger = fund.coordinator.engine.ledger
+    state = fund.anchor
+    if state is None:
+        state = initial_state(total, ledger.contributed, ledger.balance)
+        _, seen = dnw_since(rows, None, ())  # 지금까지의 입출금은 열쇠만 기억 — 다시 안 센다
+        state = replace(state, seen=seen)
+        dnw = Decimal(0)
+    else:
+        dnw, seen = dnw_since(rows, state.at, state.seen)
+        state = replace(state, seen=seen)
+    result = anchored(state, total, dnw, now)
+    fund.anchor_skipped = None
+    _logger.info(
+        "fund_anchored: %s mode=%s total=%s before=%s dnw=%s idle=%s",
+        fund.fund_id,
+        result.state.mode,
+        f"{total:.2f}",
+        f"{result.equity_before_flow:.2f}",
+        f"{dnw:.2f}",
+        f"{result.state.idle:.2f}",
+    )
+    return result
+
+
+async def _tick(fund: Fund, flow: CashFlow | None = None) -> TickReport:
+    """펀드 틱 — 거래소 계좌에 총자본을 맞춘 뒤(자동 앵커) 예산을 다시 나누고 저장한다 (T285).
+
+    Args:
+        fund: 펀드.
+        flow: 화면에서 기록한 입출금 (없으면 None). `drift` 모드에선 유휴 현금에서 펀드로
+            옮겨 온 것이다.
+
+    Returns:
+        이번 틱 보고.
+
+    Note:
+        모든 틱(4h 루프 · 수동 · 입출금 · 편집 · 전략 전환 · 재정렬 · 복원)이 여기를 지난다 — 앵커가
+        빠지는 경로가 없어야 장부가 다시 새지 않는다. 앵커를 못 하면 증분 모형으로 돈다.
+    """
+    found = await _anchor_for(fund)
+    anchor_value: Decimal | None = None
+    auto_flow: CashFlow | None = None
+    if found is not None:
+        anchor_value = found.equity_before_flow
+        state = found.state
+        if found.flow != 0:
+            auto_flow = CashFlow(
+                at=state.at or datetime.now(UTC), amount=found.flow, note="거래소 입출금 자동 반영"
+            )
+        if flow is not None:
+            state = manual_flow(state, flow.amount)
+        fund.anchor = state
+    report = fund.coordinator.tick(flow if flow is not None else auto_flow, anchor=anchor_value)
+    _save_fund(fund)
+    return report
 
 
 @router.post("/{fund_id}/deposit")
@@ -1573,9 +1708,17 @@ async def deposit(fund_id: str, payload: Annotated[dict[str, Any], Body()]) -> d
                 f"잔고가 {short:.2f} USDT 부족합니다 — 계좌 총액 {total:.2f} 중 이미 배정된 "
                 f"원장 합이 {pooled:.2f} 라 넣을 수 있는 최대는 {room:.2f} 입니다",
             )
+    if fund.anchor is not None and fund.anchor.mode == MODE_ACCOUNT:
+        # ⭐ 계좌 모드(계좌 = 펀드)는 거래소 입출금을 자금 원장에서 자동으로 읽는다 (T285).
+        #    여기서 또
+        #    적으면 두 번 센다 — 거래소에 넣고 "지금 리밸런싱" 을 누르면 반영된다.
+        raise HTTPException(
+            400,
+            "이 펀드는 계좌 전체를 굴려서 거래소 입출금을 자동으로 읽습니다 — 거래소에 넣고 "
+            "'지금 리밸런싱' 을 누르면 반영됩니다",
+        )
     flow = CashFlow(at=datetime.now(UTC), amount=amount, note=str(payload.get("note", "")))
-    report = fund.coordinator.tick(flow)
-    _save_fund(fund)
+    report = await _tick(fund, flow)
     return {
         "balance": str(report.balance),
         "twr_return": str(report.twr_return),

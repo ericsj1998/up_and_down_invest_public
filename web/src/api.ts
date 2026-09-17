@@ -1671,6 +1671,12 @@ export type FundStatus = {
    */
   mismatch?: string[];
   next_tick?: string | null;
+  /**
+   * 자동 앵커 (T285 · 2026-09-17) — 펀드가 틱마다 거래소 계좌에 총자본을 맞춘다. `mode` account = 계좌가
+   * 곧 펀드 · drift = 계좌 안에 펀드 밖 유휴 현금(idle)이 있다. `at` 는 마지막 앵커 시각. 없으면 아직
+   * 앵커 전(다른 펀드·단독 판이 같은 거래소를 써서 못 정하면 `skipped` 에 이유).
+   */
+  anchor?: { mode: string; at?: string | null; idle?: string; skipped?: string | null } | null;
   per_symbol: Record<string, FundLeg>;
 };
 

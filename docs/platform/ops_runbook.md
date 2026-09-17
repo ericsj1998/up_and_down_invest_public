@@ -165,17 +165,16 @@ bash scripts/ops/remote.sh -- 'bash /tmp/orderflow_server.sh stop'           # �
 - 배포(`ship.sh`)는 프로필 서비스를 새로 띄우지 않는다 — 배포 뒤 `start` 를 다시 돌리면 새 이미지 태그로 재생성된다.
 - 이미지에 `scripts/runtime/orderflow_capture.py` 가 들어간 것은 1.8.1 부터 — 그 전 태그로는 `start` 가 "No such file" 로 죽는다.
 
-## 8. 펀드 장부 재앵커 — T285 누수 뒤 한 번 (2026-09-17)
+## 8. 펀드 총자본은 스스로 계좌에 맞춘다 — 자동 앵커 (1.8.2 · T285 · 2026-09-17)
 
-1.8.1 전까지 펀드 총자본이 리밸런싱 틱·재기동마다 샜다(실계좌 장부 300 → 132 · 계좌 실잔고 298). 코드는 고쳤지만
-샌 장부는 스스로 못 돌아온다 — **배포 뒤 한 번** 실잔고로 앵커한다. 실잔고 = 거래소 계정 총액 − 다른 펀드·단독 판 몫(펀드 하나면 총액).
+1.8.1 전까지 펀드 총자본이 리밸런싱 틱·재기동마다 샜다(실계좌 장부 300 → 132 · 계좌 실잔고 298). 1.8.1 이 새는 것을
+막았고, **1.8.2 부터 펀드가 틱마다(4h 경계 · 수동 · 입출금 · 편집 · 복원) 거래소 계좌를 읽어 총자본을 그 사실에 맞춘다**
+(`orchestration/rebalancer/anchor.py`). 사람이 값을 넣는 절차는 없다.
 
-```bash
-bash scripts/ops/remote.sh scripts/ops/status.sh                                  # 계정 총액 확인(값은 화면·probe_gate)
-bash scripts/ops/remote.sh -- 'docker exec updown_live-api-1 python scripts/deploy/fund_reanchor.py <fund_id> <equity>'
-bash scripts/ops/remote.sh -- 'docker restart updown_live-api-1'                  # 메모리의 옛 장부가 파일을 덮기 전에
-```
-
-- 리더가 `api_b` 면 컨테이너 이름을 바꾼다(`status.sh` 의 leader). `docker restart` 는 IP 가 안 바뀌어 nginx 캐시 문제(§3)가 없다.
-- 확인: 다음 틱 뒤 `logs/equity/daily.jsonl` 의 펀드 값이 실잔고 근처에서 **매매 없이 안 움직이면** 끝.
-- 로컬 데모는 `docker exec updown-api_demo-1 …` + `docker restart updown-api_demo-1`. 옛 펀드를 지우고 새로 만들어도 된다.
+- 조건: 펀드가 그 거래소의 **유일한 소유자**(같은 거래소에 다른 펀드·펀드 밖 단독 판이 없음)일 때만. 아니면 증분 모형으로
+  돌고 화면 헤더에 "앵커 없음(이유)" 가 뜬다 — 계좌 총액을 나눌 근거가 없어서다.
+- 모드(첫 앵커에서 한 번 정함): **계좌**(계좌 총액이 투입 원금 ±20% 안 · 실계좌처럼 계좌 전부가 펀드 · 거래소 입출금은 펀드
+  입출금으로 자동 기록 · 화면 "입금" 버튼은 거절) / **계좌−유휴**(테스트넷 1만에 1,000 짜리 데모처럼 펀드 밖 돈이 큼 ·
+  거래소 입출금은 유휴로 · 화면 "입금" 은 유휴에서 펀드로 옮김).
+- 확인: `docker logs <api> | grep fund_anchored` (mode·total·before·dnw·idle) · 화면 헤더 "앵커 계좌 HH:MM".
+- 배포 직후 복원 틱이 앵커하므로 옛(샌) 장부는 **배포만 하면** 돌아온다. TWR 도 그 기간 수익률로 스스로 교정된다.

@@ -111,11 +111,14 @@ class Coordinator:
             self.pending += port.realized() - mark
         return port
 
-    def tick(self, flow: CashFlow | None = None) -> TickReport:
+    def tick(self, flow: CashFlow | None = None, *, anchor: Decimal | None = None) -> TickReport:
         """한 주기 — 세션들의 실현 손익 증분을 모아 총자본을 갱신하고 예산을 다시 나눠 준다.
 
         Args:
             flow: 이 주기의 외부 입출금 (없으면 None).
+            anchor: 거래소 계좌에서 읽은 **입출금 직전 진짜 총자본** (자동 앵커 · T285). 주면 증분
+                셈 대신 이 값으로 마감한다 — 장부가 틀렸으면 그 차이가 이 기간 수익률에 잡혀 TWR 이
+                스스로 교정된다. mark 는 똑같이 갱신해 다음 증분이 이어진다.
 
         Returns:
             이번 주기 결과. `missing`/`winding_down` 으로 조정자가 세션을 만들/정리할지 안다.
@@ -136,7 +139,11 @@ class Coordinator:
             if mark is not None:
                 pnl += now - mark
             self.marks[sym] = now
-        budgets = self.engine.rebalance(pnl, flow)
+        budgets = (
+            self.engine.settle(anchor, flow)
+            if anchor is not None
+            else self.engine.rebalance(pnl, flow)
+        )
         for sym, budget in budgets.items():
             port = self.ports.get(sym)
             if port is not None:

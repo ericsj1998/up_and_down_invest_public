@@ -21,7 +21,7 @@ class _Coordinator:
         self.engine = SimpleNamespace(balance=balance)
         self.flows: list[Any] = []
 
-    def tick(self, flow: Any = None) -> Any:
+    def tick(self, flow: Any = None, *, anchor: Any = None) -> Any:  # noqa: ARG002
         self.flows.append(flow)
         amount = Decimal(0) if flow is None else flow.amount
         return SimpleNamespace(balance=self.engine.balance + amount, twr_return=Decimal(0))
@@ -29,7 +29,14 @@ class _Coordinator:
 
 @pytest.fixture
 def fund(monkeypatch: pytest.MonkeyPatch) -> Any:
-    stub = SimpleNamespace(fund_id="f1", market="GATE", coordinator=_Coordinator(Decimal("100")))
+    stub = SimpleNamespace(
+        fund_id="f1",
+        market="GATE",
+        coordinator=_Coordinator(Decimal("100")),
+        handles={},
+        anchor=None,  # 자동 앵커(T285) — 스텁은 앵커 전 · 계좌 원장을 못 읽어 증분 경로로 간다
+        anchor_skipped=None,
+    )
 
     def fund_or_404(_fund_id: str, *, _pop: bool = False) -> Any:
         return stub

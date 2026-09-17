@@ -65,8 +65,23 @@ class RebalanceEngine:
             총자본)
             어느 것도 총자본을 못 건드린다.
         """
-        total = self.ledger.balance + pnl
-        self.ledger.step(total, flow)
+        return self.settle(self.ledger.balance + pnl, flow)
+
+    def settle(
+        self, equity_before_flow: Decimal, flow: CashFlow | None = None
+    ) -> dict[str, Decimal]:
+        """한 주기를 **진짜 평가금액**으로 마감하고 새 예산을 낸다 — 자동 앵커의 입력 (T285).
+
+        Args:
+            equity_before_flow: 이 기간 입출금 직전의 총자본. 거래소 계좌에서 읽은 사실이면
+                증분 셈을 덮는다(장부가 틀렸으면 그 차이가 이 기간 수익률에 잡혀 TWR 이
+                스스로 교정된다).
+            flow: 이 기간 말의 입출금.
+
+        Returns:
+            `{종목: 새 예산}` — `rebalance` 와 같다.
+        """
+        self.ledger.step(equity_before_flow, flow)
         if self.slots > 0:
             return slot_budgets(self.ledger.balance, self.basket, self.slots)
         return target_budgets(self.ledger.balance, self.basket)

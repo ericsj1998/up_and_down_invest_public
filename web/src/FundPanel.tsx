@@ -426,6 +426,21 @@ export function FundPanel() {
               </span>{" "}
               · 레버 {f.leverage}x · {f.symbols.length}종 · 전략 {f.playbook} ·
               다음 리밸런싱 <b>{countdown(f.next_tick)}</b>
+              {/* 자동 앵커(T285) — 총자본이 거래소 계좌에 맞춰졌나. 못 맞추면 이유를 그대로 보여 준다. */}
+              {f.anchor ? (
+                f.anchor.skipped ? (
+                  <span className="faint" title={f.anchor.skipped}>
+                    {" "}
+                    · 앵커 없음({f.anchor.skipped})
+                  </span>
+                ) : (
+                  <span className="faint">
+                    {" "}
+                    · 앵커 {f.anchor.mode === "account" ? "계좌" : "계좌−유휴"}
+                    {f.anchor.at ? ` ${new Date(f.anchor.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
+                  </span>
+                )
+              ) : null}
             </span>
           </div>
           {/* 🔴 **거래소와 갈린 종목이 있으면 위 잔고·TWR 은 미확정이다** (2026-09-01
