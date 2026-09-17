@@ -128,8 +128,9 @@ services:
     restart: always
     command: ["python", "scripts/runtime/orderflow_capture.py"]
     environment:
-      ORDERFLOW_GATE: ${ORDERFLOW_GATE:-}
-      ORDERFLOW_UPBIT: ${ORDERFLOW_UPBIT:-}
+      # ⚠️ 빈 값을 넘기면 안 된다 (2026-09-17 실측: 종목 0개로 돌았다) — .env.live 에 없으면 기본 6종을 여기서 준다.
+      ORDERFLOW_GATE: ${ORDERFLOW_GATE:-BTC_USDT,ETH_USDT,XRP_USDT,SOL_USDT,DOGE_USDT,ADA_USDT}
+      ORDERFLOW_UPBIT: ${ORDERFLOW_UPBIT:-KRW-BTC,KRW-ETH,KRW-XRP,KRW-SOL,KRW-DOGE,KRW-ADA}
     deploy:
       resources:
         limits:

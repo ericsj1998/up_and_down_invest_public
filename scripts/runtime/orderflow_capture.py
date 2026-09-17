@@ -40,10 +40,10 @@ UPBIT = "https://api.upbit.com/v1"
 _GATE_DEFAULT = "BTC_USDT,ETH_USDT,XRP_USDT,SOL_USDT,DOGE_USDT,ADA_USDT"
 _UPBIT_DEFAULT = "KRW-BTC,KRW-ETH,KRW-XRP,KRW-SOL,KRW-DOGE,KRW-ADA"
 GATE_CONTRACTS = tuple(
-    s.strip() for s in os.environ.get("ORDERFLOW_GATE", _GATE_DEFAULT).split(",") if s.strip()
+    s.strip() for s in (os.environ.get("ORDERFLOW_GATE") or _GATE_DEFAULT).split(",") if s.strip()
 )
 UPBIT_MARKETS = tuple(
-    s.strip() for s in os.environ.get("ORDERFLOW_UPBIT", _UPBIT_DEFAULT).split(",") if s.strip()
+    s.strip() for s in (os.environ.get("ORDERFLOW_UPBIT") or _UPBIT_DEFAULT).split(",") if s.strip()
 )
 STATS_EVERY = 5  # 분
 
