@@ -74,6 +74,7 @@ COPY --chown=updown:updown \
     scripts/runtime/backfill_cli.py \
     scripts/runtime/measure_costs.py \
     scripts/runtime/_progress.py \
+    scripts/runtime/orderflow_capture.py \
     /app/scripts/runtime/
 # 배포 절차 (T216) — 빈 볼륨 초기화 · 배포 DB 검사기. 컨테이너 안에서 돈다.
 COPY --chown=updown:updown scripts/deploy /app/scripts/deploy

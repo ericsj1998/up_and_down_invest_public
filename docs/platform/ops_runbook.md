@@ -148,3 +148,19 @@ cd ~/updown && docker compose --env-file .env.live -f docker/compose.base.yml -f
 dev 스택(`updown-*-1` · `make up`)은 별개다. 배포 이미지는 dev 컨테이너와 무관하게 로컬에서 새로 빌드한다.
 Docker Desktop 실행 파일: `%LOCALAPPDATA%\Programs\DockerDesktop\Docker Desktop.exe`
 (PowerShell `Start-Process` · 뜨는 데 5~30초 · 그 뒤 WSL 에서 `docker info`).
+
+## 7. T283 호가·체결 수집기 — 서버에서 (2026-09-17 · 프로필 뒤 · 기본 기동에서 빠진다)
+
+공개 엔드포인트만 읽는다(키 없음 · 주문 없음 · `src` import 없음 · 실계좌 api 의 키 단위 호출 예산과 무관). 실계좌·데모와
+**다른 볼륨**(`flowlogs`)에 쓴다. 로컬 WSL 수집기와 둘이 돌아도 된다 — IP 가 다르고 로그도 각자다(합칠 때 출처로 나눈다).
+
+```bash
+bash scripts/ops/remote.sh scripts/ops/orderflow_server.sh                    # 상태(컨테이너 · heartbeat · 파일 수 · 메모리)
+bash scripts/ops/remote.sh -- 'bash /tmp/orderflow_server.sh start'          # 켜기 (위 status 가 /tmp 에 복사해 둔다)
+bash scripts/ops/remote.sh -- 'bash /tmp/orderflow_server.sh stop'           # 끄기
+```
+
+- 종목은 `.env.live` 의 `ORDERFLOW_GATE` / `ORDERFLOW_UPBIT`(쉼표 목록 · 비면 핵심 6종 = 데모 펀드와 같음). 시크릿은 아니지만 env 편집은 사람이(§4).
+- 메모리 96M 는 실측 전 값. `free -m` 에서 스왑이 늘면 **수집기부터 끈다** — 실계좌 api 가 우선이다. [결정 필요] 상시 켤지는 배포 뒤 실측으로.
+- 배포(`ship.sh`)는 프로필 서비스를 새로 띄우지 않는다 — 배포 뒤 `start` 를 다시 돌리면 새 이미지 태그로 재생성된다.
+- 이미지에 `scripts/runtime/orderflow_capture.py` 가 들어간 것은 1.8.1 부터 — 그 전 태그로는 `start` 가 "No such file" 로 죽는다.

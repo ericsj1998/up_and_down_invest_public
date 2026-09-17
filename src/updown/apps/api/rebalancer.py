@@ -861,12 +861,14 @@ def basket_block_of(market: str) -> str:
     return "default"
 
 
-def _default_basket(market: str) -> tuple[list[dict[str, str]], list[str]]:
+def _default_basket(market: str, playbook: str = "") -> tuple[list[dict[str, str]], list[str]]:
     """기본 바스켓 (config/baskets.yml) 을 대상 거래소에 맞춰 거른다.
 
     Args:
         market: 거래소·시장. 코인(GATE/BINANCE)은 `default` 블록에서 testnet 에 계약이 없는 종목을
             빼고, 해외주식은 `foreign_stock`, 국내주식은 `domestic_stock` 블록을 쓴다.
+        playbook: 매매법 id. `by_playbook` 에 그 매매법의 바스켓이 있고 시장 묶음(`block`)이 맞으면
+            그것이 우선이다(측정된 우주 = 펀드 종목 · 2026-09-17). 없으면 묶음 블록.
 
     Returns:
         (남는 멤버들, 이 거래소라서 뺀 종목들). 파일이 없거나 그 묶음의 블록이 비면 둘 다 빈 목록 —
@@ -878,7 +880,20 @@ def _default_basket(market: str) -> tuple[list[dict[str, str]], list[str]]:
         return [], []
     if not isinstance(raw, dict):
         return [], []
-    body = cast("dict[str, Any]", raw).get(basket_block_of(market))
+    top = cast("dict[str, Any]", raw)
+    # ⭐ 매매법별 바스켓이 있으면 그것이 우선 (2026-09-17 · T279 데모). 매매법이 측정된 우주와 펀드
+    #    종목이 같아야 리더보드 성적이 그 펀드의 기대치다. 다른 시장 묶음(코인 매매법에 주식
+    #    거래소)이면 안 쓴다.
+    body: object = None
+    if playbook:
+        by_book = cast("dict[str, Any]", top.get("by_playbook") or {})
+        candidate = by_book.get(playbook)
+        if isinstance(candidate, dict):
+            book_spec = cast("dict[str, Any]", candidate)
+            if str(book_spec.get("block", "default")) == basket_block_of(market):
+                body = book_spec
+    if body is None:
+        body = top.get(basket_block_of(market))
     if not isinstance(body, dict):
         return [], []
     spec = cast("dict[str, Any]", body)
@@ -898,11 +913,13 @@ def _default_basket(market: str) -> tuple[list[dict[str, str]], list[str]]:
 
 
 @router.get("/defaults")
-async def defaults(market: str = "GATE") -> dict[str, Any]:
+async def defaults(market: str = "GATE", playbook: str = "") -> dict[str, Any]:
     """펀드 생성 폼의 기본값 — 화면 하드코딩의 대체 (T63 ②).
 
     Args:
         market: 대상 거래소. 그 testnet 에 없는 종목은 걸러서 준다.
+        playbook: 고른 매매법 — 매매법별 바스켓(`baskets.yml by_playbook`)이 있으면 그것을
+            준다(2026-09-17). 비면 기본 매매법.
 
     Returns:
         `{playbook, leverage, members, missing}`. `missing` 은 걸러진 종목 — 화면이
@@ -916,8 +933,8 @@ async def defaults(market: str = "GATE") -> dict[str, Any]:
         박혀 있어서 6x 로 측정한 1.3.0 을 골라도 3 이 떴다 — 문서와 화면이 다른 값을
         말하면 사람이 손으로 고치다 틀리고, 성적이 어느 배율의 것인지 모르게 된다.
     """
-    members, missing = _default_basket(market)
-    book = default_playbook()
+    members, missing = _default_basket(market, playbook)
+    book = playbook or default_playbook()
     found = next((item for item in load_playbooks() if item.playbook_id == book), None)
     return {
         "playbook": book,

@@ -28,6 +28,8 @@
 !scripts/runtime/backfill_cli.py
 !scripts/runtime/measure_costs.py
 !scripts/runtime/_progress.py
+# T283 호가·체결 수집기 — 서버에서는 compose.live.yml 의 `orderflow` 프로필 서비스로 돈다 (2026-09-17)
+!scripts/runtime/orderflow_capture.py
 # 배포 절차 스크립트 — 컨테이너 안에서 `python scripts/deploy/...` 로 돈다 (T216)
 !scripts/deploy
 

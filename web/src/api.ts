@@ -747,6 +747,20 @@ export type Book = {
   leverage?: number | null;
   /** 기준 백테스트 한 줄 (기간·손익·MDD) — 선택창 표기 전용, 선언(playbooks.yml)이 출처. */
   backtest_note?: string;
+  /**
+   * **펀드 규칙 선언** (T279 P3·V2 · 2026-09-17) — 이 매매법으로 펀드를 만들면 붙는 자리·명목·정지 규칙.
+   * 생성 페이로드가 안 보내도 서버가 플레이북 선언을 그대로 쓴다 — 화면은 그 사실을 보여 주기만 한다.
+   */
+  fund_rules?: FundRules | null;
+};
+
+export type FundRules = {
+  /** "slots" 면 자리 예산(총자본 ÷ 자리) · 그 밖은 기존 비중 배분. */
+  weight_mode: string;
+  slots: number;
+  halt_after_stops: number;
+  /** 총 명목 ÷ 자리 ≤ 이 값 (문자열 소수). null 이면 상한 없음. */
+  notional_cap: string | null;
 };
 
 export type Rank = {
@@ -2329,7 +2343,8 @@ export function fundList(): Promise<{ funds: FundStatus[] }> {
 }
 
 /** 펀드 생성 폼의 기본값 — 바스켓 SSoT 는 서버의 config/baskets.yml 이다 (T63 ②). */
-export function fundDefaults(market: string): Promise<{
+/** 기본 바스켓 — `playbook` 을 주면 매매법별 바스켓(`baskets.yml by_playbook`)이 있을 때 그것을 받는다 (2026-09-17). */
+export function fundDefaults(market: string, playbook = ""): Promise<{
   playbook: string;
   /** 그 매매법이 **측정된 배율** — 없으면 화면이 알아서 정한다 (2026-08-30). */
   leverage?: string | null;
@@ -2337,7 +2352,9 @@ export function fundDefaults(market: string): Promise<{
   /** 이 거래소 testnet 에 계약이 없어 걸러진 종목 — 실계좌에선 포함된다. */
   missing: string[];
 }> {
-  return request(`/rebalancer/defaults?market=${market}`);
+  return request(
+    `/rebalancer/defaults?market=${market}&playbook=${encodeURIComponent(playbook)}`,
+  );
 }
 
 export function fundCreate(body: {

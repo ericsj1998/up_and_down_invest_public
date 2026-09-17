@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -35,8 +36,15 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "logs" / "orderflow"
 GATE = "https://api.gateio.ws/api/v4"
 UPBIT = "https://api.upbit.com/v1"
-GATE_CONTRACTS = ("BTC_USDT", "ETH_USDT", "XRP_USDT", "SOL_USDT", "DOGE_USDT", "ADA_USDT")
-UPBIT_MARKETS = ("KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE", "KRW-ADA")
+# 종목은 환경 변수로 바꿀 수 있다(서버 데모 우주 등 · 쉼표 구분 · 비면 기본 6종). 기본은 핵심 6종.
+_GATE_DEFAULT = "BTC_USDT,ETH_USDT,XRP_USDT,SOL_USDT,DOGE_USDT,ADA_USDT"
+_UPBIT_DEFAULT = "KRW-BTC,KRW-ETH,KRW-XRP,KRW-SOL,KRW-DOGE,KRW-ADA"
+GATE_CONTRACTS = tuple(
+    s.strip() for s in os.environ.get("ORDERFLOW_GATE", _GATE_DEFAULT).split(",") if s.strip()
+)
+UPBIT_MARKETS = tuple(
+    s.strip() for s in os.environ.get("ORDERFLOW_UPBIT", _UPBIT_DEFAULT).split(",") if s.strip()
+)
 STATS_EVERY = 5  # 분
 
 

@@ -3018,6 +3018,14 @@ def _playbooks_all() -> dict[str, Any]:
                 # ⭐ 기준 백테스트 한 줄 (2026-09-03) — 레버리지 입력칸을 없앤 대신,
                 #    고르는 근거(측정 기간·손익·MDD)를 선택창이 보여 준다.
                 "backtest_note": item.backtest_note,
+                # ⭐ 펀드 규칙 선언(T279 P3·V2 · 2026-09-17) — 화면이 "이 매매법으로 펀드를 만들면
+                #    어떤 자리/명목/정지 규칙이 붙나" 를 보여 준다. 출처는 플레이북 선언 하나다.
+                "fund_rules": {
+                    "weight_mode": item.weight_mode,
+                    "slots": item.slots,
+                    "halt_after_stops": item.halt_after_stops,
+                    "notional_cap": None if item.notional_cap is None else str(item.notional_cap),
+                },
             }
             # ⭐ 선택창에는 listed 만 (사용자 확정 2026-08-23). 숨긴 것도 id 로는 띄울 수 있다.
             for item in load_playbooks()

@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 
 import * as api from "./api";
-import type { FundStatus, MarketInfo } from "./api";
+import type { FundRules, FundStatus, MarketInfo } from "./api";
 import { useMe } from "./Gate";
 import { bookInGroup, groupOfName, marketTradeAllowed, useMarketGroup } from "./shell/marketGroup";
 import { when } from "./shell/MarketHours";
@@ -128,6 +128,7 @@ export function FundPanel() {
       leverage?: number | null;
       backtest_note?: string;
       groups?: ("coin" | "stock")[];
+      fund_rules?: FundRules | null;
     }[]
   >([]);
   const [playbook, setPlaybook] = useState("");
@@ -188,6 +189,7 @@ export function FundPanel() {
             leverage: b.leverage,
             backtest_note: b.backtest_note,
             groups: b.groups,
+            fund_rules: b.fund_rules,
           })),
         );
         const live = r.live_markets ?? [];
@@ -204,15 +206,16 @@ export function FundPanel() {
 
   useEffect(() => {
     // 거래소를 바꾸면 기본 바스켓도 다시 받는다 — testnet 에 없는 종목이 다르다.
+    // 매매법을 바꿔도 다시 받는다 — 매매법별 바스켓(측정된 우주)이 있으면 그것으로 (2026-09-17).
     api
-      .fundDefaults(market)
+      .fundDefaults(market, playbook)
       .then((d) => {
         setMembers(d.members);
         setMissing(d.missing);
         setPlaybook((prev) => prev || d.playbook);
       })
       .catch(() => {});
-  }, [market]);
+  }, [market, playbook]);
 
   // 선택한 전략 — 선언 배율·기준 백테스트 표기 전용 (서버가 같은 선언을 읽는다).
   const selBook = books.find((b) => b.id === playbook) ?? null;
@@ -876,6 +879,18 @@ export function FundPanel() {
               레버리지{" "}
               {selBook.leverage != null ? `${selBook.leverage}x` : "선언 없음"}
             </span>
+            {/* 펀드 규칙 선언(T279 P3·V2) — 자리·총 명목 상한·연속 손절 정지. 값은 서버가 플레이북에서 읽는다. */}
+            {selBook.fund_rules?.weight_mode === "slots" && (
+              <span className="book-chip strong">
+                {`자리 ${selBook.fund_rules.slots}`}
+                {selBook.fund_rules.notional_cap != null
+                  ? ` · 총 명목 ${selBook.fund_rules.notional_cap}x`
+                  : ""}
+                {selBook.fund_rules.halt_after_stops > 0
+                  ? ` · 같은 날 연속 손절 ${selBook.fund_rules.halt_after_stops} 이면 정지`
+                  : ""}
+              </span>
+            )}
             {(selBook.backtest_note ?? "")
               .split(" · ")
               .filter(Boolean)

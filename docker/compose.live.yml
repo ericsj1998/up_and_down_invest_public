@@ -17,6 +17,8 @@ name: updown_live
 volumes:
   # 데모 API 전용 산출물 (펀드 파일 · 스냅샷 · 대기 주문 파일). 실계좌 `runlogs` 와 섞이면 안 된다 — 위 api_demo 주석.
   demologs:
+  # T283 수집기 산출물(`logs/orderflow/...`) — 실계좌·데모 로그와 섞지 않는다 (2026-09-17).
+  flowlogs:
 
 services:
   postgres:
@@ -114,6 +116,26 @@ services:
     #    compose 는 같은 컨테이너 경로의 마운트를 override 가 이긴다.
     volumes:
       - demologs:/app/logs
+
+  # 📡 T283 호가·체결 수집기 (2026-09-17) — **프로필 뒤 · 기본 기동에서 빠진다**. 공개 엔드포인트만 읽는다(키 없음 ·
+  #    주문 없음 · `src` import 없음 · 실계좌 api 의 키 단위 호출 예산과 무관). 실계좌·데모와 **다른 볼륨**(flowlogs).
+  #    로컬 WSL 수집기와 나란히 돌아도 된다 — 서로 다른 IP 에서 같은 공개 자료를 읽을 뿐이고 로그도 각자다.
+  #    종목은 .env.live 의 ORDERFLOW_GATE / ORDERFLOW_UPBIT(쉼표 목록 · 비면 핵심 6종). 켜기·확인·끄기는 런북 §7.
+  #    메모리 96M 는 실측 전 값 — 스왑이 늘면 수집기부터 끈다(실계좌 api 가 우선).
+  orderflow:
+    profiles: ["orderflow"]
+    image: ghcr.io/ericsj1998/up_and_down_invest/app:${IMAGE_TAG:?IMAGE_TAG 가 없다 — 배포할 릴리스 태그를 지정한다}
+    restart: always
+    command: ["python", "scripts/runtime/orderflow_capture.py"]
+    environment:
+      ORDERFLOW_GATE: ${ORDERFLOW_GATE:-}
+      ORDERFLOW_UPBIT: ${ORDERFLOW_UPBIT:-}
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+    volumes:
+      - flowlogs:/app/logs
 
   # ⏸ 별도 engine 은 **기본 기동에서 빠진다** (사용자 결정 2026-09-04 · 1 GB). 자원 비트는
   #    리더 api 가 돌린다(위 UPDOWN_ENGINE_INPROC). 다시 분리하려면 `--profile separate-engine`
