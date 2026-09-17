@@ -13,9 +13,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Protocol
 
-from updown.decision.portfolio_rules import day_halted, slot_free
+from updown.decision.portfolio_rules import day_halted, notional_free, slot_free
 
 
 class PositionPort(Protocol):
@@ -37,6 +38,14 @@ class PositionPort(Protocol):
         """
         ...
 
+    def open_exposure(self) -> Decimal:
+        """보유 중 매매의 노출(명목/증거금 · 기록 leverage) 합.
+
+        Returns:
+            열린 기록의 leverage 합. 없으면 0.
+        """
+        ...
+
 
 @dataclass(slots=True)
 class SlotGate:
@@ -51,15 +60,21 @@ class SlotGate:
     ports: Mapping[str, PositionPort]
     slots: int = 0
     halt_after_stops: int = 0
+    notional_cap: Decimal | None = None
+    """**총 명목 상한**(93차 V2 · 자본 배수). 열린 노출 합 + 새 자리 노출 을 자리 수로 나눈 값
+    (= 명목/자본)이 이 값을 넘는 진입은 막는다. None = 없음. 급락 갭에서 계좌가 한 번에 끝나는
+    날을 없애는 손잡이(파산 4.2 → 0.5%)."""
 
-    def blocks(self, at: datetime) -> str | None:
+    def blocks(self, at: datetime, exposure: Decimal = Decimal(0)) -> str | None:
         """지금 새 자리를 열면 안 되는 이유 — 없으면 None.
 
         Args:
             at: 진입하려는 봉의 시각(UTC).
+            exposure: 열려는 자리의 노출(명목/증거금). 총 명목 상한 판단에만 쓴다.
 
         Returns:
-            `"slots"`(자리 없음) · `"day_halt"`(그날 정지) · None(열어도 됨).
+            `"slots"`(자리 없음) · `"notional"`(총 명목 상한) · `"day_halt"`(그날 정지) ·
+            None(열어도 됨).
 
         Note:
             자리 검사가 먼저다 — 연구 엔진 루프도 정지 검사 뒤 상한 검사 순이지만 둘 다 막으면
@@ -68,6 +83,10 @@ class SlotGate:
         open_count = sum(port.open_count() for port in self.ports.values())
         if not slot_free(open_count, self.slots):
             return "slots"
+        if self.notional_cap is not None and self.slots > 0:
+            held = sum((port.open_exposure() for port in self.ports.values()), Decimal(0))
+            if not notional_free(held, exposure, self.slots, self.notional_cap):
+                return "notional"
         exits = [item for port in self.ports.values() for item in port.exits()]
         if day_halted(exits, at, self.halt_after_stops):
             return "day_halt"

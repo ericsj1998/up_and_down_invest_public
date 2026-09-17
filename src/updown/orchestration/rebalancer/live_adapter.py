@@ -102,3 +102,14 @@ class SessionBridge:
             for item in self.session.ledger.closed
             if item.closed_at is not None and item.actor is Actor.SYSTEM
         ]
+
+    def open_exposure(self) -> Decimal:
+        """보유 중 매매의 노출(기록 leverage = 명목/증거금) 합 (총 명목 상한의 입력).
+
+        Returns:
+            열린 기록의 leverage 합. 없으면 0.
+        """
+        return sum(
+            (item.leverage for item in self.session.ledger.records if item.outcome is Outcome.OPEN),
+            Decimal(0),
+        )

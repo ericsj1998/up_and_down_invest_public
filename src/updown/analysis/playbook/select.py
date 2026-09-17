@@ -309,6 +309,11 @@ def _load_file(target: Path) -> list[Playbook]:
                     ),
                     consec_cut=bool(body.get("consec_cut", False)),
                     slots=int(body.get("slots", 0) or 0),
+                    notional_cap=(
+                        None
+                        if body.get("notional_cap") is None
+                        else Decimal(str(body["notional_cap"]))
+                    ),
                     halt_after_stops=int(body.get("halt_after_stops", 0) or 0),
                     label=str(body.get("label", "") or ""),
                     flip_on_opposite=bool(body.get("flip_on_opposite", False)),

@@ -160,11 +160,13 @@ class EntryGate(Protocol):
     그 규칙의 내용을 모른다 — 이유 문자열을 깔때기에 적을 뿐이다.
     """
 
-    def blocks(self, at: datetime) -> str | None:
+    def blocks(self, at: datetime, exposure: Decimal) -> str | None:
         """지금 새 자리를 열면 안 되는 이유.
 
         Args:
             at: 진입하려는 봉의 시각(UTC).
+            exposure: 열려는 자리의 예상 노출(명목/증거금 = 세션 배율 x 크기 승수) —
+                총 명목 상한(93차 V2)의 입력.
 
         Returns:
             막는 이유(깔때기 라벨). 열어도 되면 None.
@@ -3166,7 +3168,7 @@ class Session:
         # 🔴 **펀드의 진입 문** (T279 P3) — 동시 보유 상한 · 같은 날 연속 손절 정지. 자리를 지우지
         #    않고 진입에서만 거른다. 단일 세션은 문이 없어 이 줄이 없는 것과 같다.
         if self.entry_gate is not None:
-            why = self.entry_gate.blocks(bar.ts)
+            why = self.entry_gate.blocks(bar.ts, self.ledger.leverage * setup.size_mult)
             if why is not None:
                 self.gate_held += 1
                 self._count(f"gate:{why}")

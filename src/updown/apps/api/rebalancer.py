@@ -95,6 +95,8 @@ class Fund:
     진입 문이 상한을 건다."""
     halt_after_stops: int = 0
     """P3 같은 날 연속 손절 정지 문턱(§24 · 2). 0 = 없음."""
+    notional_cap: Decimal | None = None
+    """총 명목 상한(자본 배수 · 93차 V2 = 2). None = 없음."""
 
 
 FUNDS: dict[str, Fund] = {}
@@ -129,7 +131,9 @@ RANK_WINDOW_DAYS = 60
 """rank60 모멘텀 창(일). 창 길이는 측정으로 정한다 — 값은 매매법 쪽 문서에."""
 
 
-def _attach_gate(coordinator: Coordinator, slots: int, halt_after_stops: int) -> None:
+def _attach_gate(
+    coordinator: Coordinator, slots: int, halt_after_stops: int, notional_cap: Decimal | None = None
+) -> None:
     """P3 진입 문을 펀드의 모든 세션에 끼운다 (T279 83차 · 2026-09-18).
 
     Args:
@@ -137,6 +141,7 @@ def _attach_gate(coordinator: Coordinator, slots: int, halt_after_stops: int) ->
             같은 매핑이 바뀌므로 문도 따라간다.
         slots: 동시 보유 상한. 0 = 없음.
         halt_after_stops: 같은 날 연속 손절 정지 문턱. 0 = 없음.
+        notional_cap: 총 명목 상한(자본 배수). None = 없음.
 
     Note:
         둘 다 0 이면 아무것도 안 끼운다 — 기존 펀드(비중 배분)는 한 톨도 안 바뀐다. 종목을 나중에
@@ -145,7 +150,9 @@ def _attach_gate(coordinator: Coordinator, slots: int, halt_after_stops: int) ->
     if slots <= 0 and halt_after_stops <= 0:
         return
     ports = cast(dict[str, PositionPort], coordinator.ports)
-    gate = SlotGate(ports=ports, slots=slots, halt_after_stops=halt_after_stops)
+    gate = SlotGate(
+        ports=ports, slots=slots, halt_after_stops=halt_after_stops, notional_cap=notional_cap
+    )
     for port in coordinator.ports.values():
         if isinstance(port, SessionBridge):
             port.session.entry_gate = gate
@@ -295,6 +302,7 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
         "alt_leverage": None if fund.alt_leverage is None else str(fund.alt_leverage),
         "slots": fund.slots,
         "halt_after_stops": fund.halt_after_stops,
+        "notional_cap": None if fund.notional_cap is None else str(fund.notional_cap),
         "basket": {
             "version": basket.version,
             "members": [{"symbol": m.symbol, "weight": str(m.weight)} for m in basket.members],
@@ -479,6 +487,8 @@ async def _restore_one(data: dict[str, Any]) -> None:
     alt_leverage = None if raw_alt in (None, "") else Decimal(str(raw_alt))
     slots = int(data.get("slots", 0) or 0)  # 옛 저장본은 0 — 비중 배분 그대로
     halt_after_stops = int(data.get("halt_after_stops", 0) or 0)
+    raw_cap = data.get("notional_cap")
+    notional_cap = None if raw_cap in (None, "") else Decimal(str(raw_cap))
     total = ledger.balance
     wsum = basket.weight_sum
     handles: dict[str, str] = {}
@@ -526,7 +536,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
         basket = Basket(tuple(kept), version=basket.version)
     engine = RebalanceEngine(basket=basket, ledger=ledger, slots=slots)
     coordinator = Coordinator(engine=engine, ports=dict(ports))  # type: ignore[arg-type]
-    _attach_gate(coordinator, slots, halt_after_stops)
+    _attach_gate(coordinator, slots, halt_after_stops, notional_cap)
     fund = Fund(
         fund_id=str(data["fund_id"]),
         label=str(data["label"]),
@@ -539,6 +549,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
         alt_leverage=alt_leverage,
         slots=slots,
         halt_after_stops=halt_after_stops,
+        notional_cap=notional_cap,
     )
     FUNDS[fund.fund_id] = fund
 
@@ -630,6 +641,7 @@ async def _create_fund(
     alt_leverage: Decimal | None = None,
     slots: int = 0,
     halt_after_stops: int = 0,
+    notional_cap: Decimal | None = None,
 ) -> Fund:
     """바스켓 종목마다 세션을 띄우고 조정자로 묶는다.
 
@@ -645,6 +657,7 @@ async def _create_fund(
         alt_leverage: 알트 배율 오버라이드 (2.0.0 A5 = 5). None 이면 전 종목 `leverage`.
         slots: P3 동시 보유 상한(예산 = 총자본 ÷ slots · 진입 문). 0 = 없음.
         halt_after_stops: P3 같은 날 연속 손절 정지 문턱. 0 = 없음.
+        notional_cap: 총 명목 상한(자본 배수 · V2 = 2). None = 없음.
 
     Returns:
         만들어진 펀드. `FUNDS` 에 등록된다.
@@ -683,7 +696,7 @@ async def _create_fund(
 
     engine = RebalanceEngine(basket=basket, ledger=TwrLedger(equity=total_cash), slots=slots)
     coordinator = Coordinator(engine=engine, ports=dict(ports))  # type: ignore[arg-type]
-    _attach_gate(coordinator, slots, halt_after_stops)
+    _attach_gate(coordinator, slots, halt_after_stops, notional_cap)
     fund = Fund(
         fund_id=f"fund{uuid4().hex[:8]}",
         label=label,
@@ -696,6 +709,7 @@ async def _create_fund(
         alt_leverage=alt_leverage,
         slots=slots,
         halt_after_stops=halt_after_stops,
+        notional_cap=notional_cap,
     )
     FUNDS[fund.fund_id] = fund
     if weight_mode == "rank60":
@@ -977,6 +991,12 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
         or (0 if declared_book is None else declared_book.halt_after_stops)
         or 0
     )
+    raw_cap = payload.get("notional_cap")
+    notional_cap = (
+        (None if declared_book is None else declared_book.notional_cap)
+        if raw_cap in (None, "")
+        else Decimal(str(raw_cap))
+    )
     if mode == "slots" and slots <= 0:
         raise HTTPException(400, "weight_mode 가 slots 인데 slots 가 없다 — 매매법 선언을 본다")
     raw_alt = payload.get("alt_leverage")
@@ -999,6 +1019,7 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
                 alt_leverage=(declared_alt if raw_alt in (None, "") else Decimal(str(raw_alt))),
                 slots=slots if mode == "slots" else 0,
                 halt_after_stops=halt,
+                notional_cap=notional_cap if mode == "slots" else None,
             )
         )
     except HTTPException:
@@ -1247,7 +1268,9 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
             fund.handles[member.symbol] = handle
             fund.coordinator.ports[member.symbol] = port  # type: ignore[index]
             added.append(member.symbol)
-        _attach_gate(fund.coordinator, fund.slots, fund.halt_after_stops)  # 새 세션에도 같은 문
+        _attach_gate(
+            fund.coordinator, fund.slots, fund.halt_after_stops, fund.notional_cap
+        )  # 새 세션에도
     except Exception as exc:
         for sym in added:  # 방금 띄운 것만 되돌린다 — 펀드는 그대로
             handle = fund.handles.pop(sym, "")
@@ -1336,7 +1359,9 @@ async def change_playbook(
     fund.handles = new_handles
     fund.coordinator.ports = new_ports  # type: ignore[assignment]
     fund.playbook = new_pb
-    _attach_gate(fund.coordinator, fund.slots, fund.halt_after_stops)  # 갈아 끼운 세션에도 같은 문
+    _attach_gate(
+        fund.coordinator, fund.slots, fund.halt_after_stops, fund.notional_cap
+    )  # 갈아 끼운 세션에도
     fund.coordinator.tick()
     _save_fund(fund)
     return await _status(fund)

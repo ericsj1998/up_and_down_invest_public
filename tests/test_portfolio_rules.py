@@ -14,7 +14,7 @@ from decimal import Decimal
 import pytest
 
 from updown.decision.allocation import Basket, BasketError, as_members, slot_budgets
-from updown.decision.portfolio_rules import day_halted, slot_free
+from updown.decision.portfolio_rules import day_halted, notional_free, slot_free
 from updown.orchestration.rebalancer import RebalanceEngine, SlotGate
 from updown.portfolio.performance import TwrLedger
 
@@ -88,9 +88,18 @@ class TestSlotBudgets:
 
 
 class _Port:
-    def __init__(self, open_count: int, exits: list[tuple[datetime, bool]] | None = None) -> None:
+    def __init__(
+        self,
+        open_count: int,
+        exits: list[tuple[datetime, bool]] | None = None,
+        exposure: Decimal = Decimal(0),
+    ) -> None:
         self._open = open_count
         self._exits = exits or []
+        self._exposure = exposure
+
+    def open_exposure(self) -> Decimal:
+        return self._exposure
 
     def open_count(self) -> int:
         return self._open
@@ -122,3 +131,20 @@ class TestSlotGate:
         assert gate.blocks(_h(1)) is None
         ports["B"] = _Port(1)
         assert gate.blocks(_h(1)) == "slots"
+
+
+class TestNotionalCap:
+    def test_rule(self) -> None:
+        # 자리 3 · 상한 2x: 열린 노출 합 + 새 노출 ≤ 6
+        assert notional_free(Decimal("4.5"), Decimal("1.5"), 3, Decimal(2))
+        assert not notional_free(Decimal("4.5"), Decimal("3"), 3, Decimal(2))
+        assert notional_free(Decimal(99), Decimal(99), 0, Decimal(2)), "자리 수 0 = 상한 없음"
+        assert notional_free(Decimal(99), Decimal(99), 3, Decimal(0)), "상한 0 = 없음"
+
+    def test_gate_notional_exact(self) -> None:
+        ports = {"A": _Port(1, exposure=Decimal(3)), "B": _Port(1, exposure=Decimal(3))}
+        gate = SlotGate(ports=ports, slots=3, notional_cap=Decimal(2))
+        assert gate.blocks(_h(1), Decimal(0)) is None
+        assert gate.blocks(_h(1), Decimal("0.01")) == "notional"
+        free = SlotGate(ports=ports, slots=3)
+        assert free.blocks(_h(1), Decimal(9)) is None, "상한 없으면 노출은 안 본다"

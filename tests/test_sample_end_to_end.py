@@ -121,7 +121,7 @@ def test_the_sample_playbook_walks_end_to_end() -> None:
 class _ShutGate:
     """항상 막는 문 — 세션이 문을 묻고, 막히면 사지 않고 깔때기에 적는지 본다 (T279 P3)."""
 
-    def blocks(self, at: datetime) -> str | None:  # noqa: ARG002
+    def blocks(self, at: datetime, exposure: Decimal) -> str | None:  # noqa: ARG002
         return "test"
 
 
