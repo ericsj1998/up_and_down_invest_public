@@ -116,3 +116,24 @@ def test_the_sample_playbook_walks_end_to_end() -> None:
     assert first.playbook.startswith(RULE_ID)
     assert first.outcome is not Outcome.OPEN, f"목표에 닿아 나갔어야 한다: {first.outcome}"
     assert session.funnel.get(f"entered:{first.playbook}") == 1
+
+
+class _ShutGate:
+    """항상 막는 문 — 세션이 문을 묻고, 막히면 사지 않고 깔때기에 적는지 본다 (T279 P3)."""
+
+    def blocks(self, at: datetime) -> str | None:  # noqa: ARG002
+        return "test"
+
+
+def test_entry_gate_blocks_without_deleting_the_setup() -> None:
+    session = _session()
+    session.entry_gate = _ShutGate()
+    for _ in range(20_000):
+        if session.finished:
+            break
+        session.step()
+    assert not session.ledger.records, "문이 막으면 한 건도 안 산다"
+    assert session.gate_held >= 1
+    assert session.funnel.get("gate:test", 0) == session.gate_held, (
+        "막힌 자리는 깔때기에 남는다(§1-0s)"
+    )

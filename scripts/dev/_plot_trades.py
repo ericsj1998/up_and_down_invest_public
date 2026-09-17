@@ -146,17 +146,20 @@ def draw(
         entry = t["entry"]
         stop0 = entry * (1 - t["stop_pct"] / 100)
         exit_px = entry * (1 + (t["net_pct"] + 0.16) / 100)
-        y0, y1 = min(stop0, exit_px), max(entry, exit_px)
+        # 상자 = 진입가~청산가만. 손절선은 따로 점선(손절선까지 칠하면 아래서 산 것처럼 보인다).
+        y0, y1 = min(entry, exit_px), max(entry, exit_px)
         if style == "taken":
             col = "#1e8449" if t["net_pct"] > 0 else "#c0392b"
             ax.add_patch(
                 Rectangle(
-                    (x0, y0), x1 - x0, y1 - y0, facecolor=col, alpha=0.13, edgecolor=col, lw=1.2
+                    (x0, y0), x1 - x0, y1 - y0, facecolor=col, alpha=0.18, edgecolor=col, lw=1.2
                 )
             )
-            ax.hlines(entry, x0, x1, color="black", lw=0.9)
-            ax.hlines(stop0, x0, x1, color="#c0392b", lw=0.8, ls="--")
-            ax.plot([x1], [exit_px], marker="v" if t["net_pct"] <= 0 else "^", color=col, ms=6)
+            ax.hlines(entry, x0, x1, color="black", lw=1.0)
+            ax.hlines(stop0, x0, x1, color="#c0392b", lw=0.9, ls="--")
+            ax.plot([x0], [entry], marker="^", color="black", ms=8, mfc="yellow", zorder=5)
+            ax.plot([x1], [exit_px], marker="s", color=col, ms=6, zorder=5)
+            ax.text(x0, stop0, " 손절선", fontsize=6, color="#c0392b", va="top", clip_on=True)
             ax.text(
                 x0,
                 y1,
@@ -265,7 +268,8 @@ def main() -> int:
             fig.suptitle(
                 f"룰 0.3 + P3 · {w} {sym} · 1H · P3 매매 {len(taken)}건"
                 f" / 룰 0.3 신호 {len(r3)}건 / 룰 0.2 만 {len(r2)}건"
-                " — 실선 상자 = 잡은 매매(초록 이익 · 빨강 손실) · 회색 점선 = 건너뜀"
+                " — 실선 상자 = 잡은 매매의 진입가~청산가(초록 이익 · 빨강 손실)"
+                " · ▲ = 진입(돌파봉 종가) · ■ = 청산 · 회색 점선 = 건너뜀"
                 " · 보라 점선 = 룰 0.3 이 거름"
                 " · 검정 = 진입가 · 빨강 점선 = 초기 손절 · 주황 = SMA20 · 회색 띠 = BB(20,2)",
                 fontsize=9.5,

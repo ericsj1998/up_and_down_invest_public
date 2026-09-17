@@ -27,7 +27,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from updown.analysis.detectors.base import MarketContext
 from updown.analysis.detectors.registry import SetupRegistry
@@ -150,6 +150,26 @@ def frame_span(frame: Timeframe) -> timedelta:
     if unit is None or not text[:-1].isdigit():
         raise ValueError(f"시간축 {text!r} 의 길이를 모른다")
     return timedelta(seconds=int(text[:-1]) * unit)
+
+
+class EntryGate(Protocol):
+    """펀드 층이 세션에 끼우는 **진입 문** (T279 P3 · 2026-09-18).
+
+    세션은 사기 직전 `blocks(at)` 만 부른다. 구현(`orchestration/rebalancer/gate.py`)은 펀드의
+    다른 세션들을 보고 동시 보유 상한(§23)·같은 날 연속 손절 정지(§24)를 판단한다. 세션은
+    그 규칙의 내용을 모른다 — 이유 문자열을 깔때기에 적을 뿐이다.
+    """
+
+    def blocks(self, at: datetime) -> str | None:
+        """지금 새 자리를 열면 안 되는 이유.
+
+        Args:
+            at: 진입하려는 봉의 시각(UTC).
+
+        Returns:
+            막는 이유(깔때기 라벨). 열어도 되면 None.
+        """
+        ...
 
 
 DEFAULT_FRAME_WINDOW = 2_000
@@ -386,6 +406,16 @@ class Session:
     """직전 걸음의 가격 축 봉 시각 — 정산 경계를 넘었는지 이것과 비교한다."""
     funding_held: int = 0
     """펀딩 극단으로 **보류한 진입** 수 (§1-0s 관측 규약)."""
+    entry_gate: EntryGate | None = None
+    """**펀드 층의 진입 문** (T279 P3 · 2026-09-18) — 동시 보유 상한(§23) · 같은 날 연속
+    손절 정지(§24).
+
+    세션은 다른 종목을 모른다. 펀드가 세션들을 묶을 때 이 문을 끼워 넣고, 세션은 사기 직전에
+    "지금 열어도 되나"만 묻는다. None(단일 세션·백테스트·RUN)이면 없는 것과 같다 — 동결 무변화.
+    막힌 자리는 지우지 않고 `gate_held` 와 깔때기 `gate:<이유>` 에 센다(§1-0s).
+    """
+    gate_held: int = 0
+    """진입 문에 막혀 **안 산** 자리 수 (T279 P3 · 관측 규약 §1-0s)."""
 
     post_only_entry: bool = False
     """지정가 진입을 **post-only(poc)** 로 낼지 (T60 축④ · 2026-08-24).
@@ -3133,6 +3163,22 @@ class Session:
                 },
             )
             return None
+        # 🔴 **펀드의 진입 문** (T279 P3) — 동시 보유 상한 · 같은 날 연속 손절 정지. 자리를 지우지
+        #    않고 진입에서만 거른다. 단일 세션은 문이 없어 이 줄이 없는 것과 같다.
+        if self.entry_gate is not None:
+            why = self.entry_gate.blocks(bar.ts)
+            if why is not None:
+                self.gate_held += 1
+                self._count(f"gate:{why}")
+                _logger.info(
+                    "session_entry_gate_held",
+                    payload={
+                        "why": why,
+                        "at": bar.ts.isoformat(),
+                        "note": "펀드 규칙 — 이 봉엔 안 산다",
+                    },
+                )
+                return None
         # 🔴 **지정가를 걸고 기다리지 않는다 — 방아쇠가 당겨지면 그 자리에서 산다.**
         #
         #    > *"박스권에서 위쪽으로 돌파된 시점 그때 그냥 최대한 빨리 매수한다고

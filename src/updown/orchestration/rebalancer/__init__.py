@@ -10,12 +10,15 @@ from updown.orchestration.rebalancer.coordinator import (
     TickReport,
 )
 from updown.orchestration.rebalancer.engine import RebalanceEngine
+from updown.orchestration.rebalancer.gate import PositionPort, SlotGate
 from updown.orchestration.rebalancer.live_adapter import SessionBridge
 
 __all__ = [
     "Coordinator",
+    "PositionPort",
     "RebalanceEngine",
     "SessionBridge",
     "SessionPort",
+    "SlotGate",
     "TickReport",
 ]

@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 from updown.orchestration.walkforward import Session
+from updown.orchestration.walkforward.ledger import Actor, Outcome
 
 
 @dataclass(slots=True)
@@ -79,3 +81,24 @@ class SessionBridge:
             기준이라 오염되지 않는다. 열린 포지션 크기는 그대로다 (설계 B).
         """
         self.session.ledger.margin_budget = budget
+
+    def open_count(self) -> int:
+        """지금 **체결돼 보유 중**인 매매 수 (P3 동시 보유 상한의 입력).
+
+        Returns:
+            보유 중 기록 수. 대기(PENDING)는 아직 자리를 안 쓴 것이라 안 센다.
+        """
+        return sum(1 for item in self.session.ledger.records if item.outcome is Outcome.OPEN)
+
+    def exits(self) -> list[tuple[datetime, bool]]:
+        """확정된 청산 `(청산 시각, 손절이었나)` 목록 (P3 같은 날 연속 손절 정지의 입력).
+
+        Returns:
+            시스템 매매의 닫힌 기록. 사람 매매는 규칙의 표본이 아니라 뺀다
+            (`_consec_loss_scale` 과 같다).
+        """
+        return [
+            (item.closed_at, item.outcome is Outcome.STOP_LOSS)
+            for item in self.session.ledger.closed
+            if item.closed_at is not None and item.actor is Actor.SYSTEM
+        ]

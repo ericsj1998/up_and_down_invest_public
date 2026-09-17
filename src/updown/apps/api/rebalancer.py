@@ -51,7 +51,13 @@ from updown.common.domain.instrument import Market, MarketGroup, Timeframe
 from updown.decision.allocation import Basket, BasketError, BasketMember, as_members, rank_members
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider
-from updown.orchestration.rebalancer import Coordinator, RebalanceEngine, SessionBridge
+from updown.orchestration.rebalancer import (
+    Coordinator,
+    PositionPort,
+    RebalanceEngine,
+    SessionBridge,
+    SlotGate,
+)
 from updown.portfolio.performance import CashFlow, TwrLedger
 
 router = APIRouter(prefix="/rebalancer", tags=["rebalancer"])
@@ -84,6 +90,11 @@ class Fund:
     """
     alt_leverage: Decimal | None = None
     """코어(BTC·ETH) 밖 종목의 배율 오버라이드 (2.0.0 A5 = 5). None = 전 종목 `leverage`."""
+    slots: int = 0
+    """P3 자리 수(T279 83차). 양수면 `weight_mode: slots` — 예산 = 총자본 ÷ slots ·
+    진입 문이 상한을 건다."""
+    halt_after_stops: int = 0
+    """P3 같은 날 연속 손절 정지 문턱(§24 · 2). 0 = 없음."""
 
 
 FUNDS: dict[str, Fund] = {}
@@ -116,6 +127,28 @@ CORE_SYMBOLS = ("BTC_USDT", "ETH_USDT", "BTCUSDT", "ETHUSDT")
 
 RANK_WINDOW_DAYS = 60
 """rank60 모멘텀 창(일). 창 길이는 측정으로 정한다 — 값은 매매법 쪽 문서에."""
+
+
+def _attach_gate(coordinator: Coordinator, slots: int, halt_after_stops: int) -> None:
+    """P3 진입 문을 펀드의 모든 세션에 끼운다 (T279 83차 · 2026-09-18).
+
+    Args:
+        coordinator: 펀드 조정자 — 문은 **조정자의 포트 매핑을 그대로** 본다. 종목을 넣고 빼면
+            같은 매핑이 바뀌므로 문도 따라간다.
+        slots: 동시 보유 상한. 0 = 없음.
+        halt_after_stops: 같은 날 연속 손절 정지 문턱. 0 = 없음.
+
+    Note:
+        둘 다 0 이면 아무것도 안 끼운다 — 기존 펀드(비중 배분)는 한 톨도 안 바뀐다. 종목을 나중에
+        더하면 이 함수를 다시 불러 새 세션에도 같은 문을 준다(멱등).
+    """
+    if slots <= 0 and halt_after_stops <= 0:
+        return
+    ports = cast(dict[str, PositionPort], coordinator.ports)
+    gate = SlotGate(ports=ports, slots=slots, halt_after_stops=halt_after_stops)
+    for port in coordinator.ports.values():
+        if isinstance(port, SessionBridge):
+            port.session.entry_gate = gate
 
 
 def _member_leverage(fund_leverage: Decimal, alt_leverage: Decimal | None, symbol: str) -> Decimal:
@@ -260,6 +293,8 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
         "market": fund.market,
         "weight_mode": fund.weight_mode,
         "alt_leverage": None if fund.alt_leverage is None else str(fund.alt_leverage),
+        "slots": fund.slots,
+        "halt_after_stops": fund.halt_after_stops,
         "basket": {
             "version": basket.version,
             "members": [{"symbol": m.symbol, "weight": str(m.weight)} for m in basket.members],
@@ -442,13 +477,15 @@ async def _restore_one(data: dict[str, Any]) -> None:
     weight_mode = str(data.get("weight_mode", "static"))  # 옛 저장본은 static — 불변
     raw_alt = data.get("alt_leverage")
     alt_leverage = None if raw_alt in (None, "") else Decimal(str(raw_alt))
+    slots = int(data.get("slots", 0) or 0)  # 옛 저장본은 0 — 비중 배분 그대로
+    halt_after_stops = int(data.get("halt_after_stops", 0) or 0)
     total = ledger.balance
     wsum = basket.weight_sum
     handles: dict[str, str] = {}
     ports: dict[str, SessionBridge] = {}
     kept: list[BasketMember] = []
     for member in basket.members:
-        share = total * member.weight / wsum
+        share = total / Decimal(slots) if slots > 0 else total * member.weight / wsum
         handle = _running_handle(member.symbol, fund_market)
         if handle is not None:  # autostart 가 되살린 세션 재사용 — 펀드 격리 재적용
             session = SESSIONS[handle].session
@@ -487,8 +524,9 @@ async def _restore_one(data: dict[str, Any]) -> None:
         raise RuntimeError("펀드 구성원이 하나도 뜨지 않았다")
     if len(kept) != len(basket.members):
         basket = Basket(tuple(kept), version=basket.version)
-    engine = RebalanceEngine(basket=basket, ledger=ledger)
+    engine = RebalanceEngine(basket=basket, ledger=ledger, slots=slots)
     coordinator = Coordinator(engine=engine, ports=dict(ports))  # type: ignore[arg-type]
+    _attach_gate(coordinator, slots, halt_after_stops)
     fund = Fund(
         fund_id=str(data["fund_id"]),
         label=str(data["label"]),
@@ -499,6 +537,8 @@ async def _restore_one(data: dict[str, Any]) -> None:
         market=fund_market,
         weight_mode=weight_mode,
         alt_leverage=alt_leverage,
+        slots=slots,
+        halt_after_stops=halt_after_stops,
     )
     FUNDS[fund.fund_id] = fund
 
@@ -588,6 +628,8 @@ async def _create_fund(
     market: str = "GATE",
     weight_mode: str = "static",
     alt_leverage: Decimal | None = None,
+    slots: int = 0,
+    halt_after_stops: int = 0,
 ) -> Fund:
     """바스켓 종목마다 세션을 띄우고 조정자로 묶는다.
 
@@ -598,22 +640,30 @@ async def _create_fund(
         playbook: 세션 전략 (기본 = `recommended: true` 플레이북).
         label: 화면 이름.
         market: 거래소 (GATE/BINANCE) — 모든 세션이 이 거래소로 나간다 (T62 P3b).
-        weight_mode: 비중 방식 — "static"(입력 비중 고정) | "rank60"(일봉 수익 랭크).
+        weight_mode: 비중 방식 — "static"(입력 비중 고정) | "rank60"(일봉 수익 랭크) |
+            "slots"(P3 자리 배분 · `slots` 가 양수여야 한다).
         alt_leverage: 알트 배율 오버라이드 (2.0.0 A5 = 5). None 이면 전 종목 `leverage`.
+        slots: P3 동시 보유 상한(예산 = 총자본 ÷ slots · 진입 문). 0 = 없음.
+        halt_after_stops: P3 같은 날 연속 손절 정지 문턱. 0 = 없음.
 
     Returns:
         만들어진 펀드. `FUNDS` 에 등록된다.
 
     Note:
         🔴 각 세션은 **`_live_start` 로 띄운 검증된 라이브 러너**다 — 여기서 새로 만들지 않는다.
-        초기 예산 = `total x 비중/비중합`. 조정자는 이후 매 틱 이 예산을 다시 나눈다.
+        초기 예산 = `total x 비중/비중합`(자리 배분이면 `total ÷ slots`). 조정자는 이후 매 틱
+        이 예산을 다시 나눈다.
     """
     wsum = basket.weight_sum
     handles: dict[str, str] = {}
     ports: dict[str, SessionBridge] = {}
     try:
         for member in basket.members:
-            share = member_share(total_cash, member.weight, wsum)
+            share = (
+                total_cash / Decimal(slots)
+                if slots > 0
+                else member_share(total_cash, member.weight, wsum)
+            )
             handle, port = await _spawn_session(
                 member.symbol,
                 share,
@@ -631,8 +681,9 @@ async def _create_fund(
             await _drop_one(handle)
         raise
 
-    engine = RebalanceEngine(basket=basket, ledger=TwrLedger(equity=total_cash))
+    engine = RebalanceEngine(basket=basket, ledger=TwrLedger(equity=total_cash), slots=slots)
     coordinator = Coordinator(engine=engine, ports=dict(ports))  # type: ignore[arg-type]
+    _attach_gate(coordinator, slots, halt_after_stops)
     fund = Fund(
         fund_id=f"fund{uuid4().hex[:8]}",
         label=label,
@@ -643,6 +694,8 @@ async def _create_fund(
         market=market,
         weight_mode=weight_mode,
         alt_leverage=alt_leverage,
+        slots=slots,
+        halt_after_stops=halt_after_stops,
     )
     FUNDS[fund.fund_id] = fund
     if weight_mode == "rank60":
@@ -914,6 +967,18 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
     #    뜨던 함정을 선언 폴백으로 막는다. 페이로드가 명시하면 그쪽이 이긴다.
     declared_mode = None if declared_book is None else declared_book.weight_mode
     declared_alt = None if declared_book is None else declared_book.alt_leverage
+    # ⭐ P3(T279 83차) — 자리 수·연속 손절 정지도 매매법 선언이 기본이고 페이로드가 명시하면
+    #    그쪽이다.
+    #    `weight_mode` 가 slots 가 아니면 자리 배분은 꺼진다(선언 실수로 두 모형이 섞이지 않게).
+    mode = str(payload.get("weight_mode") or declared_mode or "static")
+    slots = int(payload.get("slots") or (0 if declared_book is None else declared_book.slots) or 0)
+    halt = int(
+        payload.get("halt_after_stops")
+        or (0 if declared_book is None else declared_book.halt_after_stops)
+        or 0
+    )
+    if mode == "slots" and slots <= 0:
+        raise HTTPException(400, "weight_mode 가 slots 인데 slots 가 없다 — 매매법 선언을 본다")
     raw_alt = payload.get("alt_leverage")
     fallback = fallback_leverage(Market(str(payload.get("market") or Market.GATE.value)))
     try:
@@ -930,8 +995,10 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
                 playbook=book,
                 label=str(payload.get("label", "리밸런싱 펀드")),
                 market=str(payload.get("market", "GATE")),
-                weight_mode=str(payload.get("weight_mode") or declared_mode or "static"),
+                weight_mode=mode,
                 alt_leverage=(declared_alt if raw_alt in (None, "") else Decimal(str(raw_alt))),
+                slots=slots if mode == "slots" else 0,
+                halt_after_stops=halt,
             )
         )
     except HTTPException:
@@ -1180,6 +1247,7 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
             fund.handles[member.symbol] = handle
             fund.coordinator.ports[member.symbol] = port  # type: ignore[index]
             added.append(member.symbol)
+        _attach_gate(fund.coordinator, fund.slots, fund.halt_after_stops)  # 새 세션에도 같은 문
     except Exception as exc:
         for sym in added:  # 방금 띄운 것만 되돌린다 — 펀드는 그대로
             handle = fund.handles.pop(sym, "")
@@ -1268,6 +1336,7 @@ async def change_playbook(
     fund.handles = new_handles
     fund.coordinator.ports = new_ports  # type: ignore[assignment]
     fund.playbook = new_pb
+    _attach_gate(fund.coordinator, fund.slots, fund.halt_after_stops)  # 갈아 끼운 세션에도 같은 문
     fund.coordinator.tick()
     _save_fund(fund)
     return await _status(fund)

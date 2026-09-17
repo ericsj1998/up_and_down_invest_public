@@ -111,6 +111,35 @@ def target_budgets(equity: Decimal, basket: Basket) -> dict[str, Decimal]:
     return {m.symbol: equity * m.weight / wsum for m in basket.members}
 
 
+def slot_budgets(equity: Decimal, basket: Basket, slots: int) -> dict[str, Decimal]:
+    """총자본을 **자리(slot)** 수로 나눠 모든 종목에 같은 예산을 준다 (P3 · T279 83차).
+
+    Args:
+        equity: 포트폴리오 총 평가금액.
+        basket: 구성 종목 (비중은 안 본다 — 자리는 선착순이다).
+        slots: 동시에 열 수 있는 포지션 수(P3 = 3).
+
+    Returns:
+        `{종목: equity / slots}`. **합은 총자본을 넘는다** — 그것이 의도다. 어느 종목이든 신호가
+        먼저 온 쪽이 한 자리(총자본의 1/slots)를 쓰고, 자리가 다 차면 펀드의 진입 문(`EntryGate`)이
+        새 진입을 막는다. 예산만으로는 상한이 안 걸리므로 문과 짝으로만 뜻이 있다.
+
+    Raises:
+        BasketError: `equity` 가 음수이거나 `slots` 가 1 미만인 경우.
+
+    Note:
+        A안(유휴 현금 · `target_budgets`)과 다른 모형이다 — 6종목에 3자리면 종목당 예산이 1/6 이
+        아니라 1/3 이다. 83차 톱 3 표(업비트 4.5년 손실 난 날 12% · MDD 40%)가 이 모형으로 잰 값이라
+        예산을 1/6 로 두면 그 표와 다른 매매법이 된다.
+    """
+    if equity < 0:
+        raise BasketError(f"총자본이 음수다: {equity}")
+    if slots < 1:
+        raise BasketError(f"자리 수는 1 이상이다: {slots}")
+    each = equity / Decimal(slots)
+    return {m.symbol: each for m in basket.members}
+
+
 def rebalance_orders(
     equity: Decimal,
     basket: Basket,

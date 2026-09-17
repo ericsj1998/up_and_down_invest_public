@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from updown.decision.allocation import Basket, target_budgets
+from updown.decision.allocation import Basket, slot_budgets, target_budgets
 from updown.portfolio.performance import CashFlow, TwrLedger
 
 
@@ -36,6 +36,9 @@ class RebalanceEngine:
 
     basket: Basket
     ledger: TwrLedger
+    slots: int = 0
+    """자리 배분(P3 · T279 83차). 양수면 예산 = 총자본 ÷ slots 를 모든 종목에
+    (`decision.allocation.slot_budgets`). 0 이면 비중 배분(A안) 그대로다(기존 펀드 무변화)."""
 
     def rebalance(
         self,
@@ -59,6 +62,8 @@ class RebalanceEngine:
         """
         total = sum(equities.values(), Decimal(0))
         self.ledger.step(total, flow)
+        if self.slots > 0:
+            return slot_budgets(self.ledger.balance, self.basket, self.slots)
         return target_budgets(self.ledger.balance, self.basket)
 
     @property
