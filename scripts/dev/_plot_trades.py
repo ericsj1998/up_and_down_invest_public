@@ -107,8 +107,10 @@ def spans_for(rows: list[dict]) -> list[tuple[str, datetime]]:
     return out
 
 
-def draw(ax, bars, mid, up, lo, rows3, rows2, s: datetime, title: str) -> None:
-    e = s + SPAN
+def draw(
+    ax, bars, mid, up, lo, rows3, rows2, s: datetime, title: str, span: timedelta = SPAN, live=()
+) -> None:
+    e = s + span
     tss = [b.ts for b in bars]
     i0, i1 = bisect_left(tss, s), bisect_left(tss, e)
     seg = bars[i0:i1]
@@ -137,9 +139,9 @@ def draw(ax, bars, mid, up, lo, rows3, rows2, s: datetime, title: str) -> None:
     ax.plot(xs, [mid[i] for i in range(i0, i1)], color="#e67e22", lw=0.9)
 
     def box(t: dict, style: str) -> None:
-        if not (s <= t["_in"] < e):
+        if not (t["_in"] < e and t["_out"] > s):
             return
-        x0 = mdates.date2num(t["_in"].astimezone(KST))
+        x0 = mdates.date2num(max(t["_in"], s).astimezone(KST))
         x1 = mdates.date2num(min(t["_out"], e).astimezone(KST))
         entry = t["entry"]
         stop0 = entry * (1 - t["stop_pct"] / 100)
@@ -164,6 +166,7 @@ def draw(ax, bars, mid, up, lo, rows3, rows2, s: datetime, title: str) -> None:
                 color=col,
                 va="bottom",
                 weight="bold",
+                clip_on=True,
             )
         elif style == "skip":
             ax.add_patch(
@@ -176,6 +179,7 @@ def draw(ax, bars, mid, up, lo, rows3, rows2, s: datetime, title: str) -> None:
                 fontsize=7,
                 color="#555",
                 va="top",
+                clip_on=True,
             )
         else:
             ax.add_patch(
@@ -190,12 +194,30 @@ def draw(ax, bars, mid, up, lo, rows3, rows2, s: datetime, title: str) -> None:
                 fontsize=7,
                 color="#8e44ad",
                 va="top",
+                clip_on=True,
             )
 
     for t in rows2:
         box(t, "removed")
     for t in rows3:
         box(t, "taken" if t.get("taken") else "skip")
+    for lv in live:
+        if not (s <= lv["t_in"] < e):
+            continue
+        xi = mdates.date2num(lv["t_in"].astimezone(KST))
+        xo = mdates.date2num(min(lv["t_out"], e).astimezone(KST))
+        ax.annotate(
+            f"실계좌 2.1.1 {lv['pct']:+.2f}%",
+            xy=(xi, ax.get_ylim()[0] if False else lv["px"]),
+            fontsize=7,
+            color="black",
+            xytext=(0, -14),
+            textcoords="offset points",
+            clip_on=True,
+            annotation_clip=True,
+        )
+        ax.plot([xi, xo], [lv["px"], lv["px"]], color="black", lw=1.4, ls="-.")
+        ax.plot([xi], [lv["px"]], marker="D", color="black", ms=5, mfc="white")
     lows = [b.lo for b in seg]
     highs = [b.h for b in seg]
     ax.set_xlim(xs[0] - 0.3, xs[-1] + 1.5)

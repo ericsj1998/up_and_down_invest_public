@@ -50,6 +50,7 @@ GATE_USDT_NAMES: dict[str, str] = {
     "SOL_USDT": "솔라나 무기한",
     "DOGE_USDT": "도지코인 무기한",
     "ADA_USDT": "에이다 무기한",
+    "NEAR_USDT": "니어 무기한",  # 실계좌 펀드 바스켓(2026-09) — 라이브 구간 대조용
 }
 
 
