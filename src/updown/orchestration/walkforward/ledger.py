@@ -24,7 +24,7 @@ RR 174.63   진입 70,577,250 · 손절 70,471,000
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -364,6 +364,15 @@ class TradeRecord:
     입력만 실측이 된다.
     None 이면 아직 모형 비용(costs.yml 테이커 왕복)이다. 백테스트는 늘 None.
     """
+    margin_used: Decimal | None = None
+    """이 매매에 **실제로 건 증거금**(USDT) — 펀드 멤버가 주문을 낼 때의 예산 (T285 · 0130).
+
+    원장의 걷기(`_walk_wallet`)는 손익을 `증거금 x 손익률` 로 세는데, 펀드 멤버의 증거금은 펀드가
+    틱마다 다시 주는 예산이라 걷기 시작점(시드)과 다르다. 이 값을 안 적으면 예산이 바뀔 때마다
+    과거 손익이 새 예산 기준으로 다시 계산돼 펀드 총자본이 샜다(2026-09-17 실측: 로컬 데모 -94% ·
+    실계좌 장부 300 → 132). None 이면 옛 기록 · 백테스트 · 단독 판 — 걷기 증거금으로 센다(동결
+    경로는 한 비트도 안 달라진다).
+    """
     funding_keys: tuple[str, ...] = ()
     """이미 붙인 정산 열쇠들(`시각:변화`) — 재시작이 같은 정산을 다시 붙이지 않게 (T226 · 0114).
 
@@ -634,6 +643,8 @@ class TradeRecord:
             #    보유 중인 것이 아니라 끝난 것이다).
             evidence=self.evidence,
             note=self.note,
+            # ⭐ 진입 때 건 증거금도 옮긴다 (T285) — 빠지면 청산되는 순간 걷기 증거금으로 돌아간다.
+            margin_used=self.margin_used,
         )
 
 
@@ -946,7 +957,15 @@ class Ledger:
 
         Args:
             record: 매매 기록.
+
+        Note:
+            ⭐ 펀드 멤버(`refill=False`)는 주문 시점의 사이징 기준(= 예산)을 `margin_used` 로 적는다
+            (T285). 그 매매의 손익은 이 증거금 기준이라 나중에 예산이 바뀌어도 과거가 안 바뀐다.
+            백테스트·단독 판(`refill=True`)은 안 적는다 — 걷기 증거금이 곧 실제라 값이 같고, 동결
+            경로가 한 비트도 안 달라진다.
         """
+        if not self.refill and record.margin_used is None:
+            record = replace(record, margin_used=self.sizing_base)
         self.records.append(record)
 
     def replace(self, record: TradeRecord) -> None:
@@ -957,9 +976,15 @@ class Ledger:
 
         Raises:
             KeyError: 그 ID 가 원장에 없는 경우.
+
+        Note:
+            ⚠️ 새 기록에 `margin_used` 가 없으면 있던 값을 잇는다 — 세션이 들고 있던 옛 참조로 사본을
+            만들면 진입 때 적힌 증거금이 사라지고, 그 매매의 손익이 다시 걷기 증거금으로 돌아간다.
         """
         for index, item in enumerate(self.records):
             if item.trade_id == record.trade_id:
+                if record.margin_used is None and item.margin_used is not None:
+                    record = replace(record, margin_used=item.margin_used)
                 self.records[index] = record
                 return
         raise KeyError(f"{record.trade_id} 가 원장에 없다")
@@ -1081,7 +1106,15 @@ class Ledger:
             ⛔ **`halted_at` 뒤의 매매는 안 센다.** 돈이 없어 못 했을 매매를 성적에
             넣으면 *"있지도 않은 자본으로 낸 수익"* 이 된다.
         """
-        target = self.margin_budget if self.margin_budget is not None else self.seed_cash
+        # 🔴 펀드 멤버(refill=False)는 **받은 몫(seed_cash)** 에서 걷는다 (T285 · 2026-09-17).
+        #    예산(margin_budget)은 펀드가 틱마다 다시 주는 사이징 기준이라, 여기서 시작점으로 쓰면
+        #    예산이 바뀔 때마다 과거 손익이 새 예산 기준으로 다시 계산돼 펀드 총자본이 샜다
+        #    (100 · -10% → 90 → 예산 90 → 81 → 73 …). 단독 판은 예전 그대로다.
+        member = not self.refill
+        if member:
+            target = self.seed_cash
+        else:
+            target = self.margin_budget if self.margin_budget is not None else self.seed_cash
         margin = target
         wallet = self.wallet_start
         reserved = Decimal(0)
@@ -1100,7 +1133,11 @@ class Ledger:
             # ⚠️ **채워진 만큼만 걸려 있었다** (T19 ①). 사다리 진입에서 다리 하나만
             #    채워지면 증거금도 절반만 들어간 것이라, 전액으로 세면 *있지도 않은
             #    자본으로 낸 수익*이 된다. 다리가 없으면 1 이라 지금과 같다.
-            pnl = margin * item.filled_ratio * gain / Decimal(100)
+            # ⭐ 멤버는 그 매매에 **실제로 건 증거금**(margin_used · 주문 시점 예산)으로
+            #    센다 (T285).
+            #    없으면(옛 기록) 걷기 증거금 — 그 기록은 재앵커로 한 번 정리한다.
+            staked = item.margin_used if member and item.margin_used is not None else margin
+            pnl = staked * item.filled_ratio * gain / Decimal(100)
             # ⭐ T229 — 재레버 감축으로 이미 실현된 몫. 거래소가 그 자리에서 적은 USDT 그대로.
             pnl += item.realized_adjust
             margin += pnl
@@ -1390,6 +1427,12 @@ class Ledger:
             ⚠️ 증거금이 `equity` 보다 크면 `equity` 로 자른다 — 없는 돈으로 주문을 내면
             거래소가 거부하고, 그 실패는 화면에서 "주문 0건" 으로만 보인다 (규칙 #8).
         """
+        if not self.refill and self.margin_budget is not None:
+            # ⭐ 펀드 멤버: 예산이 곧 사이징 기준이다 (T285). 걷기 증거금(몫 + 누적)으로 자르면 자리
+            #    배분(예산 = 총자본 ÷ 자리 > 몫)이 영영 안 닿는다. 돈은 펀드가 계좌 총액 검사로
+            #    보증하고
+            #    (`_budget_room` · `_account_headroom`), 러너가 `_spare_margin` 으로 한 번 더 본다.
+            return self.margin_budget
         if self.funding is Funding.WALLET:
             # ⭐ 굴리는 돈이 곧 증거금이다 — 지갑은 여기 안 들어온다.
             return max(self._walk().rolling, Decimal(0))
@@ -1432,7 +1475,11 @@ class Ledger:
         """
         purse = self._walk()
         if self.funding is Funding.WALLET:
-            target = self.margin_budget if self.margin_budget is not None else self.seed_cash
+            # 펀드 멤버는 받은 몫이 분모다 (T285) — 예산은 틱마다 바뀌는 사이징 기준일 뿐이다.
+            if not self.refill:
+                target = self.seed_cash
+            else:
+                target = self.margin_budget if self.margin_budget is not None else self.seed_cash
             base = target + self.wallet_start
             if base <= 0:
                 return Decimal(0)

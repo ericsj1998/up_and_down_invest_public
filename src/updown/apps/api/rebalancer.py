@@ -311,6 +311,15 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
         # 판 → 펀드 매핑 (2026-09-04). 지금까지 메모리(`handles`)에만 있어 리포트(스케줄러
         # 프로세스)가 판을 펀드로 못 묶었다 — 파일에 남겨 어느 프로세스든 읽게 한다.
         "runs": dict(fund.handles),
+        # ⭐ T285 — 멤버가 받은 몫(원장 걷기 시작점)과 마지막 정산의 누적 실현.
+        #    재기동이 이 둘을 되살려야 과거 손익이 다시 세어지지 않는다
+        #    (예전엔 seed 를 현재 몫으로 덮어 재기동마다 샜다).
+        "seeds": {
+            sym: str(SESSIONS[handle].session.ledger.seed_cash)
+            for sym, handle in fund.handles.items()
+            if handle in SESSIONS
+        },
+        "marks": {sym: str(mark) for sym, mark in fund.coordinator.marks.items()},
     }
 
 
@@ -491,17 +500,25 @@ async def _restore_one(data: dict[str, Any]) -> None:
     notional_cap = None if raw_cap in (None, "") else Decimal(str(raw_cap))
     total = ledger.balance
     wsum = basket.weight_sum
+    # ⭐ T285 — 저장된 몫(seed)·정산 mark. 옛 저장본(없음)은 지금 몫을 seed 로, mark 는 첫 틱이 지금
+    #    값으로 잡는다 — 과거 손익을 다시 세지 않는다(재기동마다 누적 손익률이 다시 곱히던 결함).
+    seeds = cast("dict[str, Any]", data.get("seeds") or {})
+    saved_marks = cast("dict[str, Any]", data.get("marks") or {})
     handles: dict[str, str] = {}
     ports: dict[str, SessionBridge] = {}
     kept: list[BasketMember] = []
     for member in basket.members:
         share = total / Decimal(slots) if slots > 0 else total * member.weight / wsum
+        capital = total * member.weight / wsum
+        seed = Decimal(str(seeds[member.symbol])) if member.symbol in seeds else capital
         handle = _running_handle(member.symbol, fund_market)
         if handle is not None:  # autostart 가 되살린 세션 재사용 — 펀드 격리 재적용
             session = SESSIONS[handle].session
             session.ledger.wallet_start = Decimal(0)
             session.ledger.refill = False  # T235 — 몫 안에서 굴린다 (채울 지갑이 없다)
-            session.ledger.seed_cash = share
+            # 🔴 seed 는 **저장된 몫**으로 (T285). 현재 몫으로 덮으면 원장 걷기가 새 시작점에서
+            #    과거 매매를 다시 세어 재기동마다 총자본이 샌다.
+            session.ledger.seed_cash = seed
             # 🔴 예산도 몫으로 되돌린다 (2026-08-25). 안 되돌리면 판이 저장해 둔 **낡은
             #    예산**이 살아나고, WALLET 모형의 equity 가 그 값으로 수렴해 화면
             #    평가금액이 비중과 어긋난다 (실측: w2 와 w1 이 똑같이 150).
@@ -515,6 +532,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
                     _member_leverage(leverage, alt_leverage, member.symbol),
                     playbook,
                     market=fund_market,
+                    capital=seed,
                 )
             except Exception as exc:
                 # ⭐ 한 종목이 못 떠도 펀드는 산다 (2026-09-08 실측: 데모 서버의 펀드가 테스트넷에
@@ -535,7 +553,10 @@ async def _restore_one(data: dict[str, Any]) -> None:
     if len(kept) != len(basket.members):
         basket = Basket(tuple(kept), version=basket.version)
     engine = RebalanceEngine(basket=basket, ledger=ledger, slots=slots)
-    coordinator = Coordinator(engine=engine, ports=dict(ports))  # type: ignore[arg-type]
+    marks = {
+        sym: Decimal(str(saved_marks[sym])) for sym in ports if sym in saved_marks
+    }  # 되살린 세션만 · 새로 띄운 세션은 첫 틱이 mark 를 잡는다
+    coordinator = Coordinator(engine=engine, ports=dict(ports), marks=marks)  # type: ignore[arg-type]
     _attach_gate(coordinator, slots, halt_after_stops, notional_cap)
     fund = Fund(
         fund_id=str(data["fund_id"]),
@@ -562,12 +583,13 @@ async def _spawn_session(
     *,
     market: str = "GATE",
     adopt_from: str | None = None,
+    capital: Decimal | None = None,
 ) -> tuple[str, SessionBridge]:
     """종목 하나에 펀드 멤버 세션을 띄운다 — 생성·바스켓 추가·전략 전환이 공유한다.
 
     Args:
         symbol: 종목 (예: BTC_USDT).
-        share: 이 세션 몫의 증거금 예산.
+        share: 이 세션의 **예산**(사이징 기준 · 자리 배분이면 총자본 ÷ 자리).
         leverage: 레버리지 (롱 기준).
         playbook: 세션 전략 id.
         market: 거래소 (GATE/BINANCE) — 펀드가 고른다 (T62 P3b).
@@ -575,6 +597,8 @@ async def _spawn_session(
             표식(run_key)을 물려받아 거래소에 **열린 채 남은 포지션을 이어받는다**(`adopt`).
             그때는 증거금이 이미 포지션에 들어가 있으므로 `reviving=True` 로 잔액 검사를
             건너뛴다 — 안 그러면 "쓸 돈 없음" 으로 시작이 거부된다.
+        capital: 이 세션이 **받은 몫**(원장 걷기 시작점 `seed_cash` · T285). 없으면 예산과 같다.
+            자리 배분에서는 예산(총자본 ÷ 자리)과 몫(총자본 ÷ 종목 수)이 다르다.
 
     Note:
         🔴 예산 파라미터는 `margin` 이다 (없으면 계좌 전액). 그리고 펀드 멤버는 **자기 몫**만
@@ -595,8 +619,8 @@ async def _spawn_session(
     session = SESSIONS[handle].session
     session.ledger.wallet_start = Decimal(0)
     session.ledger.refill = False  # T235 — 몫 안에서 굴린다 (채울 지갑이 없다)
-    session.ledger.seed_cash = share
-    session.ledger.margin_budget = share  # 예산=몫 — 다음 틱 전까지의 표시·사이징 기준
+    session.ledger.seed_cash = share if capital is None else capital
+    session.ledger.margin_budget = share  # 예산 — 다음 틱 전까지의 사이징 기준
     return handle, SessionBridge(session)
 
 
@@ -672,17 +696,19 @@ async def _create_fund(
     ports: dict[str, SessionBridge] = {}
     try:
         for member in basket.members:
-            share = (
-                total_cash / Decimal(slots)
-                if slots > 0
-                else member_share(total_cash, member.weight, wsum)
-            )
+            # 몫(capital · 원장 걷기 시작점)은 비중대로, 예산(share · 사이징)은
+            # 자리 배분이면 총자본 ÷ 자리. 자리 배분에서 예산 합은 총자본을 넘는 것이
+            # 의도다(동시 보유만 자리 수로 막는다) — 총자본은
+            # 펀드가 들고 세션은 증분만 보고하므로 예산 합이 커도 장부가 부풀지 않는다 (T285).
+            capital = member_share(total_cash, member.weight, wsum)
+            share = total_cash / Decimal(slots) if slots > 0 else capital
             handle, port = await _spawn_session(
                 member.symbol,
                 share,
                 _member_leverage(leverage, alt_leverage, member.symbol),
                 playbook,
                 market=market,
+                capital=capital,
             )
             handles[member.symbol] = handle
             ports[member.symbol] = port
@@ -759,6 +785,28 @@ async def _exchange_facts(handle: str) -> tuple[str, str]:
     return _UNREAL_CACHE.put(handle, (unreal, margin))
 
 
+def _member_share_now(fund: Fund, sym: str) -> Decimal:
+    """종목 하나에 펀드가 지금 든 몫 — 배정 예산 + 마지막 정산 이후 실현 손익 (표시용 · T285).
+
+    Args:
+        fund: 펀드.
+        sym: 종목.
+
+    Returns:
+        예산(없으면 시드) + 정산 뒤 증분. 아직 정산이 없으면 예산 그대로.
+    """
+    live = SESSIONS.get(fund.handles.get(sym, ""))
+    port = fund.coordinator.ports.get(sym)
+    mark = fund.coordinator.marks.get(sym)
+    if live is None:
+        return Decimal(0)
+    budget = live.session.ledger.margin_budget
+    base = budget if budget is not None else live.session.ledger.seed_cash
+    if port is None or mark is None:
+        return base
+    return base + port.realized() - mark
+
+
 async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
     """한 종목의 상세 — 평가금액·비중·실현손익·미실현손익·현재 포지션."""
     handle = fund.handles.get(sym, "")
@@ -773,8 +821,10 @@ async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
     unreal, margin = await _exchange_facts(handle)
     row: dict[str, Any] = {
         "handle": handle,
-        # ⚠️ equity = 배정 예산 + 손익 (원장의 몫). 거래소가 잡은 돈은 margin 이다.
-        "equity": str(session.ledger.equity),
+        # ⚠️ equity = 배정 예산 + 마지막 정산 이후 실현 (펀드가 이 종목에 든 몫 · T285).
+        #    거래소가 잡은
+        #    돈은 margin 이다. 원장 equity(시드 + 누적)를 그대로 쓰면 예산 재배분이 안 보인다.
+        "equity": str(_member_share_now(fund, sym)),
         "margin": margin,
         "weight": weight,
         # 🔴 재정렬(resync) 앵커 이후 실현만 — 복구 불가한 과거는 뺀다 (2026-09-01).
@@ -1260,12 +1310,16 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
     old = set(old_basket.symbols)
     new = set(new_basket.symbols)
 
-    # 🔴 **새 몫은 지금 총자본을 나눠 만든다 — 스폰이 먼저면 돈이 허공에서 생긴다**
-    #    (2026-08-25 실측). 예전 순서(스폰 → 틱)는 새 세션의 시드가 어떤 예산에서도
-    #    빠지지 않은 채 총자본에 얹혔고, TWR 이 그 증가를 **성과**로 셌다 — 바이낸스
-    #    펀드가 매매 0건으로 +12.5% 를 찍은 원인. 새 바스켓으로 먼저 틱을 돌리면
-    #    기존 멤버 예산이 줄고(보유 중이면 다음 진입부터 · 설계 B), 새 멤버 몫은
-    #    그 틱이 낸 예산에서 나온다 — 총자본 불변.
+    # 🔴 순서: **빠진 종목 청산 → 틱 → 새 종목 스폰 → 빠진 세션 정리** (T285 · 2026-09-17).
+    #    빠진 종목의 강제 청산 손익이 원장에 적힌 뒤에 틱이 돌아야 그 증분이 총자본에 든다(정리는
+    #    `release` 라 그 뒤 실현도 다음 틱이 흡수한다). 총자본은 펀드가 들고 세션은
+    #    증분만 보고하므로 스폰 순서가 돈을 만들지 않는다(2026-08-25 "허공에서 +12.5%" 는
+    #    평가금액 합산 구조의 결함이었다).
+    #    새 멤버 예산은 틱이 낸 것 · 기존 멤버는 보유 중이면 다음 진입부터(설계 B).
+    for sym in old - new:
+        handle = fund.handles.get(sym, "")
+        if handle:
+            await _close_live_position(handle)
     engine.basket = new_basket
     report = fund.coordinator.tick()
 
@@ -1299,11 +1353,10 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
         fund.coordinator.tick()
         raise HTTPException(400, f"종목 추가 실패 (되돌림): {exc}") from exc
 
-    for sym in old - new:  # 빠진 종목 청산·정리
+    for sym in old - new:  # 빠진 종목 정리 (청산은 위에서 · 미정산 증분은 release 가 다음 틱으로)
         handle = fund.handles.pop(sym, "")
-        fund.coordinator.ports.pop(sym, None)
+        fund.coordinator.release(sym)
         if handle:
-            await _close_live_position(handle)
             await _drop_one(handle)
 
     _save_fund(fund)
@@ -1375,6 +1428,8 @@ async def change_playbook(
 
     fund.handles = new_handles
     fund.coordinator.ports = new_ports  # type: ignore[assignment]
+    # 새 세션의 원장은 0 부터 — 옛 정산 mark 를 물려주면 증분이 틀린다 (T285)
+    fund.coordinator.marks = {}
     fund.playbook = new_pb
     _attach_gate(
         fund.coordinator, fund.slots, fund.halt_after_stops, fund.notional_cap

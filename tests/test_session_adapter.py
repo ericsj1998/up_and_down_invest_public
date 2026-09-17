@@ -125,3 +125,32 @@ def test_set_budget_flows_to_sizing_base_without_polluting_return() -> None:
     port.set_budget(Decimal(300))
     assert led.sizing_base == Decimal(300)  # 다음 진입 예산이 바뀐다
     assert led.seed_cash == Decimal(1000)  # 손익률 분모는 그대로 (오염 없음)
+
+
+def test_realized_is_the_ledger_cash_when_trusted() -> None:
+    """조정자의 입력(T285) — 신뢰할 수 있으면 원장 누적 실현."""
+    led = _FakeLedger(Decimal(1021), realized_cash=Decimal(21))
+    port = SessionBridge(_StubSession(led))  # type: ignore[arg-type]
+    assert port.realized() == Decimal(21)
+
+
+def test_realized_swaps_to_exchange_when_diverged() -> None:
+    """갈리면 앵커 + 거래소 실측 — 원장 허구(+21)가 아니라 진짜(-4.22)가 증분의 근거다."""
+    led = _FakeLedger(Decimal(1021), realized_cash=Decimal(21))
+    session = _StubSession(
+        led, accounting_ok=False, verified_realized=Decimal("-4.22"), realized_anchor=Decimal(15)
+    )
+    port = SessionBridge(session)  # type: ignore[arg-type]
+    assert port.realized() == Decimal("10.78")  # 15 + (-4.22)
+
+
+def test_realized_freezes_at_last_trusted_when_diverged_without_verification() -> None:
+    led = _FakeLedger(Decimal(1000), realized_cash=Decimal(5))
+    session = _StubSession(led)
+    port = SessionBridge(session)  # type: ignore[arg-type]
+    assert port.realized() == Decimal(5)
+    led.realized_cash = Decimal(500)  # 허구로 부풀었다
+    session.accounting_ok = False
+    assert port.realized() == Decimal(5)  # 동결 — 증분 0
+    session.accounting_ok = True
+    assert port.realized() == Decimal(500)

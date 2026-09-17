@@ -170,6 +170,11 @@ class WalkforwardTrade(Base):
     """재레버 감축으로 실현된 손익 누적 USDT (T229 · 0116). 옛 행은 NULL = 0."""
     fee_actual: Mapped[Decimal | None] = mapped_column(sa.Numeric(38, 18))
     """거래소가 실제로 뗀 수수료 USDT (T236 · 0117). NULL = 아직 안 맞춤(모형 비용 그대로)."""
+    margin_used: Mapped[Decimal | None] = mapped_column(sa.Numeric(38, 18))
+    """매매에 실제로 건 증거금 USDT — 펀드 멤버 (T285 · 0130).
+
+    NULL = 옛 행 · 백테스트 · 단독 판(걷기 증거금으로 센다).
+    """
     funding_keys_json: Mapped[JsonDict | None] = mapped_column(default=None)
     """이미 붙인 정산 열쇠 `{"keys": ["<epoch>:<change>", ...]}` (T226 · 0114). 옛 행은 NULL.
 

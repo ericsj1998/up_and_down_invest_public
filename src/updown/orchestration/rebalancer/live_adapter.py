@@ -1,8 +1,9 @@
 """라이브 세션을 `SessionPort` 로 감싼다 (T61 M1) — 조정자와 실제 세션의 접점.
 
-매핑(T61)에서 확정: 평가금액은 `ledger.equity`(프로퍼티), 예산은 `ledger.margin_budget`.
-`margin_budget` 은 **다음 진입 사이징에만** 쓰이고 손익률(`return_pct`, seed_cash 기준)은
-안 건드리므로, 보유 중 갱신해도 열린 포지션 손익이 오염되지 않는다 (설계 B).
+매핑(T61)에서 확정: 예산은 `ledger.margin_budget`, 조정자가 읽는 것은 `realized()`(누적 실현 손익 ·
+T285). `margin_budget` 은 **다음 진입 사이징에만** 쓰이고, 멤버 원장은 받은 몫(seed_cash)에서
+걷으며 매매마다 건 증거금(`margin_used`)으로 세므로 예산 갱신이 과거 손익을 안 건드린다 (설계 B).
+`equity()` 는 표시용으로 남는다 — 총자본 합산에는 더 이상 쓰지 않는다.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ class SessionBridge:
 
     session: Session
     _last_trusted: Decimal | None = None
+    _last_realized: Decimal | None = None
 
     @property
     def symbol(self) -> str:
@@ -69,6 +71,28 @@ class SessionBridge:
             anchored = led.realized_cash - self.session.realized_anchor
             return led.equity - anchored + self.session.verified_realized
         return self._last_trusted if self._last_trusted is not None else led.equity
+
+    def realized(self) -> Decimal:
+        """누적 실현 손익(USDT) — 조정자가 총자본 증분을 셀 때의 입력 (T285).
+
+        Returns:
+            신뢰할 수 있으면 원장 `realized_cash`, 갈렸으면 거래소 실측으로 갈아끼운 값
+            (앵커 + 실측),
+            그것도 없으면 마지막 신뢰값에 동결 — `equity()` 와 같은 격리 규칙이다.
+
+        Note:
+            ⭐ 원장 실현은 펀드 멤버 걷기가 시드에서 시작하고 매매마다 건 증거금(`margin_used`)으로
+            세므로 예산 변경·재기동에 흔들리지 않는다 — 그래서 증분이 총자본의 입력이 될 수 있다.
+        """
+        led = self.session.ledger
+        trusted = self.session.reconciled and self.session.accounting_ok
+        if trusted:
+            value = led.realized_cash
+            self._last_realized = value
+            return value
+        if self.session.verified_realized is not None:
+            return self.session.realized_anchor + self.session.verified_realized
+        return self._last_realized if self._last_realized is not None else led.realized_cash
 
     def set_budget(self, budget: Decimal) -> None:
         """다음 진입 예산을 갱신한다.

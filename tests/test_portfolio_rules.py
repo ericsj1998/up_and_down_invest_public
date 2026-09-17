@@ -80,10 +80,10 @@ class TestSlotBudgets:
     def test_engine_uses_slots_when_declared(self) -> None:
         basket = Basket(as_members([("A", Decimal(1)), ("B", Decimal(3))]))
         eng = RebalanceEngine(basket=basket, ledger=TwrLedger(equity=Decimal(300)), slots=3)
-        budgets = eng.rebalance({"A": Decimal(150), "B": Decimal(150)})
+        budgets = eng.rebalance(Decimal(0))
         assert budgets == {"A": Decimal(100), "B": Decimal(100)}
         plain = RebalanceEngine(basket=basket, ledger=TwrLedger(equity=Decimal(300)))
-        by_weight = plain.rebalance({"A": Decimal(150), "B": Decimal(150)})
+        by_weight = plain.rebalance(Decimal(0))
         assert by_weight["B"] == Decimal(225), "slots 0 은 비중 배분 그대로다"
 
 

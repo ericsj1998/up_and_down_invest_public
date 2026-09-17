@@ -164,3 +164,18 @@ bash scripts/ops/remote.sh -- 'bash /tmp/orderflow_server.sh stop'           # �
 - 메모리 96M 는 실측 전 값. `free -m` 에서 스왑이 늘면 **수집기부터 끈다** — 실계좌 api 가 우선이다. [결정 필요] 상시 켤지는 배포 뒤 실측으로.
 - 배포(`ship.sh`)는 프로필 서비스를 새로 띄우지 않는다 — 배포 뒤 `start` 를 다시 돌리면 새 이미지 태그로 재생성된다.
 - 이미지에 `scripts/runtime/orderflow_capture.py` 가 들어간 것은 1.8.1 부터 — 그 전 태그로는 `start` 가 "No such file" 로 죽는다.
+
+## 8. 펀드 장부 재앵커 — T285 누수 뒤 한 번 (2026-09-17)
+
+1.8.1 전까지 펀드 총자본이 리밸런싱 틱·재기동마다 샜다(실계좌 장부 300 → 132 · 계좌 실잔고 298). 코드는 고쳤지만
+샌 장부는 스스로 못 돌아온다 — **배포 뒤 한 번** 실잔고로 앵커한다. 실잔고 = 거래소 계정 총액 − 다른 펀드·단독 판 몫(펀드 하나면 총액).
+
+```bash
+bash scripts/ops/remote.sh scripts/ops/status.sh                                  # 계정 총액 확인(값은 화면·probe_gate)
+bash scripts/ops/remote.sh -- 'docker exec updown_live-api-1 python scripts/deploy/fund_reanchor.py <fund_id> <equity>'
+bash scripts/ops/remote.sh -- 'docker restart updown_live-api-1'                  # 메모리의 옛 장부가 파일을 덮기 전에
+```
+
+- 리더가 `api_b` 면 컨테이너 이름을 바꾼다(`status.sh` 의 leader). `docker restart` 는 IP 가 안 바뀌어 nginx 캐시 문제(§3)가 없다.
+- 확인: 다음 틱 뒤 `logs/equity/daily.jsonl` 의 펀드 값이 실잔고 근처에서 **매매 없이 안 움직이면** 끝.
+- 로컬 데모는 `docker exec updown-api_demo-1 …` + `docker restart updown-api_demo-1`. 옛 펀드를 지우고 새로 만들어도 된다.

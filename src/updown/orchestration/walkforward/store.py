@@ -685,6 +685,7 @@ class RunStore:
                 "funding_keys_json": {"keys": list(item.funding_keys)},
                 "realized_adjust": item.realized_adjust,
                 "fee_actual": item.fee_actual,
+                "margin_used": item.margin_used,  # T285 · 0130 — 펀드 멤버의 실제 증거금
                 "leverage": item.leverage,
                 "note": item.note,
                 "evidence_json": evidence_rows(item.evidence),
@@ -1227,6 +1228,7 @@ def _to_record(row: WalkforwardTrade) -> TradeRecord:
         funding_keys=tuple(str(key) for key in (row.funding_keys_json or {}).get("keys", [])),
         realized_adjust=row.realized_adjust if row.realized_adjust is not None else Decimal(0),
         fee_actual=row.fee_actual,
+        margin_used=row.margin_used,
         planned_stop=row.planned_stop,
         planned_first=row.planned_first,
         planned_target=row.planned_target,
