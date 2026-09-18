@@ -250,6 +250,21 @@ class BinancePaperAdapter:
             "value": str(raw.get("notional", "")),
         }
 
+    async def margins(self) -> dict[str, str]:
+        """계좌 요약의 돈 네 칸 — Gate 어댑터와 같은 열쇠 (T285 · 2026-09-18).
+
+        Returns:
+            `{total, available, position_margin, order_margin}` 문자열. `total` 은 거래소의
+            지갑 총액(`totalWalletBalance` · 미실현 제외)이고 펀드 자동 앵커의 기준이다.
+        """
+        account = await shared(f"{BROKER_NAME}:account", self._trade.get_account)
+        return {
+            "total": str(account.get("totalWalletBalance", "0")),
+            "available": str(account.get("available", "0")),
+            "position_margin": str(account.get("position_margin", "0")),
+            "order_margin": str(account.get("totalOpenOrderInitialMargin", "0") or "0"),
+        }
+
     async def account_book(self, limit: int = 30) -> list[dict[str, str]]:
         """자금 변동(수입) 이력 — 해석은 부르는 쪽 몫.
 

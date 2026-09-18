@@ -1560,6 +1560,37 @@ async def _account_headroom(market: str) -> tuple[Decimal, Decimal] | None:
     return total, pooled
 
 
+async def _wallet_total(market: str) -> Decimal | None:
+    """거래소가 **직접 말하는** 지갑 총액 — 앵커의 기준 (T285 · 2026-09-18).
+
+    Args:
+        market: 거래소.
+
+    Returns:
+        지갑 총액(가용 + 포지션 증거금 + **대기 주문 증거금** · 미실현 제외). 못 읽으면 None.
+
+    Note:
+        🔴 총액을 `가용 + 포지션 증거금` 으로 **재구성하면 안 된다** (2026-09-17~18 실계좌 실측).
+        16:00 에 낸 지정가 진입 주문이 04:00 까지 걸려 있는 동안 그 주문 증거금 33.5 USDT 가
+        빠져 계좌가 298.09 → 264.58 로 읽혔고, 앵커가 그것을 손실로 적어 세 틱 동안 예산이
+        11% 줄고 없던 낙폭 11.8% 가 장부에 남았다. 돈은 한 푼도 안 움직였다. 어댑터의
+        `margins()` 가 주는 거래소의 `total` 을 그대로 쓴다. `margins()` 가 없는 어댑터만
+        예전 재구성 값으로 떨어진다.
+    """
+    try:
+        from updown.apps.api.exchange import _orders_adapter  # pyright: ignore[reportPrivateUsage]
+
+        orders: Any = _orders_adapter(market)
+        if hasattr(orders, "margins"):
+            raw = cast("dict[str, str]", await orders.margins())
+            return Decimal(str(raw["total"]))
+    except Exception as exc:
+        _logger.warning("fund_wallet_total_unavailable: %s %s", market, str(exc)[:160])
+        return None
+    facts = await _account_headroom(market)
+    return None if facts is None else facts[0]
+
+
 async def _anchor_for(fund: Fund) -> Anchored | None:
     """이번 틱의 자동 앵커 — 유일한 소유자일 때 계좌 총액과 입출금을 읽는다 (T285).
 
@@ -1589,11 +1620,10 @@ async def _anchor_for(fund: Fund) -> Anchored | None:
     if strangers:
         fund.anchor_skipped = f"펀드 밖 단독 판 {strangers}개"
         return None
-    facts = await _account_headroom(market)
-    if facts is None:
+    total = await _wallet_total(market)
+    if total is None:
         fund.anchor_skipped = "거래소 계좌를 읽을 수 없음"
         return None
-    total, _pooled = facts
     try:
         from updown.apps.api.exchange import _orders_adapter  # pyright: ignore[reportPrivateUsage]
 
