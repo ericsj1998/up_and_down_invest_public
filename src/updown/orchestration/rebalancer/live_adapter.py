@@ -128,12 +128,24 @@ class SessionBridge:
         ]
 
     def open_exposure(self) -> Decimal:
-        """보유 중 매매의 노출(기록 leverage = 명목/증거금) 합 (총 명목 상한의 입력).
+        """보유 중 매매의 노출(명목/증거금) 합 (총 명목 상한의 입력).
 
         Returns:
-            열린 기록의 leverage 합. 없으면 0.
+            열린 기록의 노출 합. 없으면 0.
+
+        Note:
+            🔴 **체결된 것이 있으면 그것을 센다** (`filled_leverage` · T288). `leverage` 는
+            의도한 배율이라 정수 계약과 어긋난다 — 덜 산 만큼 방이 묶이고, 반올림으로 **더 산
+            만큼은 상한을 넘겨도 안 보인다**. 상한의 뜻이 *"실제로 얼마를 들고 있나"* 이므로
+            실측이 있으면 실측이 이긴다.
+
+            모형(백테스트·페이퍼)과 옛 기록은 `filled_leverage` 가 None 이라 `leverage` 를 쓴다.
         """
         return sum(
-            (item.leverage for item in self.session.ledger.records if item.outcome is Outcome.OPEN),
+            (
+                item.filled_leverage if item.filled_leverage is not None else item.leverage
+                for item in self.session.ledger.records
+                if item.outcome is Outcome.OPEN
+            ),
             Decimal(0),
         )

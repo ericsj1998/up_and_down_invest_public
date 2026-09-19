@@ -42,7 +42,7 @@ import structlog
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Market, Timeframe
-from updown.common.domain.order import OrderKind, OrderStatus
+from updown.common.domain.order import OrderKind, OrderResult, OrderStatus
 from updown.common.domain.session import MarketCalendar, SessionConfigError, Tradability
 from updown.common.logging.setup import get_logger
 from updown.decision.risk.policy import funding_shortfall
@@ -5508,6 +5508,73 @@ class LiveRunner:
             self.squeezed = None
         return equity
 
+    async def _record_filled_exposure(
+        self, record: TradeRecord, entry: OrderResult, multiplier: Decimal
+    ) -> None:
+        """체결된 계약이 **실제로 만든 노출**을 원장에 붙인다 (T288 · 총 명목 상한 회계).
+
+        Args:
+            record: 진입 기록.
+            entry: 진입 주문의 거래소 응답 — 체결 수량·평단이 여기 있다.
+            multiplier: 계약 승수.
+
+        Note:
+            🔴 **왜 필요한가.** `leverage` 는 *의도한* 배율인데 계약은 정수라 실제와 다르다.
+            총 명목 상한(`open_exposure`)이 의도를 세면 **두 방향으로** 틀린다 — 덜 산 만큼
+            방이 묶여 놀고, v1.10.3 반올림 이후로는 **더 산 만큼 상한을 넘겨도 안 보인다.**
+            뒤쪽이 안전 쪽 결함이라 고친다 (158차: 수익 효과는 네 창 부호 불일치 · CI 전부
+            0 을 지남 — **성과가 아니라 정확성이 사유다**).
+
+            ⛔ **`leverage` 를 안 건드린다.** 손익률이 그것을 쓰고 결정론 코어는 같은 입력에
+            같은 출력을 내야 한다 (규칙 #5). 백테스트에는 정수 계약 자체가 없다.
+
+            ⛔ **체결이 0 이면 안 쓴다** (규칙 #4·#8) — 살 것이 없었다. None 으로 두면
+            `open_exposure` 가 예전처럼 `leverage` 를 센다.
+
+            ⚠️ **평단이 없으면(또는 0 이면) 계획가로 근사한다 — 비우지 않는다.** 비우면 상한이
+            의도를 세는데, 반올림으로 더 산 자리에서 그것은 **과소계상**이라 이 고침이 막으려던
+            구멍으로 되돌아간다. 근삿값이 안전 방향이고, 슬리피지 차이는 교정 원장이 따로 잰다.
+
+            ⚠️ 분모는 `sizing_base`(자리 예산)다. 상한이 `cap x 자리 수` 로 비교되므로
+            같은 자를 써야 한다 — 쥐어짜인 `equity` 를 쓰면 작게 산 것이 크게 잡힌다.
+        """
+        base = self._session.ledger.sizing_base
+        price = entry.average_price if entry.average_price else record.entry
+        qty = entry.filled_quantity
+        if base <= 0 or qty <= 0 or price <= 0 or multiplier <= 0:
+            self._log.warning(
+                "live_filled_exposure_unknown",
+                payload={
+                    "trade_id": record.trade_id,
+                    "sizing_base": str(base),
+                    "filled_quantity": str(qty),
+                    "price": str(price),
+                    "note": "실측 노출을 못 만든다 — 의도한 leverage 로 상한을 센다 (규칙 #8)",
+                },
+            )
+            return
+        live = next(
+            (item for item in self._session.ledger.records if item.trade_id == record.trade_id),
+            None,
+        )
+        if live is None:
+            return
+        filled = qty * price * multiplier / base
+        self._session.ledger.replace(dc_replace(live, filled_leverage=filled))
+        self._log.info(
+            "live_filled_exposure",
+            payload={
+                "trade_id": record.trade_id,
+                "intended": str(record.leverage),
+                "filled": str(filled),
+                "contracts": str(qty),
+                "avg_price": str(price),
+                "sizing_base": str(base),
+                "note": "총 명목 상한은 이 값을 센다 — leverage(의도)는 손익률용이라 그대로다",
+            },
+        )
+        await self._persist()
+
     async def _send(self, record: TradeRecord, spec: dict[str, str]) -> None:
         """계획 하나를 진입 + 익절 주문으로 보낸다.
 
@@ -5714,6 +5781,7 @@ class LiveRunner:
                 },
             )
             return
+        await self._record_filled_exposure(record, entry, multiplier)
 
         # 🔴 **손절을 익절보다 먼저 건다** (T20 ⑤ · 2026-08-19 실측).
         #

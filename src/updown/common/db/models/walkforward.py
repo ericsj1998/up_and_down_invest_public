@@ -170,6 +170,12 @@ class WalkforwardTrade(Base):
     """재레버 감축으로 실현된 손익 누적 USDT (T229 · 0116). 옛 행은 NULL = 0."""
     fee_actual: Mapped[Decimal | None] = mapped_column(sa.Numeric(38, 18))
     """거래소가 실제로 뗀 수수료 USDT (T236 · 0117). NULL = 아직 안 맞춤(모형 비용 그대로)."""
+    filled_leverage: Mapped[Decimal | None] = mapped_column(sa.Numeric(38, 18))
+    """체결된 계약이 실제로 만든 노출 = 체결 명목 ÷ sizing_base (T288 · 0131).
+
+    총 명목 상한(`open_exposure`) **전용**이다 — 손익률은 `leverage`(의도)를 그대로 쓴다.
+    NULL = 모형(백테스트·페이퍼) · 옛 행 · 체결 수량을 못 읽은 경우.
+    """
     margin_used: Mapped[Decimal | None] = mapped_column(sa.Numeric(38, 18))
     """매매에 실제로 건 증거금 USDT — 펀드 멤버 (T285 · 0130).
 
