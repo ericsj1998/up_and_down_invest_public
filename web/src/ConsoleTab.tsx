@@ -544,6 +544,18 @@ export function ConsoleTab({ openRun }: Props) {
     all.count === 0
       ? "—"
       : `${all.pnl > 0 ? "+" : ""}${num(all.pnl, 2)} USDT${allPnlPct === null ? "" : ` (${allPnlPct > 0 ? "+" : ""}${allPnlPct.toFixed(2)}%)`}`;
+  // 🔴 **지금 다 닫으면 손에 쥐는 돈** (사용자 요구 2026-09-19).
+  //
+  //    거래소가 말하는 `계좌 총액`(=지갑)에는 **미실현이 안 들어 있다.** 그래서 화면 어디에도
+  //    *"지금 정리하면 얼마인가"* 가 없었다 — 총액 298.03 과 미실현 +10.26 이 따로 떨어져
+  //    있어서 사람이 머리로 더해야 했다.
+  //
+  // ⚠️ **헤드라인 총액은 안 바꾼다.** 그 값은 앵커의 단일 출처이고 펀드 카드의 `잔고` 와 같은
+  //    자다 (T285 · [[anchor-total-is-exchange-wallet-total]]). 둘이 달라 보이면 사람은
+  //    버그로 읽는다. 그래서 합친 값은 **별도 카드**로 두고 이름이 그 사실을 말하게 한다.
+  const closeout = total === null ? null : total + all.pnl;
+  const closeoutPct =
+    total !== null && total > 0 ? (all.pnl / total) * 100 : null;
 
   return (
     <div className="page">
@@ -981,10 +993,36 @@ export function ConsoleTab({ openRun }: Props) {
             {/* 전 거래소 합도 같은 순서 — 오늘 손익은 두 번째 (거래소별 카드와 같은 자리). */}
             {todayCard(marketList, agg.avail + agg.margin)}
             <Card
-              name="계좌 총액 (전 거래소)"
+              name="계좌 총액 (전 거래소 · 지갑)"
               value={`${num(agg.avail + agg.margin)} USDT`}
               hint={perLine((one) => one.avail + one.margin)}
             />
+            {/* 거래소별 화면과 **같은 카드**를 둔다 (2026-09-19) — 한쪽에만 있으면 탭을 옮길 때마다
+                다른 숫자를 보게 되고, 그게 "설마 다 따로 노나" 의 모양이다 (2026-09-06). */}
+            {agg.count ? (
+              <Card
+                name="지금 다 닫으면 (전 거래소)"
+                value={`${num(agg.avail + agg.margin + agg.unreal)} USDT`}
+                tone={
+                  agg.unreal > 0 ? "gain" : agg.unreal < 0 ? "loss" : undefined
+                }
+                hint={
+                  <>
+                    지갑 {num(agg.avail + agg.margin)}{" "}
+                    {agg.unreal >= 0 ? "+" : "−"} {num(Math.abs(agg.unreal), 2)}{" "}
+                    미실현
+                    {agg.avail + agg.margin > 0
+                      ? ` (${agg.unreal > 0 ? "+" : ""}${(
+                          (agg.unreal / (agg.avail + agg.margin)) *
+                          100
+                        ).toFixed(2)}%)`
+                      : ""}
+                    <br />
+                    수수료·슬리피지 전 · 전량 시장가 청산 가정
+                  </>
+                }
+              />
+            ) : null}
             <Card
               name="쓸 수 있는 돈 (합)"
               value={`${num(agg.avail)} USDT`}
@@ -1037,21 +1075,52 @@ export function ConsoleTab({ openRun }: Props) {
                 잃은 것이 아니라 포지션에 잡혀 있었다 — available 만 보여 주면 옮긴
                 것을 잃은 것으로 읽는다. */}
             <Card
-              name="계좌 총액"
+              name="계좌 총액 (지갑)"
               value={total === null ? "—" : `${num(total)} USDT`}
               /* 테스트 자금 안내는 **Gate 테스트넷일 때만** — 실계좌 화면에 "테스트 자금 받기" 가 뜨면
-                 어느 돈을 보고 있는지 헷갈린다 (사용자 지적 2026-09-05). 총액을 거래소가 말하면 그 출처를,
-                 아니면 계산식을 적는다. */
+                 어느 돈을 보고 있는지 헷갈린다 (사용자 지적 2026-09-05).
+                 ⭐ 2026-09-19 — 출처만 적던 자리에 **구성**을 적는다. 총액이 어떻게 쪼개져 있는지
+                    (가용·증거금·대기)를 여기서 못 보면 다른 카드 셋을 눈으로 더해야 했다. */
               hint={
                 effMkt === "GATE" && body?.account.testnet === "true" ? (
                   <Faucet />
-                ) : body?.balance.total ? (
-                  (body.balance.broker ?? "—")
-                ) : (
+                ) : total === null ? (
                   "available + 포지션 증거금 합"
+                ) : (
+                  <>
+                    가용 {num(body?.balance.available)} · 증거금{" "}
+                    {num(all.count ? all.margin : 0, 2)}
+                    {orderMargin > 0 ? ` · 대기 ${num(orderMargin, 2)}` : ""}
+                    <br />
+                    {all.count
+                      ? "미실현은 빠져 있다 — 아래 “지금 다 닫으면” 이 합친 값이다"
+                      : "포지션이 없어 미실현도 없다"}
+                  </>
                 )
               }
             />
+            {/* 🔴 **지금 정리하면 얼마인가** (사용자 요구 2026-09-19: *"미실현 손익이 사실상 지금
+                매매 마무리하면 얻는 금액인거잖아? 이것과, 지금 내 실질적인 마무리 시 총액이 찍히는
+                카드가 있을까?"*). 총액과 미실현이 따로 떨어져 있어 사람이 머리로 더하고 있었다.
+                ⚠️ 수수료·슬리피지 전이다 — 그 사실을 적는다(안 적으면 이 값을 확정 금액으로 읽는다). */}
+            {all.count ? (
+              <Card
+                name="지금 다 닫으면"
+                value={closeout === null ? "—" : `${num(closeout)} USDT`}
+                tone={all.pnl > 0 ? "gain" : all.pnl < 0 ? "loss" : undefined}
+                hint={
+                  <>
+                    지갑 {num(total)} {all.pnl >= 0 ? "+" : "−"}{" "}
+                    {num(Math.abs(all.pnl), 2)} 미실현
+                    {closeoutPct === null
+                      ? ""
+                      : ` (${closeoutPct > 0 ? "+" : ""}${closeoutPct.toFixed(2)}%)`}
+                    <br />
+                    수수료·슬리피지 전 · 전량 시장가 청산 가정
+                  </>
+                }
+              />
+            ) : null}
             {/* ⭐ **대기 주문이 잡은 증거금** (사용자 요청 2026-09-05). available 이 줄어든 이유가
                 여기 있다 — 잃은 돈이 아니라 지정가가 체결될 때 쓰려고 떼어 둔 돈이다. 어댑터가
                 그 값을 줄 때만(지금은 Gate). */}
@@ -1098,7 +1167,8 @@ export function ConsoleTab({ openRun }: Props) {
             />
             {/* 🔴 **관리자에게만** (사용자 2026-09-12). 값이 서버 주소라 아무에게나 보이면 안 된다.
                 서버도 관리자가 아니면 이 칸을 비워 보낸다 — 여기는 빈 카드까지 지우는 것뿐이다. */}
-            {me.who?.role === "admin" && (effMkt === "GATE" || body?.account.ip_whitelist) ? (
+            {me.who?.role === "admin" &&
+            (effMkt === "GATE" || body?.account.ip_whitelist) ? (
               <Card
                 name="키 IP 화이트리스트"
                 value={body?.account.ip_whitelist || "없음"}
