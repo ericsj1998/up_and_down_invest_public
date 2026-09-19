@@ -144,6 +144,15 @@ class OrderMappingError(ValueError):
     """
 
 
+MAX_SIZE_MULT = Decimal("1.5")
+"""탐지기 **크기 승수의 천장** — S3 기울기가 0.5 / 1.0 / 1.5 를 낸다 (T279 83차).
+
+`round_to_nearest` 의 안전 상한을 만드는 데만 쓴다: 올림한 계약이 *"이 매매법이 가장 크게 살 때"*
+보다 커지면 안 된다. 승수가 더 큰 탐지기가 생기면 이 상한이 **더 자주 걸릴 뿐**이라 실패 방향이
+안전하다(덜 사게 된다).
+"""
+
+
 def contracts_for(
     equity: Decimal,
     leverage: Decimal,
@@ -152,6 +161,8 @@ def contracts_for(
     *,
     size_min: int = 1,
     size_max: int | None = None,
+    round_to_nearest: bool = False,
+    max_leverage: Decimal | None = None,
 ) -> int:
     """자본으로 살 수 있는 **계약 수**.
 
@@ -162,16 +173,33 @@ def contracts_for(
         multiplier: 계약 승수 — BTC_USDT 는 `0.0001` (1계약 = 0.0001 BTC).
         size_min: 거래소 최소 계약 수 (`order_size_min`).
         size_max: 거래소 최대 계약 수. None 이면 상한 없음.
+        round_to_nearest: 참이면 **반올림**(0.5계약 이상이면 올린다). 기본 거짓 = 내림.
+        max_leverage: `round_to_nearest` 의 안전 상한 — 올림한 결과의 실제 배율이 이 값을
+            넘으면 올리지 않는다. None 이면 상한 없음(올림을 켤 때는 주는 것이 옳다).
 
     Returns:
-        계약 수 (정수, 내림).
+        계약 수 (정수).
 
     Raises:
         OrderMappingError: 값이 0 이하이거나, 최소 계약 수를 못 채우는 경우.
 
     Note:
-        🔴 **내림한다.** 올리면 자본보다 큰 포지션이 열리고, 격리 마진에서 그것은
+        🔴 **기본은 내림이다.** 올리면 자본보다 큰 포지션이 열리고, 격리 마진에서 그것은
         청산선이 계획보다 가까워진다는 뜻이다 — 반대 방향 오차가 계좌를 태운다.
+
+        ⭐ **그런데 자본이 작으면 내림의 대가가 크다** (157차 · 2026-09-19 실측). 계약 하나의
+        명목이 종목마다 달라(Gate: DOGE 0.87 · SOL 111.55 USDT · 128배) 자리 예산이 작으면
+        비싼 계약을 **하나도 못 산다**. 실계좌 373 USDT 기준:
+
+            내림    배율 6.2% 손실 · 신호의 2.8% 는 아예 건너뜀
+            반올림  배율 0.1% 손실 · 건너뛰는 신호 0%
+
+        자본 1,000 이상에서는 둘 다 1% 안쪽이라 차이가 없다(156차) — 작은 자본에서만 값이 있다.
+
+        🔴 **그래서 상한이 필요하다.** 올림이 커지는 자리는 **원래 작게 사려던 자리**(낙폭
+        브레이크가 절반으로 줄인 칸)라 절대 배율이 낮아 안전하다. 하지만 **크게 사려던 자리**에서
+        한 계약을 얹으면 청산선이 실제로 가까워진다(6배 → 7.2배면 청산 거리 16% → 12%).
+        `max_leverage` 가 그 경우를 막는다 — *"선언한 배율 봉투를 넘지 않는다"* 가 규칙이다.
 
         🔴 **최소를 못 채우면 예외다.** 0 을 돌려주면 원장은 진입한 것으로 적고
         거래소에는 아무것도 없는 상태가 된다. 자본이 모자란 것은 **사건**이다.
@@ -186,8 +214,14 @@ def contracts_for(
         raise OrderMappingError(f"계약 승수가 {multiplier} 다 — 0 이하면 수량이 무한이 된다")
 
     notional = equity * leverage
-    exact = notional / (price * multiplier)
+    per = price * multiplier  # 계약 1개의 명목
+    exact = notional / per
     size = int(exact.to_integral_value(rounding=ROUND_DOWN))
+    if round_to_nearest and exact - size >= Decimal("0.5"):
+        # 올림했을 때 실제로 몇 배가 되나 — 봉투를 넘으면 올리지 않는다.
+        lifted = (size + 1) * per / equity
+        if max_leverage is None or lifted <= max_leverage:
+            size += 1
     if size < size_min:
         raise OrderMappingError(
             f"계약 수 {size} 가 최소 {size_min} 에 못 미친다 "
@@ -206,6 +240,8 @@ def can_size(
     multiplier: Decimal,
     *,
     size_min: int = 1,
+    round_to_nearest: bool = False,
+    max_leverage: Decimal | None = None,
 ) -> bool:
     """`contracts_for` 가 계약을 **만들 수 있나** — 던지지 않고 묻는다 (T286 · 2026-09-19).
 
@@ -215,6 +251,8 @@ def can_size(
         price: 진입가.
         multiplier: 계약 승수.
         size_min: 거래소 최소 계약 수. 0 으로 오는 종목이 있어 **1 을 하한으로 본다**.
+        round_to_nearest: `contracts_for` 에 넘길 값과 **같아야 한다**.
+        max_leverage: 위와 같다.
 
     Returns:
         계약이 1개 이상(그리고 `size_min` 이상) 나오면 True.
@@ -224,13 +262,28 @@ def can_size(
         라이브 경로에서는 그 예외가 **원장에 "보유중" 이 써진 뒤**에 난다 — 주문은 없고
         기록만 남아 자가 점검이 고아로 올린다. 값을 미리 물어 그 거래를 **안 하면** 된다.
 
+        🔴 **두 함수가 같은 답을 내야 한다.** 인자가 갈리면 가드가 "못 산다" 고 접은 자리를
+        `contracts_for` 는 살 수 있었거나(진입을 잃는다) 그 반대가 된다(가드가 무의미해진다).
+        그래서 계산을 `contracts_for` 에 **위임**한다 — 두 벌로 두면 조용히 갈라진다.
+
         ⚠️ Gate 는 일부 종목의 `order_size_min` 을 **0 으로 준다**. 0계약은 주문이 아니므로
         `max(size_min, 1)` 로 본다 — 실측(2026-09-19)에서 SOL 이 그렇게 왔다.
     """
     if equity <= 0 or leverage <= 0 or price <= 0 or multiplier <= 0:
         return False
-    exact = (equity * leverage) / (price * multiplier)
-    return int(exact.to_integral_value(rounding=ROUND_DOWN)) >= max(size_min, 1)
+    try:
+        contracts_for(
+            equity,
+            leverage,
+            price,
+            multiplier,
+            size_min=max(size_min, 1),
+            round_to_nearest=round_to_nearest,
+            max_leverage=max_leverage,
+        )
+    except OrderMappingError:
+        return False
+    return True
 
 
 def rounding_drift_pct(

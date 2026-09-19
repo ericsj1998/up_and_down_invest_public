@@ -68,6 +68,7 @@ from updown.orchestration.walkforward.ledger import (
 from updown.orchestration.walkforward.live_feed import LiveFeed
 from updown.orchestration.walkforward.live_filler import LiveFiller, Want
 from updown.orchestration.walkforward.order_mapping import (
+    MAX_SIZE_MULT,
     RUN_CHARS,
     SENTINEL_RR,
     can_size,
@@ -5570,7 +5571,23 @@ class LiveRunner:
         #    -0.4% 였다(자본이 커지면 계약 수가 늘어 저절로 사라진다 · SOL 96.9% → 99.8%).
         #    0.4% 를 쫓아 자리 예산을 넘기면 총 명목 상한 회계가 어긋난다.
         #    그 거래를 **안 하는 것**이 옳다 — 자리는 다음 신호에 다시 쓴다.
-        if not can_size(equity, leverage, record.entry, multiplier, size_min=size_min):
+        # ⭐ **반올림한다** (157차 · 사용자 승인 2026-09-19). 자리 예산이 작으면 비싼 계약을
+        #    하나도 못 사서 신호를 통째로 놓친다 — 실계좌 373 USDT 기준 배율 6.2% 손실에
+        #    신호의 2.8% 를 건너뛰었다. 반올림하면 각각 0.1% · 0% 다.
+        #    ⚠️ 상한은 **이 매매법이 가장 크게 살 때**(선언 배율 x 크기 승수 천장)다 — 올림이
+        #       커지는 자리는 원래 작게 사려던 칸이라 안전하지만, 크게 사려던 칸에서 한 계약을
+        #       얹으면 청산선이 실제로 가까워진다(6배 → 7.2배 = 청산 거리 16% → 12%).
+        #    ⛔ 진입 경로에만 켠다 — 재레버·청산은 재본 적이 없으므로 손대지 않는다.
+        envelope = self._session.ledger.leverage * MAX_SIZE_MULT
+        if not can_size(
+            equity,
+            leverage,
+            record.entry,
+            multiplier,
+            size_min=size_min,
+            round_to_nearest=True,
+            max_leverage=envelope,
+        ):
             self._skip_unfillable(record, equity, multiplier, size_min)
             return
         contracts = contracts_for(
@@ -5580,6 +5597,8 @@ class LiveRunner:
             multiplier,
             size_min=size_min,
             size_max=size_max,
+            round_to_nearest=True,
+            max_leverage=envelope,
         )
         drift = rounding_drift_pct(contracts, equity, leverage, record.entry, multiplier)
         self._log.info(

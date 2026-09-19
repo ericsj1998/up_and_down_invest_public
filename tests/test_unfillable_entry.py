@@ -77,6 +77,106 @@ class TestCanSizeAnswersWithoutThrowing:
         assert can_size(SLOT, Decimal(4), SOL_PX, Decimal(0)) is False
 
 
+class TestRoundToNearestRescuesSmallAccounts:
+    """🔴 **반올림** — 157차 실측으로 켠 것 (사용자 승인 2026-09-19).
+
+    자리 예산이 작으면 비싼 계약을 하나도 못 사서 신호를 통째로 놓친다. 실계좌 373 USDT 기준:
+
+        내림    배율 6.2% 손실 · 신호의 2.8% 를 건너뜀
+        반올림  배율 0.1% 손실 · 건너뛰는 신호 0%
+
+    자본 1,000 이상에서는 둘 다 1% 안쪽이라 차이가 없다(156차) — 작은 자본에서만 값이 있다.
+    """
+
+    ENVELOPE = Decimal(4) * Decimal("1.5")  # 선언 배율 4x x 크기 승수 천장 1.5
+
+    def test_sol_at_one_x_is_rescued(self) -> None:
+        # 62 USDT 로 111.55 짜리 계약 → 0.56개. 내림은 0(못 산다), 반올림은 1개.
+        assert can_size(SLOT, Decimal(1), SOL_PX, SOL_MULT) is False
+        assert (
+            can_size(
+                SLOT,
+                Decimal(1),
+                SOL_PX,
+                SOL_MULT,
+                round_to_nearest=True,
+                max_leverage=self.ENVELOPE,
+            )
+            is True
+        )
+
+    def test_below_half_a_contract_is_still_refused(self) -> None:
+        """0.5계약 **미만**은 안 올린다 — 반올림이지 올림이 아니다."""
+        tiny = SLOT / 4  # 0.14개어치
+        assert (
+            can_size(
+                tiny,
+                Decimal(1),
+                SOL_PX,
+                SOL_MULT,
+                round_to_nearest=True,
+                max_leverage=self.ENVELOPE,
+            )
+            is False
+        )
+
+    def test_the_envelope_blocks_the_dangerous_lift(self) -> None:
+        """🔴 **크게 사려던 자리에서는 안 올린다** — 청산선이 가까워지는 경우다.
+
+        선언 봉투는 4x x 1.5 = 6배다. 올림했을 때 그 위로 가면 내림으로 남는다.
+        """
+        # 계약 하나가 자리 예산의 1.79배(SOL) — 6배를 의도하면 3.34개 → 3개(내림).
+        # 만약 3.6개였다면 올림이 4개 = 7.16배라 봉투를 넘는다. 그 경우를 직접 만든다.
+        slot = SOL_PX * Decimal("1.5") / Decimal("1.5")  # 계약 하나 = 자리 예산
+        # 5.6개어치를 의도 → 올리면 6개 = 6배(봉투 안) · 5.7 이면 6개여도 6배로 같다.
+        got_capped = contracts_for(
+            slot,
+            Decimal("5.6"),
+            SOL_PX,
+            SOL_MULT,
+            size_min=1,
+            round_to_nearest=True,
+            max_leverage=Decimal(6),
+        )
+        assert got_capped == 6, "6배 봉투 안이면 올린다"
+        # 6.6개어치를 의도 → 올리면 7배라 봉투를 넘는다 → 내림(6개).
+        got_blocked = contracts_for(
+            slot,
+            Decimal("6.6"),
+            SOL_PX,
+            SOL_MULT,
+            size_min=1,
+            round_to_nearest=True,
+            max_leverage=Decimal(6),
+        )
+        assert got_blocked == 6, "봉투를 넘는 올림은 막는다 — 청산선이 가까워진다"
+
+    def test_guard_and_sizer_never_disagree(self) -> None:
+        """가드와 실제 계산이 **같은 인자로 같은 답**을 내야 한다 (둘이 갈리면 가드가 무의미)."""
+        for lever in (Decimal("0.5"), Decimal(1), Decimal(2), Decimal(4), Decimal(6)):
+            for px, mult in ((SOL_PX, SOL_MULT), (DOGE_PX, DOGE_MULT)):
+                ok = can_size(
+                    SLOT, lever, px, mult, round_to_nearest=True, max_leverage=self.ENVELOPE
+                )
+                try:
+                    got = contracts_for(
+                        SLOT,
+                        lever,
+                        px,
+                        mult,
+                        size_min=1,
+                        round_to_nearest=True,
+                        max_leverage=self.ENVELOPE,
+                    )
+                except OrderMappingError:
+                    got = 0
+                assert ok == (got >= 1), f"배율 {lever} · 계약 {px * mult}"
+
+    def test_floor_stays_the_default(self) -> None:
+        """⛔ 진입 경로에만 켠다 — 재레버·청산은 재본 적이 없어 기본은 내림 그대로다."""
+        assert contracts_for(SLOT, Decimal(1), SOL_PX, SOL_MULT, size_min=0) == 0
+
+
 class TestTheLiveAccountShape:
     """지금 실계좌(373 USDT · 자리 6 · 4x)에서 어느 칸이 막히나 — 숫자를 못 박는다."""
 
