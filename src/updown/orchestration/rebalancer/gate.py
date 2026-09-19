@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from updown.decision.portfolio_rules import (
     Grant,
@@ -49,6 +49,26 @@ class PositionPort(Protocol):
 
         Returns:
             열린 기록의 leverage 합. 없으면 0.
+        """
+        ...
+
+
+@runtime_checkable
+class BreadthAware(Protocol):
+    """**시장 전체 돌파**를 셀 수 있는 포트 (T289). 없는 포트는 폭에 0 을 보탠다.
+
+    `PositionPort` 와 따로 둔 이유: 폭은 선택 기능이다. 필수 프로토콜에 넣으면 폭을 안 쓰는
+    펀드·시험용 포트까지 전부 이 메서드를 가져야 한다(`LeverageAware` 와 같은 패턴).
+    """
+
+    def band_breaks(self, at: datetime) -> int:
+        """직전 **3개 마감 봉** 안에 종가가 BB(20,2) 상단 밖에서 마감했으면 1, 아니면 0.
+
+        Args:
+            at: 진입하려는 봉의 시각(UTC).
+
+        Returns:
+            포트가 든 종목 수만큼의 합 — 종목 하나짜리 세션이면 0 또는 1.
         """
         ...
 
@@ -89,6 +109,20 @@ class SlotGate:
 
     brake_scale: Decimal = Decimal(1)
     """브레이크가 걸렸을 때 신규 진입에 곱할 배수(0.5). 걸려도 건너뛰지 않고 **크기만** 줄인다."""
+
+    breadth_min: int = 0
+    """**시장 전체 돌파**로 보는 폭의 문턱 (T289 · 177차 등록값 4). 0 = 조건부 상한 없음.
+
+    폭 = 포트들의 `band_breaks(at)` 합 = 직전 3개 마감 봉 안에 상단 밖에서 마감한 종목 수
+    (신호를 낸 종목 자신 포함). 진입 시점에 아는 값이다."""
+
+    breadth_cap: Decimal | None = None
+    """폭이 `breadth_min` 이상일 때 **그 진입에만** 쓰는 총 명목 상한(177차 등록값 3.0).
+
+    🔴 왜: 여러 종목이 같이 밴드를 뚫는 순간 `notional_cap` 이 차서 뒤쪽 신호가 통째로 버려진다 —
+    그런데 그 자리의 건당 EV 가 가장 높다(176차). 크기를 키우거나 혼자 돌파를 거르는 것은 세 창 모두
+    ⛔ 였고, **상한만** 올리는 것이 통과했다(177~179차 · 급락 주입 파산 0.07%).
+    ⚠️ `notional_cap` 보다 작으면 시장 전체 돌파에서 오히려 조인다 — 선언 파서가 막는다."""
 
     def blocks(self, at: datetime, exposure: Decimal = Decimal(0)) -> str | None:
         """지금 새 자리를 열면 안 되는 이유 — 없으면 None.
@@ -145,10 +179,29 @@ class SlotGate:
             #    브레이크로 막으면 안 된다(그 경로는 "자리·정지만 보자" 는 뜻이다).
             return Grant(Decimal(0), "brake")
         held = sum((port.open_exposure() for port in self.ports.values()), Decimal(0))
-        room = notional_room(held, self.slots, self.notional_cap)
+        room = notional_room(held, self.slots, self._cap_at(at))
         if room is not None and want > room:
             if not self.notional_fit or room <= 0 or room < self.min_grant:
                 return Grant(Decimal(0), "notional")
             want = room
             shrunk.append("notional")
         return Grant(want, None, "+".join(shrunk) if shrunk else None)
+
+    def breadth(self, at: datetime) -> int:
+        """지금의 **폭** — 직전 3개 마감 봉 안에 상단 밖에서 마감한 종목 수 (T289).
+
+        Args:
+            at: 진입하려는 봉의 시각(UTC).
+
+        Returns:
+            `BreadthAware` 포트들의 `band_breaks` 합. 폭을 못 세는 포트는 0 을 보탠다.
+        """
+        return sum(
+            port.band_breaks(at) for port in self.ports.values() if isinstance(port, BreadthAware)
+        )
+
+    def _cap_at(self, at: datetime) -> Decimal | None:
+        """이 진입에 쓸 총 명목 상한 — 시장 전체 돌파면 `breadth_cap`, 아니면 `notional_cap`."""
+        if self.breadth_cap is None or self.breadth_min <= 0 or self.notional_cap is None:
+            return self.notional_cap
+        return self.breadth_cap if self.breadth(at) >= self.breadth_min else self.notional_cap
