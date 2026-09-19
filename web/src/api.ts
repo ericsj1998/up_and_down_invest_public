@@ -761,6 +761,10 @@ export type FundRules = {
   halt_after_stops: number;
   /** 총 명목 ÷ 자리 ≤ 이 값 (문자열 소수). null 이면 상한 없음. */
   notional_cap: string | null;
+  /** 상한에 걸리면 남은 여유만큼 줄여서 진입한다 (T286). false 면 그 진입을 버린다. */
+  notional_fit?: boolean;
+  /** 낙폭 브레이크 — 고점 대비 at 이상 빠지면 신규 진입 크기를 scale 배로. null 이면 없음. */
+  drawdown_brake?: { at: string; scale: string } | null;
 };
 
 export type Rank = {

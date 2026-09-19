@@ -3025,6 +3025,17 @@ def _playbooks_all() -> dict[str, Any]:
                     "slots": item.slots,
                     "halt_after_stops": item.halt_after_stops,
                     "notional_cap": None if item.notional_cap is None else str(item.notional_cap),
+                    # ⭐ T286 — 줄여서 진입 · 낙폭 브레이크. 화면에 입력칸이 없는 규칙이라
+                    #    **여기가 사람이 그것을 볼 수 있는 유일한 자리**다.
+                    "notional_fit": item.notional_fit,
+                    "drawdown_brake": (
+                        None
+                        if item.drawdown_brake is None
+                        else {
+                            "at": str(item.drawdown_brake.at),
+                            "scale": str(item.drawdown_brake.scale),
+                        }
+                    ),
                 },
             }
             # ⭐ 선택창에는 listed 만 (사용자 확정 2026-08-23). 숨긴 것도 id 로는 띄울 수 있다.

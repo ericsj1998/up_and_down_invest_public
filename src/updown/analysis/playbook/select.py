@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import fields
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -27,6 +28,7 @@ from updown.analysis.playbook.types import (
     ConflictAction,
     ConflictRule,
     ConflictSide,
+    DrawdownBrake,
     Playbook,
     PlaybookRegime,
 )
@@ -170,6 +172,40 @@ def _conflict(raw: Mapping[str, Any]) -> ConflictRule:
     )
 
 
+def _brake(raw: object, name: str) -> DrawdownBrake:
+    """낙폭 브레이크 한 줄 — `{at: "0.12", scale: "0.5"}` (T286).
+
+    Raises:
+        PlaybookConfigError: 문턱이 0~1 밖이거나 배수가 (0, 1] 밖인 경우.
+
+    Note:
+        🔴 **강도 0(신규 정지)을 막는다.** 진입이 없으면 실현 잔고가 안 움직여 고점을 회복할 길이
+        사라진다 — 영영 못 빠져나오는 흡수 상태다(143차 실측). 1 초과도 막는다: 낙폭에서 크기를
+        **키우는** 것은 이 장치의 뜻이 아니고, 146차에서 그 방향은 이미 ⛔ 다.
+    """
+    body = _mapping(raw, f"{name}.drawdown_brake")
+    at = Decimal(str(body["at"]))
+    scale = Decimal(str(body["scale"]))
+    if not (Decimal(0) < at < Decimal(1)):
+        raise PlaybookConfigError(f"{name}.drawdown_brake.at 는 0~1 사이다 — {at} 는 낙폭이 아니다")
+    if not (Decimal(0) < scale <= Decimal(1)):
+        raise PlaybookConfigError(
+            f"{name}.drawdown_brake.scale 은 0 초과 1 이하다 — {scale} 는 "
+            f"정지(흡수 상태)이거나 키우는 것이다"
+        )
+    return DrawdownBrake(at=at, scale=scale)
+
+
+_KNOWN_KEYS = frozenset(field.name for field in fields(Playbook)) - {"playbook_id"}
+"""선언에 쓸 수 있는 키 — `Playbook` 의 필드에서 나온다(`playbook_id` 는 매핑의 키다).
+
+🔴 **모르는 키를 조용히 넘기지 않기 위해 있다.** 이 검사가 없던 동안 `notional_fit` 같은 키는
+파일에 적어도 아무 일이 없었고, 그래서 측정한 장치를 선언하지 못한 채 "코드에 없으니 적지 말자"는
+주석만 쌓였다(T286). 오타 한 글자가 규칙을 통째로 지우는 것도 같은 구멍이다 — `risk.yml`·
+`costs.yml`·구조물 파라미터는 이미 거부한다.
+"""
+
+
 def _load_file(target: Path) -> list[Playbook]:
     """선언 파일 하나를 읽는다.
 
@@ -202,6 +238,12 @@ def _load_file(target: Path) -> list[Playbook]:
     out: list[Playbook] = []
     for name, raw_body in _mapping(declared, "playbooks").items():
         body = _mapping(raw_body, f"playbooks.{name}")
+        unknown = sorted(set(body) - _KNOWN_KEYS)
+        if unknown:
+            raise PlaybookConfigError(
+                f"playbooks.{name} 에 모르는 키가 있다: {unknown} — 조용히 무시하면 선언한 규칙이 "
+                f"안 도는 채로 측정이 돈다. 허용: {sorted(_KNOWN_KEYS)}"
+            )
         try:
             out.append(
                 Playbook(
@@ -315,6 +357,12 @@ def _load_file(target: Path) -> list[Playbook]:
                         else Decimal(str(body["notional_cap"]))
                     ),
                     halt_after_stops=int(body.get("halt_after_stops", 0) or 0),
+                    notional_fit=bool(body.get("notional_fit", False)),
+                    drawdown_brake=(
+                        None
+                        if body.get("drawdown_brake") is None
+                        else _brake(body["drawdown_brake"], f"playbooks.{name}")
+                    ),
                     label=str(body.get("label", "") or ""),
                     flip_on_opposite=bool(body.get("flip_on_opposite", False)),
                     regime_source=_regime_source(body.get("regime_source", "trend"), name),

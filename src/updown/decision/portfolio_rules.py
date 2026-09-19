@@ -80,3 +80,53 @@ def notional_free(held: Decimal, adding: Decimal, slots: int, cap: Decimal) -> b
     if slots <= 0 or cap <= 0:
         return True
     return (held + adding) / Decimal(slots) <= cap
+
+
+def notional_room(held: Decimal, slots: int, cap: Decimal | None) -> Decimal | None:
+    """총 명목 상한까지 **남은 여유** — 걸리는 진입을 버리지 않고 줄여서 받기 위한 값 (T286).
+
+    Args:
+        held: 지금 열린 자리들의 노출(명목/증거금) 합.
+        slots: 자리 수. 0 이하면 상한 없음.
+        cap: 자본 대비 총 명목 상한. None·0 이하면 상한 없음.
+
+    Returns:
+        남은 여유 노출. 상한이 없으면 None(= 자르지 않는다). 이미 넘겼으면 음수일 수 있다.
+
+    Note:
+        `notional_free` 와 같은 식을 여유 쪽에서 본 것이다 — `(held + adding) / slots <= cap`
+        ⟺ `adding <= cap * slots - held`. 연구 걸음
+        `scripts/research/scenarios/t279_leaderboard_bn.walk` 의 `room = cap * slots - sum(eff)`
+        와 같은 값이고, 123·124차가 잰 "줄여서 진입" 은 이 값으로 자른 판이다.
+    """
+    if cap is None or slots <= 0 or cap <= 0:
+        return None
+    return cap * Decimal(slots) - held
+
+
+def drawdown_scale(drawdown: Decimal, at: Decimal, scale: Decimal) -> Decimal:
+    """낙폭 브레이크 — 고점 대비 `at` 이상이면 **신규 진입만** `scale` 배로 (T279 143~145차).
+
+    Args:
+        drawdown: 지금 고점 대비 낙폭(0~1 · 0 = 고점).
+        at: 문턱(0.12 = 12%). 0 이하면 브레이크 없음.
+        scale: 걸렸을 때 곱할 배수(0.5).
+
+    Returns:
+        진입 크기에 곱할 배수. 안 걸리면 1.
+
+    Note:
+        🔴 **비대칭이다** — 낙폭 쪽만 줄이고 고점 쪽은 건드리지 않는다. 146·147차에서 역(고점
+        갱신 시 키우기)을 재보니 같은 평균 배율의 평평한 판에 -44% 로 졌다: **모든 낙폭은 정의상
+        고점에서 시작**하므로 고점에서 크게 가는 것은 모든 낙폭의 출발점마다 크게 가는 것이다.
+
+        ⚠️ **문턱은 배율 4x 에 묶인 값이다**(149차). 배율을 내리면 곡선이 눌려 낙폭이 얕아지고,
+        브레이크는 지킬 것 없이 비용만 낸다 — 3x 이하에서 켜면 네 창 모두 잔고가 깎였다(짝 0/60).
+        배율을 4x 미만으로 내리면 이 값을 끄거나 다시 재야 한다.
+
+        연구 걸음은 `equity < peak * (1 - dd)` 이므로 **엄격 부등호**다. 낙폭이 문턱과 정확히
+        같으면 안 걸린다 — 같은 자를 쓴다.
+    """
+    if at <= 0:
+        return Decimal(1)
+    return scale if drawdown > at else Decimal(1)

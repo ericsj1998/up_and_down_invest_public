@@ -904,6 +904,13 @@ export function FundPanel() {
                 {selBook.fund_rules.halt_after_stops > 0
                   ? ` · 같은 날 연속 손절 ${selBook.fund_rules.halt_after_stops} 이면 정지`
                   : ""}
+                {/* T286 — 화면에 입력칸이 없는 규칙이다. 여기가 사람이 볼 수 있는 유일한 자리다. */}
+                {selBook.fund_rules.notional_fit ? " · 상한에 걸리면 줄여서 진입" : ""}
+                {selBook.fund_rules.drawdown_brake
+                  ? ` · 낙폭 ${(
+                      Number(selBook.fund_rules.drawdown_brake.at) * 100
+                    ).toFixed(0)}% 아래면 신규 x${selBook.fund_rules.drawdown_brake.scale}`
+                  : ""}
               </span>
             )}
             {(selBook.backtest_note ?? "")

@@ -153,23 +153,24 @@ def frame_span(frame: Timeframe) -> timedelta:
 
 
 class EntryGate(Protocol):
-    """펀드 층이 세션에 끼우는 **진입 문** (T279 P3 · 2026-09-18).
+    """펀드 층이 세션에 끼우는 **진입 문** (T279 P3 · 2026-09-18 · T286 으로 크기까지).
 
-    세션은 사기 직전 `blocks(at)` 만 부른다. 구현(`orchestration/rebalancer/gate.py`)은 펀드의
-    다른 세션들을 보고 동시 보유 상한(§23)·같은 날 연속 손절 정지(§24)를 판단한다. 세션은
-    그 규칙의 내용을 모른다 — 이유 문자열을 깔때기에 적을 뿐이다.
+    세션은 사기 직전 `grant(at, exposure)` 만 부른다. 구현(`orchestration/rebalancer/gate.py`)은
+    펀드의 다른 세션들을 보고 동시 보유 상한(§23)·같은 날 연속 손절 정지(§24)·총 명목 상한(V2)·
+    낙폭 브레이크를 판단한다. 세션은 그 규칙의 내용을 모른다 — 허용 크기를 받고 이유를 깔때기에
+    적을 뿐이다.
     """
 
-    def blocks(self, at: datetime, exposure: Decimal) -> str | None:
-        """지금 새 자리를 열면 안 되는 이유.
+    def grant(self, at: datetime, exposure: Decimal) -> tuple[Decimal, str | None]:
+        """이 크기로 열어도 되는지 묻고 **허용 크기**를 받는다.
 
         Args:
             at: 진입하려는 봉의 시각(UTC).
-            exposure: 열려는 자리의 예상 노출(명목/증거금 = 세션 배율 x 크기 승수) —
-                총 명목 상한(93차 V2)의 입력.
+            exposure: 열려는 자리의 **실제** 노출(명목/증거금 = 배율 x 크기 승수).
 
         Returns:
-            막는 이유(깔때기 라벨). 열어도 되면 None.
+            `(허용 크기, 막은 사유)`. 열어도 되면 사유가 None 이고 크기는 요청값 이하다.
+            막히면 `(0, 깔때기 라벨)`.
         """
         ...
 
@@ -2392,6 +2393,46 @@ class Session:
             losses += 1
         return CONSEC_CUT_3 if losses >= 3 else CONSEC_CUT_2 if losses >= 2 else Decimal(1)
 
+    def _gate(self, at: datetime, exposure: Decimal) -> Decimal | None:
+        """펀드 문에 **이 크기로 열어도 되는지** 묻고 허용 크기를 받는다 (T279 P3 · T286).
+
+        Args:
+            at: 진입하려는 봉의 시각(UTC).
+            exposure: 이 자리에 쓰려는 실제 노출(명목/증거금).
+
+        Returns:
+            허용 크기(요청값 이하). 막히면 None — 호출자는 이 봉을 건너뛴다.
+
+        Note:
+            단일 세션(백테스트·RUN)은 문이 없어 요청값을 그대로 돌려준다 — 이 줄이 없는 것과 같다.
+            줄어든 경우(`gate:fit`)를 따로 세는 이유는 §1-0s 관측 규약이다: **새 규칙이 값을
+            만들면 그 값의 분포를 리포트에 싣는다.** 줄인 횟수를 안 세면 상한이 실제로 몇 번
+            일했는지 알 수 없고, 123차에서 겪은 "27% 가 조용히 버려지고 있었다" 를 반복한다.
+        """
+        if self.entry_gate is None:
+            return exposure
+        granted, why = self.entry_gate.grant(at, exposure)
+        if why is not None:
+            self.gate_held += 1
+            self._count(f"gate:{why}")
+            _logger.info(
+                "session_entry_gate_held",
+                payload={"why": why, "at": at.isoformat(), "note": "펀드 규칙 — 이 봉엔 안 산다"},
+            )
+            return None
+        if granted < exposure:
+            self._count("gate:fit")
+            _logger.info(
+                "session_entry_gate_fit",
+                payload={
+                    "want": str(exposure),
+                    "granted": str(granted),
+                    "at": at.isoformat(),
+                    "note": "펀드 여유에 맞춰 줄여서 진입 (T286)",
+                },
+            )
+        return granted
+
     def _book_of(self, held: TradeRecord) -> Playbook:
         """이 매매를 낸 플레이북 — 귀속 키로 찾는다 (T42 ③).
 
@@ -2595,6 +2636,13 @@ class Session:
         #    분석이 *'이 자리는 평소보다 작게'* 를 판단하고, 수량은 여전히
         #    decision 이 정한다 — 여기서는 곱하기만 한다.
         exposure *= setup.size_mult
+        # 🔴 **펀드의 진입 문** (T279 P3 · T286) — 시장가 경로와 같은 자다. 예전에는 `_enter` 가
+        #    문을 **선언 배율**로 한 번 물었고 여기서 계산한 실제 노출과 어긋났다(위험 기반
+        #    사이징일 때). 이제 각 경로가 **자기가 쓸 크기**로 묻는다.
+        gated = self._gate(bar.ts, exposure)
+        if gated is None:
+            return
+        exposure = gated
         record = TradeRecord(
             trade_id=trade_id,
             playbook=owner,
@@ -3165,22 +3213,6 @@ class Session:
                 },
             )
             return None
-        # 🔴 **펀드의 진입 문** (T279 P3) — 동시 보유 상한 · 같은 날 연속 손절 정지. 자리를 지우지
-        #    않고 진입에서만 거른다. 단일 세션은 문이 없어 이 줄이 없는 것과 같다.
-        if self.entry_gate is not None:
-            why = self.entry_gate.blocks(bar.ts, self.ledger.leverage * setup.size_mult)
-            if why is not None:
-                self.gate_held += 1
-                self._count(f"gate:{why}")
-                _logger.info(
-                    "session_entry_gate_held",
-                    payload={
-                        "why": why,
-                        "at": bar.ts.isoformat(),
-                        "note": "펀드 규칙 — 이 봉엔 안 산다",
-                    },
-                )
-                return None
         # 🔴 **지정가를 걸고 기다리지 않는다 — 방아쇠가 당겨지면 그 자리에서 산다.**
         #
         #    > *"박스권에서 위쪽으로 돌파된 시점 그때 그냥 최대한 빨리 매수한다고
@@ -3230,7 +3262,12 @@ class Session:
             exposure *= self._consec_loss_scale()
         # ⭐ 탐지기가 낸 크기 승수 (T81). 기본 1 — 지정가 경로와 같은 규칙이다.
         exposure *= setup.size_mult
-        # 🔴 **지정가를 걸고 기다리지 않는다 — 방아쇠가 당겨지면 그 자리에서 산다.**
+        # 🔴 **펀드의 진입 문** (T279 P3 · T286) — 자리 · 같은 날 연속 손절 정지 · 총 명목 상한 ·
+        #    낙폭 브레이크. 자리를 지우지 않고 진입에서만 거르거나 **크기를 줄인다**.
+        gated = self._gate(bar.ts, exposure)
+        if gated is None:
+            return None
+        exposure = gated
         record = TradeRecord(
             trade_id=new_trade_id(),
             playbook=owner,

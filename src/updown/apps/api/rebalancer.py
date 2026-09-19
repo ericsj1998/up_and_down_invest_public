@@ -24,7 +24,7 @@ import contextlib
 import json
 import logging
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -36,6 +36,7 @@ import yaml
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from updown.analysis.playbook.select import default_playbook, load_playbooks
+from updown.analysis.playbook.types import DrawdownBrake
 from updown.apps.api.admin import instrument_of
 from updown.apps.api.auth import require_market_trade, require_playbook_trade
 from updown.apps.api.walkforward import (
@@ -107,6 +108,15 @@ class Fund:
     """P3 같은 날 연속 손절 정지 문턱(§24 · 2). 0 = 없음."""
     notional_cap: Decimal | None = None
     """총 명목 상한(자본 배수 · 93차 V2 = 2). None = 없음."""
+    notional_fit: bool = False
+    """상한에 걸리면 **남은 여유만큼 줄여서** 진입한다 (T286 · A 구성). False = 통째로 건너뛴다."""
+    drawdown_brake: DrawdownBrake | None = None
+    """낙폭 브레이크 — 고점 대비 `at` 이상 빠져 있으면 신규 진입 크기를 `scale` 배로 (T286).
+
+    낙폭의 출처는 **펀드 장부의 TWR 지수**(`engine.ledger.drawdown_pct`)다 — 이미 저장·복원되고
+    입출금 중립이라(입금이 낙폭을 메우지 않는다) T286 의 "정할 것 ②" 가 여기서 해결된다.
+    입출금이 없는 백테스트에서는 실현 잔고 낙폭과 **같은 값**이라 143~145차 측정과 같은 자다.
+    """
     anchor: AnchorState | None = None
     """자동 앵커 상태 (T285) — 첫 틱에서 잡히고 펀드 파일에 저장된다. None = 아직 앵커 전."""
     anchor_skipped: str | None = None
@@ -149,9 +159,16 @@ RANK_WINDOW_DAYS = 60
 
 
 def _attach_gate(
-    coordinator: Coordinator, slots: int, halt_after_stops: int, notional_cap: Decimal | None = None
+    coordinator: Coordinator,
+    slots: int,
+    halt_after_stops: int,
+    notional_cap: Decimal | None = None,
+    *,
+    notional_fit: bool = False,
+    brake: DrawdownBrake | None = None,
+    leverage: Decimal | None = None,
 ) -> None:
-    """P3 진입 문을 펀드의 모든 세션에 끼운다 (T279 83차 · 2026-09-18).
+    """P3 진입 문을 펀드의 모든 세션에 끼운다 (T279 83차 · 2026-09-18 · T286 으로 크기까지).
 
     Args:
         coordinator: 펀드 조정자 — 문은 **조정자의 포트 매핑을 그대로** 본다. 종목을 넣고 빼면
@@ -159,20 +176,57 @@ def _attach_gate(
         slots: 동시 보유 상한. 0 = 없음.
         halt_after_stops: 같은 날 연속 손절 정지 문턱. 0 = 없음.
         notional_cap: 총 명목 상한(자본 배수). None = 없음.
+        notional_fit: 상한에 걸릴 때 남은 여유만큼 줄여서 진입할지 (T286).
+        brake: 낙폭 브레이크 선언. None = 없음.
+        leverage: 펀드 선언 배율 — 줄여서 진입의 **허용 하한**(1/4)을 여기서 만든다.
 
     Note:
-        둘 다 0 이면 아무것도 안 끼운다 — 기존 펀드(비중 배분)는 한 톨도 안 바뀐다. 종목을 나중에
+        아무 규칙도 없으면 안 끼운다 — 기존 펀드(비중 배분)는 한 톨도 안 바뀐다. 종목을 나중에
         더하면 이 함수를 다시 불러 새 세션에도 같은 문을 준다(멱등).
+
+        🔴 낙폭은 **조정자 장부에서 매번 읽는다**(람다) — 값을 복사해 두면 틱마다 갱신되는 낙폭이
+        문에 반영되지 않아 브레이크가 첫 값에 얼어붙는다.
     """
-    if slots <= 0 and halt_after_stops <= 0:
+    if slots <= 0 and halt_after_stops <= 0 and brake is None:
         return
     ports = cast(dict[str, PositionPort], coordinator.ports)
+    ledger = coordinator.engine.ledger
     gate = SlotGate(
-        ports=ports, slots=slots, halt_after_stops=halt_after_stops, notional_cap=notional_cap
+        ports=ports,
+        slots=slots,
+        halt_after_stops=halt_after_stops,
+        notional_cap=notional_cap,
+        notional_fit=notional_fit,
+        min_grant=(Decimal(0) if leverage is None else leverage / Decimal(4)),
+        drawdown=(None if brake is None else lambda: ledger.drawdown_pct / Decimal(100)),
+        brake_at=(Decimal(0) if brake is None else brake.at),
+        brake_scale=(Decimal(1) if brake is None else brake.scale),
     )
     for port in coordinator.ports.values():
         if isinstance(port, SessionBridge):
             port.session.entry_gate = gate
+
+
+def _reattach_gate(fund: Fund) -> None:
+    """펀드의 **지금 규칙**으로 문을 다시 끼운다 — 종목 추가·전략 전환 뒤 (멱등).
+
+    Args:
+        fund: 대상 펀드.
+
+    Note:
+        호출부가 인자를 하나씩 적던 것을 모았다 — T286 이 인자를 셋 더 늘리면서 두 곳 중 하나만
+        고치면 **그 경로의 세션만 규칙 없이 도는** 조용한 실패가 된다(전략 전환 뒤 브레이크가
+        사라지는 식).
+    """
+    _attach_gate(
+        fund.coordinator,
+        fund.slots,
+        fund.halt_after_stops,
+        fund.notional_cap,
+        notional_fit=fund.notional_fit,
+        brake=fund.drawdown_brake,
+        leverage=fund.leverage,
+    )
 
 
 def _member_leverage(fund_leverage: Decimal, alt_leverage: Decimal | None, symbol: str) -> Decimal:
@@ -319,6 +373,14 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
         "slots": fund.slots,
         "halt_after_stops": fund.halt_after_stops,
         "notional_cap": None if fund.notional_cap is None else str(fund.notional_cap),
+        # ⭐ T286 — 줄여서 진입 · 낙폭 브레이크. 돌던 펀드의 규칙은 선언이 바뀌어도 안 바뀐다.
+        #    낙폭 **고점**은 여기 안 적는다 — `twr` 의 `twr_peak` 이 이미 그 값이고 입출금 중립이다.
+        "notional_fit": fund.notional_fit,
+        "drawdown_brake": (
+            None
+            if fund.drawdown_brake is None
+            else {"at": str(fund.drawdown_brake.at), "scale": str(fund.drawdown_brake.scale)}
+        ),
         "basket": {
             "version": basket.version,
             "members": [{"symbol": m.symbol, "weight": str(m.weight)} for m in basket.members],
@@ -521,6 +583,16 @@ async def _restore_one(data: dict[str, Any]) -> None:
     halt_after_stops = int(data.get("halt_after_stops", 0) or 0)
     raw_cap = data.get("notional_cap")
     notional_cap = None if raw_cap in (None, "") else Decimal(str(raw_cap))
+    # ⭐ T286 — 옛 저장본에는 없다(둘 다 꺼짐). 있으면 그대로 되살린다: 펀드를 만든 뒤 선언이
+    #    바뀌어도 **돌던 펀드의 규칙은 안 바뀐다**(저장본이 이긴다 — slots·cap 과 같은 원칙).
+    notional_fit = bool(data.get("notional_fit", False))
+    raw_brake = data.get("drawdown_brake")
+    drawdown_brake: DrawdownBrake | None = None
+    if isinstance(raw_brake, Mapping):
+        brake_body = cast("Mapping[str, Any]", raw_brake)
+        drawdown_brake = DrawdownBrake(
+            at=Decimal(str(brake_body["at"])), scale=Decimal(str(brake_body["scale"]))
+        )
     total = ledger.balance
     wsum = basket.weight_sum
     # ⭐ T285 — 저장된 몫(seed)·정산 mark. 옛 저장본(없음)은 지금 몫을 seed 로, mark 는 첫 틱이 지금
@@ -580,7 +652,15 @@ async def _restore_one(data: dict[str, Any]) -> None:
         sym: Decimal(str(saved_marks[sym])) for sym in ports if sym in saved_marks
     }  # 되살린 세션만 · 새로 띄운 세션은 첫 틱이 mark 를 잡는다
     coordinator = Coordinator(engine=engine, ports=dict(ports), marks=marks)  # type: ignore[arg-type]
-    _attach_gate(coordinator, slots, halt_after_stops, notional_cap)
+    _attach_gate(
+        coordinator,
+        slots,
+        halt_after_stops,
+        notional_cap,
+        notional_fit=notional_fit,
+        brake=drawdown_brake,
+        leverage=leverage,
+    )
     fund = Fund(
         fund_id=str(data["fund_id"]),
         label=str(data["label"]),
@@ -594,6 +674,8 @@ async def _restore_one(data: dict[str, Any]) -> None:
         slots=slots,
         halt_after_stops=halt_after_stops,
         notional_cap=notional_cap,
+        notional_fit=notional_fit,
+        drawdown_brake=drawdown_brake,
     )
     raw_anchor = data.get("anchor")
     if isinstance(raw_anchor, dict):
@@ -692,6 +774,8 @@ async def _create_fund(
     slots: int = 0,
     halt_after_stops: int = 0,
     notional_cap: Decimal | None = None,
+    notional_fit: bool = False,
+    drawdown_brake: DrawdownBrake | None = None,
 ) -> Fund:
     """바스켓 종목마다 세션을 띄우고 조정자로 묶는다.
 
@@ -708,6 +792,8 @@ async def _create_fund(
         slots: P3 동시 보유 상한(예산 = 총자본 ÷ slots · 진입 문). 0 = 없음.
         halt_after_stops: P3 같은 날 연속 손절 정지 문턱. 0 = 없음.
         notional_cap: 총 명목 상한(자본 배수 · V2 = 2). None = 없음.
+        notional_fit: 상한에 걸릴 때 남은 여유만큼 줄여서 진입할지 (T286 · A 구성).
+        drawdown_brake: 낙폭 브레이크 선언. None = 없음.
 
     Returns:
         만들어진 펀드. `FUNDS` 에 등록된다.
@@ -748,7 +834,15 @@ async def _create_fund(
 
     engine = RebalanceEngine(basket=basket, ledger=TwrLedger(equity=total_cash), slots=slots)
     coordinator = Coordinator(engine=engine, ports=dict(ports))  # type: ignore[arg-type]
-    _attach_gate(coordinator, slots, halt_after_stops, notional_cap)
+    _attach_gate(
+        coordinator,
+        slots,
+        halt_after_stops,
+        notional_cap,
+        notional_fit=notional_fit,
+        brake=drawdown_brake,
+        leverage=leverage,
+    )
     fund = Fund(
         fund_id=f"fund{uuid4().hex[:8]}",
         label=label,
@@ -762,6 +856,8 @@ async def _create_fund(
         slots=slots,
         halt_after_stops=halt_after_stops,
         notional_cap=notional_cap,
+        notional_fit=notional_fit,
+        drawdown_brake=drawdown_brake,
     )
     FUNDS[fund.fund_id] = fund
     if weight_mode == "rank60":
@@ -1103,6 +1199,13 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
         if raw_cap in (None, "")
         else Decimal(str(raw_cap))
     )
+    # ⭐ T286 — 줄여서 진입 · 낙폭 브레이크. 화면에 입력칸이 없으므로 **선언이 유일한 출처**다.
+    notional_fit = bool(
+        payload.get("notional_fit")
+        if payload.get("notional_fit") is not None
+        else (False if declared_book is None else declared_book.notional_fit)
+    )
+    drawdown_brake = None if declared_book is None else declared_book.drawdown_brake
     if mode == "slots" and slots <= 0:
         raise HTTPException(400, "weight_mode 가 slots 인데 slots 가 없다 — 매매법 선언을 본다")
     raw_alt = payload.get("alt_leverage")
@@ -1126,6 +1229,8 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
                 slots=slots if mode == "slots" else 0,
                 halt_after_stops=halt,
                 notional_cap=notional_cap if mode == "slots" else None,
+                notional_fit=notional_fit if mode == "slots" else False,
+                drawdown_brake=drawdown_brake,
             )
         )
     except HTTPException:
@@ -1377,9 +1482,7 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
             fund.handles[member.symbol] = handle
             fund.coordinator.ports[member.symbol] = port  # type: ignore[index]
             added.append(member.symbol)
-        _attach_gate(
-            fund.coordinator, fund.slots, fund.halt_after_stops, fund.notional_cap
-        )  # 새 세션에도
+        _reattach_gate(fund)  # 새 세션에도
     except Exception as exc:
         for sym in added:  # 방금 띄운 것만 되돌린다 — 펀드는 그대로
             handle = fund.handles.pop(sym, "")
@@ -1469,9 +1572,7 @@ async def change_playbook(
     # 새 세션의 원장은 0 부터 — 옛 정산 mark 를 물려주면 증분이 틀린다 (T285)
     fund.coordinator.marks = {}
     fund.playbook = new_pb
-    _attach_gate(
-        fund.coordinator, fund.slots, fund.halt_after_stops, fund.notional_cap
-    )  # 갈아 끼운 세션에도
+    _reattach_gate(fund)  # 갈아 끼운 세션에도
     await _tick(fund)
     return await _status(fund)
 
