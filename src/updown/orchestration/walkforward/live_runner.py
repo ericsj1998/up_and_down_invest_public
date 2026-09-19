@@ -70,6 +70,7 @@ from updown.orchestration.walkforward.live_filler import LiveFiller, Want
 from updown.orchestration.walkforward.order_mapping import (
     RUN_CHARS,
     SENTINEL_RR,
+    can_size,
     close_limit_order,
     close_order,
     contracts_for,
@@ -4110,6 +4111,52 @@ class LiveRunner:
                     },
                 )
 
+    def _skip_unfillable(
+        self, record: TradeRecord, equity: Decimal, multiplier: Decimal, size_min: int
+    ) -> None:
+        """계약을 못 만드는 진입을 **원장에서 거둔다** (T286 · 2026-09-19).
+
+        Args:
+            record: 방금 원장에 적힌 진입 기록.
+            equity: 이 자리에 쓰려던 증거금.
+            multiplier: 계약 승수.
+            size_min: 거래소 최소 계약 수.
+
+        Note:
+            🔴 **`CANCELLED` 로 닫는다** — 원장의 뜻 그대로 *"체결 전에 계획이 사라져 주문을
+            거뒀다"* 다. 손절로 적으면 승률·손익이 없던 손실을 세고, `OPEN` 으로 두면 거래소에
+            없는 포지션이 원장에 남아 자가 점검이 고아로 올린다.
+
+            ⚠️ **조용히 넘기지 않는다** (규칙 #8). 이것은 *"자본이 그 종목의 계약 하나도 못 산다"*
+            는 뜻이고, 자주 나면 자리 수를 줄이거나 자본을 키워야 한다는 신호다. 화면(`placed`)과
+            로그 양쪽에 남긴다 — 다만 **주문 거절이 아니므로** `failures` 는 올리지 않는다.
+        """
+        per = record.entry * multiplier
+        self._log.warning(
+            "live_runner_unfillable",
+            payload={
+                "trade_id": record.trade_id,
+                "symbol": self._session.instrument.symbol,
+                "equity": str(equity),
+                "leverage": str(record.leverage),
+                "contract_notional": str(per),
+                "size_min": size_min,
+                "note": "계약 1개를 못 산다 — 원장을 거둔다(주문은 안 나갔다). "
+                "자리 예산 < 계약 하나의 명목이면 자본을 키우거나 자리를 줄여야 한다",
+            },
+        )
+        self.placed[record.trade_id] = {
+            "status": "unfillable",
+            "order_id": "",
+            "contracts": "0",
+            "error": f"계약 1개의 명목 {per} 가 자리 예산 {equity} x {record.leverage}배 보다 크다",
+        }
+        self._session.ledger.replace(
+            record.closed(at=record.placed_at, price=record.entry, outcome=Outcome.CANCELLED)
+        )
+        # 세션의 "보유 중" 표시도 놓는다 — 안 놓으면 자리가 영원히 잡혀 다음 신호를 못 받는다.
+        self._session.release()
+
     async def _protect(self, record: TradeRecord) -> None:
         """**지정가 사다리로 이미 산** 매매에 손절·익절만 건다 (2026-08-20 ⓐ).
 
@@ -5508,6 +5555,24 @@ class LiveRunner:
         # 🔴 방향별 사이징 (T59): 세션이 계산한 방향 스케일 노출(record.leverage — 롱3/숏1.02)을
         #    쓴다. ledger.leverage(플랫 3)를 쓰면 숏도 3x 로 나가 검증된 롱3/숏1 이 깨진다.
         leverage = record.leverage
+        # 🔴 **살 수 없으면 원장을 거둔다** (T286 · 2026-09-19 실계좌 실측).
+        #
+        #    계약은 정수이고 계약 하나의 명목이 종목마다 다르다 — Gate 실측에서 DOGE 0.87 ·
+        #    **SOL 111.55 USDT** 로 128배 차이다. 자리 예산이 작거나(실계좌 373 USDT → 자리 62)
+        #    낙폭 브레이크가 크기를 절반으로 줄이면 **SOL 은 계약이 0 개**가 된다.
+        #
+        # ⛔ 그대로 두면 `contracts_for` 가 예외를 내는데, 그때는 **원장에 이미 "보유중" 이 써진
+        #    뒤**다(`Session._enter` 의 `ledger.add`). 주문은 안 나갔으므로 원장은 있고 거래소에는
+        #    없는 상태가 남고, 자가 점검이 그것을 고아로 올린다 — 돈은 안 잃지만 **원장이 거짓말**을
+        #    한다. 그래서 예외를 기다리지 않고 여기서 먼저 접는다.
+        #
+        # ⭐ 크기를 **키워서** 맞추지 않는다. 156차에서 정수 계약의 대가를 쟀더니 4.47년 복리에서
+        #    -0.4% 였다(자본이 커지면 계약 수가 늘어 저절로 사라진다 · SOL 96.9% → 99.8%).
+        #    0.4% 를 쫓아 자리 예산을 넘기면 총 명목 상한 회계가 어긋난다.
+        #    그 거래를 **안 하는 것**이 옳다 — 자리는 다음 신호에 다시 쓴다.
+        if not can_size(equity, leverage, record.entry, multiplier, size_min=size_min):
+            self._skip_unfillable(record, equity, multiplier, size_min)
+            return
         contracts = contracts_for(
             equity,
             leverage,

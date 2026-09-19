@@ -199,6 +199,40 @@ def contracts_for(
     return size
 
 
+def can_size(
+    equity: Decimal,
+    leverage: Decimal,
+    price: Decimal,
+    multiplier: Decimal,
+    *,
+    size_min: int = 1,
+) -> bool:
+    """`contracts_for` 가 계약을 **만들 수 있나** — 던지지 않고 묻는다 (T286 · 2026-09-19).
+
+    Args:
+        equity: 이 자리에 쓸 증거금.
+        leverage: 배율.
+        price: 진입가.
+        multiplier: 계약 승수.
+        size_min: 거래소 최소 계약 수. 0 으로 오는 종목이 있어 **1 을 하한으로 본다**.
+
+    Returns:
+        계약이 1개 이상(그리고 `size_min` 이상) 나오면 True.
+
+    Note:
+        🔴 **호출자가 원장을 쓰기 전에 물어야 한다.** `contracts_for` 의 예외는 옳지만,
+        라이브 경로에서는 그 예외가 **원장에 "보유중" 이 써진 뒤**에 난다 — 주문은 없고
+        기록만 남아 자가 점검이 고아로 올린다. 값을 미리 물어 그 거래를 **안 하면** 된다.
+
+        ⚠️ Gate 는 일부 종목의 `order_size_min` 을 **0 으로 준다**. 0계약은 주문이 아니므로
+        `max(size_min, 1)` 로 본다 — 실측(2026-09-19)에서 SOL 이 그렇게 왔다.
+    """
+    if equity <= 0 or leverage <= 0 or price <= 0 or multiplier <= 0:
+        return False
+    exact = (equity * leverage) / (price * multiplier)
+    return int(exact.to_integral_value(rounding=ROUND_DOWN)) >= max(size_min, 1)
+
+
 def rounding_drift_pct(
     contracts: int,
     equity: Decimal,
