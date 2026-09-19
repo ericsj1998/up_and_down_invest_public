@@ -17,7 +17,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from updown.orchestration.rebalancer.gate import SlotGate
+from updown.orchestration.rebalancer.gate import PositionPort, SlotGate
+
+Ports = dict[str, PositionPort]
 
 AT = datetime(2026, 9, 18, 4, 0, tzinfo=UTC)
 
@@ -56,7 +58,7 @@ class _BlindPort:
         return Decimal(0)
 
 
-def _gate(ports: dict, *, breadth_min: int = 4, breadth_cap: str | None = "3") -> SlotGate:
+def _gate(ports: Ports, *, breadth_min: int = 4, breadth_cap: str | None = "3") -> SlotGate:
     return SlotGate(
         ports=ports,
         slots=6,
@@ -68,9 +70,9 @@ def _gate(ports: dict, *, breadth_min: int = 4, breadth_cap: str | None = "3") -
     )
 
 
-def _full(breaks: int) -> dict:
+def _full(breaks: int) -> Ports:
     """세 종목이 4배씩(합 12 = 상한 2x 꽉 참) 들고 있고, `breaks` 개 종목이 밴드를 뚫은 상태."""
-    ports: dict = {f"H{i}": _Port("4", 1 if i < breaks else 0) for i in range(3)}
+    ports: Ports = {f"H{i}": _Port("4", 1 if i < breaks else 0) for i in range(3)}
     ports |= {f"E{i}": _Port("0", 1 if i + 3 < breaks else 0) for i in range(3)}
     return ports
 
@@ -89,7 +91,7 @@ class TestConditionalCap:
 
     def test_higher_cap_still_binds(self) -> None:
         """올린 상한도 **상한이다** — 넘치면 줄여서 받는다(통째로 푸는 V2f 와 다른 점)."""
-        ports = {f"H{i}": _Port("4", 1) for i in range(4)}  # 합 16 · 폭 4 · 방 18 - 16 = 2
+        ports: Ports = {f"H{i}": _Port("4", 1) for i in range(4)}  # 합 16 · 폭 4 · 방 18 - 16 = 2
         got = _gate(ports).grant(AT, Decimal(6))
         assert got.size == Decimal(2)
         assert got.shrunk == "notional"
@@ -119,7 +121,8 @@ class TestOffByDefault:
 
 class TestBlindPorts:
     def test_ports_that_cannot_count_add_zero(self) -> None:
-        ports: dict = {f"H{i}": _Port("4", 1) for i in range(3)} | {"X": _BlindPort()}
+        ports: Ports = {f"H{i}": _Port("4", 1) for i in range(3)}
+        ports["X"] = _BlindPort()
         gate = _gate(ports)
         assert gate.breadth(AT) == 3
         assert gate.grant(AT, Decimal(4)).blocked == "notional", "폭 3 은 문턱 4 에 못 미친다"
