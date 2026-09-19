@@ -179,21 +179,14 @@ def _brake(raw: object, name: str) -> DrawdownBrake:
         PlaybookConfigError: 문턱이 0~1 밖이거나 배수가 (0, 1] 밖인 경우.
 
     Note:
-        🔴 **강도 0(신규 정지)을 막는다.** 진입이 없으면 실현 잔고가 안 움직여 고점을 회복할 길이
-        사라진다 — 영영 못 빠져나오는 흡수 상태다(143차 실측). 1 초과도 막는다: 낙폭에서 크기를
-        **키우는** 것은 이 장치의 뜻이 아니고, 146차에서 그 방향은 이미 ⛔ 다.
+        범위 검사는 `DrawdownBrake` 자체가 한다 — 저장본 복원 경로도 같은 검사를 지나게
+        하려면 자료형에 붙어 있어야 한다. 여기서는 선언 오류의 **자리 이름**만 붙여 준다.
     """
     body = _mapping(raw, f"{name}.drawdown_brake")
-    at = Decimal(str(body["at"]))
-    scale = Decimal(str(body["scale"]))
-    if not (Decimal(0) < at < Decimal(1)):
-        raise PlaybookConfigError(f"{name}.drawdown_brake.at 는 0~1 사이다 — {at} 는 낙폭이 아니다")
-    if not (Decimal(0) < scale <= Decimal(1)):
-        raise PlaybookConfigError(
-            f"{name}.drawdown_brake.scale 은 0 초과 1 이하다 — {scale} 는 "
-            f"정지(흡수 상태)이거나 키우는 것이다"
-        )
-    return DrawdownBrake(at=at, scale=scale)
+    try:
+        return DrawdownBrake(at=Decimal(str(body["at"])), scale=Decimal(str(body["scale"])))
+    except (ArithmeticError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.drawdown_brake — {exc}") from exc
 
 
 _KNOWN_KEYS = frozenset(field.name for field in fields(Playbook)) - {"playbook_id"}

@@ -13,8 +13,35 @@ SSoT). 펀드 조정자(`orchestration/rebalancer/gate.py`)는 세션들의 사�
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class Grant:
+    """진입 문의 답 — **얼마나 열어도 되나**, 그리고 요청보다 작다면 무엇이 줄였나 (T286).
+
+    Attributes:
+        size: 열어도 되는 노출(명목/증거금). 막혔으면 0.
+        blocked: 막은 사유(깔때기 라벨) — `"slots"` · `"day_halt"` · `"notional"` · `"brake"`.
+            열어도 되면 None.
+        shrunk: 크기를 줄인 장치 — `"brake"` · `"notional"` · `"brake+notional"` · None.
+
+    Note:
+        🔴 **줄인 장치를 따로 적는 이유**(§1-0s 관측 규약 — *새 규칙이 값을 만들면 그 값의
+        분포를 리포트에 싣는다*): 낙폭 브레이크는 진입의 59%, 총 명목 맞춤은 54~63% 에 걸린다.
+        한 카운터에 섞으면 *"상한이 실제로 몇 번 일했나"* 를 되물을 수 없고, 그것이 123차에서
+        "27% 가 조용히 버려지고 있었다" 를 늦게 안 이유다.
+
+        여기(decision)에 두는 이유: 이것은 **판단의 결과**다. 세션은 `EntryGate` 프로토콜만
+        알아야 하므로 문 구현(`orchestration/rebalancer/gate.py`)에 두면 세션이 그것을
+        import 하게 되어 프로토콜의 존재 이유가 사라진다.
+    """
+
+    size: Decimal
+    blocked: str | None = None
+    shrunk: str | None = None
 
 
 def slot_free(open_count: int, slots: int) -> bool:

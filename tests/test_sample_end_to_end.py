@@ -23,6 +23,7 @@ from updown.common.domain.instrument import (
     Market,
     Timeframe,
 )
+from updown.decision.portfolio_rules import Grant
 from updown.orchestration.walkforward import Ledger, Seal, SealedFeed, Session
 from updown.orchestration.walkforward.ledger import Direction, Outcome
 
@@ -121,8 +122,8 @@ def test_the_sample_playbook_walks_end_to_end() -> None:
 class _ShutGate:
     """항상 막는 문 — 세션이 문을 묻고, 막히면 사지 않고 깔때기에 적는지 본다 (T279 P3)."""
 
-    def grant(self, at: datetime, exposure: Decimal) -> tuple[Decimal, str | None]:  # noqa: ARG002
-        return Decimal(0), "test"
+    def grant(self, at: datetime, exposure: Decimal) -> Grant:  # noqa: ARG002
+        return Grant(Decimal(0), "test")
 
 
 def test_entry_gate_blocks_without_deleting_the_setup() -> None:

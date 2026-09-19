@@ -10,7 +10,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from updown.decision.portfolio_rules import drawdown_scale, notional_room
+import pytest
+
+from updown.analysis.playbook.types import DrawdownBrake
+from updown.decision.portfolio_rules import Grant, drawdown_scale, notional_room
 from updown.orchestration.rebalancer.gate import SlotGate
 
 AT = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
@@ -78,19 +81,19 @@ class TestGrantBlocksAllOrNothing:
 
     def test_slots_full_grants_nothing(self) -> None:
         gate = _gate(ports={"A": FakePort(open_count=6)}, slots=6)
-        assert gate.grant(AT, Decimal(4)) == (Decimal(0), "slots")
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal(0), "slots")
 
     def test_day_halt_grants_nothing(self) -> None:
         port = FakePort()
         port.closed = [(AT, True), (AT, True)]
         gate = _gate(ports={"A": port}, slots=6, halt_after_stops=2)
-        assert gate.grant(AT, Decimal(4)) == (Decimal(0), "day_halt")
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal(0), "day_halt")
 
     def test_open_gate_grants_what_was_asked(self) -> None:
-        assert _gate(slots=6).grant(AT, Decimal(4)) == (Decimal(4), None)
+        assert _gate(slots=6).grant(AT, Decimal(4)) == Grant(Decimal(4), None, None)
 
     def test_no_rules_means_no_gate_at_all(self) -> None:
-        assert _gate().grant(AT, Decimal(99)) == (Decimal(99), None)
+        assert _gate().grant(AT, Decimal(99)) == Grant(Decimal(99), None, None)
 
 
 class TestNotionalFit:
@@ -99,7 +102,7 @@ class TestNotionalFit:
     def test_without_fit_the_entry_is_thrown_away(self) -> None:
         # 지금까지의 동작. OOS·Gate 매매의 27% 가 여기서 사라지고 있었다.
         gate = _gate(ports={"A": FakePort(exposure=Decimal(10))}, slots=6, notional_cap=Decimal(2))
-        assert gate.grant(AT, Decimal(4)) == (Decimal(0), "notional")
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal(0), "notional")
 
     def test_with_fit_the_entry_shrinks_to_the_room(self) -> None:
         # 여유 = 2*6 - 10 = 2 → 4 를 요청하면 2 만 받는다.
@@ -110,7 +113,7 @@ class TestNotionalFit:
             notional_fit=True,
             min_grant=Decimal(1),
         )
-        assert gate.grant(AT, Decimal(4)) == (Decimal(2), None)
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal(2), None, "notional")
 
     def test_crumbs_below_the_floor_are_skipped(self) -> None:
         # 🔴 여유가 기준 배율의 1/4 에 못 미치면 줄이지 않는다 — 부스러기 주문은 거래소
@@ -122,7 +125,7 @@ class TestNotionalFit:
             notional_fit=True,
             min_grant=Decimal(1),
         )
-        assert gate.grant(AT, Decimal(4)) == (Decimal(0), "notional")
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal(0), "notional")
 
     def test_already_over_the_cap_is_skipped_not_negative(self) -> None:
         gate = _gate(
@@ -131,7 +134,7 @@ class TestNotionalFit:
             notional_cap=Decimal(2),
             notional_fit=True,
         )
-        assert gate.grant(AT, Decimal(4)) == (Decimal(0), "notional")
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal(0), "notional")
 
     def test_room_to_spare_is_not_shrunk(self) -> None:
         gate = _gate(
@@ -140,7 +143,7 @@ class TestNotionalFit:
             notional_cap=Decimal(2),
             notional_fit=True,
         )
-        assert gate.grant(AT, Decimal(4)) == (Decimal(4), None)
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal(4), None, None)
 
 
 class TestBrakeInsideTheGate:
@@ -153,7 +156,7 @@ class TestBrakeInsideTheGate:
             brake_at=Decimal("0.12"),
             brake_scale=Decimal("0.5"),
         )
-        assert gate.grant(AT, Decimal(4)) == (Decimal(2), None)
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal(2), None, "brake")
 
     def test_no_drawdown_means_full_size(self) -> None:
         gate = _gate(
@@ -162,7 +165,22 @@ class TestBrakeInsideTheGate:
             brake_at=Decimal("0.12"),
             brake_scale=Decimal("0.5"),
         )
-        assert gate.grant(AT, Decimal(4)) == (Decimal(4), None)
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal(4), None, None)
+
+    def test_both_devices_are_named_separately(self) -> None:
+        """🔴 §1-0s — 두 장치가 각각 진입의 절반 넘게 걸린다. 한 칸에 섞으면 못 되묻는다."""
+        gate = _gate(
+            ports={"A": FakePort(exposure=Decimal("10.5"))},
+            slots=6,
+            notional_cap=Decimal(2),
+            notional_fit=True,
+            min_grant=Decimal(1),
+            drawdown=lambda: Decimal("0.20"),
+            brake_at=Decimal("0.12"),
+            brake_scale=Decimal("0.5"),
+        )
+        # 요청 4 → 브레이크로 2 → 여유 1.5 로 다시 잘림.
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal("1.5"), None, "brake+notional")
 
     def test_brake_runs_before_the_cap(self) -> None:
         """🔴 순서가 이 방향이어야 한다 — 뒤집으면 다른 매매법이다.
@@ -179,7 +197,7 @@ class TestBrakeInsideTheGate:
             brake_at=Decimal("0.12"),
             brake_scale=Decimal("0.5"),
         )
-        assert gate.grant(AT, Decimal(4)) == (Decimal(2), None)
+        assert gate.grant(AT, Decimal(4)) == Grant(Decimal(2), None, "brake")
 
     def test_brake_is_read_every_call_not_frozen(self) -> None:
         """낙폭은 틱마다 바뀐다 — 값을 복사해 두면 브레이크가 첫 값에 얼어붙는다."""
@@ -190,11 +208,33 @@ class TestBrakeInsideTheGate:
             brake_at=Decimal("0.12"),
             brake_scale=Decimal("0.5"),
         )
-        assert gate.grant(AT, Decimal(4)) == (Decimal(4), None)
+        assert gate.grant(AT, Decimal(4)).size == Decimal(4)
         now["dd"] = Decimal("0.30")
-        assert gate.grant(AT, Decimal(4)) == (Decimal(2), None)
+        assert gate.grant(AT, Decimal(4)).size == Decimal(2)
         now["dd"] = Decimal(0)  # 회복하면 저절로 풀린다 (따로 해제 규칙이 없다)
-        assert gate.grant(AT, Decimal(4)) == (Decimal(4), None)
+        assert gate.grant(AT, Decimal(4)).size == Decimal(4)
+
+
+class TestTheBrakeDeclarationRefusesAbsurdValues:
+    """🔴 검사가 **자료형에** 붙어 있어야 저장본 복원 경로도 같은 검사를 지난다 (리뷰 M2)."""
+
+    def test_zero_scale_is_an_absorbing_state(self) -> None:
+        # 진입이 없으면 실현 잔고가 안 움직여 고점을 영영 못 회복한다 (143차).
+        with pytest.raises(ValueError, match="흡수"):
+            DrawdownBrake(at=Decimal("0.12"), scale=Decimal(0))
+
+    def test_growing_in_a_drawdown_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="키우는"):
+            DrawdownBrake(at=Decimal("0.12"), scale=Decimal("1.5"))
+
+    def test_percent_instead_of_fraction_is_refused(self) -> None:
+        # `at: 12` 는 12% 가 아니라 1200% 다 — 조용히 통과하면 브레이크가 꺼진 채 돈다.
+        with pytest.raises(ValueError, match="낙폭이 아니다"):
+            DrawdownBrake(at=Decimal(12), scale=Decimal("0.5"))
+
+    def test_the_measured_values_are_accepted(self) -> None:
+        brake = DrawdownBrake(at=Decimal("0.12"), scale=Decimal("0.5"))
+        assert brake.at == Decimal("0.12")
 
 
 class TestBlocksStaysInSyncWithGrant:
@@ -207,9 +247,8 @@ class TestBlocksStaysInSyncWithGrant:
     def test_fit_makes_the_cap_stop_blocking(self) -> None:
         # 줄여서 진입이 켜지면 상한은 더 이상 **막지** 않는다 — 크기만 준다.
         ports = {"A": FakePort(exposure=Decimal(10))}
-        assert _gate(ports=ports, slots=6, notional_cap=Decimal(2)).blocks(AT, Decimal(4)) == (
-            "notional"
-        )
+        plain = _gate(ports=ports, slots=6, notional_cap=Decimal(2))
+        assert plain.blocks(AT, Decimal(4)) == "notional"
         fit = _gate(
             ports=ports,
             slots=6,

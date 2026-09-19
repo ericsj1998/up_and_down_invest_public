@@ -906,11 +906,17 @@ export function FundPanel() {
                   : ""}
                 {/* T286 — 화면에 입력칸이 없는 규칙이다. 여기가 사람이 볼 수 있는 유일한 자리다. */}
                 {selBook.fund_rules.notional_fit ? " · 상한에 걸리면 줄여서 진입" : ""}
-                {selBook.fund_rules.drawdown_brake
-                  ? ` · 낙폭 ${(
-                      Number(selBook.fund_rules.drawdown_brake.at) * 100
-                    ).toFixed(0)}% 아래면 신규 x${selBook.fund_rules.drawdown_brake.scale}`
-                  : ""}
+              </span>
+            )}
+            {/* 🔴 낙폭 브레이크는 **자리 배분과 무관한** 펀드 층 장치라 위 칩 밖에 있다.
+                안에 두면 비중 배분 매매법이 브레이크를 선언해도 화면에 한 글자도 안 나온다. */}
+            {selBook.fund_rules?.drawdown_brake && (
+              <span className="book-chip strong">
+                {`낙폭 ${(
+                  Number(selBook.fund_rules.drawdown_brake.at) * 100
+                ).toFixed(1).replace(/\.0$/, "")}% 아래면 신규 x${
+                  selBook.fund_rules.drawdown_brake.scale
+                }`}
               </span>
             )}
             {(selBook.backtest_note ?? "")

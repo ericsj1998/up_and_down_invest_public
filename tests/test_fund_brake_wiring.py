@@ -95,12 +95,12 @@ class TestAttachGateWiresTheBrake:
             brake_at=Decimal("0.12"),
             brake_scale=Decimal("0.5"),
         )
-        assert gate.grant(AT, Decimal(4)) == (Decimal(4), None)
+        assert gate.grant(AT, Decimal(4)).size == Decimal(4)
         ledger.step(Decimal(1200))
         ledger.step(Decimal(900))  # 고점 1200 대비 25% 낙폭
-        assert gate.grant(AT, Decimal(4)) == (Decimal(2), None)
+        assert gate.grant(AT, Decimal(4)).size == Decimal(2)
         ledger.step(Decimal(1400))  # 고점 회복 → 저절로 풀린다
-        assert gate.grant(AT, Decimal(4)) == (Decimal(4), None)
+        assert gate.grant(AT, Decimal(4)).size == Decimal(4)
 
 
 class TestTheA6DeclarationIsTheMeasuredOne:

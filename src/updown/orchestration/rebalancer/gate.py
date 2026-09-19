@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from updown.decision.portfolio_rules import (
+    Grant,
     day_halted,
     drawdown_scale,
     notional_room,
@@ -104,9 +105,9 @@ class SlotGate:
             `grant` 의 사유만 꺼내 쓴다 — 두 벌로 두면 조용히 갈라진다. 줄여서 진입이 켜져 있으면
             상한에 걸려도 **막지 않으므로** 여기서도 None 이다(크기가 줄 뿐이다).
         """
-        return self.grant(at, exposure)[1]
+        return self.grant(at, exposure).blocked
 
-    def grant(self, at: datetime, exposure: Decimal) -> tuple[Decimal, str | None]:
+    def grant(self, at: datetime, exposure: Decimal) -> Grant:
         """이 크기로 열어도 되는지 묻고 **허용 크기**를 돌려준다 (T286).
 
         Args:
@@ -114,8 +115,7 @@ class SlotGate:
             exposure: 열려는 자리의 **실제** 노출(명목/증거금 = 배율 x 크기 승수).
 
         Returns:
-            `(허용 크기, 막은 사유)`. 열어도 되면 사유가 None 이고, 크기는 요청값 이하다
-            (낙폭 브레이크로 줄거나 총 명목 여유에 맞춰 줄 수 있다). 막히면 `(0, 사유)`.
+            `Grant` — 허용 크기 · 막은 사유 · 줄인 장치.
 
         Note:
             순서는 연구 걸음 `t279_leaderboard_bn.walk` 과 같다 — **자리·정지로 거르고 → 낙폭
@@ -127,23 +127,28 @@ class SlotGate:
         """
         open_count = sum(port.open_count() for port in self.ports.values())
         if not slot_free(open_count, self.slots):
-            return Decimal(0), "slots"
+            return Grant(Decimal(0), "slots")
         exits = [item for port in self.ports.values() for item in port.exits()]
         if day_halted(exits, at, self.halt_after_stops):
-            return Decimal(0), "day_halt"
+            return Grant(Decimal(0), "day_halt")
         want = exposure
+        shrunk: list[str] = []
         if self.drawdown is not None and self.brake_at > 0:
-            want *= drawdown_scale(self.drawdown(), self.brake_at, self.brake_scale)
+            scale = drawdown_scale(self.drawdown(), self.brake_at, self.brake_scale)
+            if scale != 1:
+                want *= scale
+                shrunk.append("brake")
         if exposure > 0 and want <= 0:
             # 브레이크 배수가 0 이면 **흡수 상태**가 된다(진입이 없으면 실현 잔고가 안 움직여
             # 고점을 영영 못 회복한다 · 143차). 선언 파서가 막지만 문에서도 막는다.
             # ⚠️ `exposure > 0` 조건이 있어야 한다 — 크기 없이(0) 묻는 `blocks(at)` 호출을
             #    브레이크로 막으면 안 된다(그 경로는 "자리·정지만 보자" 는 뜻이다).
-            return Decimal(0), "brake"
+            return Grant(Decimal(0), "brake")
         held = sum((port.open_exposure() for port in self.ports.values()), Decimal(0))
         room = notional_room(held, self.slots, self.notional_cap)
         if room is not None and want > room:
             if not self.notional_fit or room <= 0 or room < self.min_grant:
-                return Decimal(0), "notional"
+                return Grant(Decimal(0), "notional")
             want = room
-        return want, None
+            shrunk.append("notional")
+        return Grant(want, None, "+".join(shrunk) if shrunk else None)

@@ -1541,6 +1541,36 @@ async def change_playbook(
     if new_pb == fund.playbook:
         return await _status(fund)
 
+    # 🔴 **계좌 층도 새 매매법의 것으로 바꾼다** (T286 · 2026-09-19). 전에는 진입·청산만 갈아
+    #    끼우고 자리·상한·줄여서 진입·낙폭 브레이크는 **옛 매매법의 값이 그대로 남았다**.
+    #    그러면 a6 로 바꾼 펀드가 a6 의 진입을 하면서 계좌 층이 없는 A0 (MDD 45%)로 돌고,
+    #    화면 라벨과 성적은 A (MDD 33%)를 말한다 — 측정과 현실이 조용히 갈라진다.
+    #    ⚠️ 배율은 안 건드린다 — 사람이 펀드를 만들 때 정한 값이고, 바꾸면 이미 열린 포지션의
+    #       증거금 전제가 달라진다. 선언 배율과 다르면 화면이 그 사실을 보여 준다.
+    declared_new = next((p for p in load_playbooks() if p.playbook_id == new_pb), None)
+    if declared_new is not None:
+        fund.weight_mode = declared_new.weight_mode or fund.weight_mode
+        fund.slots = declared_new.slots
+        fund.halt_after_stops = declared_new.halt_after_stops
+        fund.notional_cap = declared_new.notional_cap if declared_new.slots > 0 else None
+        fund.notional_fit = declared_new.notional_fit and declared_new.slots > 0
+        fund.drawdown_brake = declared_new.drawdown_brake
+        # 🔴 엔진의 자리 수도 같이 — 예산을 `총자본 ÷ 자리` 로 낼지 비중으로 낼지가 여기서 갈린다.
+        #    안 바꾸면 자리 6 을 선언해 놓고 예산은 비중대로 나가 두 모형이 섞인다.
+        fund.coordinator.engine.slots = declared_new.slots
+        _logger.info(
+            "fund_rules_switched",
+            extra={
+                "fund_id": fund.fund_id,
+                "playbook": new_pb,
+                "slots": fund.slots,
+                "notional_cap": None if fund.notional_cap is None else str(fund.notional_cap),
+                "notional_fit": fund.notional_fit,
+                "brake": None if fund.drawdown_brake is None else str(fund.drawdown_brake.at),
+                "note": "매매법을 바꾸면 계좌 층도 그 선언의 것으로 간다 (T286)",
+            },
+        )
+
     await _tick(fund)  # 총자본 갱신 (청산 전 값으로 재배분 · 앵커 포함)
     total = fund.coordinator.engine.balance
     basket = fund.coordinator.engine.basket
@@ -1552,7 +1582,9 @@ async def change_playbook(
             old = fund.handles.get(member.symbol)
             if old:  # 러너만 거둔다 — 거래소 포지션·주문은 그대로 (무중단)
                 await _drop_one(old)
-            share = total * member.weight / wsum
+            # 자리 배분이면 `총자본 ÷ 자리`(합이 총자본을 넘는 것이 의도) · 아니면 비중대로.
+            #    생성·복원 경로와 같은 식이어야 한다 (T286 — 전에는 여기만 비중이었다).
+            share = total / Decimal(fund.slots) if fund.slots > 0 else total * member.weight / wsum
             # old 를 물려주면 새 세션이 그 포지션을 이어받는다 (없으면 새로 시작)
             handle, port = await _spawn_session(
                 member.symbol,

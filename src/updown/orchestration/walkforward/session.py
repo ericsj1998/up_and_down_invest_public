@@ -55,6 +55,7 @@ from updown.common.domain.session import MarketCalendar
 from updown.common.domain.setup import TradeSetup
 from updown.common.domain.trade_tick import BarDelta
 from updown.common.logging.setup import get_logger
+from updown.decision.portfolio_rules import Grant
 from updown.decision.sizing import DEFAULT_LEVERAGE_CAP, capped_stop, protect_stop, size_for
 from updown.marketdata.ingest.delta_store import load_bar_deltas
 from updown.marketdata.ingest.timeframes import interval
@@ -161,7 +162,7 @@ class EntryGate(Protocol):
     적을 뿐이다.
     """
 
-    def grant(self, at: datetime, exposure: Decimal) -> tuple[Decimal, str | None]:
+    def grant(self, at: datetime, exposure: Decimal) -> Grant:
         """이 크기로 열어도 되는지 묻고 **허용 크기**를 받는다.
 
         Args:
@@ -169,8 +170,7 @@ class EntryGate(Protocol):
             exposure: 열려는 자리의 **실제** 노출(명목/증거금 = 배율 x 크기 승수).
 
         Returns:
-            `(허용 크기, 막은 사유)`. 열어도 되면 사유가 None 이고 크기는 요청값 이하다.
-            막히면 `(0, 깔때기 라벨)`.
+            허용 크기 · 막은 사유 · 크기를 줄인 장치.
         """
         ...
 
@@ -2411,27 +2411,34 @@ class Session:
         """
         if self.entry_gate is None:
             return exposure
-        granted, why = self.entry_gate.grant(at, exposure)
-        if why is not None:
+        given = self.entry_gate.grant(at, exposure)
+        if given.blocked is not None:
             self.gate_held += 1
-            self._count(f"gate:{why}")
+            self._count(f"gate:{given.blocked}")
             _logger.info(
                 "session_entry_gate_held",
-                payload={"why": why, "at": at.isoformat(), "note": "펀드 규칙 — 이 봉엔 안 산다"},
+                payload={
+                    "why": given.blocked,
+                    "at": at.isoformat(),
+                    "note": "펀드 규칙 — 이 봉엔 안 산다",
+                },
             )
             return None
-        if granted < exposure:
-            self._count("gate:fit")
+        if given.shrunk is not None:
+            # 🔴 **장치별로 센다** — 브레이크와 총 명목 맞춤은 각각 진입의 절반 넘게 걸린다.
+            #    한 칸에 섞으면 "상한이 실제로 몇 번 일했나" 를 되물을 수 없다 (§1-0s).
+            self._count(f"gate:fit:{given.shrunk}")
             _logger.info(
                 "session_entry_gate_fit",
                 payload={
                     "want": str(exposure),
-                    "granted": str(granted),
+                    "granted": str(given.size),
+                    "by": given.shrunk,
                     "at": at.isoformat(),
-                    "note": "펀드 여유에 맞춰 줄여서 진입 (T286)",
+                    "note": "펀드 규칙에 맞춰 줄여서 진입 (T286)",
                 },
             )
-        return granted
+        return given.size
 
     def _book_of(self, held: TradeRecord) -> Playbook:
         """이 매매를 낸 플레이북 — 귀속 키로 찾는다 (T42 ③).
