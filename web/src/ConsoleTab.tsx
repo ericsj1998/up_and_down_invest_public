@@ -553,9 +553,33 @@ export function ConsoleTab({ openRun }: Props) {
   // ⚠️ **헤드라인 총액은 안 바꾼다.** 그 값은 앵커의 단일 출처이고 펀드 카드의 `잔고` 와 같은
   //    자다 (T285 · [[anchor-total-is-exchange-wallet-total]]). 둘이 달라 보이면 사람은
   //    버그로 읽는다. 그래서 합친 값은 **별도 카드**로 두고 이름이 그 사실을 말하게 한다.
-  const closeout = total === null ? null : total + all.pnl;
+  //
+  // 🔴 **수수료를 뺀다** (사용자 2026-09-19: *"생각보다 살짝 덜 들어왔네? 수수료나 이런것도
+  //    같이 적혀서 정확하게 측정됐으면"*).
+  //
+  //    실측으로 갈랐다 — 예상 307.07 vs 실제 306.90 의 0.17 은 절반씩이었다:
+  //      0.093  프로브와 청산 사이에 가격이 움직임 (예측 불가 · 스냅샷의 숙명)
+  //      0.082  **수수료** (청산 명목 163.7 x 0.0499% — 선언 테이커 0.05% 와 한 자리까지 같다)
+  //    즉 수수료는 예측 가능하므로 화면이 빼 준다. 가격 이동은 못 빼니 "지금 값" 이라고 적는다.
+  //
+  //    청산 명목 = Σ(증거금 x 배율) + 미실현. 진입 명목에 미실현을 더하면 지금 명목이다.
+  const exitNotional = (body?.positions ?? []).reduce(
+    (sum, row) => sum + Number(row.margin ?? 0) * Number(row.leverage ?? 0),
+    0,
+  );
+  // ⚠️ **분수다** (0.0005 = 0.05%) — 100 으로 나누지 않는다. 이름이 그 사실을 말한다.
+  const takerRate = body?.balance.taker_rate
+    ? Number(body.balance.taker_rate)
+    : null;
+  const exitFee =
+    takerRate === null || !all.count
+      ? null
+      : (exitNotional + all.pnl) * takerRate;
+  const closeout = total === null ? null : total + all.pnl - (exitFee ?? 0);
   const closeoutPct =
-    total !== null && total > 0 ? (all.pnl / total) * 100 : null;
+    total !== null && total > 0
+      ? ((all.pnl - (exitFee ?? 0)) / total) * 100
+      : null;
 
   return (
     <div className="page">
@@ -1112,11 +1136,14 @@ export function ConsoleTab({ openRun }: Props) {
                   <>
                     지갑 {num(total)} {all.pnl >= 0 ? "+" : "−"}{" "}
                     {num(Math.abs(all.pnl), 2)} 미실현
+                    {exitFee === null ? "" : ` − ${num(exitFee, 3)} 수수료`}
                     {closeoutPct === null
                       ? ""
                       : ` (${closeoutPct > 0 ? "+" : ""}${closeoutPct.toFixed(2)}%)`}
                     <br />
-                    수수료·슬리피지 전 · 전량 시장가 청산 가정
+                    {exitFee === null
+                      ? "전량 시장가 청산 가정 · 수수료율을 못 읽었다"
+                      : `전량 시장가 청산 · 테이커 ${((takerRate ?? 0) * 100).toFixed(3)}% x 명목 ${num(exitNotional + all.pnl, 1)} · 가격은 지금 값`}
                   </>
                 }
               />

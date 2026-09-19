@@ -1474,6 +1474,13 @@ export type Exchange = {
     total?: string;
     /** 대기 지정가가 잡아 둔 증거금 — 취소되면 available 로 돌아온다. */
     order_margin?: string;
+    /**
+     * 테이커 편도 수수료 — **분수**다 (`0.0005` = 0.05%). 이름이 단위를 말한다: `_pct` 로
+     * 적었다가 화면이 100 으로 한 번 더 나눠 수수료가 0 이 된 적이 있다 (2026-09-19).
+     *
+     * 실측 대조: 명목 163.7 x 0.0005 = 0.08185 vs 장부 0.081567.
+     */
+    taker_rate?: string;
   };
   /** 비어 있으면 포지션이 없다. **고른 종목의 것**이다 — 전체는 `positions`. */
   position: Record<string, string>;
@@ -1680,7 +1687,12 @@ export type FundStatus = {
    * 곧 펀드 · drift = 계좌 안에 펀드 밖 유휴 현금(idle)이 있다. `at` 는 마지막 앵커 시각. 없으면 아직
    * 앵커 전(다른 펀드·단독 판이 같은 거래소를 써서 못 정하면 `skipped` 에 이유).
    */
-  anchor?: { mode: string; at?: string | null; idle?: string; skipped?: string | null } | null;
+  anchor?: {
+    mode: string;
+    at?: string | null;
+    idle?: string;
+    skipped?: string | null;
+  } | null;
   per_symbol: Record<string, FundLeg>;
 };
 
@@ -1954,7 +1966,11 @@ export type FilingsView = {
   reason: string | null;
 };
 
-export function filings(symbol: string, market: string, limit = 12): Promise<FilingsView> {
+export function filings(
+  symbol: string,
+  market: string,
+  limit = 12,
+): Promise<FilingsView> {
   return request(
     `/fundamentals/${encodeURIComponent(symbol)}/filings?market=${encodeURIComponent(market)}&limit=${limit}`,
     undefined,
@@ -2354,7 +2370,10 @@ export function fundList(): Promise<{ funds: FundStatus[] }> {
 
 /** 펀드 생성 폼의 기본값 — 바스켓 SSoT 는 서버의 config/baskets.yml 이다 (T63 ②). */
 /** 기본 바스켓 — `playbook` 을 주면 매매법별 바스켓(`baskets.yml by_playbook`)이 있을 때 그것을 받는다 (2026-09-17). */
-export function fundDefaults(market: string, playbook = ""): Promise<{
+export function fundDefaults(
+  market: string,
+  playbook = "",
+): Promise<{
   playbook: string;
   /** 그 매매법이 **측정된 배율** — 없으면 화면이 알아서 정한다 (2026-08-30). */
   leverage?: string | null;
@@ -2855,11 +2874,23 @@ export type CalendarView = {
   events: CalendarEvent[];
   /** 못 받은 출처 — 이유와 함께. 조용히 빠지지 않는다. */
   failures: Array<{ key: string; label: string; reason: string }>;
-  watch: Array<{ key: string; label: string; note: string; url: string | null }>;
+  watch: Array<{
+    key: string;
+    label: string;
+    note: string;
+    url: string | null;
+  }>;
   /** 오늘 발표 중 값을 아는 것 (지금은 CPI) — 열쇠 → 거시 지표 모양 + `fresh`(발표분이 실렸나). */
   actuals: Record<
     string,
-    { label: string; value: string; unit: string; note: string; as_of: string | null; fresh: boolean }
+    {
+      label: string;
+      value: string;
+      unit: string;
+      note: string;
+      as_of: string | null;
+      fresh: boolean;
+    }
   >;
   /** 서버 시각 — 화면은 자기 시계 대신 이것으로 카운트다운을 잰다. 뉴욕 오프셋은 tz DB(서머타임). */
   clock: {
@@ -2898,7 +2929,10 @@ export type CalendarHistory = {
     /** 전달 대비 변화(%p). */
     delta?: number | null;
     period?: string;
-    moves: Record<string, { first: number; h1: number; h2: number; spike: number }>;
+    moves: Record<
+      string,
+      { first: number; h1: number; h2: number; spike: number }
+    >;
   }>;
   aggregate: {
     n: number;
@@ -2910,6 +2944,13 @@ export type CalendarHistory = {
   reason: string | null;
 };
 
-export function calendarHistory(kind: string, days = 365): Promise<CalendarHistory> {
-  return request(`/calendar/history?kind=${encodeURIComponent(kind)}&days=${days}`, undefined, 30_000);
+export function calendarHistory(
+  kind: string,
+  days = 365,
+): Promise<CalendarHistory> {
+  return request(
+    `/calendar/history?kind=${encodeURIComponent(kind)}&days=${days}`,
+    undefined,
+    30_000,
+  );
 }
