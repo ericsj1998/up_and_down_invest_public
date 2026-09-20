@@ -121,3 +121,41 @@ def bollinger(
                 position[end] = (close[end] - bottom) / span
 
     return BandSeries(middle=middle, upper=upper, lower=lower, width=width, position=position)
+
+
+def closed_above_upper(
+    close: Sequence[Decimal],
+    *,
+    bars: int,
+    period: int = PERIOD,
+    multiple: Decimal = MULTIPLE,
+) -> bool:
+    """최근 `bars` 개 봉 가운데 **종가가 밴드 상단 밖에서 마감한 봉**이 있나 (T289 · 폭의 재료).
+
+    Args:
+        close: 마감된 봉의 종가 열(오름차순). 미마감 봉을 넣으면 미래 참조다 — 부르는 쪽이 거른다.
+        bars: 돌아볼 봉 수(마지막 봉 포함).
+        period: 밴드 기간.
+        multiple: 표준편차 배수.
+
+    Returns:
+        하나라도 있으면 참. 워밍업이 모자라 밴드가 없는 봉은 **거짓으로 센다**
+        (모르는 것을 돌파로 치지 않는다).
+
+    Raises:
+        SeriesError: 기간이 1 미만인 경우.
+        ValueError: `bars` 가 1 미만이거나 배수가 0 이하인 경우.
+
+    Note:
+        176차의 정의 그대로다 — 종가 > SMA(period) + multiple x 모집단 표준편차. 룰 0.3 의 진입 조건
+        (관통 0.75 ATR · 거래량 2배)보다 **느슨하다**: 폭은 "시장이 같이 위로 밀리고 있나" 를
+        세는 것이지 다른 종목의 진입 신호를 세는 것이 아니다.
+    """
+    if bars < 1:
+        raise ValueError(f"돌아볼 봉 수는 1 이상이다: {bars}")
+    tail = close[-(period + bars - 1) :]
+    upper = bollinger(tail, period=period, multiple=multiple).upper
+    return any(
+        top is not None and price > top
+        for price, top in zip(tail[-bars:], upper[-bars:], strict=True)
+    )

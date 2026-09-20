@@ -208,6 +208,45 @@ class DrawdownBrake:
 
 
 @dataclass(frozen=True, slots=True)
+class BreadthCap:
+    """조건부 총 명목 상한 선언 — `min` 종목 이상이 같이 밴드를 뚫었을 때만 상한을 `cap` 으로.
+
+    Attributes:
+        min: 폭 문턱 — 최근 `bars` 개 마감 봉 안에 밴드 상단 밖에서 마감한 **종목 수**(자기 포함).
+            177차: 핵심 6종 중 4.
+        cap: 그때 쓸 총 명목 상한(자본 배수). 기본 상한(`notional_cap`)보다 **커야** 뜻이 있다.
+        bars: 돌아볼 마감 봉 수(돌파봉 포함 · 177차 3).
+
+    Raises:
+        ValueError: 문턱이 1 미만 · 상한이 0 이하 · 봉 수가 1 미만인 경우.
+
+    Note:
+        176차: 폭 4~6 의 건당 EV 는 혼자 돌파의 3~20배인데, 바로 그 순간 상한 2x 가 차서 뒤쪽
+        신호가 가장 많이 깎였다. 177~179차: 폭 ≥ 4 에만 3.0 을 쓰면 세 창 모두 연 ↑ · MDD 동일 ·
+        청산 0 · 급락 주입 파산 0.07%.
+
+        🔴 **통째로 푸는 것이 아니다** — 올린 상한도 상한이라 넘치면 줄여서 받는다. 상한을 없앤
+        V2f 는 파산 1.7% 로 사용자가 거절했다(123·124차).
+        🔴 **검사가 자료형에 붙어 있다** — 저장본 복원 경로도 같은 검사를 지난다
+        (`DrawdownBrake` 와 같다).
+        `cap` 이 기본 상한보다 큰지는 여기서 모른다(기본 상한은 플레이북 필드다) → 선언 파서가 본다.
+    """
+
+    min: int
+    cap: Decimal
+    bars: int = 3
+
+    def __post_init__(self) -> None:
+        """값이 조건부 상한으로서 말이 되는지."""
+        if self.min < 1:
+            raise ValueError(f"폭 문턱은 1 이상이다 — {self.min} 은 늘 참이라 조건이 아니다")
+        if self.cap <= 0:
+            raise ValueError(f"조건부 상한은 0 보다 커야 한다 — {self.cap}")
+        if self.bars < 1:
+            raise ValueError(f"돌아볼 봉 수는 1 이상이다 — {self.bars}")
+
+
+@dataclass(frozen=True, slots=True)
 class Playbook:
     """매매법 하나의 선언.
 
@@ -623,6 +662,13 @@ class Playbook:
     평균 배율의 평평한 판에 -44% 로 졌다(모든 낙폭은 정의상 고점에서 시작한다).
     ⚠️ **배율 4x 에 묶인 값이다**(149차) — 3x 이하에서 켜면 네 창 모두 잔고가 깎인다(짝 0/60).
     배율을 내리면 끄거나 다시 재야 한다.
+    """
+    breadth_cap: BreadthCap | None = None
+    """**조건부 총 명목 상한** — 시장 전체 돌파(폭 ≥ `min`)일 때만 상한을 `cap` 으로 (T289 · 177차).
+
+    None(기본) = 늘 `notional_cap`. `notional_cap` · `slots` 가 있어야 뜻이 있고 `cap` 은 그보다
+    커야 한다(아니면 선언 파서가 거부한다). 폭은 펀드 문이 멤버 세션들에게 물어 센다
+    (`SessionBridge.band_breaks`).
     """
     flip_on_opposite: bool = False
     """반대 방향 후보가 뜨면 보유분을 **즉시 청산**하고 같은 걸음에 뒤집는다 (T46 ①).

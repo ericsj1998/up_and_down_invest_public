@@ -36,7 +36,7 @@ import yaml
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from updown.analysis.playbook.select import default_playbook, load_playbooks
-from updown.analysis.playbook.types import DrawdownBrake
+from updown.analysis.playbook.types import BreadthCap, DrawdownBrake
 from updown.apps.api.admin import instrument_of
 from updown.apps.api.auth import require_market_trade, require_playbook_trade
 from updown.apps.api.walkforward import (
@@ -117,6 +117,11 @@ class Fund:
     입출금 중립이라(입금이 낙폭을 메우지 않는다) T286 의 "정할 것 ②" 가 여기서 해결된다.
     입출금이 없는 백테스트에서는 실현 잔고 낙폭과 **같은 값**이라 143~145차 측정과 같은 자다.
     """
+    breadth_cap: BreadthCap | None = None
+    """조건부 총 명목 상한 — 폭 ≥ `min` 일 때만 상한을 `cap` 으로 (T289). None = 늘 `notional_cap`.
+
+    폭은 문이 멤버 세션들의 `band_breaks` 를 합해 센다 — 돌아볼 봉 수·축은 `_attach_gate` 가 심는다.
+    """
     anchor: AnchorState | None = None
     """자동 앵커 상태 (T285) — 첫 틱에서 잡히고 펀드 파일에 저장된다. None = 아직 앵커 전."""
     anchor_skipped: str | None = None
@@ -166,6 +171,7 @@ def _attach_gate(
     *,
     notional_fit: bool = False,
     brake: DrawdownBrake | None = None,
+    breadth: BreadthCap | None = None,
     leverage: Decimal | None = None,
 ) -> None:
     """P3 진입 문을 펀드의 모든 세션에 끼운다 (T279 83차 · 2026-09-18 · T286 으로 크기까지).
@@ -178,6 +184,7 @@ def _attach_gate(
         notional_cap: 총 명목 상한(자본 배수). None = 없음.
         notional_fit: 상한에 걸릴 때 남은 여유만큼 줄여서 진입할지 (T286).
         brake: 낙폭 브레이크 선언. None = 없음.
+        breadth: 조건부 총 명목 상한 선언 (T289). None = 늘 `notional_cap`.
         leverage: 펀드 선언 배율 — 줄여서 진입의 **허용 하한**(1/4)을 여기서 만든다.
 
     Note:
@@ -201,10 +208,17 @@ def _attach_gate(
         drawdown=(None if brake is None else lambda: ledger.drawdown_pct / Decimal(100)),
         brake_at=(Decimal(0) if brake is None else brake.at),
         brake_scale=(Decimal(1) if brake is None else brake.scale),
+        breadth_min=(0 if breadth is None else breadth.min),
+        breadth_cap=(None if breadth is None else breadth.cap),
     )
     for port in coordinator.ports.values():
         if isinstance(port, SessionBridge):
             port.session.entry_gate = gate
+            # T289 — 폭을 셀 봉 수·축을 세션 다리에 심는다. 선언이 없으면 0 으로 **되돌린다**
+            #   (매매법 전환으로 선언이 사라졌는데 다리가 계속 세면 꺼진 규칙의 흔적이 남는다).
+            books = port.session.playbooks
+            port.breadth_bars = 0 if breadth is None else breadth.bars
+            port.breadth_frame = books[0].timeframe if breadth is not None and books else None
 
 
 def _reattach_gate(fund: Fund) -> None:
@@ -225,6 +239,7 @@ def _reattach_gate(fund: Fund) -> None:
         fund.notional_cap,
         notional_fit=fund.notional_fit,
         brake=fund.drawdown_brake,
+        breadth=fund.breadth_cap,
         leverage=fund.leverage,
     )
 
@@ -380,6 +395,15 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
             None
             if fund.drawdown_brake is None
             else {"at": str(fund.drawdown_brake.at), "scale": str(fund.drawdown_brake.scale)}
+        ),
+        "breadth_cap": (
+            None
+            if fund.breadth_cap is None
+            else {
+                "min": fund.breadth_cap.min,
+                "cap": str(fund.breadth_cap.cap),
+                "bars": fund.breadth_cap.bars,
+            }
         ),
         "basket": {
             "version": basket.version,
@@ -593,6 +617,16 @@ async def _restore_one(data: dict[str, Any]) -> None:
         drawdown_brake = DrawdownBrake(
             at=Decimal(str(brake_body["at"])), scale=Decimal(str(brake_body["scale"]))
         )
+    # ⭐ T289 — 옛 저장본에는 없다(꺼짐). 있으면 그대로 되살린다(저장본이 이긴다 · T286 과 같다).
+    raw_breadth = data.get("breadth_cap")
+    breadth_cap: BreadthCap | None = None
+    if isinstance(raw_breadth, Mapping):
+        breadth_body = cast("Mapping[str, Any]", raw_breadth)
+        breadth_cap = BreadthCap(
+            min=int(breadth_body["min"]),
+            cap=Decimal(str(breadth_body["cap"])),
+            bars=int(breadth_body.get("bars", 3)),
+        )
     total = ledger.balance
     wsum = basket.weight_sum
     # ⭐ T285 — 저장된 몫(seed)·정산 mark. 옛 저장본(없음)은 지금 몫을 seed 로, mark 는 첫 틱이 지금
@@ -659,6 +693,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
         notional_cap,
         notional_fit=notional_fit,
         brake=drawdown_brake,
+        breadth=breadth_cap,
         leverage=leverage,
     )
     fund = Fund(
@@ -676,6 +711,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
         notional_cap=notional_cap,
         notional_fit=notional_fit,
         drawdown_brake=drawdown_brake,
+        breadth_cap=breadth_cap,
     )
     raw_anchor = data.get("anchor")
     if isinstance(raw_anchor, dict):
@@ -776,6 +812,7 @@ async def _create_fund(
     notional_cap: Decimal | None = None,
     notional_fit: bool = False,
     drawdown_brake: DrawdownBrake | None = None,
+    breadth_cap: BreadthCap | None = None,
 ) -> Fund:
     """바스켓 종목마다 세션을 띄우고 조정자로 묶는다.
 
@@ -794,6 +831,7 @@ async def _create_fund(
         notional_cap: 총 명목 상한(자본 배수 · V2 = 2). None = 없음.
         notional_fit: 상한에 걸릴 때 남은 여유만큼 줄여서 진입할지 (T286 · A 구성).
         drawdown_brake: 낙폭 브레이크 선언. None = 없음.
+        breadth_cap: 조건부 총 명목 상한 선언 (T289). None = 없음.
 
     Returns:
         만들어진 펀드. `FUNDS` 에 등록된다.
@@ -841,6 +879,7 @@ async def _create_fund(
         notional_cap,
         notional_fit=notional_fit,
         brake=drawdown_brake,
+        breadth=breadth_cap,
         leverage=leverage,
     )
     fund = Fund(
@@ -858,6 +897,7 @@ async def _create_fund(
         notional_cap=notional_cap,
         notional_fit=notional_fit,
         drawdown_brake=drawdown_brake,
+        breadth_cap=breadth_cap,
     )
     FUNDS[fund.fund_id] = fund
     if weight_mode == "rank60":
@@ -1206,6 +1246,9 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
         else (False if declared_book is None else declared_book.notional_fit)
     )
     drawdown_brake = None if declared_book is None else declared_book.drawdown_brake
+    breadth_cap = (
+        None if declared_book is None else declared_book.breadth_cap
+    )  # T289 · 선언이 유일한 출처
     if mode == "slots" and slots <= 0:
         raise HTTPException(400, "weight_mode 가 slots 인데 slots 가 없다 — 매매법 선언을 본다")
     raw_alt = payload.get("alt_leverage")
@@ -1231,6 +1274,7 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
                 notional_cap=notional_cap if mode == "slots" else None,
                 notional_fit=notional_fit if mode == "slots" else False,
                 drawdown_brake=drawdown_brake,
+                breadth_cap=breadth_cap if mode == "slots" else None,
             )
         )
     except HTTPException:
@@ -1555,6 +1599,7 @@ async def change_playbook(
         fund.notional_cap = declared_new.notional_cap if declared_new.slots > 0 else None
         fund.notional_fit = declared_new.notional_fit and declared_new.slots > 0
         fund.drawdown_brake = declared_new.drawdown_brake
+        fund.breadth_cap = declared_new.breadth_cap if declared_new.slots > 0 else None
         # 🔴 엔진의 자리 수도 같이 — 예산을 `총자본 ÷ 자리` 로 낼지 비중으로 낼지가 여기서 갈린다.
         #    안 바꾸면 자리 6 을 선언해 놓고 예산은 비중대로 나가 두 모형이 섞인다.
         fund.coordinator.engine.slots = declared_new.slots
@@ -1567,6 +1612,7 @@ async def change_playbook(
                 "notional_cap": None if fund.notional_cap is None else str(fund.notional_cap),
                 "notional_fit": fund.notional_fit,
                 "brake": None if fund.drawdown_brake is None else str(fund.drawdown_brake.at),
+                "breadth_cap": None if fund.breadth_cap is None else str(fund.breadth_cap.cap),
                 "note": "매매법을 바꾸면 계좌 층도 그 선언의 것으로 간다 (T286)",
             },
         )

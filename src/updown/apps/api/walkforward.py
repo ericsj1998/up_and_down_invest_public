@@ -3036,6 +3036,16 @@ def _playbooks_all() -> dict[str, Any]:
                             "scale": str(item.drawdown_brake.scale),
                         }
                     ),
+                    # T289 — 조건부 총 명목 상한(폭 ≥ min 일 때만 cap). 화면은 아직 안 그린다.
+                    "breadth_cap": (
+                        None
+                        if item.breadth_cap is None
+                        else {
+                            "min": item.breadth_cap.min,
+                            "cap": str(item.breadth_cap.cap),
+                            "bars": item.breadth_cap.bars,
+                        }
+                    ),
                 },
             }
             # ⭐ 선택창에는 listed 만 (사용자 확정 2026-08-23). 숨긴 것도 id 로는 띄울 수 있다.

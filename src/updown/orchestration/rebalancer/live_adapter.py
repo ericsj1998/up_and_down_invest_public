@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
+from updown.analysis.indicators.bands import closed_above_upper
+from updown.common.domain.instrument import Timeframe
 from updown.orchestration.walkforward import Session
 from updown.orchestration.walkforward.ledger import Actor, Outcome
 
@@ -28,6 +30,10 @@ class SessionBridge:
     session: Session
     _last_trusted: Decimal | None = None
     _last_realized: Decimal | None = None
+    breadth_bars: int = 0
+    """폭을 셀 때 돌아볼 마감 봉 수 (T289). 0 = 이 세션은 폭을 안 센다(`band_breaks` 가 늘 0)."""
+    breadth_frame: Timeframe | None = None
+    """폭을 세는 시간축 — 매매법의 진입 축. None 이면 안 센다."""
 
     @property
     def symbol(self) -> str:
@@ -149,3 +155,23 @@ class SessionBridge:
             ),
             Decimal(0),
         )
+
+    def band_breaks(self, at: datetime) -> int:
+        """이 종목이 최근 몇 봉 안에 **밴드 상단 밖에서 마감**했나 — 1 또는 0 (T289 폭의 입력).
+
+        Args:
+            at: 진입하려는 봉의 시각(UTC). 그 시각까지 **마감된** 봉만 본다.
+
+        Returns:
+            최근 `breadth_bars` 개 마감 봉 중 하나라도 종가가 밴드 상단 밖이면 1, 아니면 0.
+            폭을 안 세는 세션(`breadth_bars` 0 · 축 없음)은 늘 0.
+
+        Note:
+            🔴 **판정용 보기(`feed.judged`)로만 읽는다** — 커서 밖을 보면 미래 참조다(절대 규칙 #5).
+            펀드 문은 멤버들의 이 값을 **합해** 폭을 낸다(`SlotGate.breadth`). 자기 자신도 센다 —
+            연구 정의(176차 `breadth_of`)가 자기 포함이다.
+        """
+        if self.breadth_bars < 1 or self.breadth_frame is None:
+            return 0
+        closes = [bar.close for bar in self.session.feed.judged(self.breadth_frame, at=at)]
+        return 1 if closed_above_upper(closes, bars=self.breadth_bars) else 0

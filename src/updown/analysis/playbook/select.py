@@ -25,6 +25,7 @@ import yaml
 
 from updown.analysis import plugins
 from updown.analysis.playbook.types import (
+    BreadthCap,
     ConflictAction,
     ConflictRule,
     ConflictSide,
@@ -187,6 +188,45 @@ def _brake(raw: object, name: str) -> DrawdownBrake:
         return DrawdownBrake(at=Decimal(str(body["at"])), scale=Decimal(str(body["scale"])))
     except (ArithmeticError, ValueError) as exc:
         raise PlaybookConfigError(f"{name}.drawdown_brake — {exc}") from exc
+
+
+def _breadth(body: Mapping[str, object], name: str) -> BreadthCap:
+    """조건부 총 명목 상한 한 줄 — `{min: 4, cap: "3", bars: 3}` (T289).
+
+    Args:
+        body: 플레이북 선언 전체 — 기본 상한(`notional_cap`)·`slots` 와 **같이** 봐야 한다.
+        name: 오류에 붙일 자리 이름.
+
+    Raises:
+        PlaybookConfigError: 값이 범위 밖이거나, 기본 상한·자리 수가 없거나, `cap` 이 기본 상한
+            이하인 경우.
+
+    Note:
+        🔴 **기본 상한 이하의 `cap` 을 거부한다.** 조용히 받으면 "시장 전체 돌파일 때 오히려
+        조이는" 선언이 되고, 그것은 177차가 잰 것의 반대다. 기본 상한이 없는 선언도 거부한다 —
+        문은 기본 상한이 없으면 조건부 상한도 안 쓰므로(`SlotGate._cap_at`) 적어 놓고 안 도는
+        규칙이 된다.
+    """
+    raw = _mapping(body["breadth_cap"], f"{name}.breadth_cap")
+    try:
+        made = BreadthCap(
+            min=int(str(raw["min"])),
+            cap=Decimal(str(raw["cap"])),
+            bars=int(str(raw.get("bars", 3))),
+        )
+    except (ArithmeticError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.breadth_cap — {exc}") from exc
+    base = body.get("notional_cap")
+    if base is None or not int(str(body.get("slots", 0) or 0)):
+        raise PlaybookConfigError(
+            f"{name}.breadth_cap — notional_cap 과 slots 가 있어야 돈다"
+            f"(없으면 적어 놓고 안 도는 규칙이다)"
+        )
+    if made.cap <= Decimal(str(base)):
+        raise PlaybookConfigError(
+            f"{name}.breadth_cap — cap {made.cap} 은 기본 상한 {base} 보다 커야 한다"
+        )
+    return made
 
 
 _KNOWN_KEYS = frozenset(field.name for field in fields(Playbook)) - {"playbook_id"}
@@ -355,6 +395,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         None
                         if body.get("drawdown_brake") is None
                         else _brake(body["drawdown_brake"], f"playbooks.{name}")
+                    ),
+                    breadth_cap=(
+                        None
+                        if body.get("breadth_cap") is None
+                        else _breadth(body, f"playbooks.{name}")
                     ),
                     label=str(body.get("label", "") or ""),
                     flip_on_opposite=bool(body.get("flip_on_opposite", False)),
