@@ -1910,6 +1910,14 @@ class Session:
                     level = sma([row.close for row in gauge.rows], book.ma_exit_below_long)[-1]
                     if level is not None and gauge.rows[-1].close < level:
                         flipped = True
+            # 🔴 **숏 거울상** (T290) — 판정 TF 종가가 SMA(N) **위로 마감**하면 숏을 전량 정리한다.
+            #    닫힌 삼각수렴 하방 이탈 숏의 청산이다. None 이면 이 가지는 없는 것과 같다.
+            if not flipped and not long and book.ma_exit_above_short is not None:
+                gauge = self._frame(self.playbook.timeframe, None)
+                if gauge is not None and len(gauge.rows) > book.ma_exit_above_short:
+                    level = sma([row.close for row in gauge.rows], book.ma_exit_above_short)[-1]
+                    if level is not None and gauge.rows[-1].close > level:
+                        flipped = True
             # 🔴 **추세가 반대로 선언되기 전까지 보유** (T32 후보 D · `hold_while_trend`).
             #    전환 익절(캔들 패턴)은 15m 되돌림에 일찍 끊는다 — 돌파 롱 11건이 상승장에서
             #    -2.43% 였던 이유다. 이 스위치가 켜지면 캔들 패턴을 안 보고, 1h 주 추세가

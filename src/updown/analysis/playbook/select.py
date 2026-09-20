@@ -346,6 +346,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         if body.get("ma_exit_below_long") is None
                         else int(body["ma_exit_below_long"])
                     ),
+                    ma_exit_above_short=(
+                        None
+                        if body.get("ma_exit_above_short") is None
+                        else int(body["ma_exit_above_short"])
+                    ),
                     entry_ref_ma_gate=(
                         None
                         if body.get("entry_ref_ma_gate") is None
