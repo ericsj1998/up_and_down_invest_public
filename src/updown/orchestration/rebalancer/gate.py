@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -205,3 +205,130 @@ class SlotGate:
         if self.breadth_cap is None or self.breadth_min <= 0 or self.notional_cap is None:
             return self.notional_cap
         return self.breadth_cap if self.breadth(at) >= self.breadth_min else self.notional_cap
+
+
+@runtime_checkable
+class LegSource(Protocol):
+    """다리 보기가 세션 다리에 묻는 것 — 귀속 키로 거른 사실들. `SessionBridge` 가 구현한다."""
+
+    def open_count_of(self, leg: str) -> int:
+        """그 다리(귀속 키)의 보유 중 매매 수."""
+        ...
+
+    def exits_of(self, leg: str) -> list[tuple[datetime, bool]]:
+        """그 다리의 확정된 청산 `(청산 시각, 손절이었나)`."""
+        ...
+
+    def open_exposure_of(self, leg: str) -> Decimal:
+        """그 다리의 보유 중 노출 합."""
+        ...
+
+    def band_breaks(self, at: datetime) -> int:
+        """폭의 입력 — `BreadthAware` 와 같다."""
+        ...
+
+
+@dataclass(slots=True, frozen=True)
+class LegPort:
+    """세션 하나를 **다리 하나의 눈으로** 본 포트 (T291).
+
+    한 세션에 두 다리(1H 롱 · 4H 숏)가 실리면 세션 전체의 열린 수·청산·노출은 두 다리가 섞인
+    값이다. 다리의 문은 자기 매매만 세야 하므로(측정이 다리마다 자리 6 이었다) 귀속 키로 거른다.
+
+    Attributes:
+        source: 원본 세션 다리.
+        leg: 이 다리의 귀속 키(`Playbook.attribution` = `TradeRecord.playbook`).
+        in_scope: 이 종목이 그 다리의 종목 범위 안인가 — 밖이면 폭에 0 을 보탠다.
+    """
+
+    source: LegSource
+    leg: str
+    in_scope: bool = True
+
+    def open_count(self) -> int:
+        """이 다리의 보유 중 매매 수."""
+        return self.source.open_count_of(self.leg)
+
+    def exits(self) -> list[tuple[datetime, bool]]:
+        """이 다리의 확정된 청산."""
+        return self.source.exits_of(self.leg)
+
+    def open_exposure(self) -> Decimal:
+        """이 다리의 보유 중 노출 합."""
+        return self.source.open_exposure_of(self.leg)
+
+    def band_breaks(self, at: datetime) -> int:
+        """폭의 입력 — 다리의 종목 범위 밖이면 0."""
+        return self.source.band_breaks(at) if self.in_scope else 0
+
+
+@dataclass(slots=True)
+class LegPorts(Mapping[str, PositionPort]):
+    """펀드의 포트 매핑을 **다리 하나의 눈으로** 본 매핑 — 원본이 바뀌면 같이 바뀐다 (T291).
+
+    Attributes:
+        ports: 펀드 조정자의 `{종목: 포트}` — 복사하지 않는다(종목을 넣고 빼면 문도 따라간다).
+        leg: 다리의 귀속 키.
+        scope: 다리의 종목 범위.
+    """
+
+    ports: Mapping[str, object]
+    leg: str
+    scope: frozenset[str]
+
+    def __getitem__(self, key: str) -> PositionPort:
+        """그 종목을 이 다리의 눈으로 본 포트 — 다리별 사실을 못 주는 포트는 없는 것으로 친다."""
+        port = self.ports[key]
+        if not isinstance(port, LegSource):
+            raise KeyError(key)
+        return LegPort(port, self.leg, in_scope=key in self.scope)
+
+    def __iter__(self) -> Iterator[str]:
+        """다리별 사실을 줄 수 있는 포트의 종목들."""
+        return (key for key, port in self.ports.items() if isinstance(port, LegSource))
+
+    def __len__(self) -> int:
+        """다리별 사실을 줄 수 있는 포트 수."""
+        return sum(1 for _ in self)
+
+
+@runtime_checkable
+class LegAware(Protocol):
+    """진입을 **낸 다리**를 알려 주면 그 다리의 문으로 답하는 문 (T291)."""
+
+    def grant_for(self, leg: str, at: datetime, exposure: Decimal) -> Grant:
+        """그 다리의 문에 묻는다."""
+        ...
+
+
+@dataclass(slots=True)
+class LegGate:
+    """다리마다 자기 문을 가진 펀드 문 (T291 · 이종 합성 매매법).
+
+    Attributes:
+        legs: `{귀속 키: 그 다리의 SlotGate}`.
+
+    Note:
+        🔴 **모르는 다리는 막는다**(`"leg"`). 신규 진입은 리스크 증가 행동이고 분류가 불분명하면
+        기본값은 보류다(절대 규칙 #8-1). 다리를 모르고 묻는 `grant`/`blocks` 도 같은 이유로 막는다 —
+        세션은 `LegAware` 를 알아보고 `grant_for` 로 묻는다.
+    """
+
+    legs: Mapping[str, SlotGate]
+
+    def grant_for(self, leg: str, at: datetime, exposure: Decimal) -> Grant:
+        """그 다리의 문에 묻는다 — 없는 다리면 막는다."""
+        gate = self.legs.get(leg)
+        if gate is None:
+            return Grant(Decimal(0), "leg")
+        return gate.grant(at, exposure)
+
+    def grant(self, at: datetime, exposure: Decimal) -> Grant:
+        """다리를 모르고 물으면 막는다."""
+        _ = (at, exposure)
+        return Grant(Decimal(0), "leg")
+
+    def blocks(self, at: datetime, exposure: Decimal = Decimal(0)) -> str | None:
+        """다리를 모르고 물으면 막는다."""
+        _ = (at, exposure)
+        return "leg"

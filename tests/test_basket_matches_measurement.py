@@ -71,6 +71,14 @@ class TestListedSlotPlaybooksDeclareTheirUniverse:
             members = cast("list[dict[str, str]]", blocks[book.playbook_id]["members"])
             if book.playbook_id == "private_strategy":
                 continue  # P3·V2 는 자리 3 · 6종이 의도다(자리 경합이 설계의 일부 · 93차)
+            if book.split_legs:
+                # T291 — 다리로 나뉘는 묶음은 **다리마다** 본다. 돌파 다리(A+)는 종목마다 자기 자리,
+                # 삼각 숏 다리는 자리 6 · 18종이 측정 그대로다(T290 — 자리 경합이 설계의 일부).
+                long_leg = cast("list[dict[str, str]]", blocks[book.bundle[0]]["members"])
+                assert book.slots == len(long_leg), (
+                    f"{book.playbook_id}: 돌파 다리가 자리 수와 다르다"
+                )
+                continue
             assert book.slots == len(members), (
                 f"{book.playbook_id}: 자리 {book.slots} 인데 바스켓은 {len(members)}종 — "
                 f"A 구성은 '종목마다 자기 자리' 가 전제다(130차)"

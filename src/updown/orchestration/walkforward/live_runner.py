@@ -1808,9 +1808,13 @@ class LiveRunner:
             first = target = entry - far if short else entry + far
         trade_id = adopted_id(orders)
         cost = load_cost_table(DEFAULT_CONFIG_PATH).for_market(self.instrument.market)
+        # ⭐ T291 — 되읽은 포지션은 **그 방향을 드는 매매법**에 귀속한다. 한 세션에 1H 롱 · 4H 숏
+        #    두 다리가 실리면 대표(롱 다리)로 적힌 숏은 자기 청산 규칙을 잃는다.
+        #    매매법이 하나면 늘 대표다.
+        keeper = self._session.book_for(Direction.SHORT if short else Direction.LONG)
         record = TradeRecord(
             trade_id=trade_id,
-            playbook=self._session.playbook.attribution,
+            playbook=keeper.attribution,
             actor=Actor.ADOPTED,
             direction=Direction.SHORT if short else Direction.LONG,
             placed_at=self._session.cursor,
@@ -1821,7 +1825,9 @@ class LiveRunner:
             planned_target=target,
             outcome=Outcome.OPEN,
             cost_pct=cost.round_trip_pct,
-            leverage=self._session.ledger.leverage,
+            leverage=self._session.leg_leverage.get(
+                keeper.attribution, self._session.ledger.leverage
+            ),
         )
         self._fired("adopt", f"거래소 포지션 {size} 계약을 원장으로 되읽었다")
         self._session.ledger.add(record)

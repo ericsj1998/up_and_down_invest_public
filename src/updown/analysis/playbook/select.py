@@ -230,6 +230,48 @@ def _breadth(body: Mapping[str, object], name: str) -> BreadthCap:
     return made
 
 
+def _split_legs(body: Mapping[str, object], name: str) -> bool:
+    """`split_legs` 한 줄 — 묶음 없이 켜면 거부한다 (T291).
+
+    Args:
+        body: 플레이북 선언 전체 — `bundle` 과 같이 봐야 한다.
+        name: 오류에 붙일 자리 이름.
+
+    Raises:
+        PlaybookConfigError: 구성원이 둘 미만인데 켠 경우 — 적어 놓고 안 도는 규칙이 된다.
+    """
+    wanted = bool(body.get("split_legs", False))
+    if wanted and len(_items(body.get("bundle"), "bundle")) < 2:
+        raise PlaybookConfigError(f"{name}.split_legs — bundle 구성원이 둘 이상이어야 한다")
+    return wanted
+
+
+def _leg_exposure(body: Mapping[str, object], name: str) -> Decimal | None:
+    """`leg_exposure` 한 줄 — 거래소 배율(`leverage`)을 넘는 노출은 거부한다 (T291).
+
+    Args:
+        body: 플레이북 선언 전체 — `leverage` 와 같이 봐야 한다.
+        name: 오류에 붙일 자리 이름.
+
+    Raises:
+        PlaybookConfigError: 0 이하이거나, `leverage` 가 없거나, `leverage` 보다 큰 경우 — 거래소
+            배율보다 큰 명목은 주문이 거절된다.
+    """
+    raw = body.get("leg_exposure")
+    if raw is None:
+        return None
+    try:
+        made = Decimal(str(raw))
+    except ArithmeticError as exc:
+        raise PlaybookConfigError(f"{name}.leg_exposure — {exc}") from exc
+    lever = body.get("leverage")
+    if made <= 0 or lever is None or made > Decimal(str(lever)):
+        raise PlaybookConfigError(
+            f"{name}.leg_exposure {made} — 0 보다 크고 leverage({lever}) 이하여야 한다"
+        )
+    return made
+
+
 def _ref_band(raw: object, name: str) -> RefReturnBand:
     """기준 종목 수익률 띠 한 줄 — `{bars: 360, low: "-0.15", high: "0.15"}` (T290).
 
@@ -384,6 +426,8 @@ def _load_file(target: Path) -> list[Playbook]:
                         else int(body["entry_ref_ma_gate"])
                     ),
                     bundle=tuple(str(x) for x in _items(body.get("bundle"), "bundle")),
+                    split_legs=_split_legs(body, f"playbooks.{name}"),
+                    leg_exposure=_leg_exposure(body, f"playbooks.{name}"),
                     risk_pct=(
                         None if body.get("risk_pct") is None else Decimal(str(body["risk_pct"]))
                     ),

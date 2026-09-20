@@ -27,7 +27,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from updown.analysis.detectors.base import MarketContext
 from updown.analysis.detectors.registry import SetupRegistry
@@ -168,6 +168,29 @@ class EntryGate(Protocol):
         Args:
             at: 진입하려는 봉의 시각(UTC).
             exposure: 열려는 자리의 **실제** 노출(명목/증거금 = 배율 x 크기 승수).
+
+        Returns:
+            허용 크기 · 막은 사유 · 크기를 줄인 장치.
+        """
+        ...
+
+
+@runtime_checkable
+class LegAwareGate(Protocol):
+    """진입을 **낸 다리**를 알려 주면 그 다리의 문으로 답하는 문 (T291 · 이종 합성 매매법).
+
+    한 펀드에 다리가 둘(1H 롱 · 4H 숏)이면 자리·총 명목 상한을 다리마다 따로 센다 — 측정이 그렇게
+    쟀다. 구현은 `orchestration/rebalancer/gate.LegGate`. 이 프로토콜이 없는 문은 지금까지처럼
+    `grant` 로 묻는다.
+    """
+
+    def grant_for(self, leg: str, at: datetime, exposure: Decimal) -> Grant:
+        """그 다리의 문에 묻는다.
+
+        Args:
+            leg: 진입을 낸 매매법의 귀속 키.
+            at: 진입하려는 봉의 시각(UTC).
+            exposure: 열려는 자리의 실제 노출.
 
         Returns:
             허용 크기 · 막은 사유 · 크기를 줄인 장치.
@@ -425,6 +448,13 @@ class Session:
     세션은 다른 종목을 모른다. 펀드가 세션들을 묶을 때 이 문을 끼워 넣고, 세션은 사기 직전에
     "지금 열어도 되나"만 묻는다. None(단일 세션·백테스트·RUN)이면 없는 것과 같다 — 동결 무변화.
     막힌 자리는 지우지 않고 `gate_held` 와 깔때기 `gate:<이유>` 에 센다(§1-0s).
+    """
+    leg_leverage: dict[str, Decimal] = field(default_factory=dict[str, Decimal])
+    """**다리별 노출** `{귀속 키: 배율}` (T291 · 이종 합성 매매법) — 펀드가 끼운다.
+
+    한 세션에 배율이 다른 두 다리(4x 롱 · 2x 숏)가 실리면 세션(거래소) 배율은 하나(큰 쪽)라,
+    작은 다리의 진입 노출을 `원장 배율 → 그 다리 배율` 로 바꿔 적는다. 비어 있으면(단일 세션 ·
+    백테스트 · 지금까지의 모든 펀드) 없는 것과 같다 — 동결 무변화.
     """
     gate_held: int = 0
     """진입 문에 막혀 **안 산** 자리 수 (T279 P3 · 관측 규약 §1-0s)."""
@@ -1749,10 +1779,15 @@ class Session:
             #    ⭐ 상향만 일어난다 (규칙 #3): 후보가 기존 손절보다 유리할 때만 움직인다.
             #    ⚠️ 현재가를 넘는 후보는 버린다 — 손절이 가격 반대편에 서면 즉시 청산이다.
             #    🪞 거울상은 방향 분기 그대로다 — 롱은 저점 위로, 숏은 고점 아래로.
+            # 🔴 **청산 봉은 이 매매를 낸 매매법의 시간축에서 읽는다** (T291 · 2026-09-20).
+            #    세션 대표(`self.playbook`)의 축으로 읽으면 1H 매매법과 4H 매매법을 한 세션에
+            #    묶었을 때 4H 숏이 1H SMA20 에서 닫힌다 — 다른 매매법이 된다. 매매법이 하나거나
+            #    묶음의 축이 같으면(지금까지의 모든 선언) `book.timeframe` 이 대표의 축과 같아
+            #    한 글자도 안 달라진다.
             if book.trail_stops:
-                state = self._frame(self.playbook.timeframe, None)
+                state = self._frame(book.timeframe, None)
                 if state is not None:
-                    swings = find_pivots(state.rows, self.playbook.timeframe)
+                    swings = find_pivots(state.rows, book.timeframe)
                     kind = SwingKind.LOW if long else SwingKind.HIGH
                     picks = [item for item in swings if item.kind is kind]
                     # ⭐ T279 28차 C2 — 연구 엔진 `confirmed_swing_low(i, 10)` 과 같게: 마지막 N 봉
@@ -1787,7 +1822,7 @@ class Session:
             # 🔴 **이동평균 트레일** (T58 B-3). 진입 TF 의 SMA(N) 위로 손절을
             #    끌어올린다 — close>SMA 추세필터의 청산이다. 상향만·현재가 안 넘게 (규칙 #3).
             if book.trail_ma is not None:
-                state = self._frame(self.playbook.timeframe, None)
+                state = self._frame(book.timeframe, None)
                 if state is not None and len(state.rows) > book.trail_ma:
                     level = sma([row.close for row in state.rows], book.trail_ma)[-1]
                     if level is not None:
@@ -1802,7 +1837,7 @@ class Session:
             #    진입 위(숏은 아래)에 새 박스가 서면 손절을 그 박스의 바깥 띠로 올린다.
             #    상향만 일어난다 (규칙 #3) — 기존 손절보다 유리하고 현재가를 안 넘을 때만.
             if book.ratchet_boxes and held.hold_level is not None:
-                state = self._frame(self.playbook.timeframe, None)
+                state = self._frame(book.timeframe, None)
                 anchor = None if state is None else (state.box_low if long else state.box_high)
                 if anchor is not None:
                     beyond = anchor > held.entry if long else anchor < held.entry
@@ -1814,7 +1849,7 @@ class Session:
                         self.ledger.replace(held)
                         self.journal()
             if book.guard_holdings and shot is not None:
-                regime = major_trend(shot.trend, self.playbook.timeframe)
+                regime = major_trend(shot.trend, book.timeframe)
                 opposed = regime is (TrendDirection.DOWN if long else TrendDirection.UP)
                 gained = (bar.close - held.entry) * held.direction.sign / held.entry
                 behind = held.planned_stop < held.entry if long else held.planned_stop > held.entry
@@ -1887,7 +1922,7 @@ class Session:
             #      판정은 봉 마감 기준이다 (절대 규칙 #5).
             adx_gate = book.adx_exit_long if long else book.adx_exit_short
             if not flipped and adx_gate is not None:
-                gauge = self._frame(self.playbook.timeframe, None)
+                gauge = self._frame(book.timeframe, None)
                 if gauge is not None and gauge.rows:
                     power = adx(
                         [row.high for row in gauge.rows],
@@ -1901,7 +1936,7 @@ class Session:
             #    자기 규칙대로 진입한다 (방식 B). 위 약화 청산의 거울상 — 캐리는
             #    추세가 강해지면 나간다.
             if not flipped and long and book.adx_exit_above_long is not None:
-                gauge = self._frame(self.playbook.timeframe, None)
+                gauge = self._frame(book.timeframe, None)
                 if gauge is not None and gauge.rows:
                     power = adx(
                         [row.high for row in gauge.rows],
@@ -1914,7 +1949,7 @@ class Session:
             #    캐리 구간의 정의가 사라졌다. 마감 기준이 측정 의미론이다 (인트라바
             #    SMA 터치 변형은 ETH -16%p 로 기각 · T66 §4j).
             if not flipped and long and book.ma_exit_below_long is not None:
-                gauge = self._frame(self.playbook.timeframe, None)
+                gauge = self._frame(book.timeframe, None)
                 if gauge is not None and len(gauge.rows) > book.ma_exit_below_long:
                     level = sma([row.close for row in gauge.rows], book.ma_exit_below_long)[-1]
                     if level is not None and gauge.rows[-1].close < level:
@@ -1922,7 +1957,7 @@ class Session:
             # 🔴 **숏 거울상** (T290) — 판정 TF 종가가 SMA(N) **위로 마감**하면 숏을 전량 정리한다.
             #    닫힌 삼각수렴 하방 이탈 숏의 청산이다. None 이면 이 가지는 없는 것과 같다.
             if not flipped and not long and book.ma_exit_above_short is not None:
-                gauge = self._frame(self.playbook.timeframe, None)
+                gauge = self._frame(book.timeframe, None)
                 if gauge is not None and len(gauge.rows) > book.ma_exit_above_short:
                     level = sma([row.close for row in gauge.rows], book.ma_exit_above_short)[-1]
                     if level is not None and gauge.rows[-1].close > level:
@@ -1935,7 +1970,7 @@ class Session:
             #
             #    ⛔ 동결 버전(스위치 꺼짐)은 아래 elif 그대로다 — 한 글자도 안 달라진다.
             if book.hold_while_trend and shot is not None:
-                regime = major_trend(shot.trend, self.playbook.timeframe)
+                regime = major_trend(shot.trend, book.timeframe)
                 opposed = regime is (TrendDirection.DOWN if long else TrendDirection.UP)
                 if not flipped and not opposed:
                     return ()
@@ -2410,12 +2445,34 @@ class Session:
             losses += 1
         return CONSEC_CUT_3 if losses >= 3 else CONSEC_CUT_2 if losses >= 2 else Decimal(1)
 
-    def _gate(self, at: datetime, exposure: Decimal) -> Decimal | None:
+    def _leg_scaled(self, exposure: Decimal, leg: str) -> Decimal:
+        """다리 배율이 선언돼 있으면 노출을 **그 다리의 배율 기준으로** 바꾼다 (T291).
+
+        Args:
+            exposure: 원장 배율 기준으로 계산한 노출(크기 승수가 이미 곱해져 있다).
+            leg: 진입을 낸 매매법의 귀속 키.
+
+        Returns:
+            `exposure x 다리 배율 ÷ 원장 배율`. 다리 선언이 없으면 그대로 — 동결 무변화.
+
+        Note:
+            승수(기울기·숏 비중·연속 손절)는 비율이라 그대로 남는다. 다리 배율이 원장 배율보다
+            클 수는 없다(펀드가 세션 배율을 다리들의 최댓값으로 띄운다) — 크면 거래소 배율이 모자라
+            주문이 거절되므로 여기서 원장 배율로 자른다.
+        """
+        wanted = self.leg_leverage.get(leg)
+        base = self.ledger.leverage
+        if wanted is None or base <= 0:
+            return exposure
+        return exposure * min(wanted, base) / base
+
+    def _gate(self, at: datetime, exposure: Decimal, leg: str | None = None) -> Decimal | None:
         """펀드 문에 **이 크기로 열어도 되는지** 묻고 허용 크기를 받는다 (T279 P3 · T286).
 
         Args:
             at: 진입하려는 봉의 시각(UTC).
             exposure: 이 자리에 쓰려는 실제 노출(명목/증거금).
+            leg: 진입을 낸 매매법의 귀속 키 — 다리별 문(`LegAware` · T291)은 이것으로 문을 고른다.
 
         Returns:
             허용 크기(요청값 이하). 막히면 None — 호출자는 이 봉을 건너뛴다.
@@ -2428,7 +2485,12 @@ class Session:
         """
         if self.entry_gate is None:
             return exposure
-        given = self.entry_gate.grant(at, exposure)
+        gate = self.entry_gate
+        given = (
+            gate.grant_for(leg, at, exposure)
+            if leg is not None and isinstance(gate, LegAwareGate)
+            else gate.grant(at, exposure)
+        )
         if given.blocked is not None:
             self.gate_held += 1
             self._count(f"gate:{given.blocked}")
@@ -2456,6 +2518,33 @@ class Session:
                 },
             )
         return given.size
+
+    def book_for(self, direction: Direction) -> Playbook:
+        """그 방향의 포지션을 **맡을 매매법** — 거래소에서 되읽은 포지션의 귀속에 쓴다 (T291).
+
+        Args:
+            direction: 되읽은 포지션의 방향.
+
+        Returns:
+            그 방향의 청산 규칙을 선언한 첫 매매법. 없으면 대표 매매법(지금까지의 동작).
+
+        Note:
+            🔴 한 세션에 1H 롱 다리와 4H 숏 다리가 실려 있는데 되읽은 숏을 대표(롱 다리)로 귀속하면,
+            그 숏은 **자기 청산 규칙(SMA 위 마감) 없이** 손절만 남는다. 방향별 청산 선언이 곧 "이
+            매매법이 그 방향을 든다" 는 표시다. 매매법이 하나면 늘 대표라 동작이 같다.
+        """
+        if len(self.playbooks) < 2:
+            return self.playbook
+        short = direction is Direction.SHORT
+        for item in self.playbooks:
+            mine = (
+                (item.ma_exit_above_short, item.adx_exit_short)
+                if short
+                else (item.ma_exit_below_long, item.adx_exit_long, item.adx_exit_above_long)
+            )
+            if any(value is not None for value in mine):
+                return item
+        return self.playbook
 
     def _book_of(self, held: TradeRecord) -> Playbook:
         """이 매매를 낸 플레이북 — 귀속 키로 찾는다 (T42 ③).
@@ -2660,10 +2749,11 @@ class Session:
         #    분석이 *'이 자리는 평소보다 작게'* 를 판단하고, 수량은 여전히
         #    decision 이 정한다 — 여기서는 곱하기만 한다.
         exposure *= setup.size_mult
+        exposure = self._leg_scaled(exposure, owner)  # T291 — 시장가 경로와 같은 자
         # 🔴 **펀드의 진입 문** (T279 P3 · T286) — 시장가 경로와 같은 자다. 예전에는 `_enter` 가
         #    문을 **선언 배율**로 한 번 물었고 여기서 계산한 실제 노출과 어긋났다(위험 기반
         #    사이징일 때). 이제 각 경로가 **자기가 쓸 크기**로 묻는다.
-        gated = self._gate(bar.ts, exposure)
+        gated = self._gate(bar.ts, exposure, owner)
         if gated is None:
             return
         exposure = gated
@@ -3303,9 +3393,11 @@ class Session:
             exposure *= self._consec_loss_scale()
         # ⭐ 탐지기가 낸 크기 승수 (T81). 기본 1 — 지정가 경로와 같은 규칙이다.
         exposure *= setup.size_mult
+        # ⭐ T291 — 다리 배율이 선언돼 있으면 그 다리의 노출로 바꾼다(없으면 그대로).
+        exposure = self._leg_scaled(exposure, owner)
         # 🔴 **펀드의 진입 문** (T279 P3 · T286) — 자리 · 같은 날 연속 손절 정지 · 총 명목 상한 ·
         #    낙폭 브레이크. 자리를 지우지 않고 진입에서만 거르거나 **크기를 줄인다**.
-        gated = self._gate(bar.ts, exposure)
+        gated = self._gate(bar.ts, exposure, owner)
         if gated is None:
             return None
         exposure = gated

@@ -69,6 +69,15 @@ from updown.orchestration.rebalancer.anchor import (
     manual_flow,
 )
 from updown.orchestration.rebalancer.coordinator import TickReport
+from updown.orchestration.rebalancer.legs import (
+    FundLeg,
+    LegError,
+    declared_legs,
+    leg_gate,
+    legs_on,
+    member_leverage,
+    member_playbook,
+)
 from updown.portfolio.performance import CashFlow, TwrLedger
 
 router = APIRouter(prefix="/rebalancer", tags=["rebalancer"])
@@ -122,6 +131,13 @@ class Fund:
 
     폭은 문이 멤버 세션들의 `band_breaks` 를 합해 센다 — 돌아볼 봉 수·축은 `_attach_gate` 가 심는다.
     """
+    legs: tuple[FundLeg, ...] = ()
+    """**다리** (T291 · 이종 합성 매매법) — 비어 있으면 지금까지의 펀드(문 하나 · 매매법 하나).
+
+    있으면 다리마다 자기 문(자리·상한·브레이크·폭)·자기 종목·자기 배율로 돈다. 그때 위의
+    `halt_after_stops`·`notional_cap`·`notional_fit`·`drawdown_brake`·`breadth_cap` 은 **안 쓰인다**
+    (다리 것이 쓰인다) — `slots` 만 멤버 예산(`총자본 ÷ 자리`)에 쓰인다.
+    """
     anchor: AnchorState | None = None
     """자동 앵커 상태 (T285) — 첫 틱에서 잡히고 펀드 파일에 저장된다. None = 아직 앵커 전."""
     anchor_skipped: str | None = None
@@ -173,6 +189,7 @@ def _attach_gate(
     brake: DrawdownBrake | None = None,
     breadth: BreadthCap | None = None,
     leverage: Decimal | None = None,
+    legs: Sequence[FundLeg] = (),
 ) -> None:
     """P3 진입 문을 펀드의 모든 세션에 끼운다 (T279 83차 · 2026-09-18 · T286 으로 크기까지).
 
@@ -186,6 +203,7 @@ def _attach_gate(
         brake: 낙폭 브레이크 선언. None = 없음.
         breadth: 조건부 총 명목 상한 선언 (T289). None = 늘 `notional_cap`.
         leverage: 펀드 선언 배율 — 줄여서 진입의 **허용 하한**(1/4)을 여기서 만든다.
+        legs: 다리들 (T291). 있으면 위 규칙 인자 대신 **다리마다 자기 문**을 세운다.
 
     Note:
         아무 규칙도 없으면 안 끼운다 — 기존 펀드(비중 배분)는 한 톨도 안 바뀐다. 종목을 나중에
@@ -194,10 +212,27 @@ def _attach_gate(
         🔴 낙폭은 **조정자 장부에서 매번 읽는다**(람다) — 값을 복사해 두면 틱마다 갱신되는 낙폭이
         문에 반영되지 않아 브레이크가 첫 값에 얼어붙는다.
     """
+    ledger = coordinator.engine.ledger
+    if legs:
+        # ⭐ T291 — 다리마다 자기 문. 세션에는 그 종목에 실린 다리의 노출을 심고, 폭은 조건부
+        #    상한을 선언한 다리의 **종목에서만** 센다(측정이 핵심 6종만 셌다 — 18종으로 세면
+        #    폭 ≥ 4 가 흔해진다).
+        split = leg_gate(coordinator.ports, legs, lambda: ledger.drawdown_pct / Decimal(100))
+        for symbol, port in coordinator.ports.items():
+            if not isinstance(port, SessionBridge):
+                continue
+            mine = legs_on(legs, symbol)
+            port.session.entry_gate = split
+            port.session.leg_leverage = {leg.attribution: leg.exposure for leg in mine}
+            wide = next((leg for leg in mine if leg.breadth_cap is not None), None)
+            port.breadth_bars = (
+                0 if wide is None or wide.breadth_cap is None else wide.breadth_cap.bars
+            )
+            port.breadth_frame = None if wide is None else Timeframe(wide.timeframe)
+        return
     if slots <= 0 and halt_after_stops <= 0 and brake is None:
         return
     ports = cast(dict[str, PositionPort], coordinator.ports)
-    ledger = coordinator.engine.ledger
     gate = SlotGate(
         ports=ports,
         slots=slots,
@@ -241,7 +276,35 @@ def _reattach_gate(fund: Fund) -> None:
         brake=fund.drawdown_brake,
         breadth=fund.breadth_cap,
         leverage=fund.leverage,
+        legs=fund.legs,
     )
+
+
+def _member_terms(
+    playbook: str,
+    leverage: Decimal,
+    alt_leverage: Decimal | None,
+    legs: Sequence[FundLeg],
+    symbol: str,
+) -> tuple[str, Decimal]:
+    """그 종목의 세션에 실을 `(매매법 이름, 배율)` — 생성·복원·종목 추가·전환이 공유한다 (T291).
+
+    Args:
+        playbook: 펀드의 매매법 id.
+        leverage: 펀드 배율.
+        alt_leverage: 알트 배율 오버라이드.
+        legs: 펀드의 다리들. 비어 있으면 지금까지의 규칙(펀드 매매법 · `_member_leverage`).
+        symbol: 종목.
+
+    Returns:
+        다리가 있으면 그 종목을 가진 다리들의 `a+b` 와 그 최댓값 배율.
+
+    Raises:
+        LegError: 다리가 있는데 그 종목을 가진 다리가 없다.
+    """
+    if not legs:
+        return playbook, _member_leverage(leverage, alt_leverage, symbol)
+    return member_playbook(legs, symbol), member_leverage(legs, symbol)
 
 
 def _member_leverage(fund_leverage: Decimal, alt_leverage: Decimal | None, symbol: str) -> Decimal:
@@ -405,6 +468,8 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
                 "bars": fund.breadth_cap.bars,
             }
         ),
+        # ⭐ T291 — 다리. 옛 저장본에는 없다(빈 목록 = 지금까지의 펀드). 저장본이 선언을 이긴다.
+        "legs": [leg.to_dict() for leg in fund.legs],
         "basket": {
             "version": basket.version,
             "members": [{"symbol": m.symbol, "weight": str(m.weight)} for m in basket.members],
@@ -627,6 +692,12 @@ async def _restore_one(data: dict[str, Any]) -> None:
             cap=Decimal(str(breadth_body["cap"])),
             bars=int(breadth_body.get("bars", 3)),
         )
+    # ⭐ T291 — 다리. 옛 저장본에는 없다(빈 튜플 = 문 하나 · 매매법 하나 · 지금까지의 경로 그대로).
+    legs = tuple(
+        FundLeg.from_dict(cast("Mapping[str, Any]", item))
+        for item in cast("list[object]", data.get("legs") or [])
+        if isinstance(item, Mapping)
+    )
     total = ledger.balance
     wsum = basket.weight_sum
     # ⭐ T285 — 저장된 몫(seed)·정산 mark. 옛 저장본(없음)은 지금 몫을 seed 로, mark 는 첫 틱이 지금
@@ -655,13 +726,17 @@ async def _restore_one(data: dict[str, Any]) -> None:
             port = SessionBridge(session)
         else:  # 안 도는 종목만 새로 띄운다
             try:
+                member_book, member_lev = _member_terms(
+                    playbook, leverage, alt_leverage, legs, member.symbol
+                )
                 handle, port = await _spawn_session(
                     member.symbol,
                     share,
-                    _member_leverage(leverage, alt_leverage, member.symbol),
-                    playbook,
+                    member_lev,
+                    member_book,
                     market=fund_market,
                     capital=seed,
+                    booked=min(share, capital) if legs else None,
                 )
             except Exception as exc:
                 # ⭐ 한 종목이 못 떠도 펀드는 산다 (2026-09-08 실측: 데모 서버의 펀드가 테스트넷에
@@ -695,8 +770,10 @@ async def _restore_one(data: dict[str, Any]) -> None:
         brake=drawdown_brake,
         breadth=breadth_cap,
         leverage=leverage,
+        legs=legs,
     )
     fund = Fund(
+        legs=legs,
         fund_id=str(data["fund_id"]),
         label=str(data["label"]),
         coordinator=coordinator,
@@ -728,6 +805,7 @@ async def _spawn_session(
     market: str = "GATE",
     adopt_from: str | None = None,
     capital: Decimal | None = None,
+    booked: Decimal | None = None,
 ) -> tuple[str, SessionBridge]:
     """종목 하나에 펀드 멤버 세션을 띄운다 — 생성·바스켓 추가·전략 전환이 공유한다.
 
@@ -743,6 +821,11 @@ async def _spawn_session(
             건너뛴다 — 안 그러면 "쓸 돈 없음" 으로 시작이 거부된다.
         capital: 이 세션이 **받은 몫**(원장 걷기 시작점 `seed_cash` · T285). 없으면 예산과 같다.
             자리 배분에서는 예산(총자본 ÷ 자리)과 몫(총자본 ÷ 종목 수)이 다르다.
+        booked: 판 저장소에 **계좌 예산으로 적을 값** (T291). None 이면 `share`(지금까지의 동작).
+            다리 펀드는 종목(18)이 자리(6)보다 많아 `share` 를 적으면 예산 합이 총자본의 3배가 되고,
+            계좌 예산 검사(`_budget_room`)가 생성을 막고 러너의 `check_funding` 이 전 종목의 진입을
+            막는다. 펀드가 계좌에서 실제로 가진 돈은 몫의 합(= 총자본)이므로 그것을 적는다 —
+            사이징 예산은 아래에서 `share` 로 되돌린다.
 
     Note:
         🔴 예산 파라미터는 `margin` 이다 (없으면 계좌 전액). 그리고 펀드 멤버는 **자기 몫**만
@@ -753,7 +836,7 @@ async def _spawn_session(
         "playbook": playbook,
         "symbol": symbol,
         "market": market,  # T62 P3b — 펀드가 거래소를 고른다 (기본 GATE)
-        "margin": str(share),
+        "margin": str(share if booked is None else booked),
         "leverage": str(leverage),
     }
     if adopt_from:
@@ -813,6 +896,7 @@ async def _create_fund(
     notional_fit: bool = False,
     drawdown_brake: DrawdownBrake | None = None,
     breadth_cap: BreadthCap | None = None,
+    legs: Sequence[FundLeg] = (),
 ) -> Fund:
     """바스켓 종목마다 세션을 띄우고 조정자로 묶는다.
 
@@ -832,6 +916,8 @@ async def _create_fund(
         notional_fit: 상한에 걸릴 때 남은 여유만큼 줄여서 진입할지 (T286 · A 구성).
         drawdown_brake: 낙폭 브레이크 선언. None = 없음.
         breadth_cap: 조건부 총 명목 상한 선언 (T289). None = 없음.
+        legs: 다리들 (T291 · 이종 합성 매매법). 있으면 종목마다 그 종목의 다리만 실은 세션을 띄우고
+            문을 다리별로 세운다. 비어 있으면 지금까지의 경로 그대로다.
 
     Returns:
         만들어진 펀드. `FUNDS` 에 등록된다.
@@ -852,13 +938,17 @@ async def _create_fund(
             # 펀드가 들고 세션은 증분만 보고하므로 예산 합이 커도 장부가 부풀지 않는다 (T285).
             capital = member_share(total_cash, member.weight, wsum)
             share = total_cash / Decimal(slots) if slots > 0 else capital
+            member_book, member_lev = _member_terms(
+                playbook, leverage, alt_leverage, legs, member.symbol
+            )
             handle, port = await _spawn_session(
                 member.symbol,
                 share,
-                _member_leverage(leverage, alt_leverage, member.symbol),
-                playbook,
+                member_lev,
+                member_book,
                 market=market,
                 capital=capital,
+                booked=min(share, capital) if legs else None,
             )
             handles[member.symbol] = handle
             ports[member.symbol] = port
@@ -881,8 +971,10 @@ async def _create_fund(
         brake=drawdown_brake,
         breadth=breadth_cap,
         leverage=leverage,
+        legs=legs,
     )
     fund = Fund(
+        legs=tuple(legs),
         fund_id=f"fund{uuid4().hex[:8]}",
         label=label,
         coordinator=coordinator,
@@ -1137,6 +1229,51 @@ def _default_basket(market: str, playbook: str = "") -> tuple[list[dict[str, str
     return members, sorted(missing)
 
 
+def _leg_scopes() -> dict[str, list[str]]:
+    """매매법별 종목 범위 `{매매법 id: 종목들}` — `config/baskets.yml by_playbook` (T291).
+
+    Returns:
+        파일이 없거나 모양이 다르면 빈 딕셔너리 — 그러면 `declared_legs` 가 "종목 범위가 없다" 로
+        펀드 생성을 막는다(조용히 전 종목으로 풀지 않는다 · 규칙 #8).
+    """
+    try:
+        raw: object = yaml.safe_load(BASKETS_CONFIG.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    by_book = cast("dict[str, Any]", cast("dict[str, Any]", raw).get("by_playbook") or {})
+    out: dict[str, list[str]] = {}
+    for name, body in by_book.items():
+        if isinstance(body, dict):
+            rows = cast("list[dict[str, Any]]", cast("dict[str, Any]", body).get("members") or [])
+            out[str(name)] = [str(row["symbol"]) for row in rows]
+    return out
+
+
+def _legs_for(playbook_id: str, members: Sequence[str]) -> tuple[FundLeg, ...]:
+    """그 매매법이 다리로 나뉘는 묶음이면 다리들을 만든다 — 아니면 빈 튜플 (T291).
+
+    Args:
+        playbook_id: 펀드가 고른 매매법.
+        members: 펀드의 종목.
+
+    Returns:
+        다리들. `split_legs` 가 아닌 매매법(지금까지의 전부)은 빈 튜플.
+
+    Raises:
+        HTTPException: 400 — 다리 선언이 서로 안 맞는다(자리 수·배율·종목 범위).
+    """
+    books = load_playbooks()
+    wrapper = next((item for item in books if item.playbook_id == playbook_id), None)
+    if wrapper is None or not wrapper.split_legs:
+        return ()
+    try:
+        return declared_legs(wrapper, books, _leg_scopes(), members)
+    except LegError as exc:
+        raise HTTPException(400, f"다리 선언이 맞지 않는다: {exc}") from exc
+
+
 @router.get("/defaults")
 async def defaults(market: str = "GATE", playbook: str = "") -> dict[str, Any]:
     """펀드 생성 폼의 기본값 — 화면 하드코딩의 대체 (T63 ②).
@@ -1253,6 +1390,11 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
         raise HTTPException(400, "weight_mode 가 slots 인데 slots 가 없다 — 매매법 선언을 본다")
     raw_alt = payload.get("alt_leverage")
     fallback = fallback_leverage(Market(str(payload.get("market") or Market.GATE.value)))
+    # ⭐ T291 — 다리로 나뉘는 묶음이면 다리를 만든다(선언이 안 맞으면 여기서 400 · 세션 띄우기 전).
+    legs = _legs_for(book, list(basket.symbols))
+    if legs and mode != "slots":
+        # 조용히 문 하나짜리 묶음으로 뜨면 두 다리가 자리·상한을 나눠 써 측정과 다른 매매법이 된다.
+        raise HTTPException(400, "다리로 나뉘는 매매법은 자리 배분(weight_mode: slots)이어야 한다")
     try:
         # 🔴 **브라우저가 끊어도 생성은 끝까지 간다** (2026-09-05 실측). 느린 서버에서 종목당
         #    15초라 6종목이 20초 시한을 넘겼고, 클라이언트가 연결을 닫자(nginx 499) 요청 태스크가
@@ -1275,6 +1417,7 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
                 notional_fit=notional_fit if mode == "slots" else False,
                 drawdown_brake=drawdown_brake,
                 breadth_cap=breadth_cap if mode == "slots" else None,
+                legs=legs,
             )
         )
     except HTTPException:
@@ -1496,6 +1639,14 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
     old_basket = engine.basket
     old = set(old_basket.symbols)
     new = set(new_basket.symbols)
+    # ⭐ T291 — 다리 펀드는 새 종목 구성으로 다리의 종목 범위를 다시 낸다(어느 다리에도 안 속하는
+    #    종목이 있으면 여기서 400 · 아무것도 건드리기 전). 계좌 층 값은 **돌던 다리의 것**을 지킨다.
+    old_legs = fund.legs
+    if old_legs:
+        fresh = {leg.playbook: leg for leg in _legs_for(fund.playbook, list(new_basket.symbols))}
+        if set(fresh) != {leg.playbook for leg in old_legs}:
+            raise HTTPException(400, "이 종목 구성으로는 다리 하나가 비게 된다")
+        fund.legs = tuple(replace(leg, symbols=fresh[leg.playbook].symbols) for leg in old_legs)
 
     # 🔴 순서: **빠진 종목 청산 → 틱 → 새 종목 스폰 → 빠진 세션 정리** (T285 · 2026-09-17).
     #    빠진 종목의 강제 청산 손익이 원장에 적힌 뒤에 틱이 돌아야 그 증분이 총자본에 든다(정리는
@@ -1516,12 +1667,20 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
             if member.symbol in old:
                 continue
             share = report.budgets.get(member.symbol, Decimal(0))
+            member_book, member_lev = _member_terms(
+                fund.playbook, fund.leverage, fund.alt_leverage, fund.legs, member.symbol
+            )
             handle, port = await _spawn_session(
                 member.symbol,
                 share,
-                _member_leverage(fund.leverage, fund.alt_leverage, member.symbol),
-                fund.playbook,
+                member_lev,
+                member_book,
                 market=fund.market,
+                booked=(
+                    min(share, engine.balance * member.weight / new_basket.weight_sum)
+                    if fund.legs
+                    else None
+                ),
             )
             fund.handles[member.symbol] = handle
             fund.coordinator.ports[member.symbol] = port  # type: ignore[index]
@@ -1535,6 +1694,8 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
                 await _close_live_position(handle)
                 await _drop_one(handle)
         engine.basket = old_basket  # 바스켓·예산도 원상 복구
+        fund.legs = old_legs
+        _reattach_gate(fund)
         fund.coordinator.tick()
         raise HTTPException(400, f"종목 추가 실패 (되돌림): {exc}") from exc
 
@@ -1592,6 +1753,13 @@ async def change_playbook(
     #    ⚠️ 배율은 안 건드린다 — 사람이 펀드를 만들 때 정한 값이고, 바꾸면 이미 열린 포지션의
     #       증거금 전제가 달라진다. 선언 배율과 다르면 화면이 그 사실을 보여 준다.
     declared_new = next((p for p in load_playbooks() if p.playbook_id == new_pb), None)
+    # ⭐ T291 — 새 매매법이 다리로 나뉘는 묶음이면 **지금 종목으로** 다리를 낸다(안 맞으면 여기서
+    #    400 · 세션을 건드리기 전). 다리 없는 매매법으로 가면 빈 튜플 — 문 하나로 돌아간다.
+    #    ⚠️ 종목은 안 바꾼다. 핵심 6종 펀드를 18종 매매법으로 바꾸면 숏 다리도 그 6종에서만 돈다 —
+    #       나머지 종목은 바스켓 편집으로 더한다(측정된 우주는 `baskets.yml by_playbook` 에 있다).
+    new_legs = _legs_for(new_pb, list(fund.coordinator.engine.basket.symbols))
+    if new_legs and (declared_new is None or declared_new.weight_mode != "slots"):
+        raise HTTPException(400, "다리로 나뉘는 매매법은 자리 배분(weight_mode: slots)이어야 한다")
     if declared_new is not None:
         fund.weight_mode = declared_new.weight_mode or fund.weight_mode
         fund.slots = declared_new.slots
@@ -1632,13 +1800,17 @@ async def change_playbook(
             #    생성·복원 경로와 같은 식이어야 한다 (T286 — 전에는 여기만 비중이었다).
             share = total / Decimal(fund.slots) if fund.slots > 0 else total * member.weight / wsum
             # old 를 물려주면 새 세션이 그 포지션을 이어받는다 (없으면 새로 시작)
+            member_book, member_lev = _member_terms(
+                new_pb, fund.leverage, fund.alt_leverage, new_legs, member.symbol
+            )
             handle, port = await _spawn_session(
                 member.symbol,
                 share,
-                _member_leverage(fund.leverage, fund.alt_leverage, member.symbol),
-                new_pb,
+                member_lev,
+                member_book,
                 market=fund.market,
                 adopt_from=old,
+                booked=min(share, total * member.weight / wsum) if new_legs else None,
             )
             new_handles[member.symbol] = handle
             new_ports[member.symbol] = port
@@ -1650,6 +1822,7 @@ async def change_playbook(
     # 새 세션의 원장은 0 부터 — 옛 정산 mark 를 물려주면 증분이 틀린다 (T285)
     fund.coordinator.marks = {}
     fund.playbook = new_pb
+    fund.legs = new_legs
     _reattach_gate(fund)  # 갈아 끼운 세션에도
     await _tick(fund)
     return await _status(fund)

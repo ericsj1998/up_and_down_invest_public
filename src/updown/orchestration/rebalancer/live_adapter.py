@@ -156,6 +156,54 @@ class SessionBridge:
             Decimal(0),
         )
 
+    def open_count_of(self, leg: str) -> int:
+        """그 다리(귀속 키)가 낸 보유 중 매매 수 (T291 · 다리별 문의 입력).
+
+        Args:
+            leg: 귀속 키(`Playbook.attribution` = `TradeRecord.playbook`).
+
+        Returns:
+            그 다리의 보유 중 기록 수. `open_count` 와 같은 규칙에 귀속 거름 하나만 더했다.
+        """
+        return sum(
+            1
+            for item in self.session.ledger.records
+            if item.outcome is Outcome.OPEN and item.playbook == leg
+        )
+
+    def exits_of(self, leg: str) -> list[tuple[datetime, bool]]:
+        """그 다리의 확정된 청산 — `exits` 에 귀속 거름을 더했다 (T291).
+
+        Args:
+            leg: 귀속 키.
+
+        Returns:
+            `(청산 시각, 손절이었나)` 목록. 사람 매매는 뺀다.
+        """
+        return [
+            (item.closed_at, item.outcome is Outcome.STOP_LOSS)
+            for item in self.session.ledger.closed
+            if item.closed_at is not None and item.actor is Actor.SYSTEM and item.playbook == leg
+        ]
+
+    def open_exposure_of(self, leg: str) -> Decimal:
+        """그 다리의 보유 중 노출 합 — `open_exposure` 에 귀속 거름을 더했다 (T291).
+
+        Args:
+            leg: 귀속 키.
+
+        Returns:
+            열린 기록의 노출 합(체결 실측이 있으면 실측). 없으면 0.
+        """
+        return sum(
+            (
+                item.filled_leverage if item.filled_leverage is not None else item.leverage
+                for item in self.session.ledger.records
+                if item.outcome is Outcome.OPEN and item.playbook == leg
+            ),
+            Decimal(0),
+        )
+
     def band_breaks(self, at: datetime) -> int:
         """이 종목이 최근 몇 봉 안에 **밴드 상단 밖에서 마감**했나 — 1 또는 0 (T289 폭의 입력).
 

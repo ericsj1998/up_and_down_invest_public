@@ -198,7 +198,11 @@ class TestItIsWiredLikeAnyOtherRule:
     def test_short_ma_exit_is_off_everywhere_else(self) -> None:
         """⛔ None 이면 동결 — 새 청산 가지가 기존 매매법에 켜져 있으면 안 된다."""
         on = {b.playbook_id for b in load_playbooks() if b.ma_exit_above_short is not None}
-        assert on == {"private_strategy", "private_strategy"}
+        assert on == {
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",  # T291 — 같은 매매법에 다리의 계좌 층만 얹은 것
+        }
 
 
 class TestRegimeBand:
@@ -207,7 +211,10 @@ class TestRegimeBand:
     def test_only_the_range_variant_declares_it(self) -> None:
         books = {b.playbook_id: b for b in load_playbooks()}
         on = {name for name, b in books.items() if b.entry_ref_return_band is not None}
-        assert on == {"private_strategy"}, "기존 매매법에 국면 문이 켜지면 안 된다"
+        assert on == {
+            "private_strategy",
+            "private_strategy",  # T291 — 같은 매매법에 다리의 계좌 층만 얹은 것
+        }, "기존 매매법에 국면 문이 켜지면 안 된다"
         assert books["private_strategy"].entry_ref_return_band == RefReturnBand(
             bars=360, low=Decimal("-0.15"), high=Decimal("0.15")
         )
