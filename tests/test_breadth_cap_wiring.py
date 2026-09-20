@@ -39,10 +39,11 @@ class TestDeclaration:
         assert books["private_strategy"].breadth_cap is None
         assert books["private_strategy"].listed is True
 
-    def test_variant_declares_it_and_stays_hidden(self) -> None:
+    def test_variant_declares_it_and_is_listed(self) -> None:
+        """1.12.0 부터 선택창에 올라간다 — 전환은 사용자가 화면에서 한다(2026-09-20)."""
         book = {p.playbook_id: p for p in load_playbooks()}["private_strategy"]
         assert book.breadth_cap == BreadthCap(min=4, cap=Decimal(3), bars=3)
-        assert book.listed is False
+        assert book.listed is True
 
     def test_variant_differs_from_live_only_by_breadth_cap(self) -> None:
         books = {p.playbook_id: p for p in load_playbooks()}
