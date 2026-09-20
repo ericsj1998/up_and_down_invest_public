@@ -16,6 +16,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
 
+import pytest
+
 from updown.analysis.detectors.registry import SetupRegistry, discovered_detectors
 from updown.analysis.detectors.rules import load_rules
 from updown.analysis.detectors.private_strategy import (
@@ -25,7 +27,9 @@ from updown.analysis.detectors.private_strategy import (
     closed_private_strategy,
     private_strategy,
 )
-from updown.analysis.playbook.select import load_playbooks
+from updown.analysis.playbook import select
+from updown.analysis.playbook.select import PlaybookConfigError, load_playbooks
+from updown.analysis.playbook.types import RefReturnBand
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import AssetType, Currency, Instrument, Market, Timeframe
 from updown.common.domain.setup import TradeSetup
@@ -193,5 +197,44 @@ class TestItIsWiredLikeAnyOtherRule:
 
     def test_short_ma_exit_is_off_everywhere_else(self) -> None:
         """⛔ None 이면 동결 — 새 청산 가지가 기존 매매법에 켜져 있으면 안 된다."""
-        on = [b.playbook_id for b in load_playbooks() if b.ma_exit_above_short is not None]
-        assert on == ["private_strategy"]
+        on = {b.playbook_id for b in load_playbooks() if b.ma_exit_above_short is not None}
+        assert on == {"private_strategy", "private_strategy"}
+
+
+class TestRegimeBand:
+    """국면 문(T290) — BTC 60일 수익률이 ±15% **안**일 때만. 선언·경계·거부."""
+
+    def test_only_the_range_variant_declares_it(self) -> None:
+        books = {b.playbook_id: b for b in load_playbooks()}
+        on = {name for name, b in books.items() if b.entry_ref_return_band is not None}
+        assert on == {"private_strategy"}, "기존 매매법에 국면 문이 켜지면 안 된다"
+        assert books["private_strategy"].entry_ref_return_band == RefReturnBand(
+            bars=360, low=Decimal("-0.15"), high=Decimal("0.15")
+        )
+
+    def test_variant_differs_from_the_base_only_by_the_band(self) -> None:
+        books = {b.playbook_id: b for b in load_playbooks()}
+        base, gated = books["private_strategy"], books["private_strategy"]
+        for name in ("setups", "timeframe", "leverage", "ma_exit_above_short", "stop_mode"):
+            assert getattr(base, name) == getattr(gated, name), name
+
+    def test_edges_are_outside(self) -> None:
+        """183차 정의: +15% **이상**은 상승 · -15% **이하**는 하락 — 양 끝은 횡보가 아니다."""
+        band = RefReturnBand(bars=360, low=Decimal("-0.15"), high=Decimal("0.15"))
+        assert band.holds(Decimal(0)) and band.holds(Decimal("0.1499"))
+        assert not band.holds(Decimal("0.15")) and not band.holds(Decimal("-0.15"))
+        assert not band.holds(Decimal("0.4")) and not band.holds(Decimal("-0.3"))
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"bars": 0, "low": "-0.15", "high": "0.15"},  # 봉 수 0
+            {"bars": 360, "low": "0.15", "high": "0.15"},  # 빈 띠
+            {"bars": 360, "low": "0.2", "high": "-0.2"},  # 뒤집힘
+            {"bars": 360, "low": "-0.15"},  # 상한 없음
+            {"bars": "x", "low": "-0.15", "high": "0.15"},
+        ],
+    )
+    def test_bad_declarations_are_refused(self, raw: dict[str, object]) -> None:
+        with pytest.raises(PlaybookConfigError):
+            select._ref_band(raw, "playbooks.x")  # pyright: ignore[reportPrivateUsage]

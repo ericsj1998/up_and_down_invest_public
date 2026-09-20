@@ -4293,7 +4293,16 @@ class LiveRunner:
             ),
             None,
         )
-        if gate_n is None:
+        # T290 — 수익률 띠(국면 문)도 같은 기준 봉에서 나온다. 한 번 받아 둘 다 채운다.
+        band_n = next(
+            (
+                item.entry_ref_return_band.bars
+                for item in self._session.playbooks
+                if item.entry_ref_return_band is not None
+            ),
+            None,
+        )
+        if gate_n is None and band_n is None:
             return
         from dataclasses import replace as _replace
 
@@ -4301,25 +4310,33 @@ class LiveRunner:
         from updown.common.domain.instrument import Timeframe
 
         ref = _replace(self.instrument, symbol="BTC_USDT", name="BTC 무기한 (기준)")
+        need = max(gate_n or 0, band_n or 0)
         try:
             end = datetime.now(UTC)
             rows = await self._quotes.get_candles(
-                ref, Timeframe.H4, end - timedelta(hours=4 * (gate_n + 20)), end
+                ref, Timeframe.H4, end - timedelta(hours=4 * (need + 20)), end
             )
             # 마감봉만 (마지막 봉이 진행 중이면 제외 — 판정은 닫힌 봉으로)
             closed = [c for c in rows if c.ts + timedelta(hours=4) <= end]
-            if len(closed) <= gate_n:
-                raise ValueError(f"기준 캔들 부족: {len(closed)} <= {gate_n}")
+            if len(closed) <= need:
+                raise ValueError(f"기준 캔들 부족: {len(closed)} <= {need}")
             last_ts = closed[-1].ts
             if self._ref_regime_at == last_ts:
                 return  # 같은 4h 봉 — 재계산 불필요 (주입값 유지)
-            level = _sma([c.close for c in closed], gate_n)[-1]
-            if level is None:
-                raise ValueError("기준 SMA 워밍업 미달")
-            self._session.ref_above = closed[-1].close > level
+            if gate_n is not None:
+                level = _sma([c.close for c in closed], gate_n)[-1]
+                if level is None:
+                    raise ValueError("기준 SMA 워밍업 미달")
+                self._session.ref_above = closed[-1].close > level
+            if band_n is not None:
+                before = closed[-1 - band_n].close
+                if before <= 0:
+                    raise ValueError("기준 종가가 0 이하다")
+                self._session.ref_return = closed[-1].close / before - 1
             self._ref_regime_at = last_ts
         except Exception as exc:
             self._session.ref_above = None  # 모름 = 게이트 잠듦 (0.2.0 동작 폴백)
+            self._session.ref_return = None  # 모름 = 국면 문 잠듦 (T290 · 같은 폴백)
             self._ref_regime_at = None
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
 

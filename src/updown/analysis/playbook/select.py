@@ -32,6 +32,7 @@ from updown.analysis.playbook.types import (
     DrawdownBrake,
     Playbook,
     PlaybookRegime,
+    RefReturnBand,
 )
 from updown.common.domain.evidence import Family, Grade
 from updown.common.domain.instrument import MarketGroup, Timeframe
@@ -229,6 +230,27 @@ def _breadth(body: Mapping[str, object], name: str) -> BreadthCap:
     return made
 
 
+def _ref_band(raw: object, name: str) -> RefReturnBand:
+    """기준 종목 수익률 띠 한 줄 — `{bars: 360, low: "-0.15", high: "0.15"}` (T290).
+
+    Args:
+        raw: 선언 값.
+        name: 오류에 붙일 자리 이름.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우(빈 띠 · 봉 수 0).
+    """
+    body = _mapping(raw, f"{name}.entry_ref_return_band")
+    try:
+        return RefReturnBand(
+            bars=int(str(body["bars"])),
+            low=Decimal(str(body["low"])),
+            high=Decimal(str(body["high"])),
+        )
+    except (ArithmeticError, KeyError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_ref_return_band — {exc}") from exc
+
+
 _KNOWN_KEYS = frozenset(field.name for field in fields(Playbook)) - {"playbook_id"}
 """선언에 쓸 수 있는 키 — `Playbook` 의 필드에서 나온다(`playbook_id` 는 매핑의 키다).
 
@@ -350,6 +372,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         None
                         if body.get("ma_exit_above_short") is None
                         else int(body["ma_exit_above_short"])
+                    ),
+                    entry_ref_return_band=(
+                        None
+                        if body.get("entry_ref_return_band") is None
+                        else _ref_band(body["entry_ref_return_band"], f"playbooks.{name}")
                     ),
                     entry_ref_ma_gate=(
                         None

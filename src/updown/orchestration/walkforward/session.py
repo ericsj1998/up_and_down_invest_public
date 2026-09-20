@@ -389,6 +389,15 @@ class Session:
 
     None = 모름(게이트 잠듦 · funding 선례) — sealed 백테스트도 None 이라 0.2.0 동작이다.
     """
+    ref_return: Decimal | None = None
+    """기준 종목(BTC)의 4H `bars` 봉 수익률(비율) — 러너가 주입한다 (T290 국면 문).
+
+    `ref_above` 의 형제다. 봉 수는 선언(`entry_ref_return_band.bars`)이 정한다.
+    🔴 None = 모름 → 띠를 선언한 매매법은 **진입을 보류**한다(`ref_above` 와 반대 — 규칙 #8-1).
+    sealed 백테스트는 러너가 주입하지 않으면 한 건도 안 들어간다 — 재현 도구가 주입한다.
+    """
+    ref_band_held: int = 0
+    """국면 문(`entry_ref_return_band`)이 보류시킨 진입 수 — 관측용 (§1-0s)."""
     ref_gate_held: int = 0
     """F1 게이트로 **안 산** 자리 수 (관측 규약 §1-0s)."""
     recent_funding: Decimal | None = None
@@ -3214,6 +3223,23 @@ class Session:
             _logger.info(
                 "session_entry_ref_gate_held",
                 payload={"note": "기준(BTC) SMA 아래 — 이 봉엔 새로 안 산다 (F1)"},
+            )
+            return None
+        band = chosen.playbook.entry_ref_return_band
+        if band is not None and (self.ref_return is None or not band.holds(self.ref_return)):
+            # T290 — 기준(BTC) 수익률이 띠 밖(상승·하락 국면)이면 새로 안 들어간다. 보유분은 그대로.
+            # 🔴 **모르면(None) 보류한다** — `entry_ref_ma_gate` 는 모르면 잠들지만(검증된 0.2.0
+            #    폴백이 있어서다) 이 매매법은 국면 밖에서 음수라 폴백이 없다. 신규 진입은 리스크
+            #    증가 행동이고 분류가 불분명하면 기본값은 보류다(절대 규칙 #8-1).
+            self.ref_band_held += 1
+            self._count("ref_band")
+            _logger.info(
+                "session_entry_ref_band_held",
+                payload={
+                    "ref_return": None if self.ref_return is None else str(self.ref_return),
+                    "band": [str(band.low), str(band.high)],
+                    "note": "기준(BTC) 수익률이 띠 밖이다 — 이 봉엔 새로 안 들어간다 (T290)",
+                },
             )
             return None
         if funding_blocks(direction, self.recent_funding, chosen.playbook.funding_cap):

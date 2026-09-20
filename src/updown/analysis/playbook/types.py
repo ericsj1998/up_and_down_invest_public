@@ -208,6 +208,51 @@ class DrawdownBrake:
 
 
 @dataclass(frozen=True, slots=True)
+class RefReturnBand:
+    """기준 종목(BTC) 수익률 띠 — 그 안일 때만 새로 들어간다 (T290 · 국면 문).
+
+    Attributes:
+        bars: 기준 종목 4H 마감 봉 몇 개 전과 비교하나(360 = 60일).
+        low: 수익률 하한(비율 · -0.15 = -15%). **초과**여야 한다.
+        high: 수익률 상한(비율 · 0.15). **미만**이어야 한다.
+
+    Raises:
+        ValueError: 봉 수가 1 미만이거나 하한이 상한 이상인 경우.
+
+    Note:
+        닫힌 삼각수렴 하방 이탈 숏은 **횡보 국면에서만** 양수였다 — 하락 -0.45% · 상승 +0.06%
+        (T279 207·208·211차 · 세션 재현). 국면 정의는 183차 그대로다: BTC 직전 60일 수익률이
+        +15% 이상이면 상승 · -15% 이하면 하락 · 그 사이가 횡보.
+
+        🔴 **탐지기가 아니라 세션 진입에서 건다** — 탐지기는 자기 종목 봉만 본다. 값은 러너가
+        주입한다(`Session.ref_return` · `entry_ref_ma_gate` 와 같은 통로). 🔴 다만 **모르면(None)
+        진입을 보류한다** — 이 매매법은 국면 밖에서 음수라 잠들 폴백이 없다(절대 규칙 #8-1).
+    """
+
+    bars: int
+    low: Decimal
+    high: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 띠로서 말이 되는지."""
+        if self.bars < 1:
+            raise ValueError(f"비교 봉 수는 1 이상이다: {self.bars}")
+        if self.low >= self.high:
+            raise ValueError(f"하한 {self.low} 이 상한 {self.high} 이상이다 — 빈 띠다")
+
+    def holds(self, value: Decimal) -> bool:
+        """수익률이 띠 **안**(양 끝 제외)인가.
+
+        Args:
+            value: 기준 종목의 `bars` 봉 수익률(비율).
+
+        Returns:
+            안이면 참.
+        """
+        return self.low < value < self.high
+
+
+@dataclass(frozen=True, slots=True)
 class BreadthCap:
     """조건부 총 명목 상한 선언 — `min` 종목 이상이 같이 밴드를 뚫었을 때만 상한을 `cap` 으로.
 
@@ -507,6 +552,13 @@ class Playbook:
     (T279 200·202차) 살아남은 것은 이 느슨한 청산뿐이다(207·211차). 마감 기준인 이유는 위와 같다.
 
     ⛔ None 이면 동결이다 (§5.6.2) — 기존 매매법은 한 글자도 다르게 돌지 않는다.
+    """
+    entry_ref_return_band: RefReturnBand | None = None
+    """기준 종목(BTC) 수익률이 이 띠 안일 때만 새로 들어간다 (T290 · 국면 문).
+
+    `entry_ref_ma_gate` 의 형제다 — 값은 러너가 주입한다(`Session.ref_return`). 🔴 주입값이
+    **None(모름)이면 진입을 보류한다**(형제와 반대 · 규칙 #8-1). 보유분은 안 건드린다.
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2).
     """
     adx_exit_short: int | None = None
     """숏 거울상 — 진입 TF ADX 가 이 값 이하로 마감하면 숏을 전량 정리한다 (0.7.0).
