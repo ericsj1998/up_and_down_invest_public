@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { boxesOf, edgesOf, hitTest, pnlText, tagsOf } from "./tradeBoxes";
+import { boxesOf, edgesOf, hitTest, openPct, pnlText, tagsOf } from "./tradeBoxes";
 import type { TradeMark } from "./trades";
 
 const STEP = 3600;
@@ -185,5 +185,31 @@ describe("결말 세로줄에 손익이 같이 붙는다", () => {
 
   it("손익을 모르면 결말만 적는다", () => {
     expect(edgesOf(mark({ pnl: null }), STEP)[1]!.label).toBe("청산");
+  });
+});
+
+describe("openPct — 거래소가 못 말해 줄 때의 미실현 (사용자 신고: 차트에 손익이 안 뜬다)", () => {
+  it("원장과 같은 식이다 — (가격 변동% - 비용%) x 배율", () => {
+    // 2.860 → 4.174 = +45.944% · 비용 0.157% · 배율 4 → (45.944 - 0.157) x 4 = 183.15
+    const got = openPct({ entry: 2.86, now: 4.174, side: 1, leverage: 4, costPct: 0.00157 });
+    expect(got).toBeCloseTo(183.15, 1);
+  });
+
+  it("숏은 내려가면 이익이다", () => {
+    expect(openPct({ entry: 100, now: 90, side: -1, leverage: 3, costPct: 0 })).toBeCloseTo(30, 6);
+  });
+
+  it("비용을 모르면 0 으로 본다 — 없는 비용을 지어내지 않는다", () => {
+    expect(openPct({ entry: 100, now: 110, side: 1, leverage: 2 })).toBeCloseTo(20, 6);
+  });
+
+  it("🔴 배율을 모르면 null 이다 — 1 로 가정하면 4배 판의 손익이 1/4 로 보인다", () => {
+    expect(openPct({ entry: 100, now: 110, side: 1 })).toBeNull();
+    expect(openPct({ entry: 100, now: 110, side: 1, leverage: 0 })).toBeNull();
+  });
+
+  it("진입가나 지금가가 망가졌으면 null 이다", () => {
+    expect(openPct({ entry: 0, now: 110, side: 1, leverage: 4 })).toBeNull();
+    expect(openPct({ entry: 100, now: Number.NaN, side: 1, leverage: 4 })).toBeNull();
   });
 });

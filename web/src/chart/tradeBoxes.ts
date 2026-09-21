@@ -108,6 +108,37 @@ export function boxesOf(trade: TradeMark, step: number): TradeBox[] {
 }
 
 /**
+ * **아직 열린 매매의 미실현 %** — 거래소가 못 말해 줄 때 원장과 **같은 식**으로 잰다.
+ *
+ * 🔴 차트 딱지가 '보유중' 만 적고 손익이 없던 이유(사용자 지적 2026-09-21): 원장의 `gain_pct`
+ * 는 청산될 때만 나고, 화면이 쓰던 거래소 미실현은 **거래소 포지션이 있을 때만** 있다.
+ * 페이퍼 · 데모 · 재생 판에는 둘 다 없어서 빈칸이었다.
+ *
+ * ```
+ * 미실현 % = (가격 변동% - cost_pct x 100) x leverage
+ * ```
+ *
+ * ⚠️ **펀딩을 못 뺀다** — 청산 전까지 누적이 안 끝난다. 그래서 이 값은 청산 뒤 값보다 조금
+ * 낙관이다. 그래도 화면이 배율을 스스로 정하는 것보다, 원장과 같은 식을 쓰는 편이 낫다.
+ *
+ * ⚠️ 배율을 모르면 **null** 이다 — 1 로 가정하면 4배 판의 손익이 1/4 로 보인다.
+ */
+export function openPct(args: {
+  entry: number;
+  now: number;
+  side: 1 | -1;
+  leverage?: number | undefined;
+  costPct?: number | undefined;
+}): number | null {
+  const { entry, now, side, leverage, costPct } = args;
+  if (!(entry > 0) || !Number.isFinite(now) || leverage === undefined || !(leverage > 0)) {
+    return null;
+  }
+  const raw = ((now - entry) / entry) * side * 100;
+  return (raw - (costPct ?? 0) * 100) * leverage;
+}
+
+/**
  * 손익을 **금액 + %** 로 (사용자 요구 2026-09-21: *"박스에 손해본 금액과, 진입금액 대비 몇퍼
  * 손해봤는지 나오게 해줘"*).
  *

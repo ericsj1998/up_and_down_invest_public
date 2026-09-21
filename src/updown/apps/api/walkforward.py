@@ -5577,6 +5577,20 @@ def _record(item: TradeRecord | None) -> dict[str, Any] | None:
         # ⚠️ NULL 일 수 있다 — 백테스트·단독 판·옛 행은 이 값을 안 적었다. 그때는 화면이
         #    금액을 안 쓰고 % 만 쓴다 (`margin_used` 참고).
         "margin_used": None if item.margin_used is None else str(item.margin_used),
+        # 🔴 **아직 열린 매매의 손익을 화면이 잴 수 있게** (사용자 지적 2026-09-21: 차트 딱지가
+        #    '보유중' 만 적고 손익이 없다).
+        #
+        #    `gain_pct` 는 청산될 때만 난다. 화면은 거래소 미실현을 먼저 쓰지만, **거래소
+        #    포지션이 없는 판**(페이퍼 · 데모 · 재생 · 조회 실패)에서는 그것도 없다 — 그때
+        #    원장과 **같은 식**으로 떨어질 수 있게 두 값을 같이 낸다:
+        #
+        #        미실현 % = (가격 변동% - cost_pct x 100) x leverage
+        #
+        #    펀딩은 뺄 수 없다(청산 전까지 누적이 안 끝난다) — 그래서 이 값은 청산 뒤 값보다
+        #    **조금 낙관**이다. 두 값이 같은 식을 쓰는 것이, 화면이 배율을 자기 마음대로
+        #    정하는 것보다 낫다.
+        "leverage": float(item.leverage),
+        "cost_pct": float(item.cost_pct),
         "planned_rr": None if planned is None else float(planned),
         "realized_rr": None if realized is None else float(realized),
         "achievement": None if got is None else float(got),

@@ -13,6 +13,7 @@ import { dropSession, probe as runProbe, type Probe } from "./api";
 import { Live } from "./Live";
 import { Chart, type MarkTone } from "./Chart";
 import type { TradeMark } from "./chart/trades";
+import { openPct } from "./chart/tradeBoxes";
 import { IndicatorPanel } from "./chart/IndicatorPanel";
 import { readStance } from "./adx";
 import { useForming } from "./useForming";
@@ -234,15 +235,31 @@ export function PaperTab({ run, home, named }: Props) {
           openedTs: Math.floor(Date.parse(row.opened_at as string) / 1000),
           closedTs: closedTs ?? 0,
           // 닫힌 매매는 원장(비용·펀딩까지 든 값) · 열린 매매는 거래소 미실현.
-          pnl: open ? livePct : row.gain_pct === null ? null : Number(row.gain_pct),
+          // 🔴 거래소 포지션이 없으면(페이퍼·데모·재생·조회 실패) **원장과 같은 식**으로 떨어진다 —
+          //    그러지 않으면 그런 판에서는 딱지가 '보유중' 만 적고 손익이 빈다.
+          pnl: open
+            ? (livePct ??
+              openPct({
+                entry: Number(row.entry),
+                now: exit ?? Number.NaN,
+                side: row.direction === "숏" ? -1 : 1,
+                leverage: row.leverage,
+                costPct: row.cost_pct,
+              }))
+            : row.gain_pct === null
+              ? null
+              : Number(row.gain_pct),
           reason: row.outcome,
           open,
           // ⭐ 손익 **금액**의 분모 — 없으면(백테스트·옛 행) 화면이 % 만 적는다.
-          //    열린 매매는 거래소가 실제로 잡은 증거금을 쓴다(원장 예산과 다를 수 있다).
+          //    열린 매매는 거래소가 실제로 잡은 증거금이 먼저고(진짜 돈), 없으면 원장이 적은
+          //    사이징 기준으로 떨어진다.
           margin: open
             ? Number.isFinite(liveMargin) && liveMargin > 0
               ? liveMargin
-              : null
+              : row.margin_used === null || row.margin_used === undefined
+                ? null
+                : Number(row.margin_used)
             : row.margin_used === null || row.margin_used === undefined
               ? null
               : Number(row.margin_used),

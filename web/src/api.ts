@@ -897,6 +897,14 @@ export type Trade = {
    * **% 만** 쓴다 — 판 예산 같은 다른 돈으로 곱하면 그럴듯한 거짓 금액이 된다.
    */
   margin_used?: string | null;
+  /**
+   * 이 매매의 배율과 왕복 비용 비율 — **아직 열린 매매의 손익**을 화면이 잴 때 쓴다.
+   *
+   * 거래소 미실현이 있으면 그쪽이 먼저다(진짜 돈). 없을 때(페이퍼·데모·재생·조회 실패)
+   * 원장과 같은 식으로 떨어진다: `(가격 변동% - cost_pct x 100) x leverage`.
+   */
+  leverage?: number;
+  cost_pct?: number;
   planned_rr: number | null;
   realized_rr: number | null;
   achievement: number | null;
