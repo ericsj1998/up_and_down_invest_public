@@ -122,3 +122,34 @@ def load_fund_snapshots(root: Path | None = None) -> list[FundSnapshot]:
             )
         )
     return found
+
+
+LEGACY_FUND_MARKET = "GATE"
+"""`market` 칸이 없는 **옛 펀드 파일**의 거래소 — 복원(`_restore_one`)과 같은 기본값이다."""
+
+
+def fund_of_member(symbol: str, market: str, root: Path | None = None) -> str | None:
+    """이 (거래소, 종목)을 **바스켓에 둔 열린 펀드**의 id — 없으면 None (T293).
+
+    Args:
+        symbol: 종목.
+        market: 거래소 코드.
+        root: 펀드 파일 디렉토리. None 이면 `funds_root()`.
+
+    Returns:
+        펀드 id 또는 None.
+
+    Note:
+        🔴 **판 저장소(`wf_runs.meta_json`)에는 펀드 id 가 없다.** 멤버 관계는 펀드 파일에만 있고,
+        메모리의 `FUNDS` 는 복원이 끝나야 찬다 — 그래서 되살아나는 판이 *"나는 펀드 멤버인가"* 를
+        알 방법이 파일뿐이다.
+
+        ⚠️ **핸들이 아니라 (거래소, 종목)으로 맞춘다.** 복원도 그렇게 한다(`_running_handle`) —
+        그 종목으로 도는 세션이 있으면 핸들이 달라도 펀드가 그것을 가져간다. 판정 기준이 복원과
+        다르면 *"막았는데 아무도 안 풀어 주는 판"* 이 생긴다.
+    """
+    for snap in load_fund_snapshots(root):
+        home = LEGACY_FUND_MARKET if snap.market == "?" else snap.market
+        if home == market and symbol in snap.symbols:
+            return snap.fund_id
+    return None

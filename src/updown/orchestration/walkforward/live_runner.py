@@ -1047,6 +1047,17 @@ class LiveRunner:
         센 숫자를 들고 있으면 곧 낡는다.
         """
 
+        self.account_settled: Callable[[], bool] = lambda: True
+        """같은 계좌 판들의 원장 합을 **믿어도 되는가** — API 가 꽂는다 (T293).
+
+        🔴 펀드를 기다리는 멤버의 원장은 아직 격리 전이라 저마다 계좌 전액을 자기 것으로 센다.
+        재기동 직후 실측: *"판 11개 원장 합 4101.46 > 계정 372.86"* = 11 x 계좌. 그 합으로
+        `wallet_drift` 를 외치면 거짓 경보다 — 하나라도 기다리는 중이면 거짓을 돌려준다.
+        """
+
+        self._stack_deferred: dict[str, tuple[TradeRecord, int]] = {}
+        """펀드를 기다리느라 **미뤄 둔 겹침 검사** — 매매 id → (기록, 거래소 계약 수) (T293)."""
+
         self.account_modelled: Callable[[], Decimal | None] = lambda: None
         """같은 계좌 판들의 **원장 평가액 합** — API 가 꽂는다 (2026-08-30).
 
@@ -3696,6 +3707,11 @@ class LiveRunner:
                 # ⇒ 나눌 근거가 없으면 **가를 수 없다고 말한다.** 조용히 넘기면 진짜
                 #   갈림을 놓치고, 그대로 외치면 늘 붉어서 아무도 안 본다 — 둘 다 나쁘다.
                 others = self.peers()
+                # 🔴 T293 — **격리 전 원장으로는 대조하지 않는다.** 펀드를 기다리는 판(나든
+                #    남이든)이
+                #    있으면 합계가 N x 계좌로 부푼다 — 그것은 갈림이 아니라 아직 안 끝난 기동이다.
+                #    ⚠️ 조용히 넘기지 않는다: 기다리는 동안은 `awaiting_fund` 가 말한다 (아래 ⑦-1).
+                settled = self.fund_ready and self._account_settled()
                 # 🔴 **합계로 대조하되, 위험한 방향만 외친다** (2026-08-30).
                 #
                 #    ㄱ) 판이 여럿이면 예전엔 손을 놓고 warn 만 뱉었다. 판을 여럿 띄우는
@@ -3713,7 +3729,9 @@ class LiveRunner:
                 #   ⑧-0 `_pnl_audit` 이 **끝난 매매 단위로** 원장 손익과 거래소 손익을
                 #   맞춰 본다. 잔액은 다 잃은 뒤에야 갈리지만 그쪽은 첫 건에서 갈린다.
                 pooled = self.account_modelled() if others > 0 else modelled
-                if pooled is None:
+                if not settled:
+                    pass
+                elif pooled is None:
                     found.append(
                         {
                             "code": "wallet_unattributable",
@@ -3743,6 +3761,22 @@ class LiveRunner:
                             ),
                         }
                     )
+
+        # ⑦-1 🔴 **펀드를 기다리는 중인가** (T293). 기다리는 동안은 신규 진입이 보류된다 —
+        #    그 사실이 화면에 없으면 *"신호가 났는데 왜 안 들어가지"* 에 답이 없다. 기동 직후
+        #    수십 초는 정상이고(판을 전부 되살린 뒤 펀드가 붙는다), 오래 남으면 펀드 복원이
+        #    실패한 것이다(`funds_pending`).
+        if not self.fund_ready:
+            found.append(
+                {
+                    "code": "awaiting_fund",
+                    "level": "warn",
+                    "detail": (
+                        "펀드가 아직 문·예산을 안 붙였다 — 신규 진입 보류 중 (손절·청산은 돈다). "
+                        "기동 직후가 아닌데 남아 있으면 펀드 복원이 실패한 것이다"
+                    ),
+                }
+            )
 
         # ⑧-0 🔴 **원장이 말하는 손익과 거래소가 말하는 손익** (T20 ①).
         #
@@ -4092,6 +4126,8 @@ class LiveRunner:
         if self.observe_only:
             # ⛔ 관찰 전용이다 — 주문 경로를 통째로 건너뛴다.
             return
+        # T293 — 펀드가 붙었으면, 기다리느라 미뤄 둔 겹침 검사를 이제 맞는 분모로 잰다.
+        await self._recheck_stacked()
         # 🔴 **끝난 기록은 주문이 아니다** (사용자 신고 2026-08-20). `_sent` 는 러너가
         #    뜰 때 **빈 집합**이고 원장은 저장소에서 통째로 되살아난다 — 그래서 재시작
         #    할 때마다 **이미 닫힌 매매 전부**가 "아직 안 보낸 것" 으로 보였다. 실측:
@@ -4262,6 +4298,26 @@ class LiveRunner:
         await self._warn_if_stacked(record, filled)
         await self._arm(record, filled)
 
+    @property
+    def fund_ready(self) -> bool:
+        """이 판의 세션이 신규 진입을 받을 준비가 됐나 — 펀드 멤버가 아니면 늘 참 (T293)."""
+        return bool(getattr(self._session, "fund_ready", True))
+
+    def _account_settled(self) -> bool:
+        """같은 계좌의 판들이 전부 격리를 마쳤나 — 꽂힌 함수가 없으면 참."""
+        probe = getattr(self, "account_settled", None)
+        return True if probe is None else bool(probe())
+
+    async def _recheck_stacked(self) -> None:
+        """펀드를 기다리느라 미뤄 둔 겹침 검사를 **붙은 뒤에** 다시 잰다 (T293)."""
+        waiting = getattr(self, "_stack_deferred", None)
+        if not waiting or not self.fund_ready:
+            return
+        held, self._stack_deferred = dict(waiting), {}
+        for record, filled in held.values():
+            if record.outcome is Outcome.OPEN:
+                await self._warn_if_stacked(record, filled)
+
     async def _warn_if_stacked(self, record: TradeRecord, filled: int) -> None:
         """거래소 포지션이 **이 매매가 연 것보다 큰지** 본다 (2026-08-20).
 
@@ -4286,7 +4342,16 @@ class LiveRunner:
             무방비가 된다 — 더 나쁘다. 말하는 것까지가 이 함수의 일이다 (규칙 #8).
 
             ⚠️ 넉넉히 본다(1.5배). 반올림·부분 체결·다리 비중으로 정확히는 안 맞는다.
+
+            🔴 **펀드를 기다리는 동안은 재지 않고 미룬다** (T293). 계획 계약 수의 분모
+            (`sizing_base`)가 아직 장부값(총자본 ÷ 종목 수)이라 몫(총자본 ÷ 자리)의 1/3 로 나온다 —
+            2026-09-22 재기동에서 멀쩡한 포지션 넷이 *"계획의 3.0배"* 로 찍혔다(33 vs 11 계약).
+            ⛔ 버리지 않는다 — 펀드가 붙은 뒤 첫 걸음에서 **같은 기록을 다시 잰다**
+            (`_recheck_stacked`).
         """
+        if not self.fund_ready:
+            self._stack_deferred[record.trade_id] = (record, filled)
+            return
         spec = await self._contract_spec()
         multiplier = Decimal(str(spec["quanto_multiplier"]))
         try:
@@ -4876,6 +4941,11 @@ class LiveRunner:
             ⭐ 멱등키가 봉 시각 기반이라 재시작·중복 걸음에도 같은 봉엔 한 번만 나간다.
         """
         if self.observe_only or not self._session.playbook.relever:
+            return
+        if not self.fund_ready:
+            # 🔴 T293 — 펀드를 기다리는 동안은 예산이 **장부값**(총자본 ÷ 종목 수)이다. 그 값으로
+            #    되맞추면 멀쩡한 포지션을 몫의 1/3 로 **팔아 내린다.** 틀린 분모로 낸 줄임은
+            #    리스크 감소가 아니라 오작동이다 — 펀드가 붙은 다음 걸음에 맞는 값으로 한다.
             return
         held = next(
             (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),

@@ -194,6 +194,74 @@ def _attach_gate(
     leverage: Decimal | None = None,
     legs: Sequence[FundLeg] = (),
 ) -> None:
+    """진입 문을 끼우고, **그 다음에** 멤버들의 신규 진입을 푼다 (T293).
+
+    Args:
+        coordinator: 펀드 조정자.
+        slots: 동시 보유 상한. 0 = 없음.
+        halt_after_stops: 같은 날 연속 손절 정지 문턱. 0 = 없음.
+        notional_cap: 총 명목 상한(자본 배수). None = 없음.
+        notional_fit: 상한에 걸릴 때 남은 여유만큼 줄여서 진입할지.
+        brake: 낙폭 브레이크 선언.
+        breadth: 조건부 총 명목 상한 선언.
+        leverage: 펀드 선언 배율.
+        legs: 다리들.
+
+    Note:
+        🔴 **순서가 곧 안전장치다.** 문을 끼우다 예외가 나면 아래 줄에 닿지 않으므로 멤버들은
+        `fund_ready=False` 그대로 남는다 — *"문 없이 풀린 판"* 은 만들어지지 않는다.
+
+        ⭐ 규칙이 하나도 없는 펀드(비중 배분 · 문 없음)도 여기서 풀린다. 그 펀드의 멤버도 원장
+        격리(`wallet_start=0` · 몫 예산)는 펀드가 붙어야 생기므로, 기다리는 이유는 같다.
+    """
+    _wire_gate(
+        coordinator,
+        slots,
+        halt_after_stops,
+        notional_cap,
+        notional_fit=notional_fit,
+        brake=brake,
+        breadth=breadth,
+        leverage=leverage,
+        legs=legs,
+    )
+    _release_members(coordinator)
+
+
+def _release_members(coordinator: Coordinator) -> None:
+    """펀드가 붙었다 — 멤버 세션의 `fund_ready` 를 참으로 되돌린다 (T293).
+
+    Args:
+        coordinator: 펀드 조정자. 그 포트의 세션들이 대상이다.
+
+    Note:
+        호출 시점에는 원장 격리(`_restore_one` · `_spawn_session`)와 문(`_wire_gate`)이 둘 다 끝나
+        있다 — 이 함수를 부르는 자리는 `_attach_gate` 하나다.
+    """
+    freed: list[str] = []
+    for symbol, port in coordinator.ports.items():
+        if isinstance(port, SessionBridge) and not port.session.fund_ready:
+            port.session.fund_ready = True
+            freed.append(symbol)
+    if freed:
+        _events.info(
+            "fund_members_released",
+            payload={"members": sorted(freed), "note": "문·예산이 붙었다 — 신규 진입을 받는다"},
+        )
+
+
+def _wire_gate(
+    coordinator: Coordinator,
+    slots: int,
+    halt_after_stops: int,
+    notional_cap: Decimal | None = None,
+    *,
+    notional_fit: bool = False,
+    brake: DrawdownBrake | None = None,
+    breadth: BreadthCap | None = None,
+    leverage: Decimal | None = None,
+    legs: Sequence[FundLeg] = (),
+) -> None:
     """P3 진입 문을 펀드의 모든 세션에 끼운다 (T279 83차 · 2026-09-18 · T286 으로 크기까지).
 
     Args:
@@ -721,6 +789,57 @@ def _running_handle(symbol: str, market: str = "GATE") -> str | None:
     return None
 
 
+def rebind_member(handle: str) -> str | None:
+    """되살아난 멤버 세션을 **펀드에 다시 묶는다** — 감시견 부활 뒤 (T293).
+
+    Args:
+        handle: 새로 뜬 세션의 핸들.
+
+    Returns:
+        묶은 펀드 id. 어느 펀드의 멤버도 아니면 None.
+
+    Note:
+        🔴 감시견(`_revive`)은 같은 키로 **새 Session** 을 만든다. 펀드의 포트는 죽은 세션을 계속
+        감싸고 있어서, 전에는 되살아난 멤버가 **문도 예산 격리도 없이** 다음 재기동까지 돌았다
+        (T293 지도에서 찾은 같은 부류의 결함 — 창이 100초가 아니라 무기한이다).
+
+        원장 격리는 복원(`_restore_one`)과 같은 식이다: 지갑 0 · 채우기 끔 · 예산 = 몫.
+        `seed_cash` 는 **죽은 세션의 값을 물려받는다** — 저장된 몫이고, 지금 몫으로 덮으면 원장
+        걷기가 과거 매매를 새 시작점에서 다시 센다(T285).
+    """
+    live = SESSIONS.get(handle)
+    if live is None:
+        return None
+    session = live.session
+    symbol, market = session.instrument.symbol, session.instrument.market.value
+    for fund in FUNDS.values():
+        if fund.market != market or symbol not in fund.coordinator.ports:
+            continue
+        old = fund.coordinator.ports[symbol]
+        if isinstance(old, SessionBridge) and old.session is session:
+            _reattach_gate(fund)  # 이미 같은 세션이다 — 문만 다시 확인하고 푼다
+            return fund.fund_id
+        engine = fund.coordinator.engine
+        total, wsum = engine.balance, engine.basket.weight_sum
+        weight = next((m.weight for m in engine.basket.members if m.symbol == symbol), None)
+        if weight is None:
+            continue
+        share = total / Decimal(fund.slots) if fund.slots > 0 else total * weight / wsum
+        session.ledger.wallet_start = Decimal(0)
+        session.ledger.refill = False
+        if isinstance(old, SessionBridge):
+            session.ledger.seed_cash = old.session.ledger.seed_cash
+        else:
+            session.ledger.seed_cash = total * weight / wsum
+        session.ledger.margin_budget = share
+        fund.coordinator.ports[symbol] = SessionBridge(session)  # type: ignore[index]
+        fund.handles[symbol] = handle
+        _reattach_gate(fund)
+        _save_fund(fund)
+        return fund.fund_id
+    return None
+
+
 async def _restore_one(data: dict[str, Any]) -> None:
     """저장 딕셔너리 하나에서 펀드를 되살린다 — 세션 재기동 + TWR 이어받기.
 
@@ -914,6 +1033,10 @@ async def _spawn_session(
     }
     if adopt_from:
         payload["run_key"] = adopt_from
+    # 🔴 T293 — 펀드가 띄우는 판은 **문이 붙을 때까지 신규 진입을 안 받는다.** 문은 멤버를 전부
+    #    띄운 뒤에야 붙는데(`_attach_gate`), 러너는 `_live_start` 안에서 바로 돌기 시작한다 —
+    #    18종을 띄우는 동안 먼저 뜬 판이 문 없이 걷는 창이 생성 때도 똑같이 있다.
+    payload["fund_member"] = "fund"
     result = await _live_start(payload, reviving=bool(adopt_from))
     handle = str(result["session_id"])
     session = SESSIONS[handle].session

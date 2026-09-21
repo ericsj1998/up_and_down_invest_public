@@ -112,6 +112,7 @@ from updown.orchestration.reconcile import (
     covered,
     partial_fills,
 )
+from updown.orchestration.report.funds import fund_of_member
 from updown.orchestration.walkforward import (
     Funding,
     Ledger,
@@ -759,6 +760,44 @@ async def live_start(
         포지션에 들어가 있는 것이 정상이라 그 검사를 받으면 안 된다.
     """
     return await _live_start(payload, request=request)
+
+
+def _awaited_fund(
+    payload: Mapping[str, Any], symbol: str, market: str, *, reviving: bool
+) -> str | None:
+    """이 판이 **기다려야 할 펀드** — 없으면 None (T293).
+
+    Args:
+        payload: 판 시작 요청. 펀드가 직접 띄울 때는 `fund_member` 에 펀드 이름을 넣는다.
+        symbol: 종목.
+        market: 거래소 코드.
+        reviving: 되살리는 판인가(재기동 · 감시견). 사람이 콘솔에서 새로 띄우는 판은 파일을 안
+            본다 —
+            펀드 바스켓에 있는 종목을 단독으로 띄웠다고 막으면 아무도 풀어 주지 않는다.
+
+    Returns:
+        펀드 id(또는 펀드가 준 이름). 단독 판이면 None.
+
+    Note:
+        두 길이다 — ① 펀드가 지금 띄우는 판(`_spawn_session` 이 표시를 넣는다: 문은 멤버를 전부
+        띄운 뒤에 붙으므로 생성 때도 같은 창이 있다) ② 재기동·감시견이 되살리는 판(펀드 파일에
+        이 종목이 있나 본다 — 메모리의 `FUNDS` 는 복원이 끝나야 찬다).
+
+        ⚠️ 파일을 못 읽으면 None 이다(단독 판으로 본다). 여기서 던지면 **판이 아예 안 뜨고**
+        되살아난 포지션의 손절 관리가 멈춘다 — 그쪽이 더 나쁘다.
+    """
+    named = payload.get("fund_member")
+    if named:
+        return str(named)
+    if not reviving:
+        return None
+    try:
+        return fund_of_member(symbol, market)
+    except Exception as exc:
+        _logger.warning(
+            "fund_membership_unreadable", payload={"symbol": symbol, "error": str(exc)[:160]}
+        )
+        return None
 
 
 async def _live_start(
@@ -1471,6 +1510,12 @@ async def _live_start(
         (item.ledger.equity for item in LIVE_RUNNERS.values() if item.instrument.market is market),
         Decimal(0),
     )
+    # 🔴 T293 — **합계를 믿어도 되는가.** 펀드를 기다리는 판의 원장은 아직 격리 전이라 저마다
+    #    계좌 전액을 자기 것으로 센다(실측: "판 11개 원장 합 4101.46 > 계정 372.86" = 11 x 계좌).
+    #    그 합으로 `wallet_drift` 를 외치면 거짓 경보다 — 하나라도 기다리는 중이면 대조를 미룬다.
+    runner.account_settled = lambda: all(
+        item.fund_ready for item in LIVE_RUNNERS.values() if item.instrument.market is market
+    )
     # 🔴 걸음마다 원장을 DB 에 다시 쓴다 — 파일 저널이 하던 그대로다.
     # 🔴 **주문 표식(run_key)은 보통 handle 이지만, 무중단 전략 전환 때는 넘겨받는다**
     #    (T61). 새 전략 세션이 앞 세션의 거래소 포지션을 `adopt` 하려면, 그 포지션에
@@ -1499,6 +1544,22 @@ async def _live_start(
     swept += await sweep_zombie_entries(orders, instrument, why="판 시작", keep=kept_ids)
     runner.swept = [f"{item.kind} {item.at}" for item in swept]
 
+    # 🔴 T293 — **펀드 멤버는 펀드가 문을 붙일 때까지 신규 진입을 안 받는다.** 러너를 띄우기
+    #    **전에** 꽂는다: 이 줄 아래에서 `runner.run()` 이 바로 돌기 시작하고, 펀드 복원은 판을
+    #    전부 되살린 뒤에야 온다(실측 약 100초 · 복원이 실패하면 120초 단위로 더).
+    #    손절·청산은 안 막는다 — `_may_enter` 에만 걸리는 스위치다.
+    awaited_fund = _awaited_fund(payload, symbol, market.value, reviving=reviving)
+    if awaited_fund is not None:
+        session.fund_ready = False
+        _logger.info(
+            "live_awaiting_fund",
+            payload={
+                "session_id": handle,
+                "symbol": symbol,
+                "fund": awaited_fund,
+                "note": "펀드가 문·예산을 붙일 때까지 신규 진입 보류 · 손절·청산은 돈다",
+            },
+        )
     entry = Live(session=session, flags=chosen, applied=applied, seed=None, _full={})
     entry.runner = asyncio.create_task(runner.run(), name=f"live-{handle}")
     SESSIONS[handle] = entry
@@ -2280,6 +2341,18 @@ async def _revive(key: str, row: dict[str, Any], code: str) -> dict[str, str]:
     if runner is not None:
         # ⭐ 판 화면이 이 사실을 든다. 로그에만 두면 아무도 안 본다.
         runner.note_guard("revived", f"감시자가 되살렸다 ({code})")
+    # 🔴 T293 — 되살아난 것은 **새 세션**이다. 펀드는 죽은 세션을 계속 붙들고 있으므로 다시
+    #    묶어 준다 — 안 묶으면 (전에는) 문·예산 없이 다음 재기동까지 돌았고, (지금은) 신규 진입이
+    #    영영 보류된다. 지연 import: 펀드 모듈이 이 모듈을 import 한다.
+    from updown.apps.api.rebalancer import rebind_member
+
+    try:
+        bound = rebind_member(handle)
+    except Exception as exc:
+        bound = None
+        _logger.error("fund_rebind_failed", payload={"run": handle, "error": str(exc)[:200]})
+    if bound:
+        _logger.info("fund_member_rebound", payload={"run": handle, "fund": bound})
     _logger.info("run_revived", payload={"run": key, "as": handle, "code": code})
     return {"revive": f"감시자가 되살렸다 → {handle}"}
 
@@ -4018,6 +4091,8 @@ def _summary(key: str, live: Live) -> dict[str, Any]:
         # 🔴 **이 판이 왜 안 들어가는지**를 목록이 말한다 (2026-08-30). 거짓이면 대조가
         #    갈려서 신규 진입을 보류 중이라는 뜻이다 — 이유는 위의 `watch` 배너에 있다.
         "reconciled": session.reconciled,
+        # T293 — 펀드 멤버인데 펀드가 아직 문·예산을 안 붙였으면 거짓 (신규 진입 보류 중).
+        "fund_ready": session.fund_ready,
     }
 
 

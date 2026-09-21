@@ -544,6 +544,28 @@ class Session:
     꽂는 것은 API 의 대조 루프다 (`reconcile_once`).
     """
 
+    fund_ready: bool = True
+    """펀드 멤버라면 **펀드가 문과 예산을 붙였는가** — 거짓이면 신규 진입을 보류한다 (T293).
+
+    🔴 2026-09-22 실측(v1.14.0 재기동): 판 18개를 **전부 되살린 뒤에야** 펀드가 복원된다
+    (`autostart_live` → `restore_funds` 순서). 그 사이 먼저 뜬 판은 약 100초 동안
+
+        · 진입 문(`entry_gate`)이 없다 — 자리 6 · 명목 상한 · 낙폭 브레이크를 아무도 안 본다
+        · 다리 배율(`leg_leverage`)이 없다 — 숏 다리가 2x 가 아니라 세션 배율 4x 로 잡힌다
+        · 원장이 격리 전이다 — 예산이 몫(62.15)이 아니라 장부값(20.72), equity 는 계좌 전액
+
+    인 **그냥 단독 판**으로 걷는다. 그 창에 1시간 봉이 닫히면(17:00:06 이 그랬다) 신호 하나가
+    펀드 규칙 밖에서 주문이 된다. 펀드 복원이 실패해 `PENDING_FUNDS` 에 남으면 창은 120초
+    단위로 늘어난다.
+
+    ⛔ **나가는 길은 안 막는다** (§1.2.1). `_may_enter` 에만 걸린다 — 손절·청산·스탑 상향은
+    그 위(`_settle`)에서 이미 끝나 있다. 되살아난 포지션의 보호는 첫 걸음부터 돈다.
+
+    ⚠️ 기본값은 참이다 — 단독 판 · 백테스트 · 페이퍼 워크는 예전 그대로 돈다. 거짓으로 꽂는 것은
+    API 의 판 시작(`_live_start` — 펀드 파일에 이 종목이 있을 때)이고, 참으로 되돌리는 것은
+    펀드가 문을 붙이는 자리(`_attach_gate`) 하나다.
+    """
+
     accounting_ok: bool = True
     """원장 손익이 **거래소와 부호까지 맞는가** — 거짓이면 회계가 증명 가능하게 틀렸다.
 
@@ -1219,6 +1241,7 @@ class Session:
             | `liquid` | 호가가 말랐다 — 못 나갈 자리에 들어가지 않는다 |
             | `funded` | 판들의 예산 합이 계좌를 넘는다 |
             | `reconciled` | 거래소와 원장이 갈렸다 (2026-08-30) |
+            | `fund_ready` | 펀드 멤버인데 펀드가 아직 문·예산을 안 붙였다 (T293) |
             | `idle` | 이미 걸어 둔 표가 있다 — 같은 자리에 호가를 쌓지 않는다 |
             | `tripped` | 낙폭 브레이커 |
         """
@@ -1228,6 +1251,7 @@ class Session:
             and self.liquid
             and self.funded
             and self.reconciled
+            and self.fund_ready
             and idle
             and not tripped
         )
@@ -1287,6 +1311,8 @@ class Session:
         tripped = self.breaker_tripped_at is not None
         if not self.reconciled:
             self._count("blocked:unreconciled")
+        if not self.fund_ready:
+            self._count("blocked:awaiting_fund")
         opened = self._enter(shot) if self._may_enter(idle=idle, tripped=tripped) else None
         # 관측 규약 (§1-0s): 순간값만으로는 "관망"과 "탐지 정지"를 사후 구별 못 한다.
         self.seen_proposals += len(shot.proposals)
@@ -1491,7 +1517,15 @@ class Session:
 
         Returns:
             새 반대 포지션. 손절 거리가 비용보다 좁으면 None (안 뒤집고 관망).
+
+        Note:
+            ⚠️ 이 길은 `_may_enter` 도 `_gate` 도 안 거친다(청산과 한 걸음에 묶인 뒤집기라서).
+            그래서 펀드를 기다리는 동안(T293)은 여기서 따로 막는다 — 뒤집기도 **새 포지션**이고,
+            문 없이 열리면 자리·명목 상한 밖이다. 청산 자체는 이미 끝났으므로 나가는 길은 안 막힌다.
         """
+        if not self.fund_ready:
+            self._count("blocked:awaiting_fund")
+            return None
         rows = list(self.feed.judged(self.playbook.timeframe))
         pivot = rows[-1] if rows else bar
         series = atr_series([c.high for c in rows], [c.low for c in rows], [c.close for c in rows])
