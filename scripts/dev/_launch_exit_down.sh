@@ -23,7 +23,11 @@ for W in $WINDOWS; do
     # 바이낸스 선물 공개 봉 — 129차 창 경계 그대로 (앞 두 달은 워밍업)
     BIS)  S0=2022-03-01; E0=2024-06-30; MKT=BINANCE; COST=gate ;;
     BOOS) S0=2024-07-01; E0=2026-08-22; MKT=BINANCE; COST=gate ;;
-    GATE) S0=2025-07-07; E0=2026-08-22; MKT=;        COST=gate ;;
+    # 🔴 **시장 칸을 비우지 않는다** (2026-09-22 실측). `xargs -L 1` 은 줄 끝 공백을 "다음 줄로
+    #    이어짐" 으로 읽는다 — 시장이 비면 줄 끝에 공백이 남고, GATE 24줄이 **한 줄로 합쳐져
+    #    잡 하나만** 돌았다(나머지 23개는 조용히 사라진다). `--market GATE` 는 기본값과 같은
+    #    경로다(t279_parity: MARKET or "GATE").
+    GATE) S0=2025-07-07; E0=2026-08-22; MKT=GATE;    COST=gate ;;
     *) echo "모르는 창: $W"; exit 1 ;;
   esac
   for A in $ARMS; do
@@ -58,8 +62,10 @@ LOGF=logs/t279/_exit_down_run.log
   echo "start $(date '+%F %T') · 창 [$WINDOWS] · 팔 [$ARMS] · 잡 $(wc -l < "$JOBS")"
   echo "예상: BIS 25분 · BOOS 26분 · GATE 11분 (종목·창당 · 34차 실측) ÷ 8 병렬"
 } > "$LOGF"
-setsid nohup bash -c "xargs -P 8 -L 1 bash logs/t279/_exit_down_one.sh < $JOBS; echo ALLDONE \$(date '+%F %T')" \
-  >> "$LOGF" 2>&1 < /dev/null &
-sleep 2
-echo "띄웠다 — 진행은 tail -f $LOGF · 남은 잡은 grep -c DONE $LOGF"
-cat "$LOGF"
+
+# 🔴 **전경으로 돈다.** `setsid nohup ... &` 는 띄운 wsl 세션이 끝나면 같이 죽는다(2026-09-17 ·
+#    릴리스에서 같은 함정). 윈도에서는 `Start-Process wsl.exe -ArgumentList ...` 로 이 스크립트
+#    자체를 띄워 그 wsl 프로세스가 살아 있게 한다 — 그래야 몇 시간짜리 격자가 끝까지 간다.
+xargs -P 8 -L 1 bash logs/t279/_exit_down_one.sh < "$JOBS" >> "$LOGF" 2>&1
+echo "ALLDONE $(date '+%F %T')" >> "$LOGF"
+tail -3 "$LOGF"
