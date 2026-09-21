@@ -820,12 +820,29 @@ export type Choice = {
   tradable: boolean;
 };
 
-export function symbols(): Promise<{ rows: Choice[] }> {
-  return request("/exchange/symbols");
+/**
+ * 띄울 수 있는 종목들 — **그 거래소의 것** (2026-09-22).
+ *
+ * 🔴 전에는 서버가 Gate 이름 아홉 개를 박아 두고 있었다. 지금은 거래소를 넘기면 그 거래소의
+ * 눈금 선언 · 펀드 바스켓 · 도는 판에서 파생한 목록이 온다. 안 넘기면 서버가 연결된 거래소를 고른다.
+ */
+export function symbols(market?: string): Promise<{ rows: Choice[]; market?: string | null }> {
+  const query = market ? `?market=${encodeURIComponent(market)}` : "";
+  return request(`/exchange/symbols${query}`);
 }
 
-export function ranking(): Promise<{ rows: Rank[]; at: string; note?: string }> {
-  return request("/exchange/ranking");
+/**
+ * 종목 순위 — **이 API 에 연결된 거래소**의 표 (2026-09-22).
+ *
+ * 🔴 전에는 Gate 만 알았다 — 바이낸스 테스트넷에 연결된 로컬 데모에서는 *"연결된 Gate 계정이
+ * 없다"* 만 떴다. `market` 을 넘기면 그 거래소, 안 넘기면 서버가 연결된 것을 고른다.
+ * 어느 거래소의 표인지는 응답의 `market` 이 말한다 — 화면이 이름을 지어내지 않는다.
+ */
+export function ranking(
+  market?: string,
+): Promise<{ rows: Rank[]; at: string; note?: string; market?: string | null }> {
+  const query = market ? `?market=${encodeURIComponent(market)}` : "";
+  return request(`/exchange/ranking${query}`);
 }
 
 /**

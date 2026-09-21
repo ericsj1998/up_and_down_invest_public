@@ -1255,7 +1255,7 @@ export function ConsoleTab({ openRun }: Props) {
       {/* ⭐ **순위가 도는 RUN 바로 위다** (사용자 요구 2026-08-20). 판 화면에도 같은
           표가 있었는데, 거기는 *"이 판이 어떻게 하고 있나"* 를 보는 곳이라 자리가
           아니었다 — 판을 여럿 열면 같은 표가 화면마다 반복되고 왕복도 그만큼 늘었다. */}
-      {group === "coin" ? <Ranking /> : null}
+      {group === "coin" ? <Ranking markets={marketList} /> : null}
       {/* ⭐ 주식은 순위 대신 **저평가 후보** (T244) — 재무 대비 싼 순. 시장은 **재무 출처가 있는** 시장 전부
           (서버 `fundamentals` 깃발 · NASDAQ · NYSE 를 카드 안 칩으로 고른다 · KRX 만 있으면 카드 대신 한 줄).
           첫 시장만 넘기던 때는 NYSE 종목이 적재돼 있어도 안 보였다 (2026-09-10). */}

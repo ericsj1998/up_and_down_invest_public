@@ -30,6 +30,7 @@ from updown.common.domain.market import (
     OrderBook,
     OrderBookLevel,
     Quote,
+    TickerStat,
 )
 from updown.common.domain.order import OrderRequest, OrderResult, OrderStatus
 from updown.marketdata.adapter import Capability
@@ -361,6 +362,32 @@ class GateAdapter:
         rows = cast("list[dict[str, object]]", payload)
         return [{str(k): str(v) for k, v in row.items()} for row in rows]
 
+    async def ticker_stats(self) -> list[TickerStat]:
+        """모든 계약의 24시간 요약 — **중립 자료형**으로 (`TickerBoard` · 2026-09-22).
+
+        Returns:
+            계약별 요약. 못 읽은 칸은 None 이다 (0 으로 채우지 않는다).
+
+        Note:
+            `tickers()` 의 원문 행을 위로 올리면 상위 계층이 Gate 필드 이름을 알게 된다 —
+            종목 순위 화면이 실제로 그랬고, 바이낸스에 연결된 API 에서 화면이 죽었다.
+            Gate 계약 이름은 이미 도메인 표기(`BTC_USDT`)라 되돌릴 것이 없다.
+        """
+        return [
+            TickerStat(
+                symbol=row.get("contract", ""),
+                last=_loose(row.get("last")),
+                high_24h=_loose(row.get("high_24h")),
+                low_24h=_loose(row.get("low_24h")),
+                bid=_loose(row.get("highest_bid")),
+                ask=_loose(row.get("lowest_ask")),
+                turnover_quote=_loose(row.get("volume_24h_quote")),
+                change_pct=_loose(row.get("change_percentage")),
+            )
+            for row in await self.tickers()
+            if row.get("contract")
+        ]
+
     async def get_orderbook(self, instrument: Instrument) -> OrderBook:
         """호가창 스냅샷.
 
@@ -649,3 +676,29 @@ def _maybe(payload: dict[str, Any], key: str) -> Decimal | None:
     if raw is None or str(raw).strip() == "":
         return None
     return _num(payload, key)
+
+
+def _loose(raw: object) -> Decimal | None:
+    """티커 한 칸을 **너그럽게** 읽는다 — 못 읽으면 None (`ticker_stats` 전용).
+
+    Args:
+        raw: 원문 값.
+
+    Returns:
+        `Decimal`. 비었거나 숫자가 아니면 None.
+
+    Note:
+        ⚠️ `_num` 처럼 터지지 않는 이유: 이 값은 **표시용 순위표**의 한 칸이고, 1,000개
+        계약 중 하나의 한 칸이 깨졌다고 표 전체를 죽이면 안 된다. 주문 경로의 값은
+        여전히 `_num` 이 엄격하게 읽는다.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if text == "":
+        return None
+    try:
+        value = Decimal(text)
+    except (ArithmeticError, ValueError):
+        return None
+    return value if value.is_finite() else None

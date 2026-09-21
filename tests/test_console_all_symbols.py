@@ -48,11 +48,26 @@ class Adapter:
         return {"size": "1408", "entry_price": "139.84"} if symbol == "SPCX_USDT" else {}
 
 
+SYMBOLS = (
+    "BTC_USDT",
+    "ETH_USDT",
+    "SOL_USDT",
+    "XRP_USDT",
+    "DOGE_USDT",
+    "TSLAX_USDT",
+    "SPCX_USDT",
+    "SNDK_USDT",
+    "SKHY_USDT",
+)
+"""시험용 종목들 — 옛 `TRACKED` 와 같은 아홉 개 (순회 계약을 재는 데 필요한 것은 "여럿" 뿐이다)."""
+
+
 async def live(adapter: Any) -> dict[str, list[dict[str, str]]]:
     """`_all_live` 한 번."""
-    # 2026-08-26: tracked 는 이제 파생 인자다 — 테스트는 옛 TRACKED 목록을 그대로
-    # 주입해 종목 순회 계약(전 종목 조회·부분 실패 허용)만 검증한다.
-    return await api._all_live(adapter, "GATE", tuple(api.TRACKED))  # pyright: ignore[reportPrivateUsage]
+    # 2026-08-26: tracked 는 이제 파생 인자다 — 테스트는 종목 순회 계약(전 종목 조회 ·
+    # 부분 실패 허용)만 검증한다. 2026-09-22: 서버의 하드코딩 튜플(TRACKED)이 사라져
+    # 같은 아홉 종목을 여기 시험 자료로 둔다.
+    return await api._all_live(adapter, "GATE", SYMBOLS)  # pyright: ignore[reportPrivateUsage]
 
 
 class TestAllSymbols:
@@ -88,8 +103,8 @@ class TestAllSymbols:
         assert len(got["stops"]) == 1
 
     async def test_it_asks_every_tracked_symbol(self) -> None:
-        """⛔ 목록이 두 벌이면 한쪽만 고쳐진다 — 단일 출처는 TRACKED 다."""
+        """⛔ 받은 종목을 **하나도 빼지 않고** 묻는다 — 빠진 종목의 포지션은 안 보인다."""
         adapter = Adapter()
         await live(adapter)
 
-        assert set(adapter.asked) == set(api.TRACKED)
+        assert set(adapter.asked) == set(SYMBOLS)

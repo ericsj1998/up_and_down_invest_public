@@ -107,13 +107,24 @@ function Exit({ row }: { row: Rank }) {
   );
 }
 
-export function Ranking() {
+export function Ranking({ markets = [] }: { markets?: string[] }) {
   const [rows, setRows] = useState<Rank[]>([]);
+  /**
+   * 볼 거래소 — **콘솔이 연결됐다고 말한 것들 중에서** (2026-09-22).
+   *
+   * 🔴 이 화면은 Gate 만 알았다. 바이낸스 테스트넷에 연결된 로컬 데모에서는 *"연결된 Gate 계정이
+   * 없다"* 만 떴다 (사용자 지적: *"바이낸스 테스트넷에서는 바이낸스로, Gate 에서는 Gate 로 떠야지"*).
+   * 이름을 여기 적지 않는다 — 목록은 콘솔이 주고, 어느 표인지는 서버 응답이 말한다.
+   */
+  const [picked, setPicked] = useState("");
+  const market = markets.includes(picked) ? picked : (markets[0] ?? "");
+  /** 서버가 실제로 답한 거래소 — 제목에 적는다 (화면이 지어내지 않는다). */
+  const [shown, setShown] = useState("");
   const [error, setError] = useState("");
   /**
    * 서버가 **줄이 없는 이유**를 말해 줄 때 그 말 (2026-09-22).
    *
-   * 🔴 서버는 Gate 연결이 없으면 `{rows: [], note: "연결된 Gate 계정이 없다"}` 를 돌려주는데
+   * 🔴 서버는 연결된 거래소가 없으면 `{rows: [], note: "…"}` 를 돌려주는데
    * 화면이 `note` 를 **아예 안 읽고 있었다** — 그래서 머리글만 남은 빈 표가 떴고, 사람은
    * 고장인지 조용한 건지 알 수 없었다 (사용자 신고: *"종목 순위도 아예 출력이 안되고 있어"*).
    * 조용한 실패 금지(규칙 #8)는 서버만의 일이 아니다.
@@ -128,10 +139,14 @@ export function Ranking() {
   useEffect(() => {
     let alive = true;
     const pull = () => {
-      ranking()
+      ranking(market || undefined)
         .then(
           (body) =>
-            alive && (setRows(body.rows), setNote(body.note ?? ""), setError("")),
+            alive &&
+            (setRows(body.rows),
+            setNote(body.note ?? ""),
+            setShown(body.market ?? ""),
+            setError("")),
         )
         .catch((exc: unknown) => alive && setError(String(exc)));
     };
@@ -145,7 +160,8 @@ export function Ranking() {
       alive = false;
       clearInterval(timer);
     };
-  }, []);
+    // 거래소가 바뀌면 바로 다시 받는다 — 남의 거래소 표를 1분 동안 보여 주지 않는다.
+  }, [market]);
 
   const sorted = ordered(rows, sort, down);
 
@@ -164,7 +180,28 @@ export function Ranking() {
       <p className="card-hint">
         나란히 놓기만 한다 — <b>점수도 추천도 만들지 않는다</b>. 어느 열로
         볼지는 사람이 고른다.
+        {shown ? (
+          <>
+            {" "}
+            · 거래소 <b>{shown}</b>
+          </>
+        ) : null}
       </p>
+      {/* 연결된 거래소가 둘 이상일 때만 고르개를 낸다 — 하나면 고를 것이 없다. */}
+      {markets.length > 1 ? (
+        <div className="row" style={{ gap: 6, marginBottom: 6 }}>
+          {markets.map((name) => (
+            <button
+              key={name}
+              type="button"
+              className={`btn small${name === market ? " picked" : ""}`}
+              onClick={() => setPicked(name)}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {error ? <ErrorCard message={error} /> : null}
       {/* 🔴 **줄이 없으면 왜 없는지 말한다.** 머리글만 남은 표는 고장과 구별되지 않는다. */}
       {!error && sorted.length === 0 ? (

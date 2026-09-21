@@ -136,7 +136,11 @@ class TestTheGateIsWired:
         assert "liquidity_of(symbol, margin * lever, market=market.value)" in source
 
     def test_the_tick_check_does_not_cover_this(self) -> None:
-        """⛔ `_TRADABLE` 은 **설정 질문**이다 — 시장이 살아 있는지는 안 본다."""
-        source = inspect.getsource(api)
-        cut = source.index("_TRADABLE = ")
-        assert "spec_ticks" in source[cut : cut + 200]
+        """⛔ 눈금 선언(`_tradable`)은 **설정 질문**이다 — 시장이 살아 있는지는 안 본다.
+
+        2026-09-22: Gate 고정 상수(`_TRADABLE`)이던 것이 시장별 함수가 됐다 — 바이낸스에
+        연결된 API 에서도 Gate 의 눈금으로 답하고 있었다.
+        """
+        source = inspect.getsource(api._tradable)  # pyright: ignore[reportPrivateUsage]
+        assert "spec_ticks" in source
+        assert "Market.GATE" not in source, "거래소 이름을 박으면 다른 거래소에서 거짓말한다"

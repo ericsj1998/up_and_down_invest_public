@@ -222,7 +222,9 @@ export function Runs({ rows, open, refresh, available }: Props) {
   const [picks, setPicks] = useState<Choice[]>([]);
   // ⭐ 기본 선택은 /playbooks 의 recommended 가 정한다 (T63 ②) — 리터럴은 반드시 낡는다.
   const [book, setBook] = useState("");
-  const [market, setMarket] = useState("GATE");
+  // 🔴 **거래소 이름을 기본값으로 박지 않는다** (사용자 지적 2026-09-22). 전에는 "GATE" 였고,
+  //    바이낸스에 연결된 API 에서도 첫 요청이 Gate 로 나갔다. 서버가 목록을 주면 그 첫째가 된다.
+  const [market, setMarket] = useState("");
   // ⭐ 거래소 목록은 서버 파생 (T63 §2c) — 새 거래소는 어댑터가 계약을 지키면 자동으로 뜬다.
   const [markets, setMarkets] = useState<string[]>([]);
   // ⭐ T245 — 새 판의 시장 후보는 고른 묶음(코인/주식)의 것만. 묶음은 서버가 말한다.
@@ -240,6 +242,26 @@ export function Runs({ rows, open, refresh, available }: Props) {
   useEffect(() => {
     if (groupMarkets.length && !groupMarkets.includes(market)) setMarket(groupMarkets[0] ?? market);
   }, [groupMarkets, market]);
+  // 🔴 **종목 목록은 고른 거래소의 것이다** (2026-09-22). 전에는 마운트 때 한 번, 거래소를 안
+  //    가리고 받았다(서버가 Gate 이름 아홉 개를 박아 두고 있었다). 거래소가 바뀌면 다시 받는다 —
+  //    안 그러면 바이낸스를 골라 놓고 Gate 에만 있는 종목으로 판을 띄우려 하게 된다.
+  useEffect(() => {
+    if (!market) return;
+    let alive = true;
+    symbols(market)
+      .then((body) => {
+        if (!alive) return;
+        setPicks(body.rows);
+        // ⭐ 고른 종목이 새 목록에 없으면 첫 항목으로 — 빈 값·남의 종목으로 띄우기를 누르지 않게.
+        setSymbol((now) =>
+          body.rows.some((r) => r.symbol === now) ? now : (body.rows[0]?.symbol ?? ""),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [market]);
   // ⭐ T242 — 이 묶음에서 거래할 권한. 없으면 시작 칸 위에 🔒 를 띄운다(서버가 403 으로 다시 막는다).
   const me = useMe();
   const mayTradeHere = marketTradeAllowed(me.who, group);
@@ -283,15 +305,6 @@ export function Runs({ rows, open, refresh, available }: Props) {
         const pick =
           body.playbooks.find((b) => b.recommended) ?? body.playbooks[0];
         if (pick) setBook((prev) => prev || pick.id);
-      })
-      .catch(() => undefined);
-    // 🔴 종목 목록도 서버가 준다 — 화면에 박아 두면 추가해도 안 뜬다.
-    symbols()
-      .then((body) => {
-        setPicks(body.rows);
-        // ⭐ 첫 항목을 고른 상태로 시작한다. 안 하면 빈 값으로 띄우기를 누르게 된다.
-        const first = body.rows[0];
-        if (first) setSymbol((now) => now || first.symbol);
       })
       .catch(() => undefined);
   }, []);

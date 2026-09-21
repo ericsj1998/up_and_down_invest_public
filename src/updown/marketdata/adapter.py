@@ -18,7 +18,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Timeframe
-from updown.common.domain.market import Balance, MarketStatus, OrderBook, Quote
+from updown.common.domain.market import Balance, MarketStatus, OrderBook, Quote, TickerStat
 from updown.common.domain.order import OrderRequest, OrderResult, OrderStatus
 from updown.common.http.outbound import (
     RequestBudgetExceededError as _RequestBudgetExceededError,
@@ -431,4 +431,25 @@ class RequestCounting(Protocol):
             같은 시각에 도는 다른 작업(예열 · 폴링)의 요청은 세지 않는다 — 2026-09-11 에
             그것 때문에 사람의 펀드 만들기가 남의 일로 실패했다.
         """
+        ...
+
+
+@runtime_checkable
+class TickerBoard(Protocol):
+    """**모든 종목의 24시간 요약을 한 번에** 줄 수 있는 어댑터 (2026-09-22).
+
+    종목 순위 화면이 쓴다. 전에는 그 화면이 `GateAdapter` 를 `isinstance` 로 직접 찾고
+    Gate 원문 필드를 읽어서, 바이낸스에 연결된 API 에서는 *"연결된 Gate 계정이 없다"* 만
+    떴다 — 상위 계층에 거래소 이름이 나타난 것이고, 그것이 곧 추상화가 샌 자리였다.
+
+    Note:
+        🔴 **종목마다 부르지 않는다.** 한 번에 받아야 모든 행이 같은 순간의 값이라
+        순위가 비교가 된다 (T18 ②).
+
+        ⭐ 구현하지 않는 어댑터(토스·업비트)는 순위 화면이 "한 번에 줄 수 있는 연결된
+        거래소가 없다" 고 말한다 — 조립부가 `isinstance` 로 가린다.
+    """
+
+    async def ticker_stats(self) -> list[TickerStat]:
+        """연결된 거래소의 모든 종목 요약 — 심볼은 도메인 표기(`BASE_QUOTE`)다."""
         ...

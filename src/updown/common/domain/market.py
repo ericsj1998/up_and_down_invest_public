@@ -98,6 +98,40 @@ class Quote:
 
 
 @dataclass(frozen=True, slots=True)
+class TickerStat:
+    """한 종목의 **24시간 요약** — 거래소가 모든 종목을 한 번에 줄 때의 한 행 (2026-09-22).
+
+    Attributes:
+        symbol: 도메인 표기(`BASE_QUOTE`). 거래소 표기(`BTCUSDT`)는 어댑터가 되돌려 놓는다.
+        last: 최종가. 못 읽으면 None.
+        high_24h: 24시간 고가.
+        low_24h: 24시간 저가.
+        bid: 최우선 매수호가.
+        ask: 최우선 매도호가.
+        turnover_quote: 24시간 거래대금 — **견적통화 기준** (계약 수가 아니다).
+        change_pct: 24시간 등락률(%).
+
+    Note:
+        🔴 **거래소 원문 행을 위로 올리지 않는다.** 종목 순위 화면이 Gate 의 필드 이름
+        (`volume_24h_quote` · `highest_bid`)을 직접 읽고 있어서, 바이낸스에 연결된 API 에서는
+        화면이 *"연결된 Gate 계정이 없다"* 만 말했다 (사용자 지적 2026-09-22: *"항상 내가
+        하드코딩 하지 말라고 했지 — 바이낸스 테스트넷에서는 바이낸스로, Gate 에서는 Gate 로
+        떠야지"*). 거래소 차이는 어댑터가 이 자료형으로 숨긴다.
+
+        ⚠️ 못 읽은 값은 **None** 이다 — 0 으로 채우면 "거래가 없다 · 안 움직였다" 로 읽힌다.
+    """
+
+    symbol: str
+    last: Decimal | None
+    high_24h: Decimal | None
+    low_24h: Decimal | None
+    bid: Decimal | None
+    ask: Decimal | None
+    turnover_quote: Decimal | None
+    change_pct: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
 class OrderBookLevel:
     """호가창 한 단계 — 매수/매도가 **같은 행에 붙어 온다**.
 

@@ -35,7 +35,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 
 from updown.apps.api.market_hours import market_status_payload
 from updown.common.cache import TtlCache
-from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
+from updown.common.costs import DEFAULT_CONFIG_PATH, CostConfigError, load_cost_table
 from updown.common.domain.capabilities import CapabilityConfigError, capabilities_of
 from updown.common.domain.instrument import Instrument, Market, MarketGroup, Timeframe
 from updown.common.domain.order import OrderKind, OrderRequest, OrderType, Side
@@ -43,14 +43,13 @@ from updown.common.domain.session import SessionConfigError, load_calendar
 from updown.common.logging.setup import get_logger
 from updown.common.security.roles import Role
 from updown.execution.gateway import OrderGatewayError, order_adapter
-from updown.marketdata.adapter import QuoteAdapter
+from updown.marketdata.adapter import QuoteAdapter, TickerBoard
 from updown.marketdata.calendar_check import (
     COUNTRY_OF,
     CalendarSource,
     compare_day,
     regular_window_of,
 )
-from updown.marketdata.gate.adapter import GateAdapter
 from updown.marketdata.provider import MarketDataProvider
 from updown.marketdata.ratelimit import meter
 from updown.orchestration.liquidity import Liquidity, escape_plan, probe_book
@@ -314,8 +313,38 @@ _logger = get_logger("api.exchange")
 DEFAULT_SYMBOL = "BTC_USDT"
 """기본 종목. 화면이 안 보내면 이것을 본다."""
 
-_TRADABLE = frozenset(load_cost_table(DEFAULT_CONFIG_PATH).for_market(Market.GATE).spec_ticks)
-"""판을 띄울 수 있는 종목 — **호가 눈금이 선언된 것들** (T18 ①·④).
+
+def _tradable(market: str) -> frozenset[str]:
+    """그 거래소에서 판을 띄울 수 있는 종목 — **호가 눈금이 선언된 것들** (T18 ①·④).
+
+    Args:
+        market: 거래소 코드.
+
+    Returns:
+        `config/costs.yml` 의 그 시장 `spec_ticks` 에 선언된 심볼들. 비용 블록이 없는
+        시장이면 빈 집합이다 (= 아무것도 못 띄운다 — 눈금을 모르니 맞는 답이다).
+
+    Note:
+        🔴 **Gate 고정 상수였다** (`_TRADABLE` · 2026-09-22 에 풀었다). 바이낸스에 연결된
+        API 에서도 Gate 의 눈금 선언으로 "띄울 수 있다" 를 답하고 있었다.
+    """
+    found = _TRADABLE_BY_MARKET.get(market)
+    if found is None:
+        try:
+            found = frozenset(
+                load_cost_table(DEFAULT_CONFIG_PATH).for_market(Market(market)).spec_ticks
+            )
+        except (CostConfigError, ValueError):
+            found = frozenset[str]()
+        _TRADABLE_BY_MARKET[market] = found
+    return found
+
+
+_TRADABLE_BY_MARKET: dict[str, frozenset[str]] = {}
+"""시장별 눈금 선언 캐시 — 설정 파일은 프로세스 수명 동안 안 바뀐다.
+
+옛 설명(그대로 유효하다):
+판을 띄울 수 있는 종목 — **호가 눈금이 선언된 것들** (T18 ①·④).
 
 🔴 사용자 확정: *"판을 못 띄우는 것도 맞는 말이야 (…) 그런 종목이 있는 것을 받아들인다"*.
 받아들이되 **조용히 넘어가지 않는다** — 순위 창이 그 사실을 열로 말한다.
@@ -1406,76 +1435,131 @@ async def cancel_stop(
     return await _state_fresh(symbol, market)
 
 
-TRACKED = (
-    "BTC_USDT",
-    "ETH_USDT",
-    "SOL_USDT",
-    "XRP_USDT",
-    "DOGE_USDT",
-    # 🔴 **토큰화 주식** (사용자 요청 2026-08-19). 코인과 성질이 다르다 —
-    #    수수료가 1.5배(테이커 0.075%)이고, 기초자산 장이 닫힌 시간에는 호가가 얇다.
-    #
-    # ⚠️ **SNDK·SKHY 는 testnet 에 없다.** 순위·시세에는 뜨지만 판을 띄우면 막힌다 —
-    #    감추지 않는 이유는 *"왜 이건 못 띄우나"* 가 화면에서 보여야 하기 때문이다.
-    "TSLAX_USDT",
-    "SPCX_USDT",
-    "SNDK_USDT",
-    "SKHY_USDT",
-)
-"""순위 창이 보여 주는 종목들 (T18 ② · 사용자 확정 — 큰 것 넷으로 시작).
+async def _board_market(market: str | None) -> tuple[str | None, Any]:
+    """순위·고르개가 볼 **거래소와 그 어댑터** — 이 API 에 실제로 연결된 것 (2026-09-22).
 
-⚠️ **여기 늘리는 것과 판을 띄우는 것은 다른 일이다.** 이 목록은 *보는* 것이고, 판을
-띄우려면 `config/costs.yml` 의 `spec_ticks` 에도 선언돼 있어야 한다 (T18 ①).
+    Args:
+        market: 화면이 고른 거래소. 비면 연결된 것 중에서 고른다.
 
-⛔ 실매매는 BTC 만이다 (사용자 확정). 나머지 종목의 비용·데이터 부재는 감수하되,
-그 사실이 화면에서 보이지 않으면 안 된다.
-"""
+    Returns:
+        `(시장 코드, 어댑터)`. 한 번에 시세를 줄 수 있는 연결된 거래소가 없으면 `(None, None)`.
+
+    Note:
+        🔴 **거래소 이름을 여기 적지 않는다** (사용자 지적 2026-09-22: *"항상 내가 하드코딩
+        하지 말라고 했지 — 바이낸스 테스트넷에서는 바이낸스로, Gate 에서는 Gate 로 떠야지"*).
+        전에는 `Market.GATE` 와 `GateAdapter` 를 직접 찾아서, 바이낸스에 연결된 로컬 데모에서
+        화면이 *"연결된 Gate 계정이 없다"* 만 말했다.
+
+        고르는 기준은 **능력**이다 — 연결된 시장(`live_markets` · SSoT) 중 `TickerBoard`
+        (전 종목 24시간 요약을 한 번에 주는 어댑터)를 지키는 첫 번째. 화면이 시장을 골라
+        보내면 그것이 먼저다.
+    """
+    provider = MarketDataProvider()
+    live = provider.live_markets()
+    wanted = [market] if market else list(live)
+    for name in wanted:
+        if name not in live:
+            continue
+        adapter = provider.adapter_for(Market(name))
+        if isinstance(adapter, TickerBoard):
+            return name, adapter
+    return None, None
+
+
+async def _universe(market: str) -> tuple[str, ...]:
+    """그 거래소에서 순위·고르개가 보여 줄 종목들 — **파생**이다 (2026-09-22).
+
+    Args:
+        market: 거래소 코드.
+
+    Returns:
+        정렬된 심볼들 (도메인 표기).
+
+    Note:
+        🔴 **하드코딩 튜플(`TRACKED`)을 없앴다.** 그 목록은 Gate 이름 아홉 개였고, 사라진
+        계약(TSLAX_USDT — Gate 가 TSLA_USDT 로 바꿨다)을 *"확인 불가 · 없다"* 로 계속 띄웠으며,
+        펀드가 실제로 굴리는 18종은 하나도 안 보였다 (사용자 지적: *"내가 담았던 것들은
+        안 보이네"*).
+
+        세 출처의 합집합이다 — 전부 이미 있는 선언이라 **새로 관리할 목록이 없다**:
+
+            ① 눈금이 선언된 종목   `config/costs.yml` 의 그 시장 `spec_ticks`
+            ② 펀드가 굴리는 종목   그 시장의 살아 있는 펀드 바스켓
+            ③ 판이 도는 종목       그 시장의 라이브 러너 · 열린 포지션 (`_tracked`)
+
+        ⚠️ 거래소에 없는 종목이 섞여도 괜찮다 — 순위 표가 그 줄에 *"거래소가 이 계약을 안
+        준다"* 를 적는다 (조용히 빼지 않는다 · 규칙 #8).
+    """
+    found: set[str] = set(_tradable(market))
+    from updown.apps.api.rebalancer import FUNDS
+
+    for fund in FUNDS.values():
+        if fund.market == market:
+            found.update(fund.coordinator.engine.basket.symbols)
+    try:
+        found.update(await _tracked(_orders_adapter(market), market))
+    except HTTPException:
+        # 주문 어댑터가 없는 API(조회 전용)에서도 순위는 떠야 한다 — 판·포지션 축만 빠진다.
+        from updown.apps.api.walkforward import LIVE_RUNNERS
+
+        found.update(
+            runner.instrument.symbol
+            for runner in LIVE_RUNNERS.values()
+            if runner.instrument.market.value == market
+        )
+    return tuple(sorted(found))
+
+
+def _label(symbol: str) -> str:
+    """고르개에 적을 이름 — 심볼에서 만든다 (따로 표를 두면 그것도 갱신 대상이 된다)."""
+    base, _, quote = symbol.partition("_")
+    return f"{base} 무기한" if quote else symbol
 
 
 @router.get("/symbols")
-async def symbols() -> dict[str, Any]:
+async def symbols(market: str | None = None) -> dict[str, Any]:
     """**띄울 수 있는 종목 목록** — 화면의 고르개가 쓴다 (2026-08-20).
 
+    Args:
+        market: 거래소. 비면 이 API 에 연결된 거래소를 쓴다.
+
     Returns:
-        `{rows: [{symbol, label, tradable}]}`.
+        `{rows: [{symbol, label, tradable}], market}`.
 
     Note:
-        🔴 **화면에 박아 두면 종목을 추가해도 안 뜬다** (사용자 신고 2026-08-20).
-        `costs.yml` 과 `TRACKED` 에 넷을 넣었는데 고르개에는 다섯 개 그대로였다 —
-        목록이 **두 벌**이었고 한쪽만 고쳤기 때문이다.
-
-        ⇒ 단일 출처는 `TRACKED` 이고, *"띄울 수 있나"* 는 `costs.yml` 의 호가 눈금
-        선언 여부가 정한다.
+        🔴 **화면에 박아 두면 종목을 추가해도 안 뜬다** (사용자 신고 2026-08-20). 목록이
+        두 벌이었고 한쪽만 고쳤었다. 지금은 목록 자체가 없다 — `_universe` 가 눈금 선언 ·
+        펀드 바스켓 · 도는 판에서 **파생**한다 (2026-09-22).
 
         ⚠️ **`tradable=false` 도 목록에 남긴다.** 빼면 *"왜 이 종목이 없지"* 에 화면이
         답을 못 한다 — 못 띄우는 이유가 보여야 사람이 고칠 수 있다 (절대 규칙 #8).
 
-        ⚠️ **주문 가능 여부는 여기서 안 본다.** 그것은 거래소에 계약을 물어야 알고
-        (SNDK·SKHY 는 라이브에 있고 testnet 에 없다), 종목당 한 번씩 왕복이 든다 —
-        판을 띄우는 순간 문 앞에서 걸러진다 (`_live_start`).
+        ⚠️ **주문 가능 여부는 여기서 안 본다.** 그것은 거래소에 계약을 물어야 알고,
+        종목당 한 번씩 왕복이 든다 — 판을 띄우는 순간 문 앞에서 걸러진다 (`_live_start`).
     """
+    name, _ = await _board_market(market)
+    if name is None:
+        return {"rows": [], "market": None}
+    known = _tradable(name)
     return {
         "rows": [
-            {
-                "symbol": symbol,
-                # ⭐ 이름은 심볼에서 만든다. 따로 표를 두면 그것도 갱신 대상이 된다.
-                "label": f"{symbol.removesuffix('_USDT')} 무기한",
-                "tradable": symbol in _TRADABLE,
-            }
-            for symbol in TRACKED
-        ]
+            {"symbol": symbol, "label": _label(symbol), "tradable": symbol in known}
+            for symbol in await _universe(name)
+        ],
+        "market": name,
     }
 
 
 @router.get("/ranking")
-async def ranking() -> dict[str, Any]:
+async def ranking(market: str | None = None) -> dict[str, Any]:
     """**오늘 어느 종목이 거래하기 좋은가** — 나란히 놓기만 한다 (T18 ②).
 
-    Returns:
-        `{rows: [{symbol, price, turnover, volatility, spread, change}], at}`.
+    Args:
+        market: 거래소. 비면 이 API 에 연결된 거래소를 쓴다 (서버 = GATE · 로컬 데모 = BINANCE).
 
-    Raises:
-        HTTPException: 조회 어댑터가 없으면 503.
+    Returns:
+        `{rows: [{symbol, price, turnover, volatility, spread, change}], at, market}`.
+        연결된 거래소가 없으면 빈 표와 `note`.
 
     Note:
         🔴 **표시 전용이다.** 가중합 점수도 "오늘의 1위" 배지도 만들지 않는다 (사용자
@@ -1490,17 +1574,22 @@ async def ranking() -> dict[str, Any]:
         ⚠️ **스프레드는 지금 순간의 1호가 차이**다. 24시간 평균이 아니므로 조용한
         시간대에 재면 좁게 나온다 — 비용 판단의 근거로 쓰지 않는다 (그것은
         `config/costs.yml` 의 실측이다).
+
+        🔴 **거래소를 가리지 않는다** (2026-09-22). 전에는 Gate 만 알았다 — 자세한 경위는
+        `_board_market` 에 있다.
     """
-    provider = MarketDataProvider()
-    if Market.GATE.value not in provider.live_markets():
-        # 이 창은 Gate 전용이다. Gate 가 없는 API(로컬 실계좌 모드 · UPDOWN_MARKETS=NONE)에서는
-        # 503 대신 빈 표 — 콘솔이 "연결 없음" 을 말하는 자리는 상단 카드다.
-        return {"rows": [], "at": datetime.now(UTC).isoformat(), "note": "연결된 Gate 계정이 없다"}
-    quotes = provider.adapter_for(Market.GATE)
-    if not isinstance(quotes, GateAdapter):  # pragma: no cover - 제공자가 이미 본다
-        raise HTTPException(503, "Gate 조회 어댑터가 없다")
-    rows = await quotes.tickers()
-    found = {row.get("contract", ""): row for row in rows}
+    name, quotes = await _board_market(market)
+    if name is None or quotes is None:
+        # 콘솔이 "연결 없음" 을 말하는 자리는 상단 카드다. 여기는 빈 표와 이유만 낸다.
+        return {
+            "rows": [],
+            "at": datetime.now(UTC).isoformat(),
+            "market": None,
+            "note": "전 종목 시세를 한 번에 줄 수 있는 연결된 거래소가 없다",
+        }
+    tracked = await _universe(name)
+    known = _tradable(name)
+    found = {row.symbol: row for row in await quotes.ticker_stats()}
     # 🔴 **나갈 수 있는지를 고르기 전에 보여 준다** (사용자 제안 2026-08-20:
     #    *"애초에 유동성이 적은 종목은 종목 선택 시 유의가 뜨는 로직을 만드는 건 어때?"*).
     #
@@ -1510,47 +1599,43 @@ async def ranking() -> dict[str, Any]:
     #
     # ⚠️ **명목을 0 으로 넘긴다.** 이 창에서는 아직 예산이 정해지지 않았으므로 깊이를
     #    판정할 근거가 없다 — 격차만 판정하고 깊이는 **숫자로만** 보여 준다.
-    orders = _orders_adapter()
-    books = dict(
-        zip(
-            TRACKED,
-            await asyncio.gather(
-                *(probe_book(orders, _instrument(name), Decimal(0)) for name in TRACKED),
-                return_exceptions=True,
-            ),
-            strict=True,
+    books: dict[str, object] = {}
+    try:
+        orders = _orders_adapter(name)
+    except HTTPException as exc:
+        # 조회 전용 API — 호가 판정만 빠지고 나머지 열은 뜬다 (그 열이 "확인 불가" 를 말한다).
+        orders = None
+        _logger.info(
+            "ranking_orders_unavailable",
+            payload={"market": name, "why": str(exc.detail)[:100]},
         )
-    )
+    if orders is not None:
+        probed = await asyncio.gather(
+            *(probe_book(orders, _instrument(sym, name), Decimal(0)) for sym in tracked),
+            return_exceptions=True,
+        )
+        books = dict(zip(tracked, probed, strict=True))
     # ⭐ **최근 1시간 폭** (사용자 요구 2026-08-20). 24시간 변동성으로는 *"지금 어느
     #    종목이 움직이나"* 를 못 본다 — ETH 17.58% 와 XRP 18.18% 가 거의 같아 보이는데,
     #    최근 3시간은 2.83% 대 6.87% 였고 **매매가 난 것은 XRP 뿐**이었다.
-    spans = dict(
-        zip(
-            TRACKED,
-            await asyncio.gather(
-                *(_recent(quotes, name) for name in TRACKED), return_exceptions=True
-            ),
-            strict=True,
-        )
+    recent = await asyncio.gather(
+        *(_recent(quotes, sym, name) for sym in tracked), return_exceptions=True
     )
+    spans = dict(zip(tracked, recent, strict=True))
     out: list[dict[str, Any]] = []
-    for symbol in TRACKED:
+    for symbol in tracked:
         row = found.get(symbol)
         if row is None:
             # ⛔ 조용히 건너뛰지 않는다 — 목록에서 사라지면 아무도 못 알아챈다 (규칙 #8).
             out.append({"symbol": symbol, "missing": "거래소가 이 계약을 안 준다"})
             continue
-        last = _decimal(row.get("last"))
-        high = _decimal(row.get("high_24h"))
-        low = _decimal(row.get("low_24h"))
-        bid = _decimal(row.get("highest_bid"))
-        ask = _decimal(row.get("lowest_ask"))
+        last, high, low, bid, ask = row.last, row.high_24h, row.low_24h, row.bid, row.ask
         out.append(
             {
                 "symbol": symbol,
                 "price": None if last is None else float(last),
-                # 거래대금 — 24시간 결제통화 기준.
-                "turnover": _float(row.get("volume_24h_quote")),
+                # 거래대금 — 24시간 견적통화 기준.
+                "turnover": None if row.turnover_quote is None else float(row.turnover_quote),
                 # 변동성 — 24시간 고저폭을 현재가로 나눈 비율(%).
                 "volatility": (
                     None
@@ -1563,21 +1648,22 @@ async def ranking() -> dict[str, Any]:
                     if bid is None or ask is None or ask <= 0
                     else float((ask - bid) / ask * 100)
                 ),
-                "change": _float(row.get("change_percentage")),
+                "change": None if row.change_pct is None else float(row.change_pct),
                 # 🔴 **판을 띄울 수 있는 종목인가** (T18 ①·④). 못 띄우는 종목이 있는
                 #    것은 받아들이되, 조용히 넘어가지 않는다.
                 #
                 # ⚠️ 이것은 **설정 질문**이다 — 우리가 눈금을 아는가. 시장이 살아 있는지도
                 #    주문 거래소에 계약이 있는지도 안 본다. 그래서 아래 `exit` 이 따로 있고,
                 #    둘을 하나로 합치지 않는다 (합치면 왜 막혔는지가 사라진다).
-                "tradable": symbol in _TRADABLE,
+                "tradable": symbol in known,
                 "exit": _exit_view(books.get(symbol)),
                 # ⭐ **지금 움직이고 있나** — 자리가 나는 빈도는 거래량이 아니라 여기서 온다.
                 #    ⛔ 못 읽으면 None 이다. 0 으로 채우면 *"안 움직인다"* 로 읽힌다.
                 "recent_pct": (got if isinstance((got := spans.get(symbol)), float) else None),
             }
         )
-    return {"rows": out, "at": datetime.now(UTC).isoformat()}
+    # ⭐ 어느 거래소의 표인지 같이 낸다 — 화면이 그 이름을 적는다 (지어내지 않게).
+    return {"rows": out, "at": datetime.now(UTC).isoformat(), "market": name}
 
 
 RECENT_MINUTES = 60
@@ -1598,12 +1684,13 @@ XRP  변동성(24h) 18.18%  최근 3시간 6.87%   매매 많음
 """
 
 
-async def _recent(quotes: Any, symbol: str) -> float | None:
+async def _recent(quotes: Any, symbol: str, market: str) -> float | None:
     """**최근 1시간 고저폭**(%) — 지금 이 종목이 움직이고 있나.
 
     Args:
         quotes: 조회 어댑터.
         symbol: 종목.
+        market: 그 어댑터의 거래소 — 종목을 그 시장의 것으로 만든다.
 
     Returns:
         폭(%). 못 읽으면 None — **0 으로 채우지 않는다** (0 은 "안 움직인다" 로 읽힌다).
@@ -1618,7 +1705,7 @@ async def _recent(quotes: Any, symbol: str) -> float | None:
     end = datetime.now(UTC)
     try:
         rows = await quotes.get_candles(
-            _instrument(symbol),
+            _instrument(symbol, market),
             Timeframe.M15,
             end - timedelta(minutes=RECENT_MINUTES),
             end,
@@ -1662,19 +1749,3 @@ def _exit_view(got: object) -> dict[str, Any]:
         "bid_depth": float(got.bid_depth),
         "ask_depth": float(got.ask_depth),
     }
-
-
-def _decimal(value: object) -> Decimal | None:
-    """숫자로 읽어 본다 — 못 읽으면 None (0 으로 채우지 않는다)."""
-    if value in (None, ""):
-        return None
-    try:
-        return Decimal(str(value))
-    except (ArithmeticError, ValueError):
-        return None
-
-
-def _float(value: object) -> float | None:
-    """화면용 실수 — 못 읽으면 None."""
-    found = _decimal(value)
-    return None if found is None else float(found)

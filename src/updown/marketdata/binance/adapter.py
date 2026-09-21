@@ -20,12 +20,14 @@ from updown.common.domain.market import (
     OrderBook,
     OrderBookLevel,
     Quote,
+    TickerStat,
 )
 from updown.common.domain.order import OrderRequest, OrderResult, OrderStatus
 from updown.marketdata.adapter import Capability
 from updown.marketdata.binance.client import BinanceClient
 from updown.marketdata.binance.mapping import (
     BinanceMappingError,
+    from_binance,
     interval_of,
     interval_seconds,
     spec_with_compat,
@@ -37,6 +39,7 @@ from updown.marketdata.binance.ws import BinanceCandleStream
 _KLINES = "/fapi/v1/klines"
 _BOOK_TICKER = "/fapi/v1/ticker/bookTicker"
 _PRICE = "/fapi/v1/ticker/price"
+_TICKER_24H = "/fapi/v1/ticker/24hr"
 _DEPTH = "/fapi/v1/depth"
 _PREMIUM = "/fapi/v1/premiumIndex"
 _EXCHANGE_INFO = "/fapi/v1/exchangeInfo"
@@ -234,6 +237,55 @@ class BinanceAdapter:
             ask=Decimal(str(book["askPrice"])),
             as_of=datetime.now(UTC),
         )
+
+    async def ticker_stats(self) -> list[TickerStat]:
+        """모든 무기한 심볼의 24시간 요약 — **중립 자료형**으로 (`TickerBoard` · 2026-09-22).
+
+        Returns:
+            심볼별 요약. 심볼은 도메인 표기(`BTC_USDT`)로 되돌려 놓는다.
+
+        Raises:
+            BinanceMappingError: 응답이 배열이 아닌 경우.
+            BinanceApiError: 호출 실패.
+
+        Note:
+            🔴 종목 순위 화면이 Gate 만 알던 것을 고치려고 만들었다 (사용자 지적: *"바이낸스
+            테스트넷에서는 바이낸스로, Gate 에서는 Gate 로 떠야지"*). Gate 의 한 응답에 있는
+            것이 바이낸스에서는 **둘로 갈려** 온다 — 24시간 통계(`ticker/24hr`)와 최우선
+            호가(`ticker/bookTicker`). 둘 다 심볼 없이 부르면 전 종목을 한 번에 준다.
+
+            ⚠️ 두 호출 사이에 수십 ms 가 있어 호가와 통계가 같은 순간은 아니다. 스프레드는
+            어차피 "지금 순간의 값" 이고 비용 판단에 쓰지 않는다 (그것은 `costs.yml` 의 실측).
+
+            ⚠️ weight: 심볼 없는 `24hr` 은 40 · `bookTicker` 는 5 다. 순위 화면은 1분에 한 번
+            부르므로 분당 45 — 한도(2,400)의 2% 다.
+        """
+        stats = await self._client.get_json(_TICKER_24H)
+        books = await self._client.get_json(_BOOK_TICKER)
+        if not isinstance(stats, list) or not isinstance(books, list):
+            raise BinanceMappingError("티커 응답이 배열이 아니다")
+        quotes: dict[str, dict[str, Any]] = {
+            str(row.get("symbol", "")): row for row in cast("list[dict[str, Any]]", books)
+        }
+        out: list[TickerStat] = []
+        for row in cast("list[dict[str, Any]]", stats):
+            raw = str(row.get("symbol", ""))
+            if raw == "":
+                continue
+            book = quotes.get(raw, {})
+            out.append(
+                TickerStat(
+                    symbol=from_binance(raw),
+                    last=_loose(row.get("lastPrice")),
+                    high_24h=_loose(row.get("highPrice")),
+                    low_24h=_loose(row.get("lowPrice")),
+                    bid=_loose(book.get("bidPrice")),
+                    ask=_loose(book.get("askPrice")),
+                    turnover_quote=_loose(row.get("quoteVolume")),
+                    change_pct=_loose(row.get("priceChangePercent")),
+                )
+            )
+        return out
 
     async def get_orderbook(self, instrument: Instrument) -> OrderBook:
         """호가창 (20단계).
@@ -436,3 +488,22 @@ class BinanceAdapter:
         raise OrderPathNotAvailableError(
             f"BinanceAdapter 는 주문 상태를 조회할 수 없다 (조회 전용). id={broker_order_id}"
         )
+
+
+def _loose(raw: object) -> Decimal | None:
+    """티커 한 칸을 **너그럽게** 읽는다 — 못 읽으면 None (`ticker_stats` 전용).
+
+    Note:
+        ⚠️ 표시용 순위표의 한 칸이다. 수백 심볼 중 하나의 한 칸이 깨졌다고 표 전체를
+        죽이지 않는다. 0 으로 채우지도 않는다 — 0 은 "거래가 없다" 로 읽힌다.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if text == "":
+        return None
+    try:
+        value = Decimal(text)
+    except (ArithmeticError, ValueError):
+        return None
+    return value if value.is_finite() else None
