@@ -25,6 +25,13 @@ export interface TradeMark {
   /** 도구의 청산 사유 — hard_sl · liq · tp · soft … */
   reason: string;
   leg?: string;
+  /**
+   * **아직 안 닫혔다** (라이브 · 2026-09-21).
+   *
+   * 참이면 `exit` 는 청산가가 아니라 **지금가**이고 `closedTs` 는 마지막 봉이다 —
+   * 화면은 그것을 "청산" 이라 부르지 않고 "지금 / 보유중" 이라 적는다.
+   */
+  open?: boolean;
 }
 
 export const REASON_LABEL: Record<string, string> = {

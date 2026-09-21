@@ -22,8 +22,16 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
-import { tradeZones, type TradeMark } from "./chart/trades";
-import { ZonesPrimitive, type Rect } from "./chart/ZonesPrimitive";
+import type { TradeMark } from "./chart/trades";
+import {
+  boxesOf,
+  edgesOf,
+  hitTest,
+  tagsOf,
+  TradeBoxPrimitive,
+  type TradeBox,
+  type TradeEdge,
+} from "./chart/tradeBoxes";
 import {
   CandlestickSeries,
   createChart,
@@ -315,12 +323,14 @@ type Props = {
 /** 상자를 칠할 지난 매매의 최대 개수 — 라이브 판은 보통 한 자리다. 넘으면 최근 것부터. */
 const MAX_TRADE_ZONES = 24;
 
-/**
- * 상자만 켠 표기 설정 — 마커·가로선은 라이브 차트가 `marks`·`plan` 으로 이미 그린다.
- *
- * ⚠️ 여기서 `entry`·`exit` 를 켜면 `marks` 와 **같은 점이 두 번** 찍힌다.
- */
-const ZONE_MARKS = { entry: false, exit: false, lines: false, zones: true, labels: false } as const;
+/** 호버·선택한 매매의 가격 딱지 — 없으면 빈 목록. */
+function focusFrom(
+  byId: Map<string, TradeMark>,
+  id: string | null | undefined,
+): ReturnType<typeof tagsOf> {
+  const found = id === null || id === undefined ? undefined : byId.get(id);
+  return found === undefined ? [] : tagsOf(found);
+}
 
 const PLAN_LINES = [
   { key: "stop", label: "손절", token: "--loss", fallback: "#b4423a" },
@@ -351,8 +361,8 @@ export function Chart({
   const series = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const maLine = useRef<ISeriesApi<"Line"> | null>(null);
   const bands = useRef<BandsPrimitive | null>(null);
-  /** 지난 매매 상자 — 시간으로도 막히므로 `BandsPrimitive`(화면 폭 전체)와 다른 깔개가 필요하다. */
-  const tradeRugs = useRef<ZonesPrimitive | null>(null);
+  /** 지난 매매 상자 · 세로 경계 · 호버 — 시간으로도 막히므로 `BandsPrimitive`(화면 폭)와 다른 깔개다. */
+  const tradeRugs = useRef<TradeBoxPrimitive | null>(null);
   const badges = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const planLines = useRef<IPriceLine[]>([]);
   // 🔴 **추세강도는 가격이 아니다** — 같은 축에 그리면 0~100 이 캔들 옆에 눌려 붙어
@@ -428,7 +438,7 @@ export function Chart({
     const rug = new BandsPrimitive();
     candles.attachPrimitive(rug);
     // 🔴 지난 매매 상자는 **먼저** 붙인다 — 나중에 붙은 것이 위에 그려지므로 분석 띠가 상자를 덮지 않는다.
-    const tradeRug = new ZonesPrimitive();
+    const tradeRug = new TradeBoxPrimitive();
     candles.attachPrimitive(tradeRug);
     // 🔴 **트레일 청산선(SMA)** — full_ride 전략의 실제 청산 경로. 캔들 뒤에 얇게 깐다.
     //    가격선·마지막값 라벨은 끈다(오른쪽 축이 계획선으로 이미 붐빈다).
@@ -1064,35 +1074,67 @@ export function Chart({
   }, [zones]);
 
   /**
-   * 지난 매매 상자 — 그 매매가 **어디서 어디까지** 살았나.
+   * 지난 매매 상자 + 세로 경계 — 그 매매가 **어디서 어디까지** 살았나.
    *
-   * 색·구간 규칙은 `chart/trades.ts` 가 정한다 (백테스트 차트와 같은 규칙을 쓴다 — 두 화면이
-   * 다른 색을 쓰면 같은 매매가 달라 보인다). 여기서는 그 결과를 칠하기만 한다.
+   * 색·구간 규칙은 `chart/tradeBoxes.ts` 가 정한다(그쪽이 `trades.ts` 의 규칙을 그대로 쓴다 —
+   * 백테스트 차트와 색이 갈리면 같은 매매가 달라 보인다). 여기서는 토큰을 풀어 넘기기만 한다.
    */
   useEffect(() => {
     const rug = tradeRugs.current;
     if (rug === null) return;
-    const up = tone("--gain", "#0f7b6c");
-    const down = tone("--loss", "#b4423a");
     const step = frameSeconds(frame.timeframe);
     const shown = (trades ?? []).slice(-MAX_TRADE_ZONES);
-    const rects: Rect[] = [];
+    const boxes: TradeBox[] = [];
+    const edges: TradeEdge[] = [];
     for (const item of shown) {
-      const focused = item.id === focusTradeId;
-      for (const zone of tradeZones(item, step, ZONE_MARKS)) {
-        rects.push({
-          from: zone.from,
-          to: zone.to,
-          low: zone.low,
-          high: zone.high,
-          // 고른 매매는 진하게 + 테두리 — 표에서 누른 것이 차트에서 바로 보여야 한다.
-          color: wash(zone.tone === "gain" ? up : down, focused ? zone.alpha * 1.8 : zone.alpha),
-          ...(focused ? { stroke: zone.tone === "gain" ? up : down } : {}),
-        });
-      }
+      boxes.push(...boxesOf(item, step));
+      edges.push(...edgesOf(item, step));
     }
-    rug.set(rects);
-  }, [trades, focusTradeId, frame.timeframe]);
+    // 🔴 색은 **그릴 때마다** 토큰에서 푼다 — 날 hex 를 들고 있으면 다크 모드에서 안 따라온다.
+    rug.set(boxes, edges, {
+      entry: tone("--entry-line", "#b8860b"),
+      gain: tone("--gain", "#0f7b6c"),
+      loss: tone("--loss", "#b4423a"),
+      flat: tone("--warm-gray", "#78716c"),
+      paper: tone("--pure-white", "#ffffff"),
+    });
+  }, [trades, frame.timeframe]);
+
+  /**
+   * **마우스를 올린 매매** — 상자가 진해지고 진입·손절·청산가가 상자 왼쪽에 뜬다.
+   *
+   * 🔴 표에서 고른 것(`focusTradeId`)보다 **마우스가 우선**이다. 지금 가리키는 것을
+   * 안 비추면 호버가 반응이 없는 것처럼 느껴진다.
+   *
+   * ⚠️ 크로스헤어는 초당 수십 번 온다 — `setHover` 가 **바뀐 경우에만** 다시 그린다.
+   */
+  useEffect(() => {
+    const made = chart.current;
+    const drawn = series.current;
+    if (made === null || drawn === null) return;
+    const byId = new Map((trades ?? []).map((item) => [item.id, item]));
+    const look = (param: { point?: { x: number; y: number }; time?: unknown }) => {
+      const rug = tradeRugs.current;
+      if (rug === null) return;
+      const at = param.time as number | undefined;
+      const point = param.point;
+      if (at === undefined || point === undefined) {
+        rug.setHover(focusTradeId ?? null, focusFrom(byId, focusTradeId));
+        return;
+      }
+      const price = drawn.coordinateToPrice(point.y);
+      const found =
+        price === null ? null : hitTest(rug.current(), at, price as unknown as number);
+      const pick = found ?? focusTradeId ?? null;
+      rug.setHover(pick, focusFrom(byId, pick));
+    };
+    made.subscribeCrosshairMove(look);
+    // 처음 한 번 — 표에서 고른 것이 있으면 마우스 없이도 비춘다.
+    tradeRugs.current?.setHover(focusTradeId ?? null, focusFrom(byId, focusTradeId));
+    return () => {
+      made.unsubscribeCrosshairMove(look);
+    };
+  }, [trades, focusTradeId]);
 
   // ── 매매 순간 + 판정 커서 ───────────────────────────────────────────
   useEffect(() => {

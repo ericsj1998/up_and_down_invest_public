@@ -5,7 +5,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { costBite, shownPct, sideOf, unrealizedOf, verdictOf } from "./History";
+import { costBite, shownPct, sideOf, unrealizedOf } from "./History";
+import { verdictOf } from "./verdict";
 import { tradeOf } from "./ui";
 
 describe("sideOf — 롱인가 숏인가", () => {

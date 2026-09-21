@@ -165,52 +165,68 @@ export function PaperTab({ run, home, named }: Props) {
   //    남았다** — 차트의 다른 모든 것은 바뀌는데 이것만 안 바뀌었다.
   //
   // ⇒ **뜻**을 넘기고 색은 차트가 그릴 때마다 토큰에서 푼다.
-  const marks = (state?.log ?? []).flatMap((row) => {
-    const out: { at: string; label: string; tone: MarkTone }[] = [];
-    if (row.opened_at) out.push({ at: row.opened_at, label: "진입", tone: "entry" });
-    if (row.half_at) out.push({ at: row.half_at, label: "1차", tone: "gain" });
-    if (row.closed_at) {
-      // ⭐ **손절과 익절을 색으로 가른다** — 같은 색이면 결과를 눈으로 못 읽는다.
-      const lost = (row.gain_pct ?? 0) < 0;
-      out.push({
-        at: row.closed_at,
-        label: lost ? "손절" : "익절",
-        tone: lost ? "loss" : "gain",
-      });
-    }
-    return out;
-  });
+  // 🔴 **진입·청산 점은 뺐다** (사용자 요구 2026-09-21: *"이제 점을 찍어주지 말고, 그냥 상자
+  //    시작점 세로 줄 긋고 진입, 끝나는 상자 지점 세로 줄 긋고 익절(손절, 보합) 작성"*).
+  //    상자의 양쪽 세로 경계가 같은 일을 더 정확히 한다 — 점은 봉 위에 떠 있어 어느 봉인지
+  //    애매했고, 상자 폭과 점 위치가 미묘하게 어긋나 보였다.
+  //
+  // ⚠️ **반익(1차)만 점으로 남긴다** — 그것은 매매 **도중**의 사건이라 상자 경계가 아니다.
+  //    상자 안 어디서 절반을 덜었는지는 세로 경계로는 못 보여 준다.
+  const marks = (state?.log ?? []).flatMap((row) =>
+    row.half_at
+      ? [{ at: row.half_at, label: "1차 익절", tone: "gain" as MarkTone }]
+      : [],
+  );
 
   /**
-   * **끝난 매매를 상자로** — 점(marks)은 *"언제"* 만 말하고 *"어디서 어디까지"* 는 못 말한다
-   * (사용자 요구 2026-09-21: *"지난 매매가 차트에 표시되게 — 손해는 붉은 박스, 진입가는 경계,
-   * 익절가는 파란 박스"*).
+   * **매매를 상자로** — 점은 *"언제"* 만 말하고 *"어디서 어디까지"* 는 못 말한다
+   * (사용자 요구 2026-09-21: *"손해는 붉은 박스, 진입가는 경계, 익절가는 파란 박스"*).
    *
-   * 색·구간 규칙은 `chart/trades.ts` 가 정한다 — 백테스트 차트가 이미 그 규칙으로 그리고 있었고
+   * 색·구간 규칙은 `chart/tradeBoxes.ts` 가 정한다 — 백테스트 차트가 이미 쓰던 규칙이고
    * 라이브만 안 쓰고 있었다. 두 화면이 각자 색을 정하면 같은 매매가 달라 보인다.
    *
-   * ⚠️ **열린 매매는 뺀다** — 그쪽은 `plan` 이 가로선으로 그린다. 넣으면 같은 값이 두 번 보인다.
-   * ⚠️ `gain_pct` 가 없으면(옛 행·권한) 색은 가격 방향으로 정해진다 — `tradeZones` 안의 규칙이다.
+   * 🔴 **열려 있는 매매도 넣는다** (사용자 지적: *"지금 진입해있는 포지션은 박스가 안쳐지고 있네"*).
+   * 그때는 청산가 자리에 **지금가**(마지막 봉 종가)를 넣고 상자를 지금까지 늘린다 —
+   * 상자는 점선 테두리로 그려 "아직 안 끝났다" 를 눈으로 가른다. 결말 딱지도 '보유중' 이다.
+   *
+   * ⚠️ 지금가가 없으면(봉이 아직 없음) 그 매매는 뺀다 — 상자 오른쪽 끝을 지어내지 않는다.
    */
-  const pastTrades = useMemo<TradeMark[]>(
-    () =>
-      (state?.log ?? [])
-        .filter((row) => row.exit !== null && row.opened_at !== null && row.closed_at !== null)
-        .map((row, index) => ({
+  const pastTrades = useMemo<TradeMark[]>(() => {
+    const bars = state?.frames?.[0]?.candles ?? [];
+    const last = bars[bars.length - 1];
+    const nowPrice = last === undefined ? null : Number(last.close);
+    const nowTs = last === undefined ? null : Math.floor(Date.parse(last.ts) / 1000);
+    return (state?.log ?? [])
+      .filter((row) => row.opened_at !== null)
+      .map((row, index) => {
+        const open = row.exit === null;
+        const exit = open ? nowPrice : Number(row.exit);
+        const closedTs = open
+          ? nowTs
+          : Math.floor(Date.parse(row.closed_at as string) / 1000);
+        return {
           id: row.trade_id || `${row.opened_at}:${index}`,
           symbol: state?.symbol ?? "",
           side: row.direction === "숏" ? (-1 as const) : (1 as const),
           entry: Number(row.entry),
-          exit: Number(row.exit),
+          exit: exit ?? Number.NaN,
           stop: Number(row.stop),
           openedTs: Math.floor(Date.parse(row.opened_at as string) / 1000),
-          closedTs: Math.floor(Date.parse(row.closed_at as string) / 1000),
+          closedTs: closedTs ?? 0,
           pnl: row.gain_pct === null ? null : Number(row.gain_pct),
           reason: row.outcome,
-        }))
-        .filter((t) => Number.isFinite(t.entry) && Number.isFinite(t.exit) && t.openedTs > 0),
-    [state?.log, state?.symbol],
-  );
+          open,
+        };
+      })
+      .filter(
+        (t) =>
+          Number.isFinite(t.entry) &&
+          Number.isFinite(t.exit) &&
+          Number.isFinite(t.stop) &&
+          t.openedTs > 0 &&
+          t.closedTs > 0,
+      );
+  }, [state?.log, state?.symbol, state?.frames]);
 
   // 로직이 도는가 — 셋을 하나로 합쳐 답한다.
   //
