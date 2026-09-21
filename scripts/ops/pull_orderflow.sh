@@ -13,9 +13,15 @@ SSH=(ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=15 "$HOST")
 ROOT="$(cd "$HERE/../.." && pwd)"
 OUT="$ROOT/logs/orderflow_server"
 mkdir -p "$OUT"
-"${SSH[@]}" "docker exec updown_live-orderflow-1 tar czf - -C logs/orderflow GATE" > "$OUT/_pull.tgz"
+# 🔴 GATE 만 가져오다가 업비트 쪽을 통째로 빠뜨린 적이 있다 (2026-09-21).
+# 사전 등록 판정 기준이 "Gate·업비트 **두 출처가 같은 방향**" 이므로 한쪽만 받으면 판정이 성립하지 않는다.
+MARKETS="${MARKETS:-GATE UPBIT}"
+"${SSH[@]}" "docker exec updown_live-orderflow-1 tar czf - -C logs/orderflow $MARKETS" > "$OUT/_pull.tgz"
 tar xzf "$OUT/_pull.tgz" -C "$OUT" && rm -f "$OUT/_pull.tgz"
-echo "가져옴: $(find "$OUT/GATE" -name '*.jsonl' | wc -l) 파일 · $(du -sh "$OUT/GATE" | cut -f1)"
-for d in "$OUT"/GATE/*/; do
-  s=$(basename "$d"); echo "  $s: $(ls "$d" | head -1) ~ $(ls "$d" | tail -1)"
+for m in $MARKETS; do
+  [ -d "$OUT/$m" ] || { echo "$m: 없음"; continue; }
+  echo "$m: $(find "$OUT/$m" -name '*.jsonl' | wc -l) 파일 · $(du -sh "$OUT/$m" | cut -f1)"
+  for d in "$OUT/$m"/*/; do
+    s=$(basename "$d"); echo "  $s: $(ls "$d" | head -1) ~ $(ls "$d" | tail -1)"
+  done
 done
