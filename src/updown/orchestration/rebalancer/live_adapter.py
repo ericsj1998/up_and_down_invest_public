@@ -16,6 +16,7 @@ from updown.analysis.indicators.bands import closed_above_upper
 from updown.common.domain.instrument import Timeframe
 from updown.orchestration.walkforward import Session
 from updown.orchestration.walkforward.ledger import Actor, Outcome
+from updown.orchestration.walkforward.sealed import SealBreachError
 
 
 @dataclass(slots=True)
@@ -221,5 +222,20 @@ class SessionBridge:
         """
         if self.breadth_bars < 1 or self.breadth_frame is None:
             return 0
-        closes = [bar.close for bar in self.session.feed.judged(self.breadth_frame, at=at)]
+        feed = self.session.feed
+        try:
+            rows = feed.judged(self.breadth_frame, at=at)
+        except SealBreachError:
+            # 🔴 **묻는 쪽과 답하는 쪽의 시계가 다르다** (2026-09-21 실계좌 실측 · T289 결함).
+            #    폭은 진입하려는 세션이 **형제 세션들**에게 묻는다. 정시에 세션들은 차례로 걷는데,
+            #    먼저 걸은 세션이 아직 안 걸은 형제에게 물으면 `at` 이 그 형제의 커서보다 미래라
+            #    `judged` 가 터지고, 예외가 묻던 세션의 걸음까지 올라가 **진입하려던 봉을 통째로
+            #    건너뛴다**(ETH 01:00 · "미래를 요구했다 — 00:50 > 커서 00:00"). 놓친 진입은
+            #    로그에 걸음 실패 한 줄로만 남는다.
+            #
+            #    형제가 **받아 둔 마감 봉** 중 `at` 전의 것을 읽는다 — 묻는 세션의 시각보다 미래를
+            #    보지 않으므로 미래 참조가 아니다(형제의 커서가 늦을 뿐 그 봉은 이미 마감됐다).
+            #    ⭐ 봉인 급전은 `observed` 가 `judged` 와 같아(커서까지) 백테스트는 안 변한다.
+            rows = [bar for bar in feed.observed(self.breadth_frame) if bar.ts < at]
+        closes = [bar.close for bar in rows]
         return 1 if closed_above_upper(closes, bars=self.breadth_bars) else 0

@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import cast
 
@@ -28,6 +28,7 @@ from updown.analysis.playbook.types import BreadthCap
 from updown.common.domain.instrument import Timeframe
 from updown.orchestration.rebalancer.live_adapter import SessionBridge
 from updown.orchestration.walkforward import Session
+from updown.orchestration.walkforward.sealed import SealBreachError
 
 AT = datetime(2026, 9, 18, 4, 0, tzinfo=UTC)
 FLAT = [Decimal(100) + Decimal(i % 2) for i in range(30)]  # 100·101 을 오가는 조용한 30봉
@@ -148,3 +149,59 @@ class TestBridge:
         bridge, feed = _bridge([*FLAT, Decimal(110)], bars=3, frame=None)
         assert bridge.band_breaks(AT) == 0
         assert feed.asked == []
+
+
+@dataclass
+class _TimedBar:
+    ts: datetime
+    close: Decimal
+
+
+class _LaggingFeed:
+    """아직 그 시각까지 **안 걸은 형제 세션**의 급전 — 커서보다 미래를 물으면 터진다."""
+
+    def __init__(self, bars: list[_TimedBar], cursor: datetime) -> None:
+        self._bars = bars
+        self._cursor = cursor
+
+    def judged(self, frame: Timeframe, *, at: datetime | None = None) -> list[_TimedBar]:
+        _ = frame
+        moment = self._cursor if at is None else at
+        if moment > self._cursor:
+            raise SealBreachError(f"미래를 요구했다 — {moment} > 커서 {self._cursor}")
+        return [bar for bar in self._bars if bar.ts < moment]
+
+    def observed(self, frame: Timeframe) -> list[_TimedBar]:
+        _ = frame
+        return list(self._bars)
+
+
+class TestASiblingThatHasNotSteppedYet:
+    """2026-09-21 실계좌: ETH 가 01:00 에 진입하려다 "미래를 요구했다" 로 그 봉을 건너뛰었다.
+
+    폭은 **형제 세션들**에게 묻는데 정시에는 세션들이 차례로 걷는다 — 먼저 걸은 세션의 `at` 은
+    아직 안 걸은 형제의 커서보다 미래다. 예외가 올라가면 진입이 통째로 사라진다.
+    """
+
+    def bars(self, last: Decimal) -> list[_TimedBar]:
+        start = AT - timedelta(hours=len(FLAT) + 1)
+        closes = [*FLAT, last]
+        return [_TimedBar(start + timedelta(hours=i), c) for i, c in enumerate(closes)]
+
+    def bridge(self, last: Decimal) -> SessionBridge:
+        feed = _LaggingFeed(self.bars(last), cursor=AT - timedelta(hours=2))
+        return SessionBridge(
+            cast("Session", _SessionStub(cast("_Feed", feed))),
+            breadth_bars=3,
+            breadth_frame=Timeframe.H1,
+        )
+
+    def test_it_answers_instead_of_raising(self) -> None:
+        assert self.bridge(Decimal(110)).band_breaks(AT) == 1
+
+    def test_it_still_reads_only_bars_before_the_asked_moment(self) -> None:
+        bridge = self.bridge(Decimal(110))
+        assert bridge.band_breaks(AT - timedelta(hours=1)) == 0, "그 시각 뒤의 봉은 안 본다"
+
+    def test_a_quiet_sibling_counts_zero(self) -> None:
+        assert self.bridge(Decimal(100)).band_breaks(AT) == 0
