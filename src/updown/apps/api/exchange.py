@@ -1637,6 +1637,9 @@ async def _ranking_rows(name: str, quotes: Any, group: str) -> dict[str, Any]:
     """
     table = load_symbol_groups()
     tracked = tuple(s for s in _universe(name) if table.of(name, s).group == group)
+    if not tracked:
+        # 이 거래소에는 이 탭의 종목이 없다 — 전 종목 요약(바이낸스는 가중치 40)을 부를 이유가 없다.
+        return {"rows": [], "at": datetime.now(UTC).isoformat(), "market": name}
     known = _tradable(name)
     found = {row.symbol: row for row in await quotes.ticker_stats()}
     # 🔴 **나갈 수 있는지를 고르기 전에 보여 준다** (사용자 제안 2026-08-20:

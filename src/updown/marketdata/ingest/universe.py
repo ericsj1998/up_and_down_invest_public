@@ -9,6 +9,7 @@
 """
 
 from updown.common.domain.instrument import AssetType, Currency, Instrument, Market
+from updown.common.symbol_groups import SymbolGroupConfigError, load_symbol_groups
 
 #: 업비트 KRW 마켓 심볼 → 표시용 종목명.
 #:
@@ -251,6 +252,24 @@ class UnknownSymbolError(ValueError):
     """
 
 
+def _declared_perp_name(symbol: str) -> str | None:
+    """묶음 표(`config/symbol_groups.yml`)에 선언된 Gate 계약의 이름 — 없으면 None (2026-09-22).
+
+    Note:
+        주식·지수 추종 계약의 풀이(애플 · 나스닥100 ETF …)는 이미 묶음 표에 있다. 여기
+        `GATE_USDT_NAMES` 에 또 적으면 목록이 두 벌이 된다 — 계약이 늘 때 한쪽만 고치게 된다.
+        묶음 표를 못 읽으면 None 이다 — 그 오류는 순위 화면이 크게 말하고, 여기서는
+        "모르는 심볼" 로 간다.
+    """
+    try:
+        info = load_symbol_groups().markets.get(Market.GATE.value, {}).get(symbol)
+    except SymbolGroupConfigError:
+        return None
+    if info is None:
+        return None
+    return f"{info.name or symbol.removesuffix('_USDT')} 무기한"
+
+
 def to_instrument(symbol: str) -> Instrument:
     """유니버스 심볼을 `Instrument` 로 만든다.
 
@@ -289,11 +308,12 @@ def to_instrument(symbol: str) -> Instrument:
     if symbol.endswith("_USDT"):
         # ⭐ **접미사로 알아본다.** 코인의 `KRW-` 와 같은 규칙이고, 주식처럼 거래소를
         #   추측해야 하는 문제가 없다 — `_USDT` 무기한은 Gate 하나만 다룬다.
-        perp = GATE_USDT_NAMES.get(symbol)
+        perp = GATE_USDT_NAMES.get(symbol) or _declared_perp_name(symbol)
         if perp is None:
             raise UnknownSymbolError(
                 f"이름을 모르는 심볼이다: {symbol!r}. "
-                "marketdata/ingest/universe.py 의 GATE_USDT_NAMES 에 추가하라"
+                "marketdata/ingest/universe.py 의 GATE_USDT_NAMES 에 추가하라 "
+                "(주식·지수 추종 계약이면 config/symbol_groups.yml)"
             )
         return Instrument(
             market=Market.GATE,

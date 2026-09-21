@@ -311,11 +311,42 @@ markets:
       # 🔴 `TSLAX_USDT` 는 뺐다 (2026-09-22). Gate USDT 무기한 1,000개에 **그 계약이 없다** —
       #    `TSLA_USDT` 로 바뀌었다(2026-09-03 상장 · `scripts/ops/probe_stock_tokens.py`).
       #    순위 화면이 "확인 불가 · 없다" 로 계속 띄우고 있었고, 그 말이 맞았다.
-      #    ⛔ `TSLA_USDT` 를 여기 바로 넣지 않는다 — 눈금을 **실측하지 않고** 옮겨 적으면
-      #       2026-08-18 의 버그(모르는 눈금으로 주문)와 같은 문을 연다.
+      #    ⛔ 눈금을 **실측하지 않고** 옮겨 적지 않는다 — 2026-08-18 의 버그(모르는 눈금으로 주문)와
+      #       같은 문을 연다. `TSLA_USDT` 는 아래에 실측값으로 들어갔다(2026-09-22).
       SPCX_USDT: 0.01
       SNDK_USDT: 0.01
       SKHY_USDT: 0.01
+      # ⭐ **주식 · 지수 추종 탭의 나머지 계약** (2026-09-22 실측 · `scripts/ops/probe_group_specs.py` —
+      #    Gate 공개 API 의 `order_price_round` 그대로. 스물넷 전부 거래 중 · 테이커 0.075% ·
+      #    배율 상한 20~100x). 목록은 `config/symbol_groups.yml` 과 같다 — 계약이 늘면 두 곳에 같이 적는다.
+      #
+      # 🔴 **여기 있다는 것은 "판을 띄울 수 있다" 이지 "띄우면 번다" 가 아니다.** 진짜 무기한으로 잰
+      #    추세추종+삼각수렴 1.0.0 의 표본은 넷(MSFT·INTC·AMD·NFLX)뿐이고 아직 판정 불가다
+      #    (`docs/measurements/stock_perp_reproduction_2026-09-22.md`).
+      # ⚠️ 대부분 2026-09-03 상장이다 — 삼각 다리는 일봉 210개가 있어야 상위 추세를 읽는다. 그 전에는
+      #    세션이 그 다리를 **조용히 못 켠다**(돌파 다리는 4H 210봉 = 35일이면 켜진다).
+      # ⚠️ `TZA_USDT` 는 24시간 거래대금이 128 USDT 다 — 눈금은 있어도 호가가 없다(나갈 수 없다).
+      AAPL_USDT: 0.01
+      MSFT_USDT: 0.01
+      GOOGL_USDT: 0.01
+      AMZN_USDT: 0.01
+      META_USDT: 0.01
+      NVDA_USDT: 0.01
+      TSLA_USDT: 0.01
+      NFLX_USDT: 0.01
+      AMD_USDT: 0.01
+      INTC_USDT: 0.01
+      COIN_USDT: 0.01
+      MSTR_USDT: 0.01
+      HOOD_USDT: 0.01
+      PLTR_USDT: 0.01
+      SPY_USDT: 0.01
+      QQQ_USDT: 0.01
+      SOXX_USDT: 0.1
+      GDX_USDT: 0.01
+      TQQQX_USDT: 0.01
+      SQQQ_USDT: 0.01
+      TZA_USDT: 0.01
 
     # 🔴 **호가 눈금** (2026-08-18 실측 · 사용자 승인).
     #

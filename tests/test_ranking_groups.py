@@ -125,6 +125,25 @@ class TestDeclaredGroups:
         assert set(load_symbol_groups().declared("GATE", "stock")) <= found
 
 
+class TestDeclaredContractsCanBeLaunched:
+    """탭에 보이기만 하고 판을 못 띄우면 반쪽이다 — 눈금과 이름이 같이 있어야 한다."""
+
+    def test_every_declared_contract_has_a_measured_tick(self) -> None:
+        known = api._tradable("GATE")  # pyright: ignore[reportPrivateUsage]
+        table = load_symbol_groups()
+        declared = set(table.declared("GATE", "stock")) | set(table.declared("GATE", "index"))
+        assert declared <= known, f"눈금 미선언: {sorted(declared - known)}"
+
+    def test_declared_contracts_resolve_to_gate_instruments(self) -> None:
+        from updown.common.domain.instrument import Market
+        from updown.marketdata.ingest.universe import to_instrument
+
+        item = to_instrument("MSFT_USDT")
+        assert item.market is Market.GATE
+        assert item.name == "마이크로소프트 무기한"
+        assert to_instrument("SQQQ_USDT").name.startswith("나스닥100 3배 역방향")
+
+
 class TestBrokenConfigIsLoud:
     def _load(self, tmp_path: Path, text: str) -> Any:
         path = tmp_path / "groups.yml"
@@ -185,6 +204,20 @@ class TestRankingPerTab:
         """⭐ 비용은 종목 수에 비례한다 — 안 보는 탭의 봉을 묻지 않는다."""
         await api.ranking(group="index")
         assert sorted(board.candle_asks) == ["SPY_USDT", "SQQQ_USDT"]
+
+    async def test_an_empty_tab_asks_the_exchange_nothing(
+        self, board: FakeBoard, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """이 거래소에 그 탭의 종목이 없으면 전 종목 요약도 안 부른다 (바이낸스는 가중치 40)."""
+
+        def coins_only(_: str) -> tuple[str, ...]:
+            return ("BTC_USDT", "ETH_USDT")
+
+        monkeypatch.setattr(api, "_universe", coins_only)
+        got = await api.ranking(group="stock")
+        assert got["rows"] == []
+        assert got["group"] == "stock"
+        assert board.board_calls == 0
 
     @pytest.mark.usefixtures("board")
     async def test_unknown_group_falls_back_to_default(self) -> None:
