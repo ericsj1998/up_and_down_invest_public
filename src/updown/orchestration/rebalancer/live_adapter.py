@@ -157,6 +157,22 @@ class SessionBridge:
             Decimal(0),
         )
 
+    def breadth_bar_at(self) -> datetime | None:
+        """폭을 세는 축에서 **마지막으로 받은 마감 봉**의 시작 시각 — 관측 전용 (2026-09-21).
+
+        Returns:
+            폭을 안 세는 세션이거나 봉이 없으면 None.
+
+        Note:
+            문이 폭을 셀 때 이 값을 같이 적는다. 묻는 순간 형제의 마지막 봉이 아직 안 도착했으면
+            폭이 조용히 1 적게 세어지는데, 이 시각이 다른 형제들보다 한 칸 늦은 것으로 드러난다.
+            판정에는 안 쓴다.
+        """
+        if self.breadth_bars < 1 or self.breadth_frame is None:
+            return None
+        rows = self.session.feed.observed(self.breadth_frame)
+        return rows[-1].ts if rows else None
+
     def open_count_of(self, leg: str) -> int:
         """그 다리(귀속 키)가 낸 보유 중 매매 수 (T291 · 다리별 문의 입력).
 

@@ -10,12 +10,14 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
+from updown.common.logging.setup import get_logger
 from updown.decision.portfolio_rules import (
     Grant,
     day_halted,
@@ -23,6 +25,8 @@ from updown.decision.portfolio_rules import (
     notional_room,
     slot_free,
 )
+
+_logger = get_logger("rebalancer.gate")
 
 
 class PositionPort(Protocol):
@@ -70,6 +74,15 @@ class BreadthAware(Protocol):
         Returns:
             포트가 든 종목 수만큼의 합 — 종목 하나짜리 세션이면 0 또는 1.
         """
+        ...
+
+
+@runtime_checkable
+class BreadthTimed(Protocol):
+    """폭을 세는 축의 **마지막으로 받은 마감 봉 시각**을 말해 줄 수 있는 포트 — 관측 전용."""
+
+    def breadth_bar_at(self) -> datetime | None:
+        """마지막으로 받은 마감 봉의 시작 시각. 폭을 안 세거나 봉이 없으면 None."""
         ...
 
 
@@ -201,10 +214,47 @@ class SlotGate:
         )
 
     def _cap_at(self, at: datetime) -> Decimal | None:
-        """이 진입에 쓸 총 명목 상한 — 시장 전체 돌파면 `breadth_cap`, 아니면 `notional_cap`."""
+        """이 진입에 쓸 총 명목 상한 — 시장 전체 돌파면 `breadth_cap`, 아니면 `notional_cap`.
+
+        Note:
+            🔴 **센 폭을 적는다** (2026-09-21 · §1-0s 관측 규약). 폭은 형제 세션들이 받아 둔 봉에서
+            나오는데, 묻는 순간 형제의 마지막 봉이 아직 안 도착했으면 폭이 **조용히 1 적게** 센다
+            (상한이 3x 대신 2x 로 남는다). 얼마나 자주인지 잰 적이 없다 — 종목별 값과 마지막 봉
+            시각을 같이 적어 두면 로그만으로 센다. 진입할 때만 불리므로 양은 적다.
+        """
         if self.breadth_cap is None or self.breadth_min <= 0 or self.notional_cap is None:
             return self.notional_cap
-        return self.breadth_cap if self.breadth(at) >= self.breadth_min else self.notional_cap
+        counts = {
+            name: port.band_breaks(at)
+            for name, port in self.ports.items()
+            if isinstance(port, BreadthAware)
+        }
+        wide = sum(counts.values()) >= self.breadth_min
+        # 🔴 관측이 진입을 막으면 안 된다 — 로그를 적다 난 예외는 삼킨다(판정은 위에서 끝났다).
+        with contextlib.suppress(Exception):
+            self._note_breadth(at, counts, wide=wide)
+        return self.breadth_cap if wide else self.notional_cap
+
+    def _note_breadth(self, at: datetime, counts: Mapping[str, int], *, wide: bool) -> None:
+        """센 폭과 종목별 마지막 봉 시각을 로그로 남긴다 — 관측 전용."""
+        if not any(isinstance(port, BreadthTimed) for port in self.ports.values()):
+            # 연구 걸음·시험의 포트는 봉 시각을 모른다 — 수만 번 부르는 걸음에 로그를 쏟지 않는다.
+            return
+        _logger.info(
+            "fund_gate_breadth",
+            payload={
+                "at": at.isoformat(),
+                "breadth": sum(counts.values()),
+                "min": self.breadth_min,
+                "cap": str(self.breadth_cap if wide else self.notional_cap),
+                "breaks": counts,
+                "last_bar": {
+                    name: None if (seen := port.breadth_bar_at()) is None else seen.isoformat()
+                    for name, port in self.ports.items()
+                    if isinstance(port, BreadthTimed)
+                },
+            },
+        )
 
 
 @runtime_checkable
@@ -260,6 +310,13 @@ class LegPort:
     def band_breaks(self, at: datetime) -> int:
         """폭의 입력 — 다리의 종목 범위 밖이면 0."""
         return self.source.band_breaks(at) if self.in_scope else 0
+
+    def breadth_bar_at(self) -> datetime | None:
+        """마지막으로 받은 마감 봉 시각 — 범위 밖이거나 원본이 모르면 None (관측 전용)."""
+        source = self.source
+        if not self.in_scope or not isinstance(source, BreadthTimed):
+            return None
+        return source.breadth_bar_at()
 
 
 @dataclass(slots=True)

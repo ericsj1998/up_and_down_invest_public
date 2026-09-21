@@ -49,6 +49,7 @@ from updown.apps.api.walkforward import (
 from updown.common.cache import TtlCache
 from updown.common.domain.capabilities import capabilities_of
 from updown.common.domain.instrument import Market, MarketGroup, Timeframe
+from updown.common.logging.setup import get_logger
 from updown.decision.allocation import Basket, BasketError, BasketMember, as_members, rank_members
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider
@@ -171,6 +172,8 @@ def _fund_or_404(fund_id: str, *, pop: bool = False) -> Fund:
 
 
 _logger = logging.getLogger("rebalancer")
+_events = get_logger("rebalancer.gate")
+"""구조화 로그(`event_type` 으로 찾는다) — 운영 프로브가 서버 로그에서 읽는 줄은 이쪽으로 남긴다."""
 
 CORE_SYMBOLS = ("BTC_USDT", "ETH_USDT", "BTCUSDT", "ETHUSDT")
 """코어 종목 — `alt_leverage` 오버라이드에서 제외 (GATE·BINANCE 두 표기)."""
@@ -277,6 +280,75 @@ def _reattach_gate(fund: Fund) -> None:
         breadth=fund.breadth_cap,
         leverage=fund.leverage,
         legs=fund.legs,
+    )
+    _log_gate(fund)
+
+
+def _log_gate(fund: Fund) -> None:
+    """펀드의 세션들에 **실제로 끼워진 것**을 로그 한 줄로 남긴다 (2026-09-21 · 규칙 #8).
+
+    Args:
+        fund: 대상 펀드.
+
+    Note:
+        🔴 진입 문·다리 노출·사이징 예산·폭 설정은 **도는 프로세스의 메모리에만** 있다. 파일에도
+        DB 에도 없어, 문이 안 끼워진 채 돌아도 밖에서는 아무 흔적이 없었다(실계좌 점검에서 이 셋을
+        확인할 길이 없었다). 선언이 아니라 **세션에서 읽은 값**을 적는다 — 선언과 다르면
+        그것이 결함이다.
+        생성·복원·종목 편집·매매법 전환 때마다 남는다. 시크릿은 없다(이름·수·배율·예산).
+    """
+    try:
+        _log_gate_unguarded(fund)
+    except Exception as exc:
+        # 관측 실패가 펀드 복원(= 열린 포지션 관리)을 막으면 안 된다 (#8-1). 흔적은 남긴다.
+        _logger.warning("fund_gate_log_failed: %s %s", fund.fund_id, str(exc)[:160])
+
+
+def _log_gate_unguarded(fund: Fund) -> None:
+    """`_log_gate` 의 본문 — 예외는 호출자가 받는다."""
+    members: dict[str, dict[str, object]] = {}
+    for symbol, port in fund.coordinator.ports.items():
+        if not isinstance(port, SessionBridge):
+            continue
+        session = port.session
+        gate = session.entry_gate
+        members[symbol] = {
+            "books": [item.playbook_id for item in session.playbooks],
+            "leverage": str(session.ledger.leverage),
+            "budget": (
+                None
+                if session.ledger.margin_budget is None
+                else str(session.ledger.margin_budget.quantize(Decimal("0.01")))
+            ),
+            "gate": None if gate is None else type(gate).__name__,
+            "leg_exposure": {name: str(size) for name, size in session.leg_leverage.items()},
+            "breadth": (
+                None
+                if port.breadth_frame is None or port.breadth_bars < 1
+                else f"{port.breadth_frame.value}x{port.breadth_bars}"
+            ),
+        }
+    _events.info(
+        "fund_gate_attached",
+        payload={
+            "fund_id": fund.fund_id,
+            "playbook": fund.playbook,
+            "slots": fund.slots,
+            "legs": [
+                {
+                    "playbook": leg.playbook,
+                    "symbols": len(leg.symbols),
+                    "slots": leg.slots,
+                    "exposure": str(leg.exposure),
+                    "cap": None if leg.notional_cap is None else str(leg.notional_cap),
+                    "brake": leg.drawdown_brake is not None,
+                    "breadth": leg.breadth_cap is not None,
+                }
+                for leg in fund.legs
+            ],
+            "members": members,
+            "ungated": sorted(name for name, body in members.items() if body["gate"] is None),
+        },
     )
 
 
@@ -794,6 +866,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
     if isinstance(raw_anchor, dict):
         fund.anchor = AnchorState.from_dict(cast("dict[str, Any]", raw_anchor))
     FUNDS[fund.fund_id] = fund
+    _log_gate(fund)
 
 
 async def _spawn_session(
@@ -992,6 +1065,7 @@ async def _create_fund(
         breadth_cap=breadth_cap,
     )
     FUNDS[fund.fund_id] = fund
+    _log_gate(fund)
     if weight_mode == "rank60":
         # 첫 비중부터 랭크로 — 실패하면 입력 비중으로 시작하고 다음 00 UTC 에 다시 시도한다.
         await _refresh_rank(fund)
