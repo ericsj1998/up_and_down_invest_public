@@ -824,7 +824,7 @@ export function symbols(): Promise<{ rows: Choice[] }> {
   return request("/exchange/symbols");
 }
 
-export function ranking(): Promise<{ rows: Rank[]; at: string }> {
+export function ranking(): Promise<{ rows: Rank[]; at: string; note?: string }> {
   return request("/exchange/ranking");
 }
 

@@ -110,6 +110,15 @@ function Exit({ row }: { row: Rank }) {
 export function Ranking() {
   const [rows, setRows] = useState<Rank[]>([]);
   const [error, setError] = useState("");
+  /**
+   * 서버가 **줄이 없는 이유**를 말해 줄 때 그 말 (2026-09-22).
+   *
+   * 🔴 서버는 Gate 연결이 없으면 `{rows: [], note: "연결된 Gate 계정이 없다"}` 를 돌려주는데
+   * 화면이 `note` 를 **아예 안 읽고 있었다** — 그래서 머리글만 남은 빈 표가 떴고, 사람은
+   * 고장인지 조용한 건지 알 수 없었다 (사용자 신고: *"종목 순위도 아예 출력이 안되고 있어"*).
+   * 조용한 실패 금지(규칙 #8)는 서버만의 일이 아니다.
+   */
+  const [note, setNote] = useState("");
   // ⭐ 거래대금이 기본이다 — 얇은 종목에서는 스프레드가 좁아 보여도 실제로 못 채운다.
   const [sort, setSort] = useState<Key>("turnover");
   // ⭐ **누른 열을 다시 누르면 방향이 뒤집힌다.** 안 그러면 이미 그 열로 정렬된 상태에서
@@ -120,7 +129,10 @@ export function Ranking() {
     let alive = true;
     const pull = () => {
       ranking()
-        .then((body) => alive && (setRows(body.rows), setError("")))
+        .then(
+          (body) =>
+            alive && (setRows(body.rows), setNote(body.note ?? ""), setError("")),
+        )
         .catch((exc: unknown) => alive && setError(String(exc)));
     };
     pull();
@@ -138,13 +150,14 @@ export function Ranking() {
   const sorted = ordered(rows, sort, down);
 
   const top = sorted[0];
+  // ⚠️ 접힌 상태에서도 이유가 보여야 한다 — 펴 봐야 아는 빈 표가 지금까지의 문제였다.
   const summary = error
     ? "읽지 못했다"
     : top
       ? `${sorted.length}종목 · ${COLUMNS.find((c) => c.key === sort)?.label} ${
           down ? "내림" : "오름"
         }차순`
-      : "아직 안 읽었다";
+      : note || "아직 안 읽었다";
 
   return (
     <Fold name="종목 순위" summary={summary} keep="ranking" initialShut>
@@ -153,6 +166,13 @@ export function Ranking() {
         볼지는 사람이 고른다.
       </p>
       {error ? <ErrorCard message={error} /> : null}
+      {/* 🔴 **줄이 없으면 왜 없는지 말한다.** 머리글만 남은 표는 고장과 구별되지 않는다. */}
+      {!error && sorted.length === 0 ? (
+        <p className="notice warn">
+          {note ||
+            "줄이 없다 — 서버가 이유를 말하지 않았다. 이것 자체가 확인할 거리다."}
+        </p>
+      ) : null}
       <div className="table-wrap">
         <table>
           <thead>
