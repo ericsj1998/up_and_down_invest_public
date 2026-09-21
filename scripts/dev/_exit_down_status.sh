@@ -12,13 +12,15 @@ JOBS=logs/t279/_exit_down_jobs.txt
 TOTAL=$(wc -l < "$JOBS" 2>/dev/null | tr -d ' ')
 FILES=$(ls -1 logs/t279/ 2>/dev/null | grep -cE 'pen075_w14_x1[0257]\.json')
 LAUNCHERS=$(pgrep -fc "xargs -P 8" 2>/dev/null | head -1)
-RUNNING=$(pgrep -af "_exit_down_one.sh" 2>/dev/null | grep -vc pgrep)
+# ⚠️ xargs 런처 줄도 스크립트 이름을 담고 있다 — 빼지 않으면 런처가 '잡' 으로 세어진다.
+RUNNING=$(pgrep -af "_exit_down_one.sh" 2>/dev/null | grep -v pgrep | grep -vc xargs)
 START=$(head -1 "$LOGF" | sed -n 's/^start \([0-9-]* [0-9:]*\).*/\1/p')
 
 echo "시작 $START · 지금 $(date '+%F %T')"
 echo "런처 ${LAUNCHERS:-0}개 · 도는 잡 ${RUNNING:-0}개 · 결과 파일 **$FILES / $TOTAL**"
 # 같은 잡이 둘이면 중복이다 — 바로 보이게.
-DUPS=$(pgrep -af "_exit_down_one.sh" 2>/dev/null | grep -v pgrep | awk '{print $5, $8, $10}' | sort | uniq -d | wc -l)
+DUPS=$(pgrep -af "_exit_down_one.sh" 2>/dev/null | grep -v pgrep | grep -v xargs \
+  | awk '{print $4, $7, $9}' | sort | uniq -d | wc -l)
 [ "${DUPS:-0}" -gt 0 ] && echo "🔴 중복으로 도는 잡 $DUPS개 — 런처가 겹쳤다"
 
 if [ "${FILES:-0}" -gt 0 ] && [ -n "$START" ]; then
