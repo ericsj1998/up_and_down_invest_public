@@ -363,6 +363,14 @@ export function Chart({
   const bands = useRef<BandsPrimitive | null>(null);
   /** 지난 매매 상자 · 세로 경계 · 호버 — 시간으로도 막히므로 `BandsPrimitive`(화면 폭)와 다른 깔개다. */
   const tradeRugs = useRef<TradeBoxPrimitive | null>(null);
+  /**
+   * **아래 판의 세로줄** — 같은 매매 경계를 추세강도 판에도 긋는다.
+   *
+   * 🔴 프리미티브는 **자기 판 안에서만** 그린다. 그래서 세로줄이 가격 판 바닥에서 끊겼고,
+   * 아래 판과 시간축 사이가 비어 "잘린" 것으로 보였다 (사용자 지적 2026-09-21).
+   * 판을 넘나드는 선은 없으니 사본을 하나 더 붙여 한 줄처럼 보이게 한다.
+   */
+  const tradeLines = useRef<TradeBoxPrimitive | null>(null);
   const badges = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const planLines = useRef<IPriceLine[]>([]);
   // 🔴 **추세강도는 가격이 아니다** — 같은 축에 그리면 0~100 이 캔들 옆에 눌려 붙어
@@ -471,6 +479,9 @@ export function Chart({
       },
       1,
     );
+    // ⭐ 매매 경계 세로줄을 아래 판에도 이어 긋는다 (선만 · 상자와 글자는 위 판의 몫).
+    const tradeLine = new TradeBoxPrimitive({ linesOnly: true });
+    power.attachPrimitive(tradeLine);
     // ⭐ 아래 판은 곁다리다 — 가격 판을 눌러 버리면 원래 보던 것을 잃는다.
     made.panes()[1]?.setHeight(ADX_HEIGHT);
     // ⚠️ 판을 새로 지으면 **기억도 비운다** — 옛 축의 마지막 시각이 남아 있으면
@@ -507,6 +518,7 @@ export function Chart({
     overlayLines.current = [];
     bands.current = rug;
     tradeRugs.current = tradeRug;
+    tradeLines.current = tradeLine;
     badges.current = createSeriesMarkers(candles, []);
     // 다크 모드 (T34) — 차트는 캔버스라 CSS 토큰 변화를 스스로 못 본다.
     // data-theme 이 바뀌면 토큰을 다시 읽어 칠한다. 띠·계획선은 다음 데이터
@@ -541,6 +553,7 @@ export function Chart({
       badges.current = null;
       bands.current = null;
       tradeRugs.current = null;
+      tradeLines.current = null;
       overlayLines.current = [];
       maLine.current = null;
       series.current = null;
@@ -1091,13 +1104,16 @@ export function Chart({
       edges.push(...edgesOf(item, step));
     }
     // 🔴 색은 **그릴 때마다** 토큰에서 푼다 — 날 hex 를 들고 있으면 다크 모드에서 안 따라온다.
-    rug.set(boxes, edges, {
+    const colors = {
       entry: tone("--entry-line", "#b8860b"),
       gain: tone("--gain", "#0f7b6c"),
       loss: tone("--loss", "#b4423a"),
       flat: tone("--warm-gray", "#78716c"),
       paper: tone("--pure-white", "#ffffff"),
-    });
+    };
+    rug.set(boxes, edges, colors);
+    // 아래 판의 사본 — 같은 경계를 그어야 한 줄로 보인다.
+    tradeLines.current?.set(boxes, edges, colors);
   }, [trades, frame.timeframe]);
 
   /**
@@ -1113,24 +1129,29 @@ export function Chart({
     const drawn = series.current;
     if (made === null || drawn === null) return;
     const byId = new Map((trades ?? []).map((item) => [item.id, item]));
+    // 위 판과 아래 판이 **같이** 비춰야 한 줄로 보인다.
+    const light = (id: string | null) => {
+      const tags = focusFrom(byId, id);
+      tradeRugs.current?.setHover(id, tags);
+      tradeLines.current?.setHover(id, tags);
+    };
     const look = (param: { point?: { x: number; y: number }; time?: unknown }) => {
       const rug = tradeRugs.current;
       if (rug === null) return;
       const at = param.time as number | undefined;
       const point = param.point;
       if (at === undefined || point === undefined) {
-        rug.setHover(focusTradeId ?? null, focusFrom(byId, focusTradeId));
+        light(focusTradeId ?? null);
         return;
       }
       const price = drawn.coordinateToPrice(point.y);
       const found =
         price === null ? null : hitTest(rug.current(), at, price as unknown as number);
-      const pick = found ?? focusTradeId ?? null;
-      rug.setHover(pick, focusFrom(byId, pick));
+      light(found ?? focusTradeId ?? null);
     };
     made.subscribeCrosshairMove(look);
     // 처음 한 번 — 표에서 고른 것이 있으면 마우스 없이도 비춘다.
-    tradeRugs.current?.setHover(focusTradeId ?? null, focusFrom(byId, focusTradeId));
+    light(focusTradeId ?? null);
     return () => {
       made.unsubscribeCrosshairMove(look);
     };

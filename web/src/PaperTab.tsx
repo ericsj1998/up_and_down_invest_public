@@ -194,12 +194,28 @@ export function PaperTab({ run, home, named }: Props) {
    * 상자는 점선 테두리로 그려 "아직 안 끝났다" 를 눈으로 가른다. 결말 딱지도 '보유중' 이다.
    *
    * ⚠️ 지금가가 없으면(봉이 아직 없음) 그 매매는 뺀다 — 상자 오른쪽 끝을 지어내지 않는다.
+   *
+   * 🔴 **열린 매매의 손익은 거래소가 말한다** (사용자 요구 2026-09-21: *"롱 진입도, 지금까지
+   * 몇퍼 이득인지 적혀야 할 것 같은데? '보유중' 이렇게 적히는 게 아니라"*).
+   *
+   * 원장의 `gain_pct` 는 **청산될 때만** 난다(`exit_average` 가 있어야 계산된다) — 그래서
+   * 열린 매매는 null 이고 딱지에 결말만 남았다. 화면이 진입가·지금가로 다시 계산하면
+   * 배율·수수료를 어디선가 또 정해야 하고, 그 값은 카드·표가 보여 주는 수와 갈린다.
+   * 거래소가 잡은 `unrealised_pnl ÷ margin` 을 그대로 쓴다 — **펀드 카드와 같은 출처**다.
    */
   const pastTrades = useMemo<TradeMark[]>(() => {
     const bars = state?.frames?.[0]?.candles ?? [];
     const last = bars[bars.length - 1];
     const nowPrice = last === undefined ? null : Number(last.close);
     const nowTs = last === undefined ? null : Math.floor(Date.parse(last.ts) / 1000);
+    // 거래소가 이 종목에 잡고 있는 포지션 — 열린 매매의 미실현은 여기서만 온다.
+    const held = health?.exchange?.position;
+    const liveUsdt = Number(held?.["unrealised_pnl"]);
+    const liveMargin = Number(held?.["margin"]);
+    const livePct =
+      Number.isFinite(liveUsdt) && Number.isFinite(liveMargin) && liveMargin > 0
+        ? (liveUsdt / liveMargin) * 100
+        : null;
     return (state?.log ?? [])
       .filter((row) => row.opened_at !== null)
       .map((row, index) => {
@@ -217,12 +233,17 @@ export function PaperTab({ run, home, named }: Props) {
           stop: Number(row.stop),
           openedTs: Math.floor(Date.parse(row.opened_at as string) / 1000),
           closedTs: closedTs ?? 0,
-          pnl: row.gain_pct === null ? null : Number(row.gain_pct),
+          // 닫힌 매매는 원장(비용·펀딩까지 든 값) · 열린 매매는 거래소 미실현.
+          pnl: open ? livePct : row.gain_pct === null ? null : Number(row.gain_pct),
           reason: row.outcome,
           open,
           // ⭐ 손익 **금액**의 분모 — 없으면(백테스트·옛 행) 화면이 % 만 적는다.
-          margin:
-            row.margin_used === null || row.margin_used === undefined
+          //    열린 매매는 거래소가 실제로 잡은 증거금을 쓴다(원장 예산과 다를 수 있다).
+          margin: open
+            ? Number.isFinite(liveMargin) && liveMargin > 0
+              ? liveMargin
+              : null
+            : row.margin_used === null || row.margin_used === undefined
               ? null
               : Number(row.margin_used),
         };
@@ -235,7 +256,7 @@ export function PaperTab({ run, home, named }: Props) {
           t.openedTs > 0 &&
           t.closedTs > 0,
       );
-  }, [state?.log, state?.symbol, state?.frames]);
+  }, [state?.log, state?.symbol, state?.frames, health?.exchange?.position]);
 
   // 로직이 도는가 — 셋을 하나로 합쳐 답한다.
   //

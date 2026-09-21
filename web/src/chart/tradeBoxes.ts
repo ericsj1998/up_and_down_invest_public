@@ -236,6 +236,21 @@ function washed(color: string, alpha: number): string {
  * 차트가 안 쓰는 분기를 지고 간다.
  */
 export class TradeBoxPrimitive implements ISeriesPrimitive<Time> {
+  /**
+   * **선만 그린다** — 아래 판(추세강도)에 붙는 사본.
+   *
+   * 🔴 세로줄이 가격 판 바닥에서 끊겨 보기 불편하다는 지적(2026-09-21)의 원인은 프리미티브가
+   * **자기 판 안에서만** 그릴 수 있어서다. 판을 넘나드는 선은 없다 — 같은 x 를 그리는 사본을
+   * 아래 판에도 붙여야 한 줄처럼 보인다.
+   *
+   * ⚠️ 아래 판에는 상자도 글자도 안 그린다. 상자는 가격 띠라 뜻이 없고, 글자는 위에 이미 있다.
+   */
+  private readonly linesOnly: boolean;
+
+  constructor(options: { linesOnly?: boolean } = {}) {
+    this.linesOnly = options.linesOnly === true;
+  }
+
   private boxes: TradeBox[] = [];
   private edges: TradeEdge[] = [];
   private tags: PriceTag[] = [];
@@ -329,11 +344,35 @@ export class TradeBoxPrimitive implements ISeriesPrimitive<Time> {
           const series = owner.series;
           if (series === null) return;
           if (owner.boxes.length === 0 && owner.edges.length === 0) return;
+          // 선만 그리는 판은 세로줄이 없으면 할 일이 없다.
+          if (owner.linesOnly && owner.edges.length === 0) return;
           target.useBitmapCoordinateSpace((scope) => paint.call(owner, scope, series));
         },
       }),
     });
+    if (this.linesOnly) return [view("top", owner.paintLines)];
     return [view("bottom", owner.paintBoxes), view("top", owner.paintLabels)];
+  }
+
+  /** 아래 판 — 세로줄만. 글자는 위 판이 이미 적었고, 상자는 가격 띠라 여기서 뜻이 없다. */
+  private paintLines(scope: Scope, _series: ISeriesApi<"Candlestick">): void {
+    const { context, bitmapSize, horizontalPixelRatio: hx } = scope;
+    const cssWidth = bitmapSize.width / hx;
+    for (const edge of this.edges) {
+      const at = this.x(edge.at, cssWidth);
+      if (at === null) continue;
+      const lit = this.hover === edge.id;
+      context.save();
+      context.strokeStyle = this.toneColor(edge.tone);
+      context.lineWidth = Math.max(1, (lit ? 2 : 1) * hx);
+      context.globalAlpha = lit ? 1 : 0.55;
+      context.beginPath();
+      const x = Math.round(at * hx) + 0.5;
+      context.moveTo(x, 0);
+      context.lineTo(x, bitmapSize.height);
+      context.stroke();
+      context.restore();
+    }
   }
 
   private paintBoxes(scope: Scope, series: ISeriesApi<"Candlestick">): void {
