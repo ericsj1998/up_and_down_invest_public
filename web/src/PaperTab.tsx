@@ -12,6 +12,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { dropSession, probe as runProbe, type Probe } from "./api";
 import { Live } from "./Live";
 import { Chart, type MarkTone } from "./Chart";
+import type { TradeMark } from "./chart/trades";
 import { IndicatorPanel } from "./chart/IndicatorPanel";
 import { readStance } from "./adx";
 import { useForming } from "./useForming";
@@ -88,6 +89,8 @@ export function PaperTab({ run, home, named }: Props) {
   // ⭐ 근거를 펼친 매매 id. 한 번에 하나만 펼친다 — 여러 줄이 동시에 열리면 표가
   //    길어져 정작 비교하려던 두 매매가 화면 밖으로 밀린다.
   const [why, setWhy] = useState<string | null>(null);
+  /** 표에서 고른 매매 — 차트에서 그 상자만 진하게 + 테두리. 다시 누르면 푼다. */
+  const [focusTrade, setFocusTrade] = useState<string | null>(null);
 
   const { state, health, current } = live;
   // ⚠️ **첫 프레임을 한 번만 꺼낸다.** 단언(!)은 컴파일러만 속이고 런타임에는
@@ -177,6 +180,37 @@ export function PaperTab({ run, home, named }: Props) {
     }
     return out;
   });
+
+  /**
+   * **끝난 매매를 상자로** — 점(marks)은 *"언제"* 만 말하고 *"어디서 어디까지"* 는 못 말한다
+   * (사용자 요구 2026-09-21: *"지난 매매가 차트에 표시되게 — 손해는 붉은 박스, 진입가는 경계,
+   * 익절가는 파란 박스"*).
+   *
+   * 색·구간 규칙은 `chart/trades.ts` 가 정한다 — 백테스트 차트가 이미 그 규칙으로 그리고 있었고
+   * 라이브만 안 쓰고 있었다. 두 화면이 각자 색을 정하면 같은 매매가 달라 보인다.
+   *
+   * ⚠️ **열린 매매는 뺀다** — 그쪽은 `plan` 이 가로선으로 그린다. 넣으면 같은 값이 두 번 보인다.
+   * ⚠️ `gain_pct` 가 없으면(옛 행·권한) 색은 가격 방향으로 정해진다 — `tradeZones` 안의 규칙이다.
+   */
+  const pastTrades = useMemo<TradeMark[]>(
+    () =>
+      (state?.log ?? [])
+        .filter((row) => row.exit !== null && row.opened_at !== null && row.closed_at !== null)
+        .map((row, index) => ({
+          id: row.trade_id || `${row.opened_at}:${index}`,
+          symbol: state?.symbol ?? "",
+          side: row.direction === "숏" ? (-1 as const) : (1 as const),
+          entry: Number(row.entry),
+          exit: Number(row.exit),
+          stop: Number(row.stop),
+          openedTs: Math.floor(Date.parse(row.opened_at as string) / 1000),
+          closedTs: Math.floor(Date.parse(row.closed_at as string) / 1000),
+          pnl: row.gain_pct === null ? null : Number(row.gain_pct),
+          reason: row.outcome,
+        }))
+        .filter((t) => Number.isFinite(t.entry) && Number.isFinite(t.exit) && t.openedTs > 0),
+    [state?.log, state?.symbol],
+  );
 
   // 로직이 도는가 — 셋을 하나로 합쳐 답한다.
   //
@@ -858,6 +892,9 @@ export function PaperTab({ run, home, named }: Props) {
             //    한계고, 이쪽은 봉 하나라 축에 맞춰 1초까지 내려간다.
             forming={forming}
             marks={marks}
+            // ⭐ 끝난 매매를 상자로 — 점만으로는 "어디서 어디까지" 가 안 보인다 (2026-09-21).
+            trades={pastTrades}
+            focusTradeId={focusTrade}
           />
           {/* ⭐ 지표(이평 · 볼린저) 설정 — 모든 차트가 같은 설정을 본다 (사용자 요구 2026-09-06). */}
           <div style={{ marginTop: 8 }}>
@@ -891,9 +928,16 @@ export function PaperTab({ run, home, named }: Props) {
                 const gain = trade.gain_pct;
                 const rows = trade.evidence ?? [];
                 const shown = why === trade.trade_id;
+                const picked = focusTrade === trade.trade_id;
                 return (
                   <Fragment key={trade.trade_id}>
-                    <tr>
+                    {/* 줄을 누르면 차트에서 그 매매 상자가 진해진다 — 표와 차트를 잇는 유일한 손잡이다.
+                        ⚠️ 끝난 매매만 상자가 있다(열린 건은 계획선이 그린다). */}
+                    <tr
+                      className={picked ? "picked" : undefined}
+                      onClick={() => setFocusTrade(picked ? null : trade.trade_id)}
+                      style={{ cursor: "pointer" }}
+                    >
                       <td className="mono faint">
                         {trade.trade_id.slice(0, 6)}
                       </td>

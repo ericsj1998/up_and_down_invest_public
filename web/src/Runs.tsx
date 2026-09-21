@@ -11,6 +11,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { exchangeMarkets, type MarketInfo } from "./api";
+import { orderAlive } from "./runsOrder";
 import { useMe } from "./Gate";
 import {
   bookInGroup,
@@ -341,7 +342,11 @@ export function Runs({ rows, open, refresh, available }: Props) {
     //    타이머가 끝없이 다시 걸린다.
   }, [rows.map((row) => row.session_id).join(",")]);
 
-  const alive = shown.filter((row) => row.running && !row.stored);
+  // ⭐ 포지션이 잡힌 판부터 · 그 안에서 이득 높은 순 (규칙과 근거는 `runsOrder.ts` 에 있다).
+  const alive = orderAlive(
+    shown.filter((row) => row.running && !row.stored),
+    beats,
+  );
   const dead = shown.filter((row) => !(row.running && !row.stored));
 
   const act = (name: string, run: () => Promise<unknown>) => {

@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { costBite, shownPct, sideOf, unrealizedOf } from "./History";
+import { costBite, shownPct, sideOf, unrealizedOf, verdictOf } from "./History";
 import { tradeOf } from "./ui";
 
 describe("sideOf — 롱인가 숏인가", () => {
@@ -118,5 +118,47 @@ describe("unrealizedOf — 안 닫힌 진입의 미실현 손익률", () => {
   it("🔴 증거금이 0/빈값이면 null — 0 으로 나누지 않는다", () => {
     expect(unrealizedOf(pos("12", "0"))).toBeNull();
     expect(unrealizedOf(pos("12", ""))).toBeNull();
+  });
+});
+
+describe("verdictOf — 결말은 매매의 결과다 (주문의 수명이 아니다)", () => {
+  // 🔴 전에는 이 칸이 finish_as(체결·취소)를 보여 줬다. 손절로 닫힌 주문도 "체결" 이라
+  //    결과가 화면에 없었다 (사용자 요구 2026-09-21에 갈랐다).
+  const base = { net: null, pnl: undefined, outcome: undefined, reduceOnly: false, tradeOpen: false };
+
+  it("수익률로 익절·손절을 가른다", () => {
+    expect(verdictOf({ ...base, net: 8.95 }).label).toBe("익절");
+    expect(verdictOf({ ...base, net: 8.95 }).tone).toBe("gain");
+    expect(verdictOf({ ...base, net: -3.2 }).label).toBe("손절");
+    expect(verdictOf({ ...base, net: -3.2 }).tone).toBe("loss");
+  });
+
+  it("보합 띠(±0.5%) 안이면 어느 쪽도 아니다", () => {
+    expect(verdictOf({ ...base, net: 0.5 }).label).toBe("보합");
+    expect(verdictOf({ ...base, net: -0.5 }).label).toBe("보합");
+    expect(verdictOf({ ...base, net: 0 }).label).toBe("보합");
+    expect(verdictOf({ ...base, net: 0.5 }).tone).toBe("");
+    // 띠 **밖**은 가른다 — 경계가 흐리면 표가 거짓말한다
+    expect(verdictOf({ ...base, net: 0.51 }).label).toBe("익절");
+    expect(verdictOf({ ...base, net: -0.51 }).label).toBe("손절");
+  });
+
+  it("원장이 취소면 손익을 지어내지 않는다", () => {
+    expect(verdictOf({ ...base, outcome: "취소", net: -9 }).label).toBe("취소");
+  });
+
+  it("수익률이 없고 USDT 만 있으면 부호만 말한다 (보합은 % 가 있어야 잰다)", () => {
+    expect(verdictOf({ ...base, pnl: "-0.6596" }).label).toBe("손절");
+    expect(verdictOf({ ...base, pnl: "0.4708" }).label).toBe("익절");
+    expect(verdictOf({ ...base, pnl: "-0.6596" }).why).toContain("보합은 안 가린다");
+  });
+
+  it("아직 안 닫힌 진입 줄은 보유중이다 — 미실현으로 익절이라 적지 않는다", () => {
+    expect(verdictOf({ ...base, tradeOpen: true }).label).toBe("보유중");
+    expect(verdictOf({ ...base, tradeOpen: true }).tone).toBe("");
+  });
+
+  it("근거가 없으면 빈칸이다", () => {
+    expect(verdictOf(base).label).toBe("—");
   });
 });

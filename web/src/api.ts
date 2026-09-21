@@ -943,6 +943,8 @@ export type Dashboard = {
 
 export type State = {
   session_id: string;
+  /** 이 판의 종목 — 서버는 처음부터 보냈는데 선언에만 없었다 (2026-09-21에 맞췄다). */
+  symbol: string;
   cursor: string;
   finished: boolean;
   paused: boolean;

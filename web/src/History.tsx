@@ -45,6 +45,65 @@ const FINISH: Record<string, { label: string; why: string }> = {
   stp: { label: "자전 방지", why: "내 주문끼리 체결될 뻔해 거래소가 막았다" },
 };
 
+/**
+ * **보합 띠** — 이 안이면 이겼다고도 졌다고도 하지 않는다 (사용자 확정 2026-09-21: *"보합(손실률 0.5퍼 이내)"*).
+ *
+ * ⚠️ 이 값은 옆 칸에 **보이는 숫자**(증거금 대비 · 배율 반영) 기준이다. 4배에서 0.5% 는
+ * 가격으로 0.125% 다 — 띠를 옮길 때 어느 분모의 % 인지를 같이 본다.
+ */
+export const FLAT_BAND = 0.5;
+
+export type Verdict = { label: string; tone: "gain" | "loss" | ""; why: string };
+
+/**
+ * **결말** — 이 매매가 이겼나 졌나 (사용자 요구 2026-09-21).
+ *
+ * 🔴 전에는 이 칸이 `finish_as`(체결·취소·강제청산)를 보여 줬다. 그것은 **주문이 어떻게 끝났나**
+ * 이지 **매매가 어떻게 됐나**가 아니다 — 손절로 닫힌 주문도 "체결" 이라 결과가 안 보였다.
+ * 그 값은 옆의 **상태** 칸으로 옮기고, 여기는 결과를 말한다.
+ *
+ * 판정 순서 (근거가 확실한 쪽부터):
+ *   ① 원장이 취소라고 하면 취소 — 손익을 지어내지 않는다
+ *   ② 실현 수익률(`net`)이 있으면 그것으로. 보합 띠 안이면 보합
+ *   ③ 수익률이 없고 거래소 실현 USDT 만 있으면 **부호만** 말한다 (보합은 % 가 있어야 잰다)
+ *   ④ 아직 안 닫혔으면 보유중
+ *   ⑤ 아무 근거도 없으면 빈칸 — 모르는 것을 옮기지 않는다
+ */
+export function verdictOf(args: {
+  net: number | null;
+  pnl: string | undefined;
+  outcome: string | undefined;
+  reduceOnly: boolean;
+  tradeOpen: boolean;
+}): Verdict {
+  const { net, pnl, outcome, reduceOnly, tradeOpen } = args;
+  if (outcome === "취소") {
+    return { label: "취소", tone: "", why: "원장이 취소로 적은 매매다 — 손익이 없다" };
+  }
+  if (net !== null) {
+    if (Math.abs(net) <= FLAT_BAND) {
+      return {
+        label: "보합",
+        tone: "",
+        why: `증거금 대비 ${net >= 0 ? "+" : ""}${net.toFixed(2)}% — 보합 띠(±${FLAT_BAND}%) 안이다`,
+      };
+    }
+    return net > 0
+      ? { label: "익절", tone: "gain", why: `증거금 대비 +${net.toFixed(2)}%` }
+      : { label: "손절", tone: "loss", why: `증거금 대비 ${net.toFixed(2)}%` };
+  }
+  const money = pnl === undefined || pnl === "" ? null : Number(pnl);
+  if (money !== null && Number.isFinite(money)) {
+    return money >= 0
+      ? { label: "익절", tone: "gain", why: `거래소 실현 +${money} USDT · 수익률을 못 재 보합은 안 가린다` }
+      : { label: "손절", tone: "loss", why: `거래소 실현 ${money} USDT · 수익률을 못 재 보합은 안 가린다` };
+  }
+  if (!reduceOnly && tradeOpen) {
+    return { label: "보유중", tone: "", why: "아직 안 닫혔다 — 결말은 청산될 때 난다" };
+  }
+  return { label: "—", tone: "", why: "결말을 가릴 근거가 없다 — 지어내지 않는다" };
+}
+
 /** 포지션이 **롱이었나 숏이었나** — 주문의 매수/매도가 아니다.
  *
  * 🔴 사용자 요구: *"방향도 롱, 숏 으로 표기해줬으면 좋겠어."*
@@ -242,7 +301,12 @@ export function History({
           >
             노출
           </th>
-          <th>결말</th>
+          {/* 🔴 **결말과 상태를 갈랐다** (사용자 요구 2026-09-21). 전에는 이 한 칸이 `finish_as`
+              (체결·취소)를 보여 줬는데, 손절로 닫힌 주문도 "체결" 이라 **결과가 안 보였다**. */}
+          <th title="이 매매가 이겼나 졌나 — 보합은 증거금 대비 ±0.5% 안">결말</th>
+          <th title="주문이 거래소에서 어떻게 끝났나 — 체결·취소·강제청산 (결과가 아니라 주문의 수명)">
+            상태
+          </th>
           <th>시각</th>
         </tr>
       </thead>
@@ -286,6 +350,15 @@ export function History({
             gain === null && !reduceOnly && tradeOpen
               ? unrealizedOf(held[symbol])
               : null;
+          // ⚠️ **미실현은 결말에 안 쓴다** — 아직 안 끝난 값으로 "익절" 이라 적으면
+          //    되돌아갈 때 화면이 거짓말한 것이 된다. 그때는 "보유중" 이 맞다.
+          const verdict = verdictOf({
+            net: gain?.net ?? null,
+            pnl: row.pnl,
+            outcome: plan?.outcome,
+            reduceOnly,
+            tradeOpen,
+          });
           return (
             // ⚠️ **열쇠는 조각(Fragment)에 단다** — 한 줄이 두 `<tr>` 이 되므로 안쪽에
             //    달면 React 가 목록을 다시 그릴 때마다 펼친 줄이 엉뚱한 데로 옮겨 간다.
@@ -376,6 +449,13 @@ export function History({
                     ? `${num(lever, Number(lever) >= 10 ? 0 : Number(lever) >= 1 ? 1 : 2)}x`
                     : "—"}
                 </td>
+                {/* ⭐ **결말** — 이겼나 졌나. 색이 곧 답이다. */}
+                <td title={verdict.why}>
+                  <span className={`chip${verdict.tone ? ` ${verdict.tone}` : ""}`}>
+                    {verdict.label}
+                  </span>
+                </td>
+                {/* ⭐ **상태** — 주문이 거래소에서 어떻게 끝났나. 결말과 다른 것을 잰다. */}
                 <td className={partial ? "loss" : "muted"} title={done.why}>
                   {/* ⚠️ `finished` 는 "끝났다" 이지 "다 채워졌다" 가 아니다.
                       🔴 그런데 "미체결 N 남음" 은 **아직 걸려 있다**로 읽힌다
@@ -390,7 +470,7 @@ export function History({
               </tr>
               {shown ? (
                 <tr>
-                  <td colSpan={8} className="muted">
+                  <td colSpan={9} className="muted">
                     <Detail plan={plan} />
                     <p className="faint">
                       주문 {row.id.slice(-8)} · 멱등키{" "}

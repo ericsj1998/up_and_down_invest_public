@@ -262,6 +262,16 @@ body {
   color: var(--pure-white);
 }
 
+/* 표에서 고른 매매 줄 — 차트의 진한 상자와 짝이다. 색을 칠하지 않고 왼쪽 표식만 둔다:
+   손익 칸이 이미 초록/빨강이라 줄 배경까지 칠하면 결과 색을 덮는다. */
+tr.picked > td {
+  background: var(--stone-hover, rgba(0, 0, 0, 0.04));
+}
+
+tr.picked > td:first-child {
+  box-shadow: inset 3px 0 0 var(--cyan-signal);
+}
+
 .btn:focus-visible {
   outline: 2px solid var(--cyan-signal);
   outline-offset: 2px;
