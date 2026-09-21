@@ -235,6 +235,40 @@ class RunStore:
         """
         self._factory = factory
 
+    async def note_event(self, event_type: str, payload: JsonDict) -> None:
+        """사실 하나를 `event_logs` 에 남긴다 — **앱 로그가 사라져도 남는 자리** (2026-09-21).
+
+        Args:
+            event_type: 이벤트 이름 (검색 열쇠).
+            payload: 함께 남길 사실. 시크릿을 넣지 않는다.
+
+        Raises:
+            RunStoreError: DB 에 닿을 수 없는 경우. 🔴 **부르는 쪽이 삼킨다** — 관측이
+                매매를 멈추면 안 된다 (§1.2.1).
+
+        Note:
+            🔴 왜 필요한가: 앱 로그는 **블루그린 배포가 컨테이너를 재생성하면 통째로 사라진다.**
+            2026-09-21 에 ETH 가 건너뛴 봉 때문에 진입 하나를 잃었는데, 원인을 찾을 때 그 줄이
+            있던 컨테이너는 이미 갈려 있었다. `event_logs` 는 append-only 라 남는다.
+
+            ⛔ UPDATE·DELETE 하지 않는다 — DB 권한으로 막혀 있다 (절대 규칙 #8-2).
+        """
+        try:
+            async with self._factory() as session:
+                session.add(
+                    EventLog(
+                        trace_id=get_trace_id() or new_trace_id(),
+                        actor="system",
+                        module="orchestration.walkforward.live_runner",
+                        level=LogLevel.ERROR,
+                        event_type=event_type,
+                        payload_json=payload,
+                    )
+                )
+                await session.commit()
+        except Exception as exc:
+            raise RunStoreError(f"{event_type} 를 남기지 못했다: {exc}") from exc
+
     async def open(
         self,
         *,

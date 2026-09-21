@@ -909,6 +909,8 @@ class LiveRunner:
         """스트림이 끝나 **러너가 새로 붙은** 횟수 (스트림 내부 재연결과 별개다)."""
         self.failures = 0
         """판정이 터진 횟수. 🔴 0 이 아니면 그만큼의 봉이 **판정 없이 지나갔다**."""
+        self._noted_skip: str | None = None
+        """`event_logs` 에 마지막으로 남긴 건너뜀 사유 — 같은 사유를 되풀이해 적지 않는다."""
         self.last_error = ""
         """마지막 실패 문구 — 화면이 그대로 보여 준다.
 
@@ -2657,6 +2659,42 @@ class LiveRunner:
                         "note": "이 봉은 건너뛴다 — 다음 봉에서 계속한다",
                     },
                 )
+                # 🔴 **앱 로그만으로는 배포 한 번에 사라진다** (2026-09-21 실측). ETH 가 건너뛴
+                #    봉 때문에 진입 하나를 잃었는데, 원인을 찾으려 했을 때 그 줄이 있던 컨테이너는
+                #    이미 재생성된 뒤였다(블루그린). 건너뛴 봉은 **진입이 사라지는 사건**이라
+                #    `event_logs`(append-only)에 남긴다 — `setting_cleared` 와 같은 이유다.
+                await self._note_skipped(exc)
+
+    async def _note_skipped(self, exc: Exception) -> None:
+        """건너뛴 봉을 `event_logs` 에 남긴다 — **사유가 바뀔 때만** (2026-09-21).
+
+        Args:
+            exc: 걸음을 멈춘 예외.
+
+        Note:
+            ⚠️ 같은 사유가 5분마다 되풀이되면 하루 288줄이 된다. 사유가 바뀔 때만 적어
+            "무슨 일이 몇 번" 이 아니라 **"무슨 일이 있었나"** 를 남긴다 — 횟수는 화면이
+            `failures` 로 센다.
+
+            ⛔ 기록이 실패해도 러너는 계속 돈다 — 관측이 판을 멈추면 안 된다 (§1.2.1).
+        """
+        why = str(exc)[:200]
+        if self._store is None or why == self._noted_skip:
+            return
+        self._noted_skip = why
+        with contextlib.suppress(Exception):
+            await self._store.note_event(
+                "live_runner_step_skipped",
+                {
+                    "symbol": self.instrument.symbol,
+                    "market": self.instrument.market.value,
+                    "run": self._run_key,
+                    "book": self._session.playbook.attribution,
+                    "error": why,
+                    "failures": self.failures,
+                    "note": "이 봉의 진입 자리는 사라졌다",
+                },
+            )
 
     def price_drift(self) -> str:
         """**진입가 축이 판정 축보다 뒤처졌는가** (T15-3).

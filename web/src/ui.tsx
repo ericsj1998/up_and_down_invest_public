@@ -393,6 +393,84 @@ export function useFold(key: string, initial = false): [boolean, () => void] {
 }
 
 /**
+ * 확인했는데 **그 뒤로 새 것이 생겼나** — 확인 배너의 판정 (2026-09-21).
+ *
+ * 🔴 "확인" 은 지금까지의 N건을 봤다는 뜻이지 앞으로도 안 보겠다는 뜻이 아니다.
+ * 확인한 수를 기억해 두고 **그보다 늘면 다시 띄운다** — 안 그러면 한 번 누르는 것으로
+ * 조용한 실패가 되고, 그것이 이 규칙이 막으려던 상태다 (규칙 #8).
+ */
+export function stillWorrying(count: number, acked: number | null): boolean {
+  if (!count || count < 0) return false;
+  if (acked === null || !Number.isFinite(acked)) return true;
+  return count > acked;
+}
+
+/**
+ * 확인 배너의 상태 — **판마다** 따로 기억하고 새로고침에도 남는다.
+ *
+ * ⚠️ 슬롯에 판 id 를 넣는다. 안 넣으면 한 판에서 누른 확인이 모든 판을 덮는다
+ * (`useFold` 가 실제로 그래서 판 사이에 접힘이 섞인다).
+ */
+export function useAck(key: string, count: number): [boolean, () => void] {
+  const slot = `ack:${key}`;
+  const [acked, setAcked] = useState<number | null>(() => {
+    try {
+      const kept = localStorage.getItem(slot);
+      return kept === null ? null : Number(kept);
+    } catch {
+      // ⛔ 저장소를 못 써도 화면은 돌아야 한다 — 이번 화면은 안 접힌 채로 뜬다.
+      return null;
+    }
+  });
+  const ack = () => {
+    setAcked(count);
+    try {
+      localStorage.setItem(slot, String(count));
+    } catch {
+      // 기억만 못 한다. 이번 화면에서는 닫힌다.
+    }
+  };
+  return [stillWorrying(count, acked), ack];
+}
+
+/**
+ * **판정을 건너뛴 봉** 알림 — 노란 주의 (2026-09-21 · 사용자 요구 "상단에 노란색으로 주의 정도만").
+ *
+ * 🔴 왜 있나: 걸음이 예외로 실패하면 그 봉은 통째로 건너뛰어지고 **그 자리의 진입이 사라진다.**
+ * 2026-09-21 에 ETH 가 그렇게 한 건을 놓쳤는데(폭을 형제에게 묻다 난 예외 · 1.13.1 에서 고침)
+ * 로그 한 줄뿐이라 **사람이 묻기 전까지 아무도 몰랐다.** 붉은 이상(`Findings`)과 달리 판정을
+ * 못 믿을 일은 아니라 노랑이고, 확인하면 닫힌다 — 단 새로 나면 다시 뜬다.
+ */
+export function SkippedBars({
+  run,
+  count,
+  detail,
+}: {
+  run: string;
+  count: number;
+  detail?: string | null;
+}) {
+  const [show, ack] = useAck(`skipped:${run}`, count);
+  if (!show) return null;
+  return (
+    <div className="notice warn" role="status">
+      <b>판정을 {count}회 건너뛰었다</b> — {detail || "알 수 없음"}
+      <div className="faint" style={{ marginTop: "4px" }}>
+        그 봉에 자리가 있었다면 <b>진입이 사라진다</b>. 계속 늘어나면 원인을 봐야 한다.
+      </div>
+      <button
+        type="button"
+        className="error-card-close"
+        style={{ marginTop: "6px" }}
+        onClick={ack}
+      >
+        확인
+      </button>
+    </div>
+  );
+}
+
+/**
  * 접을 수 있는 묶음 — **접어도 한 줄은 남는다** (T18 ⑥).
  *
  * 🔴 완전히 숨기면 *"모르는 것을 아는 것처럼"* 의 반대가 된다 — **볼 수 있었는데 안 본**

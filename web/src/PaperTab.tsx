@@ -22,6 +22,7 @@ import {
   Fact,
   Fold,
   Findings,
+  SkippedBars,
   ago,
   aliveness,
   frameSeconds,
@@ -327,6 +328,13 @@ export function PaperTab({ run, home, named }: Props) {
         ) : null}
       </div>
 
+      {/* 🔴 **건너뛴 봉은 맨 위에서 말한다** (사용자 2026-09-21). 아래쪽 붉은 줄로 두었더니
+          ETH 가 한 건을 놓친 것을 사람이 묻기 전까지 아무도 못 봤다. */}
+      <SkippedBars
+        run={run}
+        count={health?.failures ?? 0}
+        detail={health?.last_error}
+      />
       {!live.link.ok ? <Disconnected silentFor={live.link.silentFor} /> : null}
       {live.error ? <p className="notice bad">{live.error}</p> : null}
       <Findings items={health?.findings ?? []} />
@@ -366,11 +374,6 @@ export function PaperTab({ run, home, named }: Props) {
         </p>
       ) : null}
 
-      {health?.failures ? (
-        <p className="notice bad">
-          <b>실패 {health.failures}회</b> — {health.last_error || "알 수 없음"}
-        </p>
-      ) : null}
 
       {/* ── 계좌: 거래소가 말하는 사실 ─────────────────── */}
       {/* 🔴 **카드가 계속 늘어난다** (사용자 요구 2026-08-19: *"점점 뭐가 늘어나니까,

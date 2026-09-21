@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { UNKNOWN_RUN, ago, aliveness, clock, confirmedNaked, frameSeconds, frameWord, num, orderKind, pct, runOf, splitFindings, when, whenSec } from "./ui";
+import { UNKNOWN_RUN, ago, aliveness, clock, confirmedNaked, frameSeconds, frameWord, num, orderKind, pct, runOf, splitFindings, stillWorrying, when, whenSec } from "./ui";
 
 describe("num — 모르는 값", () => {
   it("null·undefined·빈 문자열은 — 다. 0 이 아니다", () => {
@@ -287,5 +287,32 @@ describe("confirmedNaked — 무장 중을 무방비로 외치지 않는다", ()
 
   it("무방비가 없으면 조용하다", () => {
     expect(confirmedNaked([], new Map(), 9999, GRACE).sure).toEqual([]);
+  });
+});
+
+describe("stillWorrying — 확인 배너가 다시 떠야 하나", () => {
+  it("건너뛴 것이 없으면 안 뜬다", () => {
+    expect(stillWorrying(0, null)).toBe(false);
+    expect(stillWorrying(0, 0)).toBe(false);
+  });
+
+  it("확인한 적이 없으면 뜬다", () => {
+    expect(stillWorrying(1, null)).toBe(true);
+  });
+
+  it("확인한 만큼이면 닫혀 있다", () => {
+    expect(stillWorrying(3, 3)).toBe(false);
+  });
+
+  it("🔴 확인 뒤 **새로** 나면 다시 뜬다 — 한 번 누르는 것이 영구 침묵이 되면 안 된다", () => {
+    expect(stillWorrying(4, 3)).toBe(true);
+  });
+
+  it("재시작으로 수가 줄어도 조용하다 (과거를 다시 꺼내지 않는다)", () => {
+    expect(stillWorrying(1, 5)).toBe(false);
+  });
+
+  it("저장소가 깨진 값을 주면 뜨는 쪽으로 — 조용한 실패보다 낫다", () => {
+    expect(stillWorrying(2, Number.NaN)).toBe(true);
   });
 });
