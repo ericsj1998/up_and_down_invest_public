@@ -9,7 +9,12 @@
  */
 
 import { useEffect, useState } from "react";
-import { ranking, type Rank } from "./api";
+import {
+  ranking,
+  type Rank,
+  type SymbolGroup,
+  type SymbolTags,
+} from "./api";
 import { ErrorCard, Fold, num, pct } from "./ui";
 
 /** 정렬할 수 있는 열 — 전부 **관측값**이고 합성값이 없다. */
@@ -130,6 +135,20 @@ export function Ranking({ markets = [] }: { markets?: string[] }) {
    * 조용한 실패 금지(규칙 #8)는 서버만의 일이 아니다.
    */
   const [note, setNote] = useState("");
+  /**
+   * 탭 — **코인 · 주식 추종 · 지수 추종** (사용자 요구 2026-09-22).
+   *
+   * 🔴 탭 이름도 종목 분류도 **서버가 말한다** (`config/symbol_groups.yml`). 화면에 적으면 거래소가
+   * 계약을 하나 올릴 때마다 화면을 고쳐야 한다 — 종목 목록에서 겪은 바로 그 두 벌 문제다.
+   *
+   * ⭐ 서버는 **고른 탭만** 잰다. 종목마다 호가창과 봉을 묻기 때문에 세 탭을 한꺼번에 받으면
+   * 그만큼 느려진다 (사용자: *"종목 순위 띄우는데 좀 오래 걸리긴 한다"*).
+   */
+  const [tab, setTab] = useState("");
+  const [groups, setGroups] = useState<SymbolGroup[]>([]);
+  const [tags, setTags] = useState<SymbolTags>({});
+  /** 받는 중인가 — 탭을 바꾼 직후 남의 탭 줄을 그대로 두면 분류가 틀린 것처럼 보인다. */
+  const [busy, setBusy] = useState(false);
   // ⭐ 거래대금이 기본이다 — 얇은 종목에서는 스프레드가 좁아 보여도 실제로 못 채운다.
   const [sort, setSort] = useState<Key>("turnover");
   // ⭐ **누른 열을 다시 누르면 방향이 뒤집힌다.** 안 그러면 이미 그 열로 정렬된 상태에서
@@ -139,17 +158,22 @@ export function Ranking({ markets = [] }: { markets?: string[] }) {
   useEffect(() => {
     let alive = true;
     const pull = () => {
-      ranking(market || undefined)
-        .then(
-          (body) =>
-            alive &&
-            (setRows(body.rows),
-            setNote(body.note ?? ""),
-            setShown(body.market ?? ""),
-            setError("")),
-        )
-        .catch((exc: unknown) => alive && setError(String(exc)));
+      ranking(market || undefined, tab || undefined)
+        .then((body) => {
+          if (!alive) return;
+          setRows(body.rows);
+          setNote(body.note ?? "");
+          setShown(body.market ?? "");
+          setGroups(body.groups ?? []);
+          setTags(body.tags ?? {});
+          setError("");
+        })
+        .catch((exc: unknown) => alive && setError(String(exc)))
+        .finally(() => alive && setBusy(false));
     };
+    // 탭·거래소가 바뀌면 옛 줄을 지운다 — 주식 탭에 코인 줄이 1초라도 떠 있으면 안 된다.
+    setRows([]);
+    setBusy(true);
     pull();
     // ⚠️ 대부분 24시간 통계라 자주 물을 이유가 없다. 스프레드만 지금 값이고, 그 값은
     //    비용 판단에 쓰지 않는다 (그것은 config/costs.yml 의 실측이다).
@@ -160,8 +184,12 @@ export function Ranking({ markets = [] }: { markets?: string[] }) {
       alive = false;
       clearInterval(timer);
     };
-    // 거래소가 바뀌면 바로 다시 받는다 — 남의 거래소 표를 1분 동안 보여 주지 않는다.
-  }, [market]);
+    // 거래소·탭이 바뀌면 바로 다시 받는다 — 남의 표를 1분 동안 보여 주지 않는다.
+  }, [market, tab]);
+
+  /** 지금 보는 탭 — 아직 안 골랐으면 서버가 첫 번째로 준 것(기본 묶음)이다. */
+  const current = tab || groups[0]?.key || "";
+  const hint = groups.find((g) => g.key === current)?.hint ?? "";
 
   const sorted = ordered(rows, sort, down);
 
@@ -173,7 +201,9 @@ export function Ranking({ markets = [] }: { markets?: string[] }) {
       ? `${sorted.length}종목 · ${COLUMNS.find((c) => c.key === sort)?.label} ${
           down ? "내림" : "오름"
         }차순`
-      : note || "아직 안 읽었다";
+      : busy
+        ? "읽는 중…"
+        : note || "아직 안 읽었다";
 
   return (
     <Fold name="종목 순위" summary={summary} keep="ranking" initialShut>
@@ -202,12 +232,31 @@ export function Ranking({ markets = [] }: { markets?: string[] }) {
           ))}
         </div>
       ) : null}
+      {/* ⭐ 탭 — 서버가 준 묶음들. 하나뿐이면 고를 것이 없으니 안 그린다. */}
+      {groups.length > 1 ? (
+        <div className="row" style={{ gap: 6, marginBottom: 6 }}>
+          {groups.map((g) => (
+            <button
+              key={g.key}
+              type="button"
+              className={`btn small${g.key === current ? " picked" : ""}`}
+              title={g.hint || undefined}
+              onClick={() => setTab(g.key)}
+            >
+              {g.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {hint ? <p className="card-hint">{hint}</p> : null}
       {error ? <ErrorCard message={error} /> : null}
       {/* 🔴 **줄이 없으면 왜 없는지 말한다.** 머리글만 남은 표는 고장과 구별되지 않는다. */}
-      {!error && sorted.length === 0 ? (
+      {!error && !busy && sorted.length === 0 ? (
         <p className="notice warn">
           {note ||
-            "줄이 없다 — 서버가 이유를 말하지 않았다. 이것 자체가 확인할 거리다."}
+            (groups.length > 1
+              ? "이 거래소에는 이 탭에 선언된 종목이 없다 (config/symbol_groups.yml)."
+              : "줄이 없다 — 서버가 이유를 말하지 않았다. 이것 자체가 확인할 거리다.")}
         </p>
       ) : null}
       <div className="table-wrap">
@@ -245,7 +294,22 @@ export function Ranking({ markets = [] }: { markets?: string[] }) {
           <tbody>
             {sorted.map((row) => (
               <tr key={row.symbol}>
-                <td className="mono">{row.symbol}</td>
+                <td>
+                  <span className="mono">{row.symbol}</span>
+                  {row.name ? <span className="faint"> {row.name}</span> : null}
+                  {/* 🔴 **숏 추종은 눈에 띄어야 한다** (사용자 요구 2026-09-22) — 이 계약을 롱으로
+                      사는 것이 지수를 숏 치는 것이라, 등락의 뜻이 다른 줄과 반대다. */}
+                  {(row.tags ?? []).map((key) => (
+                    <span
+                      key={key}
+                      className={`chip ${key === "inverse" ? "warn" : ""}`}
+                      title={tags[key]?.hint || undefined}
+                      style={{ marginLeft: 6 }}
+                    >
+                      {tags[key]?.label ?? key}
+                    </span>
+                  ))}
+                </td>
                 <td className="num">{num(row.price ?? null, 4)}</td>
                 <td className="num">{big(row.turnover)}</td>
                 {/* ⭐ **지금 움직이나** — 박스 끝에 닿아야 자리가 난다. */}

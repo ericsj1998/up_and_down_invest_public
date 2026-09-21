@@ -29,6 +29,7 @@ import {
   symbols,
   type Book,
   type Choice,
+  type SymbolGroup,
   type Health,
   type Summary,
 } from "./api";
@@ -220,6 +221,8 @@ function Purse({
 export function Runs({ rows, open, refresh, available }: Props) {
   const [books, setBooks] = useState<Book[]>([]);
   const [picks, setPicks] = useState<Choice[]>([]);
+  /** 종목 묶음(코인 · 주식 추종 · 지수 추종) — 서버가 말한다. 고르개를 그 묶음으로 나눠 그린다. */
+  const [pickGroups, setPickGroups] = useState<SymbolGroup[]>([]);
   // ⭐ 기본 선택은 /playbooks 의 recommended 가 정한다 (T63 ②) — 리터럴은 반드시 낡는다.
   const [book, setBook] = useState("");
   // 🔴 **거래소 이름을 기본값으로 박지 않는다** (사용자 지적 2026-09-22). 전에는 "GATE" 였고,
@@ -252,6 +255,7 @@ export function Runs({ rows, open, refresh, available }: Props) {
       .then((body) => {
         if (!alive) return;
         setPicks(body.rows);
+        setPickGroups(body.groups ?? []);
         // ⭐ 고른 종목이 새 목록에 없으면 첫 항목으로 — 빈 값·남의 종목으로 띄우기를 누르지 않게.
         setSymbol((now) =>
           body.rows.some((r) => r.symbol === now) ? now : (body.rows[0]?.symbol ?? ""),
@@ -753,12 +757,32 @@ export function Runs({ rows, open, refresh, available }: Props) {
                 value={symbol}
                 onChange={(e) => setSymbol(e.target.value)}
               >
-                {picks.map((item) => (
-                  <option key={item.symbol} value={item.symbol}>
-                    {/* ⚠️ 못 띄우는 것도 남긴다 — 빼면 "왜 없지" 에 답을 못 한다. */}
-                    {item.tradable ? item.label : `${item.label} (눈금 없음)`}
-                  </option>
-                ))}
+                {/* ⭐ 묶음이 둘 이상이면 나눠 그린다 — 코인 사이에 주식 추종 계약이 섞여
+                    있으면 티커만 보고는 무엇인지 모른다 (SKHY · SNDK · 2026-09-22). */}
+                {(pickGroups.length > 1
+                  ? pickGroups
+                  : [{ key: "", label: "" }]
+                ).map((g) => {
+                  const mine = picks.filter(
+                    (item) => !g.key || (item.group ?? pickGroups[0]?.key) === g.key,
+                  );
+                  if (!mine.length) return null;
+                  const rows = mine.map((item) => (
+                    <option key={item.symbol} value={item.symbol}>
+                      {/* ⚠️ 못 띄우는 것도 남긴다 — 빼면 "왜 없지" 에 답을 못 한다. */}
+                      {item.label}
+                      {item.name ? ` · ${item.name}` : ""}
+                      {item.tradable ? "" : " (눈금 없음)"}
+                    </option>
+                  ));
+                  return g.key ? (
+                    <optgroup key={g.key} label={g.label}>
+                      {rows}
+                    </optgroup>
+                  ) : (
+                    rows
+                  );
+                })}
               </select>
             </label>
             <label className="field">

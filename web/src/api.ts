@@ -769,6 +769,12 @@ export type FundRules = {
 
 export type Rank = {
   symbol: string;
+  /** 어느 탭의 줄인가 — 서버가 `config/symbol_groups.yml` 에서 읽어 말한다 (2026-09-22). */
+  group?: string;
+  /** 사람이 읽을 풀이 — 티커만으로는 SKHY 가 무엇인지 모른다. 코인은 빈 문자열이다. */
+  name?: string;
+  /** 태그 키들(`inverse` = 숏 추종 · `leveraged` = 배수). 이름표는 응답의 `tags` 가 준다. */
+  tags?: string[];
   price?: number | null;
   turnover?: number | null;
   volatility?: number | null;
@@ -818,7 +824,17 @@ export type Choice = {
   label: string;
   /** 호가 눈금이 선언됐나. false 면 서버가 문 앞에서 막는다. */
   tradable: boolean;
+  /** 묶음(탭) 키 · 풀이 · 태그 — 순위 표와 같은 출처다 (2026-09-22). */
+  group?: string;
+  name?: string;
+  tags?: string[];
 };
+
+/** 종목 묶음(탭) 하나 — **서버가 선언을 읽어 말한다.** 화면은 탭 이름을 모른다. */
+export type SymbolGroup = { key: string; label: string; hint?: string };
+
+/** 태그 이름표 — 키 → 화면 글자와 풀이. */
+export type SymbolTags = Record<string, { label: string; hint?: string }>;
 
 /**
  * 띄울 수 있는 종목들 — **그 거래소의 것** (2026-09-22).
@@ -826,7 +842,9 @@ export type Choice = {
  * 🔴 전에는 서버가 Gate 이름 아홉 개를 박아 두고 있었다. 지금은 거래소를 넘기면 그 거래소의
  * 눈금 선언 · 펀드 바스켓 · 도는 판에서 파생한 목록이 온다. 안 넘기면 서버가 연결된 거래소를 고른다.
  */
-export function symbols(market?: string): Promise<{ rows: Choice[]; market?: string | null }> {
+export function symbols(
+  market?: string,
+): Promise<{ rows: Choice[]; market?: string | null; groups?: SymbolGroup[] }> {
   const query = market ? `?market=${encodeURIComponent(market)}` : "";
   return request(`/exchange/symbols${query}`);
 }
@@ -840,9 +858,22 @@ export function symbols(market?: string): Promise<{ rows: Choice[]; market?: str
  */
 export function ranking(
   market?: string,
-): Promise<{ rows: Rank[]; at: string; note?: string; market?: string | null }> {
-  const query = market ? `?market=${encodeURIComponent(market)}` : "";
-  return request(`/exchange/ranking${query}`);
+  group?: string,
+): Promise<{
+  rows: Rank[];
+  at: string;
+  note?: string;
+  market?: string | null;
+  /** 서버가 실제로 답한 탭 — 모르는 키를 보내면 기본 탭으로 답한다. */
+  group?: string;
+  groups?: SymbolGroup[];
+  tags?: SymbolTags;
+}> {
+  const query = new URLSearchParams();
+  if (market) query.set("market", market);
+  if (group) query.set("group", group);
+  const text = query.toString();
+  return request(`/exchange/ranking${text ? `?${text}` : ""}`);
 }
 
 /**

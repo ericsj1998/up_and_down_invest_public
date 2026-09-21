@@ -42,6 +42,7 @@ from updown.common.domain.order import OrderKind, OrderRequest, OrderType, Side
 from updown.common.domain.session import SessionConfigError, load_calendar
 from updown.common.logging.setup import get_logger
 from updown.common.security.roles import Role
+from updown.common.symbol_groups import load_symbol_groups
 from updown.execution.gateway import OrderGatewayError, order_adapter
 from updown.marketdata.adapter import QuoteAdapter, TickerBoard
 from updown.marketdata.calendar_check import (
@@ -68,7 +69,7 @@ router = APIRouter(prefix="/exchange", tags=["exchange"])
 #   거래소로는 TTL 에 한 번만 나간다. 값은 관찰용 화면 기준이라 신선도 손해가 없다.
 #   ⛔ 주문·취소·청산(집행)은 캐시하지 않는다 — 상태 조회만이다.
 _STATE_CACHE = TtlCache[dict[str, Any]]("exchange.state", 5.0)
-_CACHE_TTL_S = {"GATE": 10.0, "BINANCE": 20.0, "BALANCES": 30.0}
+_CACHE_TTL_S = {"GATE": 10.0, "BINANCE": 20.0, "BALANCES": 30.0, "RANKING": 20.0}
 """콘솔 상태 캐시 TTL — GATE 3 → 10s (T268 #7 · 2026-09-11).
 
 4초 폴링 x 종목 9 가 요율 156% 를 만들던 자리다."""
@@ -1466,7 +1467,7 @@ async def _board_market(market: str | None) -> tuple[str | None, Any]:
     return None, None
 
 
-async def _universe(market: str) -> tuple[str, ...]:
+def _universe(market: str) -> tuple[str, ...]:
     """그 거래소에서 순위·고르개가 보여 줄 종목들 — **파생**이다 (2026-09-22).
 
     Args:
@@ -1481,32 +1482,34 @@ async def _universe(market: str) -> tuple[str, ...]:
         펀드가 실제로 굴리는 18종은 하나도 안 보였다 (사용자 지적: *"내가 담았던 것들은
         안 보이네"*).
 
-        세 출처의 합집합이다 — 전부 이미 있는 선언이라 **새로 관리할 목록이 없다**:
+        네 출처의 합집합이다 — 전부 이미 있는 선언이라 **새로 관리할 목록이 없다**:
 
             ① 눈금이 선언된 종목   `config/costs.yml` 의 그 시장 `spec_ticks`
             ② 펀드가 굴리는 종목   그 시장의 살아 있는 펀드 바스켓
-            ③ 판이 도는 종목       그 시장의 라이브 러너 · 열린 포지션 (`_tracked`)
+            ③ 판이 도는 종목       그 시장의 라이브 러너
+            ④ 묶음에 선언된 종목   `config/symbol_groups.yml` (주식 추종 · 지수 추종 탭)
+
+        🔴 **거래소에 포지션을 묻지 않는다** (2026-09-22 실측 · `probe_ranking_timing.py`).
+        전에는 열린 포지션을 합치려고 **서명 조회**를 불렀는데, 그것이 순위에서 제일 느린
+        한 단계였다(서버 1.64초 · 전체 2.33초의 70%). 고아 포지션을 찾는 것은 콘솔 훑기
+        (`_tracked`)의 일이고, 순위는 "무엇을 볼까" 의 표다 — 같은 목록일 이유가 없다.
 
         ⚠️ 거래소에 없는 종목이 섞여도 괜찮다 — 순위 표가 그 줄에 *"거래소가 이 계약을 안
         준다"* 를 적는다 (조용히 빼지 않는다 · 규칙 #8).
     """
     found: set[str] = set(_tradable(market))
     from updown.apps.api.rebalancer import FUNDS
+    from updown.apps.api.walkforward import LIVE_RUNNERS
 
     for fund in FUNDS.values():
         if fund.market == market:
             found.update(fund.coordinator.engine.basket.symbols)
-    try:
-        found.update(await _tracked(_orders_adapter(market), market))
-    except HTTPException:
-        # 주문 어댑터가 없는 API(조회 전용)에서도 순위는 떠야 한다 — 판·포지션 축만 빠진다.
-        from updown.apps.api.walkforward import LIVE_RUNNERS
-
-        found.update(
-            runner.instrument.symbol
-            for runner in LIVE_RUNNERS.values()
-            if runner.instrument.market.value == market
-        )
+    found.update(
+        runner.instrument.symbol
+        for runner in LIVE_RUNNERS.values()
+        if runner.instrument.market.value == market
+    )
+    found.update(load_symbol_groups().markets.get(market, {}))
     return tuple(sorted(found))
 
 
@@ -1541,25 +1544,39 @@ async def symbols(market: str | None = None) -> dict[str, Any]:
     if name is None:
         return {"rows": [], "market": None}
     known = _tradable(name)
+    table = load_symbol_groups()
     return {
         "rows": [
-            {"symbol": symbol, "label": _label(symbol), "tradable": symbol in known}
-            for symbol in await _universe(name)
+            {
+                "symbol": symbol,
+                "label": _label(symbol),
+                "tradable": symbol in known,
+                **_group_fields(name, symbol),
+            }
+            for symbol in _universe(name)
         ],
         "market": name,
+        "groups": [{"key": g.key, "label": g.label, "hint": g.hint} for g in table.groups],
     }
 
 
+def _group_fields(market: str, symbol: str) -> dict[str, Any]:
+    """그 종목의 묶음·풀이·태그 — 화면이 탭과 표식을 그릴 재료 (`config/symbol_groups.yml`)."""
+    info = load_symbol_groups().of(market, symbol)
+    return {"group": info.group, "name": info.name, "tags": list(info.tags)}
+
+
 @router.get("/ranking")
-async def ranking(market: str | None = None) -> dict[str, Any]:
+async def ranking(market: str | None = None, group: str | None = None) -> dict[str, Any]:
     """**오늘 어느 종목이 거래하기 좋은가** — 나란히 놓기만 한다 (T18 ②).
 
     Args:
         market: 거래소. 비면 이 API 에 연결된 거래소를 쓴다 (서버 = GATE · 로컬 데모 = BINANCE).
+        group: 탭(`config/symbol_groups.yml` 의 묶음 키). 비거나 모르는 값이면 기본 묶음(코인).
 
     Returns:
-        `{rows: [{symbol, price, turnover, volatility, spread, change}], at, market}`.
-        연결된 거래소가 없으면 빈 표와 `note`.
+        `{rows: [{symbol, group, name, tags, price, turnover, volatility, spread, change}],
+        at, market, group, groups, tags}`. 연결된 거래소가 없으면 빈 표와 `note`.
 
     Note:
         🔴 **표시 전용이다.** 가중합 점수도 "오늘의 1위" 배지도 만들지 않는다 (사용자
@@ -1577,17 +1594,49 @@ async def ranking(market: str | None = None) -> dict[str, Any]:
 
         🔴 **거래소를 가리지 않는다** (2026-09-22). 전에는 Gate 만 알았다 — 자세한 경위는
         `_board_market` 에 있다.
+
+        ⭐ **탭 하나만 계산한다** (2026-09-22 · 사용자: *"종목 순위 띄우는데 좀 오래 걸리긴
+        한다"*). 종목마다 호가창 한 번 + 15분봉 한 번이 드니 비용이 종목 수에 비례한다 —
+        안 보는 탭까지 계산하지 않는다. 그리고 `RANKING` TTL 동안 기억한다: 화면이 몇 개
+        떠 있든 거래소로는 TTL 에 한 번만 나간다 (바이낸스 24시간 요약은 가중치 40 이다).
+        ⚠️ 표시 전용 표라 신선도 손해가 없다 — 응답의 `at` 이 잰 시각을 말한다.
     """
     name, quotes = await _board_market(market)
+    table = load_symbol_groups()
+    meta: dict[str, Any] = {
+        "groups": [{"key": g.key, "label": g.label, "hint": g.hint} for g in table.groups],
+        "tags": {t.key: {"label": t.label, "hint": t.hint} for t in table.tags},
+    }
+    picked = group if group in {g.key for g in table.groups} else table.default
     if name is None or quotes is None:
         # 콘솔이 "연결 없음" 을 말하는 자리는 상단 카드다. 여기는 빈 표와 이유만 낸다.
         return {
             "rows": [],
             "at": datetime.now(UTC).isoformat(),
             "market": None,
+            "group": picked,
             "note": "전 종목 시세를 한 번에 줄 수 있는 연결된 거래소가 없다",
+            **meta,
         }
-    tracked = await _universe(name)
+    board = await _cached(
+        f"ranking:{name}:{picked}", "RANKING", lambda: _ranking_rows(name, quotes, picked)
+    )
+    return {**board, "group": picked, **meta}
+
+
+async def _ranking_rows(name: str, quotes: Any, group: str) -> dict[str, Any]:
+    """한 거래소 · 한 탭의 순위 표를 **실제로 잰다** — `ranking` 이 TTL 캐시 뒤에서 부른다.
+
+    Args:
+        name: 거래소 코드.
+        quotes: 그 거래소의 조회 어댑터 (`TickerBoard`).
+        group: 묶음 키 — 이 묶음의 종목만 잰다.
+
+    Returns:
+        `{rows, at, market}`.
+    """
+    table = load_symbol_groups()
+    tracked = tuple(s for s in _universe(name) if table.of(name, s).group == group)
     known = _tradable(name)
     found = {row.symbol: row for row in await quotes.ticker_stats()}
     # 🔴 **나갈 수 있는지를 고르기 전에 보여 준다** (사용자 제안 2026-08-20:
@@ -1627,12 +1676,19 @@ async def ranking(market: str | None = None) -> dict[str, Any]:
         row = found.get(symbol)
         if row is None:
             # ⛔ 조용히 건너뛰지 않는다 — 목록에서 사라지면 아무도 못 알아챈다 (규칙 #8).
-            out.append({"symbol": symbol, "missing": "거래소가 이 계약을 안 준다"})
+            out.append(
+                {
+                    "symbol": symbol,
+                    "missing": "거래소가 이 계약을 안 준다",
+                    **_group_fields(name, symbol),
+                }
+            )
             continue
         last, high, low, bid, ask = row.last, row.high_24h, row.low_24h, row.bid, row.ask
         out.append(
             {
                 "symbol": symbol,
+                **_group_fields(name, symbol),
                 "price": None if last is None else float(last),
                 # 거래대금 — 24시간 견적통화 기준.
                 "turnover": None if row.turnover_quote is None else float(row.turnover_quote),

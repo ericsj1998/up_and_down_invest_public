@@ -523,6 +523,13 @@ th.num {
   color: var(--cyan-edge);
 }
 
+/* 주의 표식 — 숏 추종 계약처럼 **뜻이 반대인 줄** (2026-09-22). 색은 토큰에서 온다. */
+.chip.warn {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
 /* ── RUN 머리말 ──────────────────────────────────── */
 .run-head {
   display: flex;

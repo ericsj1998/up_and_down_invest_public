@@ -1,0 +1,70 @@
+# 종목 묶음 — 종목 순위 화면의 **탭** (사용자 요구 2026-09-22).
+#
+#   "탭 하나는 코인이고, 남은 하나는 META 구글 애플 뭐 이런 거 추종하는 USDT, 그리고 지수 추종
+#    이렇게 3개 정도는 있어야 할 것 같고, 숏을 추종하는 종목은 따로 태그 달아줘야 할 것 같아."
+#
+# 🔴 **코드에 종목 이름을 박지 않는다.** 서버(`/exchange/ranking`)가 이 파일을 읽어 탭과 태그를
+#    화면에 말해 준다. 화면은 이름을 하나도 모른다.
+#
+# 규칙
+#   · 여기 **없는 종목은 전부 `default` 묶음**(코인)이다 — 코인을 일일이 적지 않는다.
+#   · 종목 이름은 **거래소 표기 그대로**다 (사용자: "무조건 Gate 기준으로" · `GOOGL_USDT` 는 알파벳 A).
+#   · `name` 은 사람이 읽을 풀이다. 티커만으로는 SKHY 가 무엇인지 모른다.
+#   · `tags` 는 탭과 별개의 표식이다 — 같은 탭 안에서 성질이 다른 것을 가른다.
+#
+# ⚠️ 이 목록은 "Gate 에 그 계약이 있다" 를 보증하지 않는다. 없는 계약은 순위 표가 그 줄에
+#    "거래소가 이 계약을 안 준다" 를 적는다 (조용히 빼지 않는다 · 규칙 #8).
+#    실측 도구: `scripts/ops/probe_stock_tokens.py` · `probe_stock_token_history.py`
+#
+# 🔴 `SPX_USDT` 는 **여기 넣지 않는다.** S&P500 이 아니라 밈코인 SPX6900 이다 (값 0.35 · 움직임
+#    모양이 코인 · `scripts/research/scenarios/stock_perp_hours.py` 실측 2026-09-22).
+
+default: coin
+
+groups:
+  - key: coin
+    label: 코인
+  - key: stock
+    label: 주식 추종
+    hint: "기초자산 장이 닫혀도 돈다 · 밤·주말에는 호가가 얇다 · 테이커 0.075% (코인 0.05%)"
+  - key: index
+    label: 지수 · ETF 추종
+    hint: "지수·ETF 를 따라가는 계약 · 배수가 붙은 것(3배)은 오래 들면 복리로 어긋난다"
+
+tags:
+  inverse:
+    label: 숏 추종
+    hint: "기초지수가 **내리면 오른다** — 이 계약을 롱으로 사는 것이 지수를 숏 치는 것이다"
+  leveraged:
+    label: 배수
+    hint: "하루 수익률의 배수를 따라간다 — 횡보에서 값이 닳는다(변동성 끌림)"
+
+markets:
+  GATE:
+    stock:
+      AAPL_USDT: { name: 애플 }
+      MSFT_USDT: { name: 마이크로소프트 }
+      GOOGL_USDT: { name: 알파벳 A }
+      AMZN_USDT: { name: 아마존 }
+      META_USDT: { name: 메타 }
+      NVDA_USDT: { name: 엔비디아 }
+      TSLA_USDT: { name: 테슬라 }
+      NFLX_USDT: { name: 넷플릭스 }
+      AMD_USDT: { name: AMD }
+      INTC_USDT: { name: 인텔 }
+      COIN_USDT: { name: 코인베이스 }
+      MSTR_USDT: { name: 마이크로스트래티지 }
+      HOOD_USDT: { name: 로빈후드 }
+      PLTR_USDT: { name: 팔란티어 }
+      # 아래 셋은 기존 종목 순위에 있던 것 — 코인 목록에서 이리로 옮겼다 (2026-09-22).
+      SPCX_USDT: { name: 스페이스X(비상장) }
+      SNDK_USDT: { name: 샌디스크 }
+      SKHY_USDT: { name: SK하이닉스 }
+    index:
+      SPY_USDT: { name: S&P500 ETF }
+      QQQ_USDT: { name: 나스닥100 ETF }
+      SOXX_USDT: { name: 반도체 ETF }
+      GDX_USDT: { name: 금광 ETF }
+      TQQQX_USDT: { name: 나스닥100 3배, tags: [leveraged] }
+      SQQQ_USDT: { name: 나스닥100 3배 역방향, tags: [inverse, leveraged] }
+      TZA_USDT: { name: 소형주 3배 역방향, tags: [inverse, leveraged] }
