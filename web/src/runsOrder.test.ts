@@ -1,8 +1,9 @@
 /**
  * 도는 RUN 정렬 — 포지션 먼저 · 이득 내림차순 (사용자 요구 2026-09-21).
  *
- * 🔴 여기서 못 박는 것 하나: **셋이 다 같아도 순서가 흔들리면 안 된다.** 막 만든 18종은
- * 미실현도 손익도 전부 0 이라, 그때 순서가 폴링마다 바뀌면 줄을 누를 수가 없다.
+ * 🔴 여기서 못 박는 것 하나: **순서가 들어온 순서에 딸려 가면 안 된다.** 막 만든 18종은
+ * 미실현도 손익도 전부 0 이라, 그때 기준이 없으면 화면 순서가 서버의 정렬(만든 시각)을
+ * 그대로 따라간다 — 38초 안에 만들어진 순서는 사람에게 아무 뜻이 없다.
  */
 
 import { describe, expect, it } from "vitest";
@@ -73,7 +74,7 @@ describe("orderAlive", () => {
     expect(orderAlive(rows, {}).map((r) => r.session_id)).toEqual(["b", "a", "c"]);
   });
 
-  it("🔴 전부 0 이면 종목 이름 순으로 **고정**된다 (폴링마다 춤추면 못 누른다)", () => {
+  it("🔴 전부 0 이면 **들어온 순서와 무관하게** 종목 이름 순이다", () => {
     const ids = ["XRP", "ADA", "BTC", "SOL"];
     const rows = ids.map((id) => row({ session_id: id, symbol: id }));
     const once = orderAlive(rows, {}).map((r) => r.symbol);
