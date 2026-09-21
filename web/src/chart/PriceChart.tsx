@@ -38,6 +38,13 @@ type Props = {
   height?: number;
   /** 아래에 적을 한 줄 (자료 출처 · 주의). */
   note?: string;
+  /**
+   * 고른 매매 주변으로 **화면을 옮길까** (기본 참).
+   *
+   * ⚠️ 펀드 상세 카드는 거짓이다 — 거기는 90일 개요를 보는 곳이라, 하루짜리 매매로
+   * 확대해 버리면 카드를 여는 목적(전체 흐름)이 사라진다. 상자와 가로선은 그대로 그린다.
+   */
+  autoZoom?: boolean;
 };
 
 const TONES = { entry: "entry", gain: "up", loss: "down" } as const;
@@ -48,7 +55,16 @@ export function pricePrecision(bars: readonly Ohlc[]): number {
   return v >= 1000 ? 0 : v >= 10 ? 2 : v >= 1 ? 3 : 5;
 }
 
-export function PriceChart({ bars, step, trades, focusId, settings, height = 420, note }: Props) {
+export function PriceChart({
+  bars,
+  step,
+  trades,
+  focusId,
+  settings,
+  height = 420,
+  note,
+  autoZoom = true,
+}: Props) {
   const holder = useRef<HTMLDivElement | null>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -183,7 +199,7 @@ export function PriceChart({ bars, step, trades, focusId, settings, height = 420
     );
     // 선택한 매매 주변으로 본다 — 앞뒤로 여유를 둬 진입 전 맥락이 보이게.
     const made = chart.current;
-    if (made !== null && bars.length > 0) {
+    if (autoZoom && made !== null && bars.length > 0) {
       const span = Math.max(focus.closedTs - focus.openedTs, step * 20);
       const from = focus.openedTs - span * 1.5;
       const to = focus.closedTs + span * 1.0;
@@ -194,7 +210,7 @@ export function PriceChart({ bars, step, trades, focusId, settings, height = 420
         to: Math.min(last, to) as Time,
       });
     }
-  }, [focus, step, settings.marks, bars, ready]);
+  }, [focus, step, settings.marks, bars, ready, autoZoom]);
 
   const shown = legend(overlaySeries);
   return (

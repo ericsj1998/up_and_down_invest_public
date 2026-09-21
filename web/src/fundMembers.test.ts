@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { changeText, changeTone, toOhlc } from "./fundMembers";
+import { cardTone, changeText, changeTone, toOhlc, unrealizedPct } from "./fundMembers";
 
 describe("toOhlc", () => {
   it("문자열 가격을 숫자 봉으로 · 깨진 줄은 버린다", () => {
@@ -24,5 +24,39 @@ describe("changeText · changeTone", () => {
     expect(changeTone("-1")).toBe("loss");
     expect(changeTone("0")).toBe("");
     expect(changeTone(undefined)).toBe("");
+  });
+});
+
+describe("cardTone — 테두리 색 (사용자 요구 2026-09-21)", () => {
+  it("들고 있고 이익이면 초록 · 손해면 붉은", () => {
+    expect(cardTone({ holding: true, unrealized: "8.13" })).toBe("gain");
+    expect(cardTone({ holding: true, unrealized: "-2.5" })).toBe("loss");
+  });
+
+  it("🔴 포지션이 없으면 색이 없다 — 지금 '보고 있는' 손익이 없다", () => {
+    expect(cardTone({ holding: false, unrealized: "8.13" })).toBe("");
+    expect(cardTone({ unrealized: "8.13" })).toBe("");
+  });
+
+  it("🔴 거래소와 갈리면 색이 없다 — 미확정인 수를 색으로 단언하지 않는다", () => {
+    expect(cardTone({ holding: true, unrealized: "8.13", reconciled: false })).toBe("");
+    expect(cardTone({ holding: true, unrealized: "8.13", accounting_ok: false })).toBe("");
+  });
+
+  it("정확히 0 이면 색이 없다", () => {
+    expect(cardTone({ holding: true, unrealized: "0" })).toBe("");
+  });
+});
+
+describe("unrealizedPct — 미실현을 증거금 대비 % 로", () => {
+  it("분모는 거래소가 잡은 증거금이다", () => {
+    expect(unrealizedPct({ unrealized: "8.13", margin: "62.15" })).toBeCloseTo(13.08, 2);
+    expect(unrealizedPct({ unrealized: "-3.1", margin: "62.15" })).toBeCloseTo(-4.99, 2);
+  });
+
+  it("증거금이 없거나 0 이면 못 잰다 — 몫으로 대신 나누지 않는다", () => {
+    expect(unrealizedPct({ unrealized: "8.13" })).toBeNull();
+    expect(unrealizedPct({ unrealized: "8.13", margin: "0" })).toBeNull();
+    expect(unrealizedPct({ margin: "62.15" })).toBeNull();
   });
 });

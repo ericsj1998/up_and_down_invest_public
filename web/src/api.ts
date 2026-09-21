@@ -1669,7 +1669,19 @@ export type FundLeg = {
   accounting_ok?: boolean;
   /** 갈렸을 때 거래소 실측으로 귀속된 **진짜 실현손익** — 화면이 원장 허구 대신 이걸 그린다. */
   verified_realized?: string | null;
-  position?: { side: string; entry: string; target: string; stop: string };
+  position?: {
+    side: string;
+    entry: string;
+    target: string;
+    stop: string;
+    /** 진입 시각 (ISO) — 없으면 상자를 안 그린다. 가로선만으로는 "언제부터" 를 못 그린다. */
+    opened_at?: string | null;
+    /**
+     * 참이면 **고정 익절선이 없다** — `target` 은 진입+100R 짜리 자리표시자다.
+     * 화면은 그 값을 '목표' 로 적지 않는다 (적으면 "218만 달러 대기" 처럼 거짓말한다).
+     */
+    full_ride?: boolean;
+  };
 };
 
 export type FundStatus = {

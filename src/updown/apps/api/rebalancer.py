@@ -1178,6 +1178,17 @@ async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
             "entry": str(held.entry),
             "target": str(held.planned_target),
             "stop": str(held.planned_stop),
+            # 🔴 **상자를 그리려면 언제 들어갔는지가 있어야 한다** (사용자 요구 2026-09-21:
+            #    *"여기에도 진입가, 손절가, 박스 그려줘"*). 가격 셋만으로는 가로선밖에 못 긋는다.
+            "opened_at": None if held.opened_at is None else held.opened_at.isoformat(),
+            # 🔴 **목표가 익절선이 아닐 수 있다** (사용자 지적 2026-09-21: *"우리 익절선이 따로
+            #    없는 거 아냐? 이게 계산되고 있어?"* — 맞다).
+            #
+            #    추세추종(`full_ride`)은 고정 익절이 없고 `planned_target` 은 진입+100R 짜리
+            #    **자리표시자**다(RIDE_R). 그 값을 '목표' 로 적으면 화면이 "218만 달러 대기" 처럼
+            #    거짓말한다 — 2026-08-24 에 RUN 차트에서 같은 지적을 받아 고쳤는데, 이 카드에는
+            #    그 판단이 안 실려 있었다. 플래그를 같이 실어 화면이 가린다.
+            "full_ride": session.playbook.full_ride,
         }
     return row
 

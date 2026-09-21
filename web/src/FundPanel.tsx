@@ -100,7 +100,12 @@ function fundUnreal(f: FundStatus): number {
   }, 0);
 }
 
-export function FundPanel() {
+export function FundPanel({
+  openRun,
+}: {
+  /** 판을 연다 — 종목 카드의 접힘 모서리가 쓴다. 없으면 모서리를 안 그린다. */
+  openRun?: (run: string, name?: string) => void;
+} = {}) {
   const [funds, setFunds] = useState<FundStatus[]>([]);
   const [cash, setCash] = useState("200");
   // 🔴 레버리지 입력은 제거됐다 (사용자 확정 2026-09-02) — 배율은 매매법 선언이
@@ -575,7 +580,9 @@ export function FundPanel() {
               {detail === f.fund_id ? "상세 접기" : "상세보기"}
             </button>
           </div>
-          {detail === f.fund_id ? <FundMembers fundId={f.fund_id} /> : null}
+          {detail === f.fund_id ? (
+            <FundMembers fundId={f.fund_id} {...(openRun ? { openRun } : {})} />
+          ) : null}
 
           {editing === f.fund_id ? (
             <div
