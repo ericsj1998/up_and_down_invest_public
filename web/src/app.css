@@ -64,7 +64,7 @@ body {
 }
 
 .dot.warn {
-  background: #f59e0b;
+  background: var(--warn);
 }
 
 /* ── 페이지 ───────────────────────────────────────────
@@ -264,7 +264,10 @@ body {
 
 /* ── 펀드 종목 카드 (2026-09-21) ──────────────────────────────────────
    테두리 = 지금 이익인가 손해인가. 들고 있는 종목에만 색이 붙는다 —
-   포지션이 없으면 "보고 있는" 손익이 없다. */
+   포지션이 없으면 "보고 있는" 손익이 없다.
+
+   🔴 갈림(warn)은 손해(loss)와 **다른 색**이어야 한다. 붉게 칠하면 "졌다" 로 읽히는데,
+   실제로는 이겼는지 졌는지를 **아직 모르는** 상태다 (원장과 거래소가 어긋났다). */
 .member-card.gain {
   border-color: var(--gain);
   box-shadow: inset 0 0 0 1px var(--gain);
@@ -275,27 +278,51 @@ body {
   box-shadow: inset 0 0 0 1px var(--loss);
 }
 
+.member-card.warn {
+  border-color: var(--warn);
+  box-shadow: inset 0 0 0 1px var(--warn);
+}
+
 /* 우측 하단 **접힘 모서리** — 페이지가 접힌 모양. 누르면 그 RUN 상세로 간다.
    ⚠️ 카드 안 아무 데나 누르면 열리게 하지 않는다 — 카드 안에는 차트가 있고, 차트를
-   끌어 보는 것과 "여는 것" 이 같은 몸짓이 되면 볼 수가 없다. */
+   끌어 보는 것과 "여는 것" 이 같은 몸짓이 되면 볼 수가 없다.
+
+   🔴 **카드 모서리와 같은 곡률을 따른다** (사용자 지적 2026-09-21: *"삼각형 이질감이
+   심하다 · 카드 테두리 저런 상태면 똑같이 둥글게"*). 옛 판은 `border-left/-bottom` 으로
+   만든 **직각** 삼각형이라 둥근 카드 모서리 밖으로 뾰족하게 튀어나왔다.
+   지금은 네모에 카드와 같은 `--r-card` 를 주고 `clip-path` 로 반을 자른다 —
+   빗변은 직선이고 오른쪽 아래만 카드를 따라 둥글다. */
 .corner-fold {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 0;
-  height: 0;
+  width: 20px;
+  height: 20px;
   padding: 0;
   border: none;
-  border-left: 18px solid transparent;
-  border-bottom: 18px solid var(--stone-border);
-  background: none;
+  /* 색은 테두리와 같다 — 카드가 초록이면 모서리도 초록 (사용자 요구). */
+  background: var(--stone-border);
+  border-bottom-right-radius: var(--r-card);
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
   cursor: pointer;
-  transition: border-bottom-color 0.12s ease;
+  transition: background-color 0.12s ease;
+}
+
+.member-card.gain .corner-fold {
+  background: var(--gain);
+}
+
+.member-card.loss .corner-fold {
+  background: var(--loss);
+}
+
+.member-card.warn .corner-fold {
+  background: var(--warn);
 }
 
 .corner-fold:hover,
 .corner-fold:focus-visible {
-  border-bottom-color: var(--cyan-signal);
+  background: var(--cyan-signal);
   outline: none;
 }
 
@@ -399,7 +426,7 @@ tr.picked > td:first-child {
 }
 
 .notice.warn {
-  border-color: #f59e0b;
+  border-color: var(--warn);
   background: #fffbeb;
   color: #92400e;
 }

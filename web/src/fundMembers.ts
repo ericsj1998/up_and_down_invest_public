@@ -35,22 +35,26 @@ export function changeTone(pct: string | null | undefined): "gain" | "loss" | ""
 }
 
 /**
- * 카드 **테두리 색** — 지금 이익인가 손해인가 (사용자 요구 2026-09-21).
+ * 카드 **테두리 색** — 지금 이익인가 손해인가, 아니면 **못 믿는 값인가** (사용자 요구 2026-09-21).
  *
- * 🔴 **들고 있는 종목만 색을 준다.** 포지션이 없으면 "보고 있는" 손익이 없다 — 지난 실현으로
- * 칠하면 지금 아무 일도 안 하는 카드가 초록으로 빛나 눈이 거기로 간다.
+ * 🔴 **갈림이 손익보다 먼저다.** 원장과 거래소가 어긋난 종목(`reconciled` · `accounting_ok`
+ * 거짓)은 손익이 **미확정**이라 초록/빨강으로 단언하면 안 된다 — 그 수가 맞는지를 아직
+ * 모르는 상태다. 노랑은 "틀렸다" 가 아니라 **"못 믿는다"** 는 뜻이다.
  *
- * ⚠️ 원장과 거래소가 갈린 종목(`reconciled` · `accounting_ok` 거짓)은 손익이 **미확정**이라
- * 색을 안 준다 — 확정되지 않은 수를 색으로 단언하지 않는다.
+ * ⚠️ 갈림은 **들고 있지 않아도** 칠한다. 포지션이 닫힌 뒤에 회계가 갈린 경우가 실제로 있었고
+ * (2026-09-01), 그때 카드가 아무 색도 없으면 사람은 그 종목이 멀쩡한 줄 안다.
+ *
+ * 🔴 **들고 있는 종목만 손익 색을 준다.** 포지션이 없으면 "보고 있는" 손익이 없다 — 지난
+ * 실현으로 칠하면 지금 아무 일도 안 하는 카드가 초록으로 빛나 눈이 거기로 간다.
  */
 export function cardTone(m: {
   holding?: boolean;
   unrealized?: string;
   reconciled?: boolean;
   accounting_ok?: boolean;
-}): "gain" | "loss" | "" {
+}): "gain" | "loss" | "warn" | "" {
+  if (m.reconciled === false || m.accounting_ok === false) return "warn";
   if (m.holding !== true) return "";
-  if (m.reconciled === false || m.accounting_ok === false) return "";
   return changeTone(m.unrealized);
 }
 

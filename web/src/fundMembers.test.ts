@@ -38,9 +38,17 @@ describe("cardTone — 테두리 색 (사용자 요구 2026-09-21)", () => {
     expect(cardTone({ unrealized: "8.13" })).toBe("");
   });
 
-  it("🔴 거래소와 갈리면 색이 없다 — 미확정인 수를 색으로 단언하지 않는다", () => {
-    expect(cardTone({ holding: true, unrealized: "8.13", reconciled: false })).toBe("");
-    expect(cardTone({ holding: true, unrealized: "8.13", accounting_ok: false })).toBe("");
+  it("🔴 거래소와 갈리면 노랑이다 — 손익보다 먼저이고, 붉은색(졌다)과 다른 뜻이다", () => {
+    // 이익이 나 보여도 그 수를 못 믿는 상태다 — 초록으로 단언하지 않는다.
+    expect(cardTone({ holding: true, unrealized: "8.13", reconciled: false })).toBe("warn");
+    expect(cardTone({ holding: true, unrealized: "8.13", accounting_ok: false })).toBe("warn");
+    // 손해로 보여도 마찬가지 — 붉은색은 "졌다" 이고 노랑은 "못 믿는다" 다.
+    expect(cardTone({ holding: true, unrealized: "-8.13", reconciled: false })).toBe("warn");
+  });
+
+  it("🔴 갈림은 들고 있지 않아도 칠한다 — 닫힌 뒤 회계가 갈린 적이 있다 (2026-09-01)", () => {
+    expect(cardTone({ holding: false, accounting_ok: false })).toBe("warn");
+    expect(cardTone({ reconciled: false })).toBe("warn");
   });
 
   it("정확히 0 이면 색이 없다", () => {
