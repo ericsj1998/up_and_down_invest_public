@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { boxesOf, edgesOf, hitTest, tagsOf } from "./tradeBoxes";
+import { boxesOf, edgesOf, hitTest, pnlText, tagsOf } from "./tradeBoxes";
 import type { TradeMark } from "./trades";
 
 const STEP = 3600;
@@ -66,25 +66,26 @@ describe("boxesOf — 무슨 상자가 그려지나", () => {
 describe("edgesOf — 세로 경계 둘 (점 대신)", () => {
   it("시작은 진입 · 끝은 결말이다", () => {
     const got = edgesOf(mark({}), STEP);
-    expect(got.map((e) => e.label)).toEqual(["롱 진입", "익절"]);
+    // 결말 옆에 손익이 붙는다 — "익절" 만으로는 얼마나 벌었는지 못 읽는다.
+    expect(got.map((e) => e.label)).toEqual(["롱 진입", "익절 +10.00%"]);
     expect(got.map((e) => e.side)).toEqual(["open", "close"]);
   });
 
   it("보합 띠 안이면 익절도 손절도 아니라고 적는다", () => {
-    expect(edgesOf(mark({ pnl: 0.3 }), STEP)[1]!.label).toBe("보합");
-    expect(edgesOf(mark({ pnl: -0.3 }), STEP)[1]!.label).toBe("보합");
+    expect(edgesOf(mark({ pnl: 0.3 }), STEP)[1]!.label).toBe("보합 +0.30%");
+    expect(edgesOf(mark({ pnl: -0.3 }), STEP)[1]!.label).toBe("보합 -0.30%");
     expect(edgesOf(mark({ pnl: -0.3 }), STEP)[1]!.tone).toBe("flat");
   });
 
   it("손절은 붉은 색조다", () => {
     const got = edgesOf(mark({ pnl: -9 }), STEP);
-    expect(got[1]!.label).toBe("손절");
+    expect(got[1]!.label).toBe("손절 -9.00%");
     expect(got[1]!.tone).toBe("loss");
   });
 
   it("🔴 아직 안 닫혔으면 '보유중' 이다 — 지금 이익이라고 '익절' 이라 적지 않는다", () => {
     const got = edgesOf(mark({ open: true, pnl: 12 }), STEP);
-    expect(got[1]!.label).toBe("보유중");
+    expect(got[1]!.label).toBe("보유중 +12.00%");
   });
 
   it("숏은 진입 딱지가 '숏 진입' 이다", () => {
@@ -96,9 +97,10 @@ describe("tagsOf — 호버하면 상자 선 좌측에 뜨는 가격", () => {
   it("진입 · 손절 · 청산 셋이다", () => {
     const got = tagsOf(mark({}));
     expect(got.map((t) => t.price)).toEqual([100, 95, 110]);
+    // 🔴 이름이 겹치면 안 된다 — 계획 손절선과 실제 청산가가 둘 다 '손절' 이던 결함을 막는다.
     expect(got[0]!.text).toContain("진입");
-    expect(got[1]!.text).toContain("손절");
-    expect(got[2]!.text).toContain("익절");
+    expect(got[1]!.text).toContain("손절선");
+    expect(got[2]!.text).toContain("청산");
   });
 
   it("🔴 열린 매매의 셋째는 청산가가 아니라 '지금' 이다", () => {
@@ -137,5 +139,51 @@ describe("hitTest — 마우스가 어느 매매 위인가", () => {
       ...boxesOf(mark({ id: "new", openedTs: 3600, closedTs: 10_800 }), STEP),
     ];
     expect(hitTest(overlap, 5000, 97)).toBe("new");
+  });
+});
+
+describe("pnlText — 손익은 금액 + % 병기 (사용자 요구)", () => {
+  it("증거금이 있으면 금액과 % 를 같이 적는다", () => {
+    // gain_pct 는 이미 **그 매매가 건 돈 대비** % 다 — 곱하면 금액이 나온다.
+    expect(pnlText(mark({ pnl: -8, margin: 62.25 }))).toBe("-4.98 USDT · -8.00%");
+    expect(pnlText(mark({ pnl: 12.5, margin: 62.25 }))).toBe("+7.78 USDT · +12.50%");
+  });
+
+  it("🔴 증거금이 없으면 % 만 적는다 — 다른 돈을 끌어다 곱하지 않는다", () => {
+    expect(pnlText(mark({ pnl: -8, margin: null }))).toBe("-8.00%");
+    expect(pnlText(mark({ pnl: -8 }))).toBe("-8.00%");
+    expect(pnlText(mark({ pnl: -8, margin: 0 }))).toBe("-8.00%");
+  });
+
+  it("손익을 모르면 아무것도 안 적는다", () => {
+    expect(pnlText(mark({ pnl: null, margin: 62.25 }))).toBe("");
+  });
+});
+
+describe("🔴 '손절' 이 두 번 뜨던 결함 (사용자 신고 2026-09-21)", () => {
+  it("계획 손절선과 실제 청산가는 이름이 다르다 — 그 차이가 미끄러짐이다", () => {
+    const stopped = mark({ stop: 2.157, exit: 2.283, pnl: -9, reason: "손절" });
+    const labels = tagsOf(stopped).map((t) => t.text.split(" ")[0]);
+    expect(labels).toEqual(["진입", "손절선", "청산"]);
+    // 같은 이름이 둘이면 안 된다
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("결말은 세로줄이 말한다 — 가격 딱지가 또 적지 않는다", () => {
+    const texts = tagsOf(mark({ pnl: -9 })).map((t) => t.text);
+    expect(texts.some((t) => t.startsWith("손절 "))).toBe(false);
+  });
+});
+
+describe("결말 세로줄에 손익이 같이 붙는다", () => {
+  it("손절도 -0.6% 와 -12% 는 다른 사건이다", () => {
+    const small = edgesOf(mark({ pnl: -0.6, margin: 62.25 }), STEP)[1]!;
+    const big = edgesOf(mark({ pnl: -12, margin: 62.25 }), STEP)[1]!;
+    expect(small.label).toBe("손절 -0.37 USDT · -0.60%");
+    expect(big.label).toBe("손절 -7.47 USDT · -12.00%");
+  });
+
+  it("손익을 모르면 결말만 적는다", () => {
+    expect(edgesOf(mark({ pnl: null }), STEP)[1]!.label).toBe("청산");
   });
 });

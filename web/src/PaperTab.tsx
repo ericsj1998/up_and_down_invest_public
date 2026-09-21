@@ -99,7 +99,11 @@ export function PaperTab({ run, home, named }: Props) {
   const first = state?.frames?.[0];
   // 🔴 **라이브는 켜고 끄는 스위치다** (사용자 요구 2026-08-30). 켜져 있는 동안에는
   //    줌·축을 바꿔도 오른쪽 끝이 최신 봉에서 안 벗어난다 — 그 고정은 `Chart` 가 한다.
-  const [live_on, setLiveOn] = useState(true);
+  //
+  // ⭐ **기본값은 꺼짐** (사용자 확정 2026-09-21: *"라이브가 꺼진게 디폴트여야 할 것 같아"*).
+  //    지난 매매를 상자로 보게 된 뒤로 화면을 여는 목적이 "과거를 되짚는 것" 으로 바뀌었다 —
+  //    켜져 있으면 왼쪽으로 끌어 옛 상자를 볼 때마다 오른쪽 끝으로 도로 끌려간다.
+  const [live_on, setLiveOn] = useState(false);
 
   // 🔴 **결론 한 줄** — 문 하나하나가 아니라 *"지금 어느 전략이 서 있나"*.
   //    서버가 판정 결과를 그대로 넘긴다 (`overlay.stance`) — 화면이 다시 판정하면
@@ -216,6 +220,11 @@ export function PaperTab({ run, home, named }: Props) {
           pnl: row.gain_pct === null ? null : Number(row.gain_pct),
           reason: row.outcome,
           open,
+          // ⭐ 손익 **금액**의 분모 — 없으면(백테스트·옛 행) 화면이 % 만 적는다.
+          margin:
+            row.margin_used === null || row.margin_used === undefined
+              ? null
+              : Number(row.margin_used),
         };
       })
       .filter(

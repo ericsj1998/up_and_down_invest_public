@@ -32,6 +32,13 @@ export interface TradeMark {
    * 화면은 그것을 "청산" 이라 부르지 않고 "지금 / 보유중" 이라 적는다.
    */
   open?: boolean;
+  /**
+   * **이 매매가 실제로 건 돈** (USDT · 증거금).
+   *
+   * `pnl` 이 이 돈 대비 % 이므로, 둘을 곱하면 손익 **금액**이 나온다. 없으면(백테스트 ·
+   * 단독 판 · 옛 행) 화면은 % 만 적는다 — 다른 돈을 끌어다 곱하지 않는다.
+   */
+  margin?: number | null;
 }
 
 export const REASON_LABEL: Record<string, string> = {

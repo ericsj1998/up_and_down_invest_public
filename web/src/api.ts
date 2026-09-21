@@ -888,7 +888,15 @@ export type Trade = {
   /** 1차 익절 · 최종 목표 — 러너가 없을 때 차트가 계획선을 그리는 유일한 출처다. */
   first?: string;
   target?: string;
+  /** 이 매매가 건 돈 대비 % — 배율이 곱해진 값이라 분모가 `margin_used` 다. */
   gain_pct: number | null;
+  /**
+   * **이 매매가 실제로 건 돈** (USDT · 증거금).
+   *
+   * `gain_pct` 와 곱하면 손익 금액이다. NULL 이면(백테스트 · 단독 판 · 옛 행) 화면은
+   * **% 만** 쓴다 — 판 예산 같은 다른 돈으로 곱하면 그럴듯한 거짓 금액이 된다.
+   */
+  margin_used?: string | null;
   planned_rr: number | null;
   realized_rr: number | null;
   achievement: number | null;

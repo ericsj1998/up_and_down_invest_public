@@ -107,11 +107,31 @@ export function boxesOf(trade: TradeMark, step: number): TradeBox[] {
   return out;
 }
 
-/** 매매 하나 → 양쪽 세로 경계 (시작 = 진입 · 끝 = 결말). */
+/**
+ * 손익을 **금액 + %** 로 (사용자 요구 2026-09-21: *"박스에 손해본 금액과, 진입금액 대비 몇퍼
+ * 손해봤는지 나오게 해줘"*).
+ *
+ * 🔴 `pnl` 은 이미 **진입금액(그 매매가 건 증거금) 대비** % 다 — 배율이 곱해진 값이라
+ * 분모가 그 돈이다. 금액은 거기에 `margin` 을 곱하면 나온다.
+ *
+ * ⚠️ `margin` 이 없으면(백테스트·단독 판·옛 행) **% 만** 적는다. 판 예산 같은 다른 돈을
+ * 끌어다 곱하면 그럴듯한 거짓 금액이 된다 — 없는 것은 안 적는다.
+ */
+export function pnlText(trade: TradeMark): string {
+  if (trade.pnl === null) return "";
+  const pct = `${trade.pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)}%`;
+  const margin = trade.margin;
+  if (margin === undefined || margin === null || !(margin > 0)) return pct;
+  const usdt = (margin * trade.pnl) / 100;
+  return `${usdt >= 0 ? "+" : ""}${usdt.toFixed(2)} USDT · ${pct}`;
+}
+
+/** 매매 하나 → 양쪽 세로 경계 (시작 = 진입 · 끝 = 결말 + 손익). */
 export function edgesOf(trade: TradeMark, step: number): TradeEdge[] {
   const from = snap(trade.openedTs, step);
   const to = Math.max(snap(trade.closedTs, step) + step, from + step);
   const done = verdictOfTrade(trade.pnl, trade.open === true);
+  const money = pnlText(trade);
   return [
     {
       id: trade.id,
@@ -123,7 +143,8 @@ export function edgesOf(trade: TradeMark, step: number): TradeEdge[] {
     {
       id: trade.id,
       at: to,
-      label: done.label,
+      // ⭐ 결말만으로는 "얼마나" 를 못 읽는다 — 손절도 -0.6% 와 -12% 는 다른 사건이다.
+      label: money === "" ? done.label : `${done.label} ${money}`,
       tone: done.tone === "gain" ? "gain" : done.tone === "loss" ? "loss" : "flat",
       side: "close",
     },
@@ -133,20 +154,30 @@ export function edgesOf(trade: TradeMark, step: number): TradeEdge[] {
 /**
  * 호버한 매매의 가격 딱지 — **상자 선 좌측**에 찍는다.
  *
- * ⚠️ 청산가는 아직 열린 매매면 "지금가" 다 — 그 값은 청산가가 아니므로 이름을 다르게 적는다.
+ * 🔴 **'손절' 이 두 번 뜨던 것을 고쳤다** (사용자 신고 2026-09-21: *"손절이 왜 2개로 뜨는지
+ * 모르겠고"*). 손절로 끝난 매매는 ① 계획 손절선과 ② 실제 청산가가 **둘 다 '손절'** 이라
+ * 적혀 있었다. 둘은 다른 값이다 — 계획선은 진입할 때 정한 자리이고 청산가는 실제로 나간
+ * 가격이며, 그 차이가 곧 **미끄러짐**이다. 이름을 갈라 그 차이가 보이게 한다:
+ *
+ * ```
+ * 손절선 2.157   진입할 때 정한 자리 (계획)
+ * 청산  2.283    실제로 나간 가격
+ * ```
+ *
+ * ⚠️ 결말(익절·손절·보합)은 **상자 끝의 세로줄**이 이미 말한다 — 여기서 또 적으면 중복이다.
+ * ⚠️ 아직 열린 매매의 셋째 값은 청산가가 아니라 **지금가**라 이름이 다르다.
  */
 export function tagsOf(trade: TradeMark): PriceTag[] {
-  const out: PriceTag[] = [
-    { price: trade.entry, text: `진입 ${fmtPrice(trade.entry)}`, tone: "entry" },
-    { price: trade.stop, text: `손절 ${fmtPrice(trade.stop)}`, tone: "loss" },
-  ];
   const done = verdictOfTrade(trade.pnl, trade.open === true);
-  out.push({
-    price: trade.exit,
-    text: `${trade.open === true ? "지금" : done.label} ${fmtPrice(trade.exit)}`,
-    tone: done.tone === "loss" ? "loss" : "gain",
-  });
-  return out;
+  return [
+    { price: trade.entry, text: `진입 ${fmtPrice(trade.entry)}`, tone: "entry" },
+    { price: trade.stop, text: `손절선 ${fmtPrice(trade.stop)}`, tone: "loss" },
+    {
+      price: trade.exit,
+      text: `${trade.open === true ? "지금" : "청산"} ${fmtPrice(trade.exit)}`,
+      tone: done.tone === "loss" ? "loss" : "gain",
+    },
+  ];
 }
 
 /**
@@ -282,28 +313,30 @@ export class TradeBoxPrimitive implements ISeriesPrimitive<Time> {
           : this.colors.flat;
   }
 
+  /**
+   * 판을 **둘로 나눈다** — 상자는 봉 아래, 글자는 봉 위.
+   *
+   * 🔴 한 판에 `zOrder: "bottom"` 으로 다 그렸더니 **글자가 봉에 묻혔다**
+   * (사용자 신고 2026-09-21: *"텍스트가 봉에 묻히네"*). 깔개는 아래여야 봉을 안 가리고,
+   * 딱지는 위여야 읽힌다 — 둘은 같은 층에 있을 수 없다.
+   */
   paneViews() {
     const owner = this;
-    return [
-      {
-        zOrder(): "bottom" {
-          return "bottom";
+    const view = (order: "bottom" | "top", paint: (scope: Scope, s: ISeriesApi<"Candlestick">) => void) => ({
+      zOrder: () => order,
+      renderer: () => ({
+        draw(target: { useBitmapCoordinateSpace: (fn: (scope: Scope) => void) => void }) {
+          const series = owner.series;
+          if (series === null) return;
+          if (owner.boxes.length === 0 && owner.edges.length === 0) return;
+          target.useBitmapCoordinateSpace((scope) => paint.call(owner, scope, series));
         },
-        renderer() {
-          return {
-            draw(target: { useBitmapCoordinateSpace: (fn: (scope: Scope) => void) => void }) {
-              const series = owner.series;
-              if (series === null) return;
-              if (owner.boxes.length === 0 && owner.edges.length === 0) return;
-              target.useBitmapCoordinateSpace((scope) => owner.paint(scope, series));
-            },
-          };
-        },
-      },
-    ];
+      }),
+    });
+    return [view("bottom", owner.paintBoxes), view("top", owner.paintLabels)];
   }
 
-  private paint(scope: Scope, series: ISeriesApi<"Candlestick">): void {
+  private paintBoxes(scope: Scope, series: ISeriesApi<"Candlestick">): void {
     const { context, bitmapSize, horizontalPixelRatio: hx, verticalPixelRatio: vy } = scope;
     const cssWidth = bitmapSize.width / hx;
 
@@ -334,6 +367,12 @@ export class TradeBoxPrimitive implements ISeriesPrimitive<Time> {
         context.restore();
       }
     }
+  }
+
+  /** 봉 **위** 층 — 세로 경계선과 모든 글자. */
+  private paintLabels(scope: Scope, series: ISeriesApi<"Candlestick">): void {
+    const { context, bitmapSize, horizontalPixelRatio: hx, verticalPixelRatio: vy } = scope;
+    const cssWidth = bitmapSize.width / hx;
 
     // ── 세로 경계 + 글자 ── (점 대신 줄 · 사용자 요구 2026-09-21)
     const fontPx = Math.round(11 * vy);

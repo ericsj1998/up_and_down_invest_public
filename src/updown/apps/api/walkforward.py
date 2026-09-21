@@ -5567,6 +5567,16 @@ def _record(item: TradeRecord | None) -> dict[str, Any] | None:
         "first": str(item.planned_first),
         "target": str(item.planned_target),
         "gain_pct": None if gain is None else float(gain),
+        # 🔴 **이 매매가 실제로 건 돈** (사용자 요구 2026-09-21: *"박스에 손해본 금액과,
+        #    진입금액 대비 몇퍼 손해봤는지 나오게 해줘"*).
+        #
+        #    `gain_pct` 는 이미 **이 돈 대비** % 다(= 사이징 기준 대비 · 배율 곱해진 값).
+        #    금액을 내려면 그 분모가 필요한데 화면에는 없었다 — 화면이 판 예산 같은 **다른
+        #    돈**으로 곱해 지어내지 않게 원장이 아는 값을 그대로 낸다.
+        #
+        # ⚠️ NULL 일 수 있다 — 백테스트·단독 판·옛 행은 이 값을 안 적었다. 그때는 화면이
+        #    금액을 안 쓰고 % 만 쓴다 (`margin_used` 참고).
+        "margin_used": None if item.margin_used is None else str(item.margin_used),
         "planned_rr": None if planned is None else float(planned),
         "realized_rr": None if realized is None else float(realized),
         "achievement": None if got is None else float(got),
