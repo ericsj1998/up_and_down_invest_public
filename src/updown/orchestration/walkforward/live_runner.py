@@ -689,6 +689,52 @@ def run_of_text(text: str) -> str:
     return ""
 
 
+_NOT_REALISED = (Outcome.OPEN, Outcome.PENDING, Outcome.CANCELLED)
+"""돈이 움직이지 않은 결말 — 취소(못 채운 계획)는 청산이 아니다."""
+
+
+def _notice_closes(runner: object, before: int) -> None:
+    """실현된 기록이 늘었으면 러너의 `on_closed` 를 부른다 — 걸음과 60초 프로브가 같이 쓴다.
+
+    Args:
+        runner: 러너(또는 대역).
+        before: 견줄 기준(그 전의 `_closed_count`).
+
+    Note:
+        시장가 청산은 `_apply_exit` 이 체결을 기다렸고, 거래소 조건부 손절은 `reconcile` 이
+        체결 뒤에 원장에 적는다 — 둘 다 이 시점에 지갑에 실현 손익이 들어와 있다.
+        ⚠️ 훅이 던져도 여기서 삼킨다 — 예산 갱신은 다음 4h 경계가 어차피 한다.
+        모듈 함수인 이유는 `_closed_count` 와 같다(껍데기 대역).
+    """
+    if _closed_count(runner) <= before:
+        return
+    hook = getattr(runner, "on_closed", None)
+    try:
+        if hook is not None:
+            hook()
+    except Exception as exc:
+        log = getattr(runner, "_log", None)
+        if log is not None:
+            log.warning("on_closed_hook_failed", payload={"error": str(exc)[:120]})
+
+
+def _closed_count(runner: object) -> int:
+    """러너 원장에서 **실현된** 기록 수 — 전후를 견줘 방금 무엇이 닫혔는지 안다.
+
+    Note:
+        모듈 함수다 — `_one_step` 만 빌려 쓰는 껍데기 대역(`test_step_overlap`)에는 세션이 없다.
+        그때 0. 취소·대기는 안 센다 — 지갑이 안 바뀌었는데 펀드를 다시 앵커할 이유가 없다
+        (배포 전 검토 2026-09-22).
+    """
+    session = getattr(runner, "_session", None)
+    ledger = getattr(session, "ledger", None)
+    if ledger is None:
+        return 0
+    return sum(
+        1 for r in ledger.records if r.opened_at is not None and r.outcome not in _NOT_REALISED
+    )
+
+
 class LiveRunner:
     """웹소켓 봉으로 세션을 걸어간다.
 
@@ -1045,6 +1091,18 @@ class LiveRunner:
 
         ⚠️ 값이 아니라 **함수**다. 판은 러너가 도는 동안에도 뜨고 죽으므로, 시작할 때
         센 숫자를 들고 있으면 곧 낡는다.
+        """
+
+        self.on_closed: Callable[[], None] = lambda: None
+        """걸음이 **기록을 닫았을 때** 부른다 — API 가 꽂는다 (2026-09-22 · 사용자 지적).
+
+        🔴 펀드 멤버의 사이징 예산(총자본 ÷ 자리)은 펀드 틱에서만 갱신되고, 틱은 4h 경계였다.
+        경계 봉에서 익절이 나면 그 실현 손익은 틱이 지갑을 읽은 **뒤에** 들어와 다음 틱(4시간
+        뒤)에야
+        크기에 반영됐다. 이 훅으로 펀드가 "닫혔다" 를 알고 잠시 뒤 한 번 더 앵커한다 — 러너는
+        펀드를 모른다(상위 계층의 일).
+
+        ⚠️ 실패해도 걸음을 막지 않는다 — 예산 갱신은 다음 4h 경계가 어차피 한다.
         """
 
         self.account_settled: Callable[[], bool] = lambda: True
@@ -2614,10 +2672,14 @@ class LiveRunner:
                 #
                 # ⚠️ 이것은 **판정이 아니라 사실 확인**이다 — 진입 판단은 여전히 봉
                 #    마감에서만 돈다 (절대 규칙 #5).
+                before = _closed_count(self)
                 if await self.reconcile():
                     # 🔴 원장이 바뀌었다 — 봉 마감을 기다리면 최대 15분 동안 DB 가
                     #    보유중이라고 말한다.
                     await self._persist()
+                    # ⭐ 거래소 손절(`stop_mode: touch`)은 **여기서** 닫힌다 — 걸음이 아니라. 펀드에
+                    #    알려야 실현 손실이 다음 4h 경계를 안 기다리고 크기에 들어간다 (2026-09-22).
+                    _notice_closes(self, before)
                 # 🔴 **감사도 여기서 돈다** (T15-4). 걸음에서만 돌면 판정이 멈춘 순간
                 #    감사도 같이 멈춘다 — 정지를 재는 항목이 정지에 같이 죽는다.
                 #
@@ -2787,7 +2849,13 @@ class LiveRunner:
             self.overlaps += 1
             return
         async with self._stepping:
-            await self._walk_once()
+            before = _closed_count(self)
+            try:
+                await self._walk_once()
+            finally:
+                # 걸음이 뒤쪽(대조·감사·저장)에서 터져도 앞쪽에서 닫은 기록은 닫힌 것이다 —
+                # 훅은 finally 에서 본다 (배포 전 검토 2026-09-22).
+                _notice_closes(self, before)
 
     async def _absorb_between_bars(self) -> None:
         """봉 사이에 **대기 지정가의 체결을 원장에 옮긴다** — 30초 점검에서 부른다.

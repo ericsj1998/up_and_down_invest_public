@@ -26,7 +26,7 @@ import re
 import time
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -760,6 +760,21 @@ async def live_start(
         포지션에 들어가 있는 것이 정상이라 그 검사를 받으면 안 된다.
     """
     return await _live_start(payload, request=request)
+
+
+ON_TRADE_CLOSED: list[Callable[[str], object]] = []
+"""판이 기록을 닫았을 때 부를 훅들 — 인자는 판 핸들. 펀드 모듈이 등록한다 (2026-09-22)."""
+
+
+def _notify_closed(handle: str) -> None:
+    """등록된 훅 전부에 "이 판이 닫혔다" 를 알린다 — 하나가 던져도 나머지는 부른다."""
+    for hook in list(ON_TRADE_CLOSED):
+        try:
+            hook(handle)
+        except Exception as exc:
+            _logger.warning(
+                "trade_closed_hook_failed", payload={"run": handle, "error": str(exc)[:160]}
+            )
 
 
 def _awaited_fund(
@@ -1516,6 +1531,9 @@ async def _live_start(
     runner.account_settled = lambda: all(
         item.fund_ready for item in LIVE_RUNNERS.values() if item.instrument.market is market
     )
+    # ⭐ 걸음이 기록을 닫으면 펀드에 알린다 (2026-09-22). 펀드 모듈이 이 모듈을 import 하므로 여기서
+    #    그쪽을 부르지 않고 **등록된 훅**을 부른다 — 펀드 모듈이 import 때 자기 함수를 꽂는다.
+    runner.on_closed = lambda: _notify_closed(handle)
     # 🔴 걸음마다 원장을 DB 에 다시 쓴다 — 파일 저널이 하던 그대로다.
     # 🔴 **주문 표식(run_key)은 보통 handle 이지만, 무중단 전략 전환 때는 넘겨받는다**
     #    (T61). 새 전략 세션이 앞 세션의 거래소 포지션을 `adopt` 하려면, 그 포지션에
