@@ -24,7 +24,6 @@ import contextlib
 import json
 import logging
 import os
-import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -543,78 +542,78 @@ def _next_boundary(now: datetime) -> datetime:
     return base.replace(hour=hour)
 
 
-CLOSE_TICK_DELAY_S = 15.0
-"""멤버가 기록을 닫은 뒤 **몇 초 뒤에** 그 펀드를 한 번 더 앵커하나 (2026-09-22).
-
-🔴 사용자 지적: 경계 봉에서 익절이 나면 실현 손익이 틱이 지갑을 읽은 **뒤에** 들어와, 새 크기는
-다음 4h 틱에야 반영됐다. 이제 닫힘을 들으면 잠시 뒤 다시 앵커한다 — 그 사이 다른 멤버가 같은
-걸음에서 닫히면 한 번에 묶인다. 시장가 청산은 걸음 안에서 체결을 기다리므로 지갑에 이미 들어와
-있다. 15초는 거래소가 잔고를 정산할 여유다.
-"""
-CLOSE_TICK_COOLDOWN_S = 60.0
-"""닫힘 틱 사이의 최소 간격 — 손절이 연달아 나도 1분에 한 번만 앵커한다(서명 호출 2회/틱)."""
-CLOSE_POLL_S = 5.0
-"""경계를 기다리며 닫힘 표시를 살피는 간격."""
-
-_CLOSED_AT: dict[str, float] = {}
-"""닫힘을 들은 펀드 → 그 시각(단조 시계). `_tick_closed` 가 지연 뒤 비운다."""
-_LAST_TICK_AT: dict[str, float] = {}
-"""펀드 → 마지막 틱 시각(단조 시계) — 닫힘 틱의 냉각 기준."""
+_ANCHOR_DIRTY: set[str] = set()
+"""닫힘을 들었지만 아직 앵커하지 않은 펀드 id — 한 걸음에 여러 멤버가 닫혀도 앵커는 한 번이다."""
+_ANCHOR_TASKS: dict[str, asyncio.Task[None]] = {}
+"""펀드 id → 도는 중인 닫힘 앵커 태스크 (참조를 들고 있어야 GC 가 안 거둔다)."""
 
 
 def note_closed(handle: str) -> str | None:
-    """판이 기록을 닫았다 — 그 판이 속한 펀드에 "다시 앵커할 것" 을 표시한다.
+    """판이 기록을 닫았다 — 그 판이 속한 펀드를 **지금** 거래소 지갑에 다시 앵커한다 (2026-09-22).
 
     Args:
         handle: 닫힌 판의 핸들.
 
     Returns:
-        표시한 펀드 id. 단독 판이면 None.
+        앵커를 건 펀드 id. 단독 판이면 None.
 
     Note:
-        걸음 안에서 불리므로 여기서 거래소를 부르지 않는다 — 표시만 하고 루프가
-        `CLOSE_TICK_DELAY_S` 뒤에 앵커한다.
+        🔴 사용자 지적: 사이징 예산(총자본 ÷ 자리)이 4h 경계 틱에서만 갱신돼, 경계 봉의 익절은 다음
+        틱(4시간 뒤)에야 크기에 들어갔다.
+
+        두 번 틀렸다. ① 15초 뒤 재앵커 — *"거래소가 잔고를 정산했겠지"* 라는 시간 추측(땜빵).
+        ② 원장 증분으로 그 자리에서 셈하기 — 원장은 거래소보다 **늦다**(조건부 손절은 60초 대조가
+        적는다). 손절 체결 뒤 원장이 적기 전에 앵커 틱이 지갑을 읽으면 그 손실이 앵커 값에 들어가고,
+        곧 대조가 적은 뒤 증분으로 **또** 들어간다(배포 전 검토가 잡았다 · TWR 고점·MDD 는
+        되돌아오지 않는다).
+
+        총자본의 진실은 **거래소 지갑** 하나다(`앵커의 계좌 총액 = 거래소 지갑 총액`). 그래서 닫힘은
+        "지갑을 지금 다시 읽어라" 라는 **사건**이지 산술이 아니다 — 시계도 원장도 안 끼운다. 시장가
+        청산은 체결 응답이 돌아온 뒤에, 거래소 손절은 대조가 포지션 소멸을 본 뒤에 이 훅이 불리므로
+        지갑에는 이미 들어와 있다. 4h 경계 틱과 같은 `_tick` 을 탄다(같은 앵커 경로 하나 · 수동 틱과
+        같다).
+
+        걸음 안에서 불리므로 여기서는 표시만 하고 태스크로 넘긴다 — 걸음을 안 막는다. 같은 펀드의
+        멤버 여럿이 한 걸음에 닫혀도 태스크 하나가 돌고, 도는 중에 또 들으면 끝난 뒤 한 번 더
+        읽는다.
     """
     for fund in FUNDS.values():
-        if handle in fund.handles.values():
-            _CLOSED_AT.setdefault(fund.fund_id, time.monotonic())
-            return fund.fund_id
+        if handle not in fund.handles.values():
+            continue
+        _ANCHOR_DIRTY.add(fund.fund_id)
+        running = _ANCHOR_TASKS.get(fund.fund_id)
+        if running is None or running.done():
+            _ANCHOR_TASKS[fund.fund_id] = asyncio.get_running_loop().create_task(
+                _anchor_on_close(fund.fund_id), name=f"fund-close-anchor-{fund.fund_id}"
+            )
+        return fund.fund_id
     return None
 
 
-ON_TRADE_CLOSED.append(note_closed)
-
-
-async def _tick_closed(now: float | None = None) -> list[str]:
-    """닫힘 표시가 지연을 넘긴 펀드를 한 번 더 앵커한다 — 냉각 안이면 다음 바퀴로 미룬다.
-
-    Args:
-        now: 시험용 단조 시각.
-
-    Returns:
-        이번에 앵커한 펀드 id 들.
-    """
-    at = time.monotonic() if now is None else now
-    done: list[str] = []
-    for fund_id, marked in list(_CLOSED_AT.items()):
+async def _anchor_on_close(fund_id: str) -> None:
+    """닫힘 표시가 있는 동안 펀드를 앵커한다 — 도는 중에 새 표시가 오면 끝난 뒤 한 번 더."""
+    while fund_id in _ANCHOR_DIRTY:
+        _ANCHOR_DIRTY.discard(fund_id)
         fund = FUNDS.get(fund_id)
         if fund is None:
-            _CLOSED_AT.pop(fund_id, None)
-            continue
-        if (
-            at - marked < CLOSE_TICK_DELAY_S
-            or at - _LAST_TICK_AT.get(fund_id, -1e9) < CLOSE_TICK_COOLDOWN_S
-        ):
-            continue
-        _CLOSED_AT.pop(fund_id, None)
+            return
+        before = fund.coordinator.engine.balance
         try:
-            await _tick(fund)
-            _LAST_TICK_AT[fund_id] = at
-            done.append(fund_id)
-            _logger.info("fund_close_tick: %s (%.0fs 뒤 앵커)", fund_id, at - marked)
+            report = await _tick(fund)
         except Exception as exc:
-            _logger.warning("fund_close_tick_failed: %s %s", fund_id, exc)
-    return done
+            # 다음 4h 경계가 어차피 앵커한다 — 여기서 영원히 재시도하지 않는다.
+            _logger.warning("fund_close_anchor_failed: %s %s", fund_id, exc)
+            return
+        _logger.info(
+            "fund_close_anchored: %s balance=%s -> %s budget=%s",
+            fund_id,
+            before.quantize(Decimal("0.01")),
+            report.balance.quantize(Decimal("0.01")),
+            next(iter(report.budgets.values()), Decimal(0)).quantize(Decimal("0.01")),
+        )
+
+
+ON_TRADE_CLOSED.append(note_closed)
 
 
 async def rebalance_loop() -> None:
@@ -625,29 +624,20 @@ async def rebalance_loop() -> None:
         이 루프는 저위험이다. 한 펀드가 실패해도 나머지는 돈다. 펀드가 0 개여도 카운트다운을
         위해 계속 돌며 다음 경계만 갱신한다.
 
-        ⭐ 경계를 기다리는 동안 **닫힘 틱**(`_tick_closed`)도 본다 (2026-09-22) — 멤버가 익절·손절로
-        닫히면 다음 경계를 안 기다리고 잠시 뒤 앵커해, 새 크기가 실현 손익을 곧바로 반영한다.
+        ⭐ 멤버가 익절·손절로 닫히면 경계를 안 기다린다 — `note_closed` 가 그 순간 같은 `_tick`
+        (지갑 앵커)을 태스크로 돌린다(2026-09-22). 이 루프는 4h 경계의 정기 앵커를 맡는다.
     """
     global _next_tick_at
     while True:
         now = datetime.now(UTC)
         _next_tick_at = _next_boundary(now)
-        while (left := (_next_tick_at - datetime.now(UTC)).total_seconds()) > 0:
-            await asyncio.sleep(min(left, CLOSE_POLL_S))
-            # 경계 직전의 닫힘은 경계 틱이 곧 앵커한다 — 같은 지갑을 두 번 읽지 않는다.
-            if left > CLOSE_TICK_DELAY_S:
-                await _tick_closed()
+        await asyncio.sleep(max((_next_tick_at - now).total_seconds(), 1.0))
         for fund in list(FUNDS.values()):
             try:
                 # rank60 — 하루 한 번(00 UTC 경계) 비중을 랭크로 갱신 (측정과 같은 일 리밸)
                 if fund.weight_mode == "rank60" and _next_tick_at.hour == 0:
                     await _refresh_rank(fund)
-                # 🔴 표시는 틱 **전에** 지운다 — 틱이 지갑을 읽는 동안 들어온 닫힘은 새 표시로
-                #    남아야 닫힘 틱이 다시 앵커한다 (배포 전 검토 2026-09-22: 뒤에 지우면 그 닫힘이
-                #    사라졌다).
-                _CLOSED_AT.pop(fund.fund_id, None)
                 await _tick(fund)
-                _LAST_TICK_AT[fund.fund_id] = time.monotonic()
             except Exception as exc:
                 _logger.warning("fund_auto_tick_failed: %s %s", fund.fund_id, exc)
         if FUNDS:

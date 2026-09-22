@@ -1,4 +1,4 @@
-"""멤버가 기록을 닫으면 펀드가 **다음 4h 경계를 안 기다리고** 다시 앵커한다 (2026-09-22).
+"""멤버가 기록을 닫으면 펀드가 **그 순간** 지갑에 다시 앵커한다 (2026-09-22).
 
 사용자 지적: *"경계 봉에서 익절이 나면, 그 실현 손익은 틱이 지갑을 읽은 뒤에 들어옵니다. 그래서
 다음 틱(4시간 뒤)에야 크기에 반영됩니다."* → *"이것만 수정되면 되겠네."*
@@ -7,9 +7,9 @@
 
     ① 러너는 걸음이 기록을 닫았을 때만 `on_closed` 를 부른다 (안 닫힌 걸음은 부르지 않는다)
     ② 훅이 던져도 걸음은 멀쩡하다
-    ③ 펀드 모듈은 닫힌 판의 펀드만 표시한다 (단독 판은 무시)
-    ④ 표시 뒤 `CLOSE_TICK_DELAY_S` 가 지나야 앵커하고, 냉각 안이면 미룬다 · 4h 경계 틱이 표시를
-       겸한다
+    ③ 펀드 모듈은 닫힌 판의 펀드만 앵커한다 (단독 판은 무시)
+    ④ 앵커 = 4h 경계·수동 틱과 같은 `_tick`(지갑 읽기) — 시간 추측도 원장 증분 셈도 없다.
+       한 걸음에 여럿이 닫혀도 지갑은 한 번(도는 중에 온 것은 끝난 뒤 한 번 더)만 읽는다
     ⑤ 훅은 등록으로 꽂힌다 — 러너·walkforward 는 펀드 모듈을 모른다 (import 방향)
 """
 
@@ -160,77 +160,111 @@ class TestRunnerHook:
 
 
 class TestFundSide:
+    """닫힘 → 펀드를 **지금** 지갑에 다시 앵커한다 (같은 `_tick` · 시계도 원장 산술도 없다)."""
+
     @pytest.fixture(autouse=True)
     def clean(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fresh_dirty: set[str] = set()
+        fresh_tasks: dict[str, Any] = {}
         monkeypatch.setattr(rebalancer, "FUNDS", {})
-        monkeypatch.setattr(rebalancer, "_CLOSED_AT", {})
-        monkeypatch.setattr(rebalancer, "_LAST_TICK_AT", {})
+        monkeypatch.setattr(rebalancer, "_ANCHOR_DIRTY", fresh_dirty)
+        monkeypatch.setattr(rebalancer, "_ANCHOR_TASKS", fresh_tasks)
 
     def _fund(self, fund_id: str, handles: dict[str, str]) -> Any:
-        return SimpleNamespace(fund_id=fund_id, handles=handles)
+        engine = SimpleNamespace(balance=Decimal(600))
+        return SimpleNamespace(
+            fund_id=fund_id, handles=handles, coordinator=SimpleNamespace(engine=engine)
+        )
 
-    def test_marks_only_the_owning_fund(self) -> None:
+    def _ticker(self, monkeypatch: pytest.MonkeyPatch, *, fail: bool = False) -> list[str]:
+        ticked: list[str] = []
+
+        async def fake_tick(fund: Any, _flow: Any = None) -> Any:
+            import asyncio
+
+            await asyncio.sleep(0.01)  # 진짜처럼 지갑을 기다린다 — 그 사이 닫힘이 더 올 수 있다
+            if fail:
+                raise RuntimeError("거래소")
+            ticked.append(fund.fund_id)
+            return SimpleNamespace(balance=Decimal(660), budgets={"BTC_USDT": Decimal(110)})
+
+        monkeypatch.setattr(rebalancer, "_tick", fake_tick)
+        return ticked
+
+    async def test_a_close_anchors_the_fund_now(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+
         rebalancer.FUNDS["f1"] = self._fund("f1", {"BTC_USDT": "h-btc"})
-        rebalancer.FUNDS["f2"] = self._fund("f2", {"ETH_USDT": "h-eth"})
-        assert rebalancer.note_closed("h-eth") == "f2"
+        ticked = self._ticker(monkeypatch)
+        assert rebalancer.note_closed("h-btc") == "f1"
+        await asyncio.sleep(0.05)
+        assert ticked == ["f1"]
+
+    async def test_a_burst_of_closes_anchors_once_or_twice_not_n_times(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """한 걸음에 멤버 셋이 닫혀도 지갑은 한 번(도는 중에 온 것은 끝난 뒤 한 번 더)만 읽는다."""
+        import asyncio
+
+        rebalancer.FUNDS["f1"] = self._fund(
+            "f1", {"BTC_USDT": "h-btc", "ETH_USDT": "h-eth", "XRP_USDT": "h-xrp"}
+        )
+        ticked = self._ticker(monkeypatch)
+        for handle in ("h-btc", "h-eth", "h-xrp"):
+            rebalancer.note_closed(handle)
+        await asyncio.sleep(0.08)
+        assert 1 <= len(ticked) <= 2
+
+    async def test_a_close_during_the_anchor_reads_the_wallet_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """지갑을 읽는 동안 또 닫히면 그 닫힘이 빠질 수 있다 — 끝난 뒤 한 번 더 읽는다."""
+        import asyncio
+
+        rebalancer.FUNDS["f1"] = self._fund("f1", {"BTC_USDT": "h-btc", "ETH_USDT": "h-eth"})
+        ticked = self._ticker(monkeypatch)
+        rebalancer.note_closed("h-btc")
+        await asyncio.sleep(0.003)  # 첫 앵커가 지갑을 기다리는 중
+        rebalancer.note_closed("h-eth")
+        await asyncio.sleep(0.08)
+        assert ticked == ["f1", "f1"]
+
+    async def test_a_standalone_run_touches_no_fund(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+
+        rebalancer.FUNDS["f1"] = self._fund("f1", {"BTC_USDT": "h-btc"})
+        ticked = self._ticker(monkeypatch)
         assert rebalancer.note_closed("h-lone") is None
-        assert set(rebalancer._CLOSED_AT) == {"f2"}  # pyright: ignore[reportPrivateUsage]
+        await asyncio.sleep(0.03)
+        assert ticked == []
+
+    async def test_a_failed_anchor_is_logged_and_left_to_the_boundary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        rebalancer.FUNDS["f1"] = self._fund("f1", {"BTC_USDT": "h-btc"})
+        self._ticker(monkeypatch, fail=True)
+        rebalancer.note_closed("h-btc")
+        await asyncio.sleep(0.05)
+        assert "f1" not in rebalancer._ANCHOR_DIRTY  # pyright: ignore[reportPrivateUsage]
+        task = rebalancer._ANCHOR_TASKS["f1"]  # pyright: ignore[reportPrivateUsage]
+        assert task.done() and task.exception() is None, "태스크가 조용히 죽지 않는다"
 
     def test_the_hook_is_registered_not_imported(self) -> None:
         assert rebalancer.note_closed in api.ON_TRADE_CLOSED
         assert "rebalancer" not in inspect.getsource(api._live_start)  # pyright: ignore[reportPrivateUsage]
 
-    async def test_waits_for_the_delay_then_ticks_once(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        rebalancer.FUNDS["f1"] = self._fund("f1", {"BTC_USDT": "h-btc"})
-        ticked: list[str] = []
-
-        async def fake_tick(fund: Any, _flow: Any = None) -> None:
-            ticked.append(fund.fund_id)
-
-        monkeypatch.setattr(rebalancer, "_tick", fake_tick)
-        rebalancer._CLOSED_AT["f1"] = 1000.0  # pyright: ignore[reportPrivateUsage]
-        assert await rebalancer._tick_closed(now=1000.0 + rebalancer.CLOSE_TICK_DELAY_S - 1) == []  # pyright: ignore[reportPrivateUsage]
-        assert ticked == []
-        assert await rebalancer._tick_closed(now=1000.0 + rebalancer.CLOSE_TICK_DELAY_S) == ["f1"]  # pyright: ignore[reportPrivateUsage]
-        assert ticked == ["f1"]
-        assert "f1" not in rebalancer._CLOSED_AT  # pyright: ignore[reportPrivateUsage]
-        # 다시 표시가 와도 냉각 안이면 미룬다 — 손절이 연달아 나도 1분에 한 번.
-        rebalancer._CLOSED_AT["f1"] = 1020.0  # pyright: ignore[reportPrivateUsage]
-        assert await rebalancer._tick_closed(now=1040.0) == []  # pyright: ignore[reportPrivateUsage]
-        later = 1000.0 + rebalancer.CLOSE_TICK_DELAY_S + rebalancer.CLOSE_TICK_COOLDOWN_S
-        assert await rebalancer._tick_closed(now=later) == ["f1"]  # pyright: ignore[reportPrivateUsage]
-
-    async def test_a_failed_tick_is_logged_and_dropped(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        rebalancer.FUNDS["f1"] = self._fund("f1", {"BTC_USDT": "h-btc"})
-
-        async def boom(_fund: Any, _flow: Any = None) -> None:
-            raise RuntimeError("거래소")
-
-        monkeypatch.setattr(rebalancer, "_tick", boom)
-        rebalancer._CLOSED_AT["f1"] = 0.0  # pyright: ignore[reportPrivateUsage]
-        assert await rebalancer._tick_closed(now=100.0) == []  # pyright: ignore[reportPrivateUsage]
-        left = rebalancer._CLOSED_AT  # pyright: ignore[reportPrivateUsage]
-        assert "f1" not in left, "다음 4h 경계가 어차피 앵커한다 — 영원히 재시도하지 않는다"
-
-    def test_a_vanished_fund_is_forgotten(self) -> None:
-        rebalancer._CLOSED_AT["gone"] = 0.0  # pyright: ignore[reportPrivateUsage]
-        import asyncio
-
-        assert asyncio.run(rebalancer._tick_closed(now=100.0)) == []  # pyright: ignore[reportPrivateUsage]
-        assert "gone" not in rebalancer._CLOSED_AT  # pyright: ignore[reportPrivateUsage]
-
-    def test_the_boundary_tick_clears_the_mark_before_it_reads_the_wallet(self) -> None:
-        """틱이 지갑을 읽는 동안 들어온 닫힘이 지워지면 그 실현 손익은 4시간을 기다린다."""
-        source = inspect.getsource(rebalancer.rebalance_loop)
-        assert "await _tick_closed()" in source
-        assert source.index("await _tick_closed()") < source.index(
-            "for fund in list(FUNDS.values()):"
+    def test_no_clock_and_no_ledger_arithmetic(self) -> None:
+        """시간 추측(15초)도, 원장 증분 셈(대조보다 늦어 이중 계산)도 없다 — 지갑 앵커 하나."""
+        source = inspect.getsource(rebalancer.note_closed) + inspect.getsource(
+            rebalancer._anchor_on_close  # pyright: ignore[reportPrivateUsage]
         )
-        body = source[source.index("for fund in list(FUNDS.values()):") :]
-        assert body.index("_CLOSED_AT.pop(fund.fund_id, None)") < body.index("await _tick(fund)")
-        # 경계 직전의 닫힘은 경계 틱이 앵커한다 — 같은 지갑을 두 번 읽지 않는다.
-        assert "if left > CLOSE_TICK_DELAY_S:" in source
+        assert "sleep" not in source
+        assert "coordinator.tick()" not in source, "앵커 없는 증분 틱은 대조보다 늦어 두 번 센다"
+        assert "await _tick(fund)" in source, "4h 경계·수동 틱과 같은 앵커 경로 하나"
+
+    def test_the_boundary_loop_is_its_original_shape(self) -> None:
+        source = inspect.getsource(rebalancer.rebalance_loop)
+        assert "_tick_closed" not in source
+        assert "await _tick(fund)" in source
