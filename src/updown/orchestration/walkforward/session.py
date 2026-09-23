@@ -35,6 +35,7 @@ from updown.analysis.indicators import snapshot as indicator_snapshot
 from updown.analysis.indicators.adx import adx
 from updown.analysis.indicators.atr import atr as atr_series
 from updown.analysis.indicators.ma import sma
+from updown.analysis.indicators.macd import macd
 from updown.analysis.indicators.reversal import (
     dragonfly,
     engulfing,
@@ -117,6 +118,9 @@ HALF_LEFT = Decimal("0.5")
 ⚠️ 탐지기의 1차 익절 비중(`HALF`)과 **같은 값이어야 한다.** 절반을 덜면
 절반이 남는다는 당연한 관계이고, 비중을 바꾸면 여기도 같이 바뀐다.
 """
+
+MACD_EXIT_MIN_BARS = 35
+"""MACD 반대 교차 청산(`macd_exit_above_short`)이 판정할 최소 봉 수 — 느린 EMA 26 + 시그널 9."""
 
 _logger = get_logger("walkforward.session")
 
@@ -1996,6 +2000,16 @@ class Session:
                     level = sma([row.close for row in gauge.rows], book.ma_exit_above_short)[-1]
                     if level is not None and gauge.rows[-1].close > level:
                         flipped = True
+            # 🔴 **MACD 반대 교차 청산** (T302 · T303) — 판정 TF 의 MACD 선이 시그널
+            #    위에서 마감하면 숏을 전량 정리한다. 4H MACD 3중 신호 숏의 청산이다.
+            #    None 이면 이 가지는 없는 것과 같다.
+            if not flipped and not long and book.macd_exit_above_short:
+                gauge = self._frame(book.timeframe, None)
+                if gauge is not None and len(gauge.rows) > MACD_EXIT_MIN_BARS:
+                    series = macd([row.close for row in gauge.rows])
+                    line, signal = series.line[-1], series.signal[-1]
+                    if line is not None and signal is not None and line > signal:
+                        flipped = True
             # 🔴 **추세가 반대로 선언되기 전까지 보유** (T32 후보 D · `hold_while_trend`).
             #    전환 익절(캔들 패턴)은 15m 되돌림에 일찍 끊는다 — 돌파 롱 11건이 상승장에서
             #    -2.43% 였던 이유다. 이 스위치가 켜지면 캔들 패턴을 안 보고, 1h 주 추세가
@@ -2572,7 +2586,7 @@ class Session:
         short = direction is Direction.SHORT
         for item in self.playbooks:
             mine = (
-                (item.ma_exit_above_short, item.adx_exit_short)
+                (item.ma_exit_above_short, item.adx_exit_short, item.macd_exit_above_short)
                 if short
                 else (item.ma_exit_below_long, item.adx_exit_long, item.adx_exit_above_long)
             )

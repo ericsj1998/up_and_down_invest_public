@@ -415,6 +415,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         if body.get("ma_exit_above_short") is None
                         else int(body["ma_exit_above_short"])
                     ),
+                    macd_exit_above_short=(
+                        None
+                        if body.get("macd_exit_above_short") is None
+                        else bool(body["macd_exit_above_short"])
+                    ),
                     entry_ref_return_band=(
                         None
                         if body.get("entry_ref_return_band") is None

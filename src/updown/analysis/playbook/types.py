@@ -578,6 +578,16 @@ class Playbook:
 
     ⛔ None 이면 동결이다 (§5.6.2) — 기존 매매법은 한 글자도 다르게 돌지 않는다.
     """
+    macd_exit_above_short: bool | None = None
+    """숏 보유 중 판정 TF 의 MACD 선이 시그널 **위에서 마감**하면 전량 나간다 (T302).
+
+    4H MACD 3중 신호 숏(`private_strategy`)의 청산이다 — 연구(`t296_wave92.exit_fn` ·
+    298~311차)가 이 규칙으로 쟀다. 진입이 "선이 시그널 아래로 교차" 이므로 처음
+    위로 마감하는 봉이 곧 반대 교차다. 마감 기준인 이유는 `ma_exit_above_short` 와
+    같다.
+
+    ⛔ None 이면 동결이다 (§5.6.2).
+    """
     entry_ref_return_band: RefReturnBand | None = None
     """기준 종목(BTC) 수익률이 이 띠 안일 때만 새로 들어간다 (T290 · 국면 문).
 

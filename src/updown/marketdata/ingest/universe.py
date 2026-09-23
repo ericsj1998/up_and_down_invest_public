@@ -105,6 +105,21 @@ GATE_USDT_NAMES: dict[str, str] = {
     "HYPE_USDT": "HYPE 무기한",  # 98차 통발 확장 후보(Gate 거래대금 상위 20 · 2026-09-17)
     "LSK_USDT": "LSK 무기한",  # 98차 통발 확장 후보(Gate 거래대금 상위 20 · 2026-09-17)
     "ZEC_USDT": "ZEC 무기한",  # 98차 통발 확장 후보(Gate 거래대금 상위 20 · 2026-09-17)
+    # ⭐ 303차(2026-09-24) — MACD 3중 숏 다리 우주(Gate 스냅샷 문턱 U-c · T303).
+    #    이름만 등록한다.
+    "FIL_USDT": "FIL 무기한",
+    "DASH_USDT": "DASH 무기한",
+    "XMR_USDT": "XMR 무기한",
+    "ICP_USDT": "ICP 무기한",
+    "COTI_USDT": "COTI 무기한",
+    "AR_USDT": "AR 무기한",
+    "ENS_USDT": "ENS 무기한",
+    "IOST_USDT": "IOST 무기한",
+    "SUSHI_USDT": "SUSHI 무기한",
+    "ALGO_USDT": "ALGO 무기한",
+    "GRT_USDT": "GRT 무기한",
+    "TRB_USDT": "TRB 무기한",
+    "DYDX_USDT": "DYDX 무기한",
 }
 
 
