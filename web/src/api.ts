@@ -2519,22 +2519,33 @@ export function fundEditBasket(
   id: string,
   members: { symbol: string; weight: string }[],
 ): Promise<FundStatus> {
-  return request(`/rebalancer/${id}/basket`, {
-    method: "PUT",
-    headers: JSON_POST,
-    body: JSON.stringify({ members }),
-  });
+  // 새 종목마다 판을 띄운다 — 전환과 같은 이유로 5분을 준다(1.17.1).
+  return request(
+    `/rebalancer/${id}/basket`,
+    {
+      method: "PUT",
+      headers: JSON_POST,
+      body: JSON.stringify({ members }),
+    },
+    300_000,
+  );
 }
 
 export function fundChangePlaybook(
   id: string,
   playbook: string,
 ): Promise<FundStatus> {
-  return request(`/rebalancer/${id}/playbook`, {
-    method: "PUT",
-    headers: JSON_POST,
-    body: JSON.stringify({ playbook }),
-  });
+  // 🔴 모든 종목의 세션을 다시 띄운다 — 2026-09-24 혼합 2.0.0-V(40종) 전환이 2분 반 걸려 20초 시한에
+  //    화면이 오류를 띄웠다(서버는 끝까지 갔다 · shield). 생성(3분)보다 넉넉히 5분을 준다.
+  return request(
+    `/rebalancer/${id}/playbook`,
+    {
+      method: "PUT",
+      headers: JSON_POST,
+      body: JSON.stringify({ playbook }),
+    },
+    300_000,
+  );
 }
 
 /**

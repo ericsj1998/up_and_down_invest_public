@@ -1896,6 +1896,16 @@ async def drop(fund_id: str) -> dict[str, Any]:
 
 @router.put("/{fund_id}/basket")
 async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+    """바스켓을 바꾼다 — 본문은 `_edit_basket` · 브라우저가 끊어도 끝까지 간다 (1.17.1 · shield).
+
+    Note:
+        종목을 넣고 빼며 세션을 띄우고 청산한다 — 도중에 취소되면 청산만 되고 새 세션은 안 뜬
+        펀드가 남는다. `change_playbook` 과 같은 이유로 요청 수명에서 떼어 낸다.
+    """
+    return await asyncio.shield(_edit_basket(fund_id, payload))
+
+
+async def _edit_basket(fund_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """바스켓을 바꾼다 — 종목 추가/제거 + 비중 조절 (동적, 무중단).
 
     Args:
@@ -2060,6 +2070,20 @@ def _widened_basket(
 @router.put("/{fund_id}/playbook")
 async def change_playbook(
     request: Request, fund_id: str, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
+    """전략(매매법)을 바꾼다 — 본문은 `_change_playbook` · 브라우저가 끊어도 끝까지 간다.
+
+    Note:
+        🔴 **shield** (2026-09-24 · 1.17.1). 혼합 2.0.0-V 로 바꾸며 40종을 띄우느라 2분 반 걸렸고,
+        화면(20초 시한)이 먼저 끊어 nginx 499 가 났다. 이번엔 서버가 끝까지 갔지만 요청 태스크가
+        취소되면 옛 러너는 거둬졌는데 새 세션은 일부만 뜬 **반쯤 바뀐 펀드**가 남는다 — 생성
+        (`create`)이 2026-09-05 에 겪은 것과 같은 구멍이라 같은 방법으로 막는다.
+    """
+    return await asyncio.shield(_change_playbook(request, fund_id, payload))
+
+
+async def _change_playbook(
+    request: Request, fund_id: str, payload: Mapping[str, Any]
 ) -> dict[str, Any]:
     """전략(매매법)을 바꾼다 — 모든 세션을 새 전략으로 다시 띄운다 (동적 전환).
 
