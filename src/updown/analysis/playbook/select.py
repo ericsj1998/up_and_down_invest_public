@@ -33,6 +33,7 @@ from updown.analysis.playbook.types import (
     Playbook,
     PlaybookRegime,
     RefReturnBand,
+    RefSurgeCap,
 )
 from updown.common.domain.evidence import Family, Grade
 from updown.common.domain.instrument import MarketGroup, Timeframe
@@ -293,6 +294,23 @@ def _ref_band(raw: object, name: str) -> RefReturnBand:
         raise PlaybookConfigError(f"{name}.entry_ref_return_band — {exc}") from exc
 
 
+def _ref_surge(raw: object, name: str) -> RefSurgeCap:
+    """기준 종목 급등 상한 한 줄 — `{days: 7, high: "0.082"}` (T304 #8).
+
+    Args:
+        raw: 선언 값.
+        name: 오류에 붙일 자리 이름.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우(일수 0 · 상한 ≤ 0).
+    """
+    body = _mapping(raw, f"{name}.entry_ref_surge_cap")
+    try:
+        return RefSurgeCap(days=int(str(body["days"])), high=Decimal(str(body["high"])))
+    except (ArithmeticError, KeyError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_ref_surge_cap — {exc}") from exc
+
+
 _KNOWN_KEYS = frozenset(field.name for field in fields(Playbook)) - {"playbook_id"}
 """선언에 쓸 수 있는 키 — `Playbook` 의 필드에서 나온다(`playbook_id` 는 매핑의 키다).
 
@@ -424,6 +442,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         None
                         if body.get("entry_ref_return_band") is None
                         else _ref_band(body["entry_ref_return_band"], f"playbooks.{name}")
+                    ),
+                    entry_ref_surge_cap=(
+                        None
+                        if body.get("entry_ref_surge_cap") is None
+                        else _ref_surge(body["entry_ref_surge_cap"], f"playbooks.{name}")
                     ),
                     entry_ref_ma_gate=(
                         None

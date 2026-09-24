@@ -253,6 +253,46 @@ class RefReturnBand:
 
 
 @dataclass(frozen=True, slots=True)
+class RefSurgeCap:
+    """기준 종목(BTC) 급등 상한 — 직전 `days` 일 수익률이 `high` 를 넘으면 새로 안 든다 (T304 #8).
+
+    Attributes:
+        days: UTC 일봉 종가 몇 개 전과 비교하나(7).
+        high: 수익률 상한(비율 · 0.082 = +8.2%). **이하**여야 든다.
+
+    Raises:
+        ValueError: 일수가 1 미만이거나 상한이 0 이하인 경우.
+
+    Note:
+        329 · 332차: 삼각수렴 하방 이탈 숏은 BTC 가 1~2주 급등한 때 두 창 모두 건당 음수였다
+        (앞 창 -0.70% · 뒤 창 -0.74% · 80% CI 둘 다 0 아래) — 알트가 같이 끌려 올라가 손절이 몰린다.
+        문턱 +8.204% = 삼각 진입들의 앞 창(~2024-06) BTC 7일 수익률 90분위.
+        `RefReturnBand` 처럼 탐지기가 아니라 세션 진입에서 건다 · 모르면 보류한다(규칙 #8-1).
+    """
+
+    days: int
+    high: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 상한으로서 말이 되는지."""
+        if self.days < 1:
+            raise ValueError(f"비교 일수는 1 이상이다: {self.days}")
+        if self.high <= 0:
+            raise ValueError(f"급등 상한은 0 보다 커야 한다: {self.high}")
+
+    def holds(self, value: Decimal) -> bool:
+        """수익률이 상한 **이하**인가(= 들어가도 되나).
+
+        Args:
+            value: 기준 종목의 `days` 일 수익률(비율).
+
+        Returns:
+            상한 이하면 참.
+        """
+        return value <= self.high
+
+
+@dataclass(frozen=True, slots=True)
 class BreadthCap:
     """조건부 총 명목 상한 선언 — `min` 종목 이상이 같이 밴드를 뚫었을 때만 상한을 `cap` 으로.
 
@@ -593,6 +633,13 @@ class Playbook:
 
     `entry_ref_ma_gate` 의 형제다 — 값은 러너가 주입한다(`Session.ref_return`). 🔴 주입값이
     **None(모름)이면 진입을 보류한다**(형제와 반대 · 규칙 #8-1). 보유분은 안 건드린다.
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_ref_surge_cap: RefSurgeCap | None = None
+    """기준 종목(BTC)의 직전 `days` 일(UTC 일봉 종가) 수익률이 상한을 넘으면 새로 안 든다 (T304 #8).
+
+    `entry_ref_return_band` 의 형제다 — 값은 러너가 주입한다(`Session.ref_surge`). 🔴 주입값이
+    **None(모름)이면 진입을 보류한다**(규칙 #8-1). 보유분은 안 건드린다.
     ⛔ 선언이 None 이면 동결이다 (§5.6.2).
     """
     adx_exit_short: int | None = None

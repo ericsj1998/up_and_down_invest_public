@@ -17,10 +17,12 @@ import math
 import random
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import TypedDict
 
 from updown.analysis.detectors.private_strategy import (
     BASE_TIMEFRAME,
     RULE_ID,
+    RULE_ID_FLOOR,
     private_strategy,
     private_strategy,
 )
@@ -32,7 +34,17 @@ from updown.common.domain.instrument import AssetType, Currency, Instrument, Mar
 
 INSTRUMENT = Instrument(Market.GATE, "ZEC_USDT", "ZEC", AssetType.COIN, Currency.USD)
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
-PARAMS: dict[str, int] = {"fast": 12, "slow": 26, "signal": 9, "gate_ma": 50, "gate_lag": 5}
+
+
+class _Params(TypedDict):
+    fast: int
+    slow: int
+    signal: int
+    gate_ma: int
+    gate_lag: int
+
+
+PARAMS: _Params = {"fast": 12, "slow": 26, "signal": 9, "gate_ma": 50, "gate_lag": 5}
 
 
 def walk(seed: int, n: int = 400) -> list[Candle]:
@@ -177,4 +189,43 @@ class TestItIsWiredLikeAnyOtherRule:
     def test_macd_exit_is_off_everywhere_else(self) -> None:
         """⛔ None 이면 동결 — 새 청산 가지가 기존 매매법에 켜져 있으면 안 된다."""
         on = {b.playbook_id for b in load_playbooks() if b.macd_exit_above_short is not None}
-        assert on == {"private_strategy"}
+        assert on == {"private_strategy", "private_strategy"}  # 334차 측정용 — 룰만 다르다
+
+
+class TestStopFloorVariant:
+    """손절 거리 하한 변형(T304 #9 · `private_strategy`) — 좁은 손절만 거르고 나머지는 그대로."""
+
+    def setup_with(self, floor: str):  # type: ignore[no-untyped-def]
+        window = TestShortSetupShape().first_fire()
+        return window, private_strategy(
+            window,
+            Timeframe.H4,
+            Decimal("0.001"),
+            sides=-1,
+            atr_period=14,
+            sl_atr=Decimal("0.2"),
+            entry_stop_floor_pct=Decimal(floor),
+            **PARAMS,
+        )
+
+    def test_floor_flips_exactly_at_the_stop_width(self) -> None:
+        window, plain = self.setup_with("0")
+        assert plain is not None
+        width = (plain.stop_loss - window[-1].close) / window[-1].close * 100
+        _, at = self.setup_with(str(width))
+        _, above = self.setup_with(str(width + Decimal("0.0001")))
+        assert at == plain, "하한과 같으면 든다"
+        assert above is None, "손절 거리가 하한보다 짧으면 안 든다"
+
+    def test_variant_is_wired_with_one_extra_line(self) -> None:
+        rules = load_rules()
+        base, floor = rules[RULE_ID].params, rules[RULE_ID_FLOOR].params
+        assert floor["entry_stop_floor_pct"] == "1.32"
+        assert {k: v for k, v in floor.items() if k != "entry_stop_floor_pct"} == base
+        assert RULE_ID_FLOOR in SetupRegistry.from_plugins(rules).available()
+        books = {b.playbook_id: b for b in load_playbooks()}
+        live, test = books["private_strategy"], books["private_strategy"]
+        assert test.setups == (RULE_ID_FLOOR,) and live.setups == (RULE_ID,)
+        assert test.listed is False
+        for name in ("timeframe", "leverage", "stop_mode", "macd_exit_above_short", "full_ride"):
+            assert getattr(live, name) == getattr(test, name), name

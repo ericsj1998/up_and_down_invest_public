@@ -29,7 +29,7 @@ from updown.analysis.detectors.private_strategy import (
 )
 from updown.analysis.playbook import select
 from updown.analysis.playbook.select import PlaybookConfigError, load_playbooks
-from updown.analysis.playbook.types import RefReturnBand
+from updown.analysis.playbook.types import RefReturnBand, RefSurgeCap
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import AssetType, Currency, Instrument, Market, Timeframe
 from updown.common.domain.setup import TradeSetup
@@ -202,6 +202,8 @@ class TestItIsWiredLikeAnyOtherRule:
             "private_strategy",
             "private_strategy",
             "private_strategy",  # T291 — 같은 매매법에 다리의 계좌 층만 얹은 것
+            "private_strategy",  # T304 #8 측정용 — 급등 상한만 더함
+            "private_strategy",
         }
 
 
@@ -214,6 +216,8 @@ class TestRegimeBand:
         assert on == {
             "private_strategy",
             "private_strategy",  # T291 — 같은 매매법에 다리의 계좌 층만 얹은 것
+            "private_strategy",  # T304 #8 측정용 — 급등 상한만 더함
+            "private_strategy",
         }, "기존 매매법에 국면 문이 켜지면 안 된다"
         assert books["private_strategy"].entry_ref_return_band == RefReturnBand(
             bars=360, low=Decimal("-0.15"), high=Decimal("0.15")
@@ -245,3 +249,45 @@ class TestRegimeBand:
     def test_bad_declarations_are_refused(self, raw: dict[str, object]) -> None:
         with pytest.raises(PlaybookConfigError):
             select._ref_band(raw, "playbooks.x")  # pyright: ignore[reportPrivateUsage]
+
+
+class TestSurgeCap:
+    """BTC 급등 상한(T304 #8) — 직전 7일 수익률이 +8.204% 를 넘으면 삼각 숏을 새로 안 든다."""
+
+    def test_only_the_measurement_variants_declare_it(self) -> None:
+        books = {b.playbook_id: b for b in load_playbooks()}
+        on = {name for name, b in books.items() if b.entry_ref_surge_cap is not None}
+        assert on == {"private_strategy", "private_strategy"}
+        assert books["private_strategy"].entry_ref_surge_cap == RefSurgeCap(
+            days=7, high=Decimal("0.08204173132170967")
+        )
+
+    def test_variants_differ_from_the_originals_only_by_the_cap(self) -> None:
+        from dataclasses import fields, replace
+
+        books = {b.playbook_id: b for b in load_playbooks()}
+        for src in ("private_strategy", "private_strategy"):
+            orig, capped = books[src], books[f"{src}_surge"]
+            same = replace(capped, entry_ref_surge_cap=None)
+            for f in fields(orig):
+                if f.name in ("playbook_id", "backtest_note", "listed"):
+                    continue
+                assert getattr(orig, f.name) == getattr(same, f.name), (src, f.name)
+
+    def test_cap_is_inclusive(self) -> None:
+        cap = RefSurgeCap(days=7, high=Decimal("0.082"))
+        assert cap.holds(Decimal("0.082")) and cap.holds(Decimal("-0.3"))
+        assert not cap.holds(Decimal("0.0821"))
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"days": 0, "high": "0.08"},
+            {"days": 7, "high": "0"},
+            {"days": 7},
+            {"days": "x", "high": "0.08"},
+        ],
+    )
+    def test_bad_declarations_are_refused(self, raw: dict[str, object]) -> None:
+        with pytest.raises(PlaybookConfigError):
+            select._ref_surge(raw, "playbooks.x")  # pyright: ignore[reportPrivateUsage]

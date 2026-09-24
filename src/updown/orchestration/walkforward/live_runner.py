@@ -4479,7 +4479,16 @@ class LiveRunner:
             ),
             None,
         )
-        if gate_n is None and band_n is None:
+        # T304 #8 — 급등 상한(직전 며칠 UTC 일봉 종가 수익률)도 같은 기준 봉(4H)에서 나온다.
+        surge_days = next(
+            (
+                item.entry_ref_surge_cap.days
+                for item in self._session.playbooks
+                if item.entry_ref_surge_cap is not None
+            ),
+            None,
+        )
+        if gate_n is None and band_n is None and surge_days is None:
             return
         from dataclasses import replace as _replace
 
@@ -4487,7 +4496,7 @@ class LiveRunner:
         from updown.common.domain.instrument import Timeframe
 
         ref = _replace(self.instrument, symbol="BTC_USDT", name="BTC 무기한 (기준)")
-        need = max(gate_n or 0, band_n or 0)
+        need = max(gate_n or 0, band_n or 0, 6 * ((surge_days or 0) + 2))
         try:
             end = datetime.now(UTC)
             rows = await self._quotes.get_candles(
@@ -4510,10 +4519,18 @@ class LiveRunner:
                 if before <= 0:
                     raise ValueError("기준 종가가 0 이하다")
                 self._session.ref_return = closed[-1].close / before - 1
+            if surge_days is not None:
+                # UTC 일봉 종가 = 00:00 UTC 에 끝나는 4H 봉의 종가
+                # (연구 `t296_wave113.btc_daily` 와 같은 값)
+                daily = [c.close for c in closed if (c.ts + timedelta(hours=4)).hour == 0]
+                if len(daily) <= surge_days or daily[-1 - surge_days] <= 0:
+                    raise ValueError(f"기준 일봉 부족: {len(daily)} <= {surge_days}")
+                self._session.ref_surge = daily[-1] / daily[-1 - surge_days] - 1
             self._ref_regime_at = last_ts
         except Exception as exc:
             self._session.ref_above = None  # 모름 = 게이트 잠듦 (0.2.0 동작 폴백)
             self._session.ref_return = None  # 모름 = 국면 문 잠듦 (T290 · 같은 폴백)
+            self._session.ref_surge = None  # 모름 = 급등 상한 보류 (T304 #8 · 같은 폴백)
             self._ref_regime_at = None
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
 

@@ -425,6 +425,14 @@ class Session:
     """
     ref_band_held: int = 0
     """국면 문(`entry_ref_return_band`)이 보류시킨 진입 수 — 관측용 (§1-0s)."""
+    ref_surge: Decimal | None = None
+    """기준 종목(BTC)의 직전 `days` 일(UTC 일봉 종가) 수익률(비율) — 러너가 주입한다 (T304 #8).
+
+    `ref_return` 의 형제다. 일수는 선언(`entry_ref_surge_cap.days`)이 정한다.
+    🔴 None = 모름 → 상한을 선언한 매매법은 **진입을 보류**한다(규칙 #8-1).
+    """
+    ref_surge_held: int = 0
+    """급등 상한(`entry_ref_surge_cap`)이 보류시킨 진입 수 — 관측용 (§1-0s)."""
     ref_gate_held: int = 0
     """F1 게이트로 **안 산** 자리 수 (관측 규약 §1-0s)."""
     recent_funding: Decimal | None = None
@@ -3377,6 +3385,21 @@ class Session:
                     "ref_return": None if self.ref_return is None else str(self.ref_return),
                     "band": [str(band.low), str(band.high)],
                     "note": "기준(BTC) 수익률이 띠 밖이다 — 이 봉엔 새로 안 들어간다 (T290)",
+                },
+            )
+            return None
+        surge = chosen.playbook.entry_ref_surge_cap
+        if surge is not None and (self.ref_surge is None or not surge.holds(self.ref_surge)):
+            # T304 #8 — 기준(BTC)이 직전 며칠 급등했으면 새로 안 들어간다. 보유분은 그대로.
+            # 🔴 모르면(None) 보류한다 — 신규 진입은 리스크 증가 행동이다(절대 규칙 #8-1).
+            self.ref_surge_held += 1
+            self._count("ref_surge")
+            _logger.info(
+                "session_entry_ref_surge_held",
+                payload={
+                    "ref_surge": None if self.ref_surge is None else str(self.ref_surge),
+                    "cap": [surge.days, str(surge.high)],
+                    "note": "기준(BTC)이 직전 며칠 급등했다 — 이 봉엔 새로 안 들어간다 (T304 #8)",
                 },
             )
             return None
