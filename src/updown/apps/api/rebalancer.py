@@ -42,6 +42,7 @@ from updown.apps.api.auth import require_market_trade, require_playbook_trade
 from updown.apps.api.walkforward import (
     LIVE_RUNNERS,
     ON_TRADE_CLOSED,
+    REPLACING,
     SESSIONS,
     _close_live_position,
     _drop_one,
@@ -1964,6 +1965,9 @@ async def _edit_basket(fund_id: str, payload: Mapping[str, Any]) -> dict[str, An
             if member.symbol in old:
                 continue
             share = report.budgets.get(member.symbol, Decimal(0))
+            # 🔴 몫(capital · 원장 걷기 시작점)은 생성 · 전환과 같게 넘긴다 (1.17.1) —
+            #    빠뜨리면 원장이 예산에서 시작해 원장 합이 계좌보다 커 보인다(`wallet_drift`).
+            capital = member_share(engine.balance, member.weight, new_basket.weight_sum)
             member_book, member_lev = _member_terms(
                 fund.playbook, fund.leverage, fund.alt_leverage, fund.legs, member.symbol
             )
@@ -1973,11 +1977,8 @@ async def _edit_basket(fund_id: str, payload: Mapping[str, Any]) -> dict[str, An
                 member_lev,
                 member_book,
                 market=fund.market,
-                booked=(
-                    min(share, engine.balance * member.weight / new_basket.weight_sum)
-                    if fund.legs
-                    else None
-                ),
+                capital=capital,
+                booked=min(share, capital) if fund.legs else None,
             )
             fund.handles[member.symbol] = handle
             fund.coordinator.ports[member.symbol] = port  # type: ignore[index]
@@ -2183,6 +2184,9 @@ async def _change_playbook(
     wsum = basket.weight_sum
     new_handles: dict[str, str] = {}
     new_ports: dict[str, SessionBridge] = {}
+    # 🔴 감시자가 거둔 옛 판을 옛 매매법으로 되살리지 않게 한다 (1.17.1 · `REPLACING`).
+    replacing = set(fund.handles.values())
+    REPLACING.update(replacing)
     try:
         for member in basket.members:
             old = fund.handles.get(member.symbol)
@@ -2190,7 +2194,11 @@ async def _change_playbook(
                 await _drop_one(old)
             # 자리 배분이면 `총자본 ÷ 자리`(합이 총자본을 넘는 것이 의도) · 아니면 비중대로.
             #    생성·복원 경로와 같은 식이어야 한다 (T286 — 전에는 여기만 비중이었다).
-            share = total / Decimal(fund.slots) if fund.slots > 0 else total * member.weight / wsum
+            # 🔴 몫(capital · 원장 걷기 시작점)도 생성과 같게 넘긴다 (1.17.1). 빠뜨리면 원장이
+            #    예산(총자본 ÷ 자리)에서 시작해 판 40개 원장 합이 계좌의 6.7배로 잡혔다
+            #    (`wallet_drift`).
+            capital = member_share(total, member.weight, wsum)
+            share = total / Decimal(fund.slots) if fund.slots > 0 else capital
             # old 를 물려주면 새 세션이 그 포지션을 이어받는다 (없으면 새로 시작)
             member_book, member_lev = _member_terms(
                 new_pb, fund.leverage, fund.alt_leverage, new_legs, member.symbol
@@ -2202,7 +2210,8 @@ async def _change_playbook(
                 member_book,
                 market=fund.market,
                 adopt_from=old,
-                booked=min(share, total * member.weight / wsum) if new_legs else None,
+                capital=capital,
+                booked=min(share, capital) if new_legs else None,
             )
             new_handles[member.symbol] = handle
             new_ports[member.symbol] = port
@@ -2210,6 +2219,8 @@ async def _change_playbook(
         if widened is not None:  # 넓힌 바스켓은 되돌린다 — 펀드 종목과 핸들이 어긋나지 않게
             fund.coordinator.engine.basket = old_basket
         raise HTTPException(400, f"전략 전환 실패: {exc}") from exc
+    finally:
+        REPLACING.difference_update(replacing)
 
     fund.handles = new_handles
     fund.coordinator.ports = new_ports  # type: ignore[assignment]

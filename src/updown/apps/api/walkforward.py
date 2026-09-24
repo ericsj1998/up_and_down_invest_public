@@ -2018,6 +2018,17 @@ REVIVE_BACKOFF = 60.0
 _REVIVE: dict[str, tuple[int, float]] = {}
 """판별 `(실패 횟수, 다음 시도 시각)`."""
 
+REPLACING: set[str] = set()
+"""펀드가 **갈아 끼우는 중인** 판 id — 감시자가 경보도 부활도 하지 않는다 (1.17.1 · 2026-09-24).
+
+🔴 매매법 전환 · 바스켓 편집은 옛 러너를 먼저 거두고 새 세션을 띄운다.
+그 사이(실측 수 초 ~ 2분 반)에 감시자가 돌면 옛 판을 *"러너가 없다"* 로 보고
+**옛 매매법으로 되살리려 한다** — 성공하면 같은 종목에 옛 판 · 새 판 러너가 둘이 된다
+(Gate 는 계약당 포지션 하나라 서로의 포지션을 자기 것으로 여긴다).
+2026-09-24 실계좌 전환에서 ONE 이 그렇게 되살리기를 시도했고 DB 키 중복으로 우연히 막혔다.
+펀드가 옛 판 id 를 여기 넣고, 끝나면(성공 · 실패 모두) 뺀다.
+"""
+
 
 async def _clear_orphans() -> None:
     """거래소에서 사라진 고아 포지션의 경보를 **거둔다** (2026-08-20).
@@ -2094,9 +2105,18 @@ async def watch_runs() -> list[dict[str, str]]:
 
     now = time.monotonic()
     found: list[dict[str, str]] = []
+    # 🔴 **닫힌 판의 경보는 거둔다** (1.17.1). 경보는 그 판을 다시 돌 때 멀쩡하면 지워지는데,
+    #    판이 닫혀 목록에서 빠지면 다시 돌 일이 없어 경보가 영원히 남는다 — 2026-09-24 전환 뒤
+    #    이미 닫힌 옛 ONE 판이 "죽은 판 1" 로 화면에 남았다. 늘 붉으면 진짜일 때 아무도 안 본다.
+    open_keys = {str(row["key"]) for row in rows}
+    for stale in [key for key in WATCHED if key not in open_keys]:
+        WATCHED.pop(stale, None)
+        _REVIVE.pop(stale, None)
     for row in rows:
         key = str(row["key"])
         symbol = str(row.get("symbol", ""))
+        if key in REPLACING:
+            continue  # 펀드가 갈아 끼우는 중 — 경보도 부활도 하지 않는다(위 `REPLACING`)
         runner = LIVE_RUNNERS.get(key)
         entry = SESSIONS.get(key)
         note: dict[str, str] | None = None
