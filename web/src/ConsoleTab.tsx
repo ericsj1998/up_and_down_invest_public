@@ -179,6 +179,7 @@ export function ConsoleTab({ openRun }: Props) {
         testnet?: string;
         error?: string;
         today_pnl?: string;
+        month_pnl?: string;
       }
     >
   >({});
@@ -433,33 +434,58 @@ export function ConsoleTab({ openRun }: Props) {
       })
       .join(" · ");
 
-  // ⭐ 오늘 손익 카드 (사용자 요구 2026-08-26) — 금액+% 병기 원칙.
-  const todayOf = (name: string): number | null => {
-    const raw = purses[name]?.today_pnl;
+  // ⭐ 손익 카드 — 금액+% 병기 원칙. 오늘 손익(사용자 요구 2026-08-26)에서 **이번 달 손익을 큰 값으로 ·
+  //    오늘은 그 아래 작은 줄로** 바꿨다(사용자 2026-09-24). % 분모는 둘 다 계좌 총액(위 카드와 같은 자).
+  //    서버가 장부를 구간 시작까지 못 읽으면 그 칸을 안 준다 — "—" 로 그리고 0 으로 꾸미지 않는다 (규칙 #8).
+  const pnlOf = (name: string, key: "today_pnl" | "month_pnl"): number | null => {
+    const raw = purses[name]?.[key];
     return raw === undefined || raw === "" ? null : Number(raw);
   };
-  const todayCard = (names: string[], base: number | null) => {
-    const parts = names.map((name) => ({ name, value: todayOf(name) }));
-    if (parts.every((one) => one.value === null)) return null;
-    const total = parts.reduce((sum, one) => sum + (one.value ?? 0), 0);
-    const pctText =
-      base && base > 0
-        ? ` (${total >= 0 ? "+" : ""}${((total / base) * 100).toFixed(2)}%)`
-        : "";
+  const sumOf = (names: string[], key: "today_pnl" | "month_pnl") => {
+    const parts = names.map((name) => ({ name, value: pnlOf(name, key) }));
+    const total = parts.some((one) => one.value !== null)
+      ? parts.reduce((sum, one) => sum + (one.value ?? 0), 0)
+      : null;
+    return { parts, total };
+  };
+  const signed = (value: number, base: number | null) =>
+    `${value > 0 ? "+" : ""}${num(value, 2)} USDT` +
+    (base && base > 0
+      ? ` (${value >= 0 ? "+" : ""}${((value / base) * 100).toFixed(2)}%)`
+      : "");
+  const toneOf = (value: number | null): "gain" | "loss" | undefined =>
+    value === null || value === 0 ? undefined : value > 0 ? "gain" : "loss";
+  const pnlCard = (names: string[], base: number | null) => {
+    const month = sumOf(names, "month_pnl");
+    const today = sumOf(names, "today_pnl");
+    if (month.total === null && today.total === null) return null;
+    const todayTone = toneOf(today.total);
     return (
       <Card
-        name="오늘 손익 (KST 00시~ · 실현)"
-        value={`${total > 0 ? "+" : ""}${num(total, 2)} USDT${pctText}`}
-        tone={total > 0 ? "gain" : total < 0 ? "loss" : undefined}
+        name="이번 달 손익 (KST 1일 00시~ · 실현)"
+        value={month.total === null ? "—" : signed(month.total, base)}
+        tone={toneOf(month.total)}
         hint={
-          names.length > 1
-            ? parts
-                .map(
-                  (one) =>
-                    `${one.name} ${one.value === null ? "—" : num(one.value, 2)}`,
-                )
-                .join(" · ") + " · 수수료·펀딩 포함, 미실현 제외"
-            : "수수료·펀딩 포함 순실현 — 미실현은 위 카드가 따로 든다"
+          <>
+            <span
+              className={`block font-mono ${todayTone === "gain" ? "text-gain" : todayTone === "loss" ? "text-loss" : ""}`}
+            >
+              오늘 {today.total === null ? "—" : signed(today.total, base)}
+            </span>
+            <span className="block">
+              {names.length > 1
+                ? month.parts
+                    .map(
+                      (one) =>
+                        `${one.name} ${one.value === null ? "—" : num(one.value, 2)}`,
+                    )
+                    .join(" · ") + " · 이번 달 · 수수료·펀딩 포함, 미실현 제외"
+                : "수수료·펀딩 포함 순실현 — 미실현은 위 카드가 따로 든다"}
+              {month.total === null
+                ? " · 이번 달은 장부가 월초까지 안 닿아 비움"
+                : ""}
+            </span>
+          </>
         }
       />
     );
@@ -536,7 +562,7 @@ export function ConsoleTab({ openRun }: Props) {
       ? Number(body.balance.total)
       : Number(body.balance.available) + locked + orderMargin
     : null;
-  // 🔴 % 의 분모는 **계좌 총액** — 상단 카드는 계좌 단위고 "오늘 손익" 과 같은 자여야 한다 (사용자 확정 2026-09-06:
+  // 🔴 % 의 분모는 **계좌 총액** — 상단 카드는 계좌 단위고 손익 카드(이번 달 · 오늘)와 같은 자여야 한다 (사용자 확정 2026-09-06:
   //    증거금 대비 +7.3% 와 계좌 대비 +0.1% 가 같은 화면에 섞여 헷갈렸다). 총액을 못 읽으면 % 를 내지 않는다.
   const allPnlPct =
     total !== null && total > 0 ? (all.pnl / total) * 100 : null;
@@ -1014,8 +1040,8 @@ export function ConsoleTab({ openRun }: Props) {
                   : "구글 로그인이 필요하다 — 오른쪽 위에서 들어간다"
               }
             />
-            {/* 전 거래소 합도 같은 순서 — 오늘 손익은 두 번째 (거래소별 카드와 같은 자리). */}
-            {todayCard(marketList, agg.avail + agg.margin)}
+            {/* 전 거래소 합도 같은 순서 — 손익 카드(이번 달 · 아래 오늘)는 두 번째 (거래소별 카드와 같은 자리). */}
+            {pnlCard(marketList, agg.avail + agg.margin)}
             <Card
               name="계좌 총액 (전 거래소 · 지갑)"
               value={`${num(agg.avail + agg.margin)} USDT`}
@@ -1086,9 +1112,9 @@ export function ConsoleTab({ openRun }: Props) {
                   : "읽는 중…"
               }
             />
-            {/* ⭐ 오늘 손익은 계정 바로 옆 (사용자 2026-09-06) — 매일 보는 숫자가 앞에, 한 번 맞추면 안 보는
+            {/* ⭐ 손익 카드(이번 달 · 아래 오늘)는 계정 바로 옆 (사용자 2026-09-06) — 매일 보는 숫자가 앞에, 한 번 맞추면 안 보는
                 화이트리스트는 맨 뒤에. */}
-            {todayCard([effMkt], total)}
+            {pnlCard([effMkt], total)}
             <Card
               name={`${effMkt} 잔액 (available)`}
               value={body ? `${num(body.balance.available)} USDT` : "—"}
@@ -1188,7 +1214,7 @@ export function ConsoleTab({ openRun }: Props) {
               tone={all.count ? (all.pnl >= 0 ? "gain" : "loss") : undefined}
               hint={
                 all.count
-                  ? "계좌 총액 대비 % (오늘 손익과 같은 자) · 종목별은 아래 포지션 표"
+                  ? "계좌 총액 대비 % (손익 카드와 같은 자) · 종목별은 아래 포지션 표"
                   : "포지션 없음"
               }
             />

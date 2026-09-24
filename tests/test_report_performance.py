@@ -13,7 +13,9 @@ from updown.orchestration.report.performance import (
     LedgerSummary,
     Performance,
     Window,
+    book_reaches,
     compare,
+    kst_day_and_month,
     render_text,
     summarize_account_book,
     summarize_records,
@@ -185,3 +187,58 @@ def test_window_rejects_naive_and_empty() -> None:
         Window(since=datetime(2026, 1, 1), until=datetime(2026, 1, 2))
     with pytest.raises(ValueError, match="비었다"):
         Window(since=T0, until=T0)
+
+
+class TestConsolePnlWindows:
+    """콘솔 손익 카드 — 이번 달(큰 값) · 오늘(작은 줄) 구간과 장부가 닿았나 (사용자 2026-09-24)."""
+
+    def test_kst_day_and_month_anchor_on_kst_midnight(self) -> None:
+        # UTC 9월 30일 16:30 = KST 10월 1일 01:30
+        # → 오늘도 이번 달도 KST 10월 1일 00시(= UTC 9월 30일 15:00)에서 시작
+        now = datetime(2026, 9, 30, 16, 30, tzinfo=UTC)
+        day, month = kst_day_and_month(now)
+        assert day.since == datetime(2026, 9, 30, 15, 0, tzinfo=UTC)
+        assert month.since == day.since
+        # UTC 9월 24일 03:00 = KST 12:00 — 오늘은 UTC 23일 15:00, 이번 달은 UTC 8월 31일 15:00
+        day, month = kst_day_and_month(datetime(2026, 9, 24, 3, 0, tzinfo=UTC))
+        assert day.since == datetime(2026, 9, 23, 15, 0, tzinfo=UTC)
+        assert month.since == datetime(2026, 8, 31, 15, 0, tzinfo=UTC)
+        assert day.until > datetime(2026, 9, 24, 3, 0, tzinfo=UTC)
+
+    def test_kst_midnight_exactly_is_not_an_empty_window(self) -> None:
+        day, _ = kst_day_and_month(datetime(2026, 9, 23, 15, 0, tzinfo=UTC))
+        assert day.since < day.until
+
+    def test_kst_day_and_month_rejects_naive(self) -> None:
+        with pytest.raises(ValueError, match="UTC"):
+            kst_day_and_month(datetime(2026, 9, 24, 3, 0))
+
+    def test_month_sum_counts_only_since_month_start(self) -> None:
+        _, month = kst_day_and_month(datetime(2026, 9, 24, 3, 0, tzinfo=UTC))
+        before = datetime(2026, 8, 31, 14, 0, tzinfo=UTC).timestamp()  # KST 8월 31일 23시 — 지난달
+        inside = datetime(2026, 9, 2, 0, 0, tzinfo=UTC).timestamp()
+        rows = [
+            {"type": "pnl", "change": "10", "time": str(before)},
+            {"type": "pnl", "change": "5", "time": str(inside)},
+            {"type": "fee", "change": "-0.5", "time": str(inside)},
+        ]
+        assert summarize_account_book(rows, month).net == Decimal("4.5")
+
+    def test_book_reaches_when_short_or_old_enough(self) -> None:
+        since = datetime(2026, 9, 1, tzinfo=UTC)
+
+        def row(when: datetime, *, ms: bool = False) -> dict[str, str]:
+            stamp = when.timestamp()
+            return {"type": "pnl", "change": "1", "time": str(int(stamp * 1000) if ms else stamp)}
+
+        new = row(datetime(2026, 9, 20, tzinfo=UTC))
+        old = row(datetime(2026, 8, 20, tzinfo=UTC))
+        # 요청보다 적게 왔다 = 있는 것을 다 받았다
+        assert book_reaches([new], since, limit=3)
+        # 꽉 찼지만 가장 오래된 줄이 월초 전
+        assert book_reaches([new, new, old], since, limit=3)
+        # 꽉 찼고 월초에 못 닿았다 → 칸을 비운다
+        assert not book_reaches([new, new, new], since, limit=3)
+        # 바이낸스 ms 도 같은 자
+        old_ms = row(datetime(2026, 8, 1, tzinfo=UTC), ms=True)
+        assert book_reaches([new, new, old_ms], since, limit=3)

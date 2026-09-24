@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -184,13 +184,12 @@ def summarize_account_book(rows: Sequence[Mapping[str, str]], window: Window) ->
     pnl_rows = 0
     other: Counter[str] = Counter()
     for row in rows:
+        when = _row_time(row)
         try:
-            stamp = float(row.get("time", ""))
-            # ⭐ 바이낸스 income 은 ms, Gate account_book 은 초다 — 단위를 안 맞추면
-            #   바이낸스 행 전부가 구간 밖(서기 5만 년)으로 빠져 조용히 0 이 된다.
-            when = datetime.fromtimestamp(stamp / 1000 if stamp > 1e12 else stamp, UTC)
             change = Decimal(str(row.get("change", "0")))
-        except (ValueError, ArithmeticError):
+        except ArithmeticError:
+            change = None
+        if when is None or change is None:
             other["unreadable"] += 1
             continue
         if not (window.since <= when < window.until):
@@ -209,6 +208,70 @@ def summarize_account_book(rows: Sequence[Mapping[str, str]], window: Window) ->
     return ExchangeSummary(
         pnl=pnl, fees=fees, funding=funding, rows=counted, pnl_rows=pnl_rows, other=dict(other)
     )
+
+
+def _row_time(row: Mapping[str, str]) -> datetime | None:
+    """장부 한 줄의 시각(UTC) — 못 읽으면 None.
+
+    ⭐ 바이낸스 income 은 ms, Gate account_book 은 초다 — 단위를 안 맞추면
+    바이낸스 행 전부가 구간 밖(서기 5만 년)으로 빠져 조용히 0 이 된다.
+    """
+    try:
+        stamp = float(row.get("time", ""))
+        return datetime.fromtimestamp(stamp / 1000 if stamp > 1e12 else stamp, UTC)
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+KST = timezone(timedelta(hours=9))
+"""표시 기준 시간대 — KST 는 DST 가 없어 고정 +9 가 사실이다 (규칙 #7: 저장·질의는 UTC 그대로)."""
+
+
+def kst_day_and_month(now: datetime) -> tuple[Window, Window]:
+    """KST 오늘 00시 ~ 지금 · 이번 달 1일 00시 ~ 지금 — 콘솔 손익 카드의 두 구간 (순수 함수).
+
+    사용자 확정: 오늘 손익의 앵커 = KST 자정(2026-08-26) · 이번 달 손익을 먼저(2026-09-24).
+
+    Args:
+        now: 지금 (UTC aware). 결정론을 위해 부르는 쪽이 넣는다 (규칙 #5).
+
+    Returns:
+        `(오늘, 이번 달)` UTC 구간. 자정 정각에 불려도 빈 구간이 되지 않게 끝을 1µs 민다.
+
+    Raises:
+        ValueError: `now` 가 naive 인 경우 (규칙 #7).
+    """
+    if now.tzinfo is None:
+        raise ValueError("지금 시각은 UTC aware 여야 한다 (규칙 #7)")
+    local = now.astimezone(KST)
+    day = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    month = day.replace(day=1)
+    until = now.astimezone(UTC) + timedelta(microseconds=1)
+    return (
+        Window(since=day.astimezone(UTC), until=until),
+        Window(since=month.astimezone(UTC), until=until),
+    )
+
+
+def book_reaches(rows: Sequence[Mapping[str, str]], since: datetime, limit: int) -> bool:
+    """받아 온 장부가 `since` 까지 닿았나 — 못 닿았으면 그 구간 합은 **모자란 값**이다.
+
+    거래소 장부는 최근 `limit` 줄만 준다. 줄 수가 `limit` 보다 적으면 있는 것을 다 받은 것이고,
+    꽉 찼으면 가장 오래된 줄이 `since` 이전이어야 구간 전체를 본 것이다. 못 닿은 합을 그대로
+    내면 이번 달 손익이 조용히 작아진다 (규칙 #8) — 부르는 쪽은 그 칸을 비운다.
+
+    Args:
+        rows: `account_book` 행들.
+        since: 구간 시작 (UTC aware).
+        limit: 요청한 줄 수.
+
+    Returns:
+        구간 시작까지 닿았으면 True.
+    """
+    if len(rows) < limit:
+        return True
+    stamps = [when for row in rows if (when := _row_time(row)) is not None]
+    return bool(stamps) and min(stamps) <= since
 
 
 async def load_closed_trades(

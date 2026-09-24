@@ -27,7 +27,7 @@
 import asyncio
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, cast
 
@@ -54,7 +54,11 @@ from updown.marketdata.calendar_check import (
 from updown.marketdata.provider import MarketDataProvider
 from updown.marketdata.ratelimit import meter
 from updown.orchestration.liquidity import Liquidity, escape_plan, probe_book
-from updown.orchestration.report.performance import Window, summarize_account_book
+from updown.orchestration.report.performance import (
+    book_reaches,
+    kst_day_and_month,
+    summarize_account_book,
+)
 from updown.orchestration.walkforward.live_runner import (
     MARGIN_HEADROOM,
     PositionLister,
@@ -244,12 +248,10 @@ async def _balances_fresh() -> dict[str, Any]:
     """
     provider = MarketDataProvider()
     found: dict[str, Any] = {}
-    # ⭐ 오늘 실현 손익의 앵커 = **KST 자정** (사용자 확정 2026-08-26). KST 는 DST 가
-    #   없어 고정 +9 가 사실이다 — 저장·질의는 UTC 그대로다 (규칙 #7: 표시 기준만 KST).
-    kst_midnight = datetime.now(timezone(timedelta(hours=9))).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    today = Window(since=kst_midnight.astimezone(UTC), until=datetime.now(UTC))
+    # ⭐ 실현 손익의 앵커 = **KST 자정**(오늘 · 2026-08-26) · **KST 1일 자정**(이번 달 ·
+    #   2026-09-24 — 사용자: "이번 달 손익이 먼저, 아래에 작게 오늘 손익").
+    #   저장·질의는 UTC 그대로다 (규칙 #7).
+    today, month = kst_day_and_month(datetime.now(UTC))
     # ⭐ 거래소 목록은 provider 가 정한다 (`UPDOWN_MARKETS` 로 좁힐 수 있다 · 2026-09-05).
     #    전 Market 을 돌면 키 없는 거래소마다 경고가 쌓인다.
     live_names = set(provider.live_markets())
@@ -282,12 +284,22 @@ async def _balances_fresh() -> dict[str, Any]:
             "position_margin": str(balance.positions_value),
             "broker": str(balance.broker),
         }
-        # 오늘(KST 00시~) 실현 순손익 — 수수료·펀딩 포함, 미실현 제외. 못 읽으면
-        # 칸을 비운다 (0 으로 꾸미지 않는다 · 규칙 #8).
+        # 오늘(KST 00시~) · 이번 달(KST 1일 00시~) 실현 순손익 — 수수료·펀딩 포함, 미실현 제외.
+        # 못 읽거나 장부가 구간 시작까지 안 닿으면 칸을 비운다
+        # (0 · 모자란 합으로 꾸미지 않는다 · 규칙 #8).
         try:
-            book = cast("list[dict[str, Any]]", await cast("Any", orders).account_book(limit=1000))
+            book = cast(
+                "list[dict[str, Any]]", await cast("Any", orders).account_book(limit=_BOOK_ROWS)
+            )
             rows = [{k: str(v) for k, v in item.items()} for item in book]
-            row["today_pnl"] = str(summarize_account_book(rows, today).net)
+            for key, window in (("today_pnl", today), ("month_pnl", month)):
+                if book_reaches(rows, window.since, _BOOK_ROWS):
+                    row[key] = str(summarize_account_book(rows, window).net)
+                else:
+                    _logger.warning(
+                        "console_pnl_book_short",
+                        payload={"market": market.value, "field": key, "rows": len(rows)},
+                    )
         except Exception as exc:
             _logger.warning(
                 "console_today_pnl_unreadable",
@@ -310,6 +322,10 @@ async def _balances_fresh() -> dict[str, Any]:
 
 
 _logger = get_logger("api.exchange")
+
+_BOOK_ROWS = 1000
+"""손익 카드가 읽는 장부 줄 수 — Gate account_book 한 번에 받는 최대치.
+한 달에 수백 줄이라 보통 월초까지 닿고, 못 닿으면 `book_reaches` 가 그 칸을 비운다."""
 
 DEFAULT_SYMBOL = "BTC_USDT"
 """기본 종목. 화면이 안 보내면 이것을 본다."""
