@@ -104,7 +104,11 @@ docker logs --since 90s "${PROJECT}-$NEW-1" 2>&1 | grep -oE '"event_type": "(tra
 echo "=== 4b) 데모 API (T221 · #19) ==="
 # 데모 API 는 슬롯이 없다 — 게스트 세션은 잃어도 된다. `.env.demo` 가 없으면 건너뛰고 경고한다(실계좌 배포를 막지 않는다).
 # 순서: migrate_demo(일회성 · 데모 DB 생성 + alembic) → api_demo 재생성. `--no-deps` 라 의존은 여기서 손으로 잇는다.
-if $C config --services 2>/dev/null | grep -qx api_demo; then
+# 🔴 서비스 목록은 **변수로 먼저 받는다** (1.16.0 · 2026-09-24). `config --services | grep -q` 는 pipefail 아래에서
+#    grep 이 먼저 끝나면 compose 가 SIGPIPE 로 비영 종료해 조건이 거짓이 된다 — 데모가 "이 환경엔 없다" 로 건너뛰어
+#    옛 이미지(v1.15.1)에 남았다(1.15.1 땐 경합에서 이겼을 뿐).
+SERVICES="$($C config --services 2>/dev/null || true)"
+if grep -qx api_demo <<<"$SERVICES"; then
   if [ -f "$(dirname "$ENV_FILE")/.env.demo" ]; then
     if $C up --no-deps --exit-code-from migrate_demo migrate_demo 2>&1 | grep -iE "error|traceback|exited with code" | tail -3; then :; fi
     if $C up -d --no-deps --wait api_demo; then
@@ -123,7 +127,7 @@ fi
 echo "=== 5) engine 재생성 · web 갱신 (이미지가 바뀐 경우만 재생성) ==="
 # live 는 engine 이 프로필 뒤에 있다 (api 안에서 돈다 · compose.live.yml). 활성 서비스에
 # 없으면 건드리지 않는다 — 이름을 지정해 up 하면 프로필이 저절로 켜져 두 벌이 돌게 된다.
-if $C config --services 2>/dev/null | grep -qx engine; then
+if grep -qx engine <<<"$SERVICES"; then
   $C up -d --no-deps --wait engine
 else
   echo "   engine: 별도 컨테이너 없음 (리더 api 안에서 돈다)"
