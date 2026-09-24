@@ -124,7 +124,7 @@ class TestTheDeclarationUnfoldsIntoTwoLegs:
 
     def test_only_this_bundle_splits_its_legs(self) -> None:
         on = {item.playbook_id for item in load_playbooks() if item.split_legs}
-        assert on == {"private_strategy"}, "기존 묶음(추세+캐리)이 다리로 나뉘면 안 된다"
+        assert on == {"private_strategy", "private_strategy"}, "기존 묶음(추세+캐리)이 다리로 나뉘면 안 된다"
 
     def test_legs_survive_a_save_and_restore(self) -> None:
         for leg in real_legs():

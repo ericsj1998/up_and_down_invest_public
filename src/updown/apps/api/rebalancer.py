@@ -412,6 +412,7 @@ def _log_gate_unguarded(fund: Fund) -> None:
                     "cap": None if leg.notional_cap is None else str(leg.notional_cap),
                     "brake": leg.drawdown_brake is not None,
                     "breadth": leg.breadth_cap is not None,
+                    "halt_dd": None if leg.halt_dd_at is None else str(leg.halt_dd_at),
                 }
                 for leg in fund.legs
             ],
@@ -1995,6 +1996,67 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
     return await _status(fund)
 
 
+def _widened_basket(
+    current: Basket, new_pb: str, market: str, payload: Mapping[str, Any]
+) -> Basket | None:
+    """매매법을 바꿀 때 **넓힐 종목 구성** — 없으면 None(지금 종목 그대로 · T304).
+
+    Args:
+        current: 지금 바스켓.
+        new_pb: 새 매매법 id.
+        market: 펀드 거래소 — 선언 바스켓을 그 거래소에 맞춰 거른다.
+        payload: 요청 본문. `members: [{symbol, weight}]` 가 있으면 그것이 이긴다.
+
+    Returns:
+        새 바스켓(지금 종목을 **전부 포함**하고 더 넓다) 또는 None.
+
+    Raises:
+        HTTPException: 400 — `members` 가 잘못됐거나 지금 종목을 빼려는 경우
+            (빼기는 바스켓 편집으로).
+
+    Note:
+        🔴 **빼지 않는다.** 종목을 빼면 그 포지션을 닫아야 하는데 매매법 전환은 무중단 이어받기다 —
+        빼기는 `PUT /basket` 이 청산 순서까지 맞춰 한다. 요청에 `members` 가 없으면 새 매매법이
+        **다리 묶음**일 때만 선언 바스켓(`baskets.yml by_playbook`)으로 넓힌다 —
+        추세추종+삼각수렴(18종)
+        → 혼합 2.0.0-V(40종)처럼 새 다리의 종목이 지금 펀드에 하나도 없으면 다리를 낼 수 없어서다.
+        선언 바스켓이 지금 종목을 다 포함하지 않으면 넓히지 않는다(추측하지 않는다).
+    """
+    raw = payload.get("members")
+    explicit = raw is not None
+    if explicit:
+        try:
+            rows = [
+                (str(m["symbol"]), Decimal(str(m["weight"])))
+                for m in cast("list[dict[str, Any]]", raw)
+            ]
+        except (KeyError, TypeError, ArithmeticError) as exc:
+            raise HTTPException(400, f"members 가 잘못됐다: {exc}") from exc
+    else:
+        declared = next((p for p in load_playbooks() if p.playbook_id == new_pb), None)
+        if declared is None or not declared.split_legs:
+            return None
+        found, _ = _default_basket(market, new_pb)
+        if not found:
+            return None
+        rows = [(row["symbol"], Decimal(row["weight"])) for row in found]
+    try:
+        widened = Basket(
+            as_members(rows), version=str(payload.get("basket_version") or f"{new_pb}-wide")
+        )
+    except (ValueError, BasketError) as exc:
+        raise HTTPException(400, f"members 가 잘못됐다: {exc}") from exc
+    old, new = set(current.symbols), set(widened.symbols)
+    if not old <= new:
+        if explicit:
+            gone = ", ".join(sorted(old - new))
+            raise HTTPException(
+                400, f"매매법 전환은 종목을 빼지 않는다({gone}) — 바스켓 편집으로 먼저 뺀다"
+            )
+        return None
+    return None if new == old else widened
+
+
 @router.put("/{fund_id}/playbook")
 async def change_playbook(
     request: Request, fund_id: str, payload: Annotated[dict[str, Any], Body()]
@@ -2041,9 +2103,15 @@ async def change_playbook(
     declared_new = next((p for p in load_playbooks() if p.playbook_id == new_pb), None)
     # ⭐ T291 — 새 매매법이 다리로 나뉘는 묶음이면 **지금 종목으로** 다리를 낸다(안 맞으면 여기서
     #    400 · 세션을 건드리기 전). 다리 없는 매매법으로 가면 빈 튜플 — 문 하나로 돌아간다.
-    #    ⚠️ 종목은 안 바꾼다. 핵심 6종 펀드를 18종 매매법으로 바꾸면 숏 다리도 그 6종에서만 돈다 —
+    #    ⚠️ 종목은 빼지 않는다. 핵심 6종 펀드를 18종 매매법으로 바꾸면 숏 다리도 그 6종에서만 돈다 —
     #       나머지 종목은 바스켓 편집으로 더한다(측정된 우주는 `baskets.yml by_playbook` 에 있다).
-    new_legs = _legs_for(new_pb, list(fund.coordinator.engine.basket.symbols))
+    # ⭐ T304 — 단, 요청 `members` 가 있거나 새 매매법이 다리 묶음이면 **넓힐 수는 있다**
+    #    (`_widened_basket`).
+    #    18종 → 혼합 2.0.0-V 40종: 새 MACD 다리의 22종이 지금 펀드에 없어 다리를 못 내던 자리다.
+    old_basket = fund.coordinator.engine.basket
+    widened = _widened_basket(old_basket, new_pb, fund.market, payload)
+    symbols = list((widened or old_basket).symbols)
+    new_legs = _legs_for(new_pb, symbols)
     if new_legs and (declared_new is None or declared_new.weight_mode != "slots"):
         raise HTTPException(400, "다리로 나뉘는 매매법은 자리 배분(weight_mode: slots)이어야 한다")
     if declared_new is not None:
@@ -2071,6 +2139,20 @@ async def change_playbook(
             },
         )
 
+    if widened is not None:
+        # 바스켓 편집과 같은 순서 — 바스켓을 먼저 바꾸고 틱이 새 구성으로 예산을 낸다.
+        fund.coordinator.engine.basket = widened
+        _events.info(
+            "fund_members_widened",
+            payload={
+                "fund_id": fund.fund_id,
+                "playbook": new_pb,
+                "before": len(old_basket.symbols),
+                "after": len(widened.symbols),
+                "added": sorted(set(widened.symbols) - set(old_basket.symbols)),
+                "note": "매매법 전환 — 새 다리의 종목을 더했다(빼지 않는다 · T304)",
+            },
+        )
     await _tick(fund)  # 총자본 갱신 (청산 전 값으로 재배분 · 앵커 포함)
     total = fund.coordinator.engine.balance
     basket = fund.coordinator.engine.basket
@@ -2101,6 +2183,8 @@ async def change_playbook(
             new_handles[member.symbol] = handle
             new_ports[member.symbol] = port
     except Exception as exc:
+        if widened is not None:  # 넓힌 바스켓은 되돌린다 — 펀드 종목과 핸들이 어긋나지 않게
+            fund.coordinator.engine.basket = old_basket
         raise HTTPException(400, f"전략 전환 실패: {exc}") from exc
 
     fund.handles = new_handles

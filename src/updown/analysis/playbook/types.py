@@ -293,6 +293,84 @@ class RefSurgeCap:
 
 
 @dataclass(frozen=True, slots=True)
+class RefSmaDown:
+    """기준 종목(BTC) 4H SMA 가 **내려가는 중**일 때만 새로 든다 (T304 #2 · 혼합 2.0.0 MACD 다리).
+
+    Attributes:
+        bars: SMA 길이(50).
+        lag: 몇 봉 전 SMA 와 비교하나(5). 지금 SMA < `lag` 봉 전 SMA 면 내려가는 중이다.
+
+    Raises:
+        ValueError: 길이나 비교 봉 수가 1 미만인 경우.
+
+    Note:
+        311차 최선 판의 문(연구 `t296_wave104.btc_regimes` 의 R2) — 신호 시각까지 **마감된** BTC 4H
+        종가로 SMA50 을 내고 5봉 전과 비교한다. 값은 러너가 주입한다(`Session.ref_sma_down`) ·
+        모르면 보류한다(규칙 #8-1).
+    """
+
+    bars: int
+    lag: int
+
+    def __post_init__(self) -> None:
+        """값이 문으로서 말이 되는지."""
+        if self.bars < 1 or self.lag < 1:
+            raise ValueError(f"SMA 길이·비교 봉 수는 1 이상이다: {self.bars} · {self.lag}")
+
+
+@dataclass(frozen=True, slots=True)
+class VolTarget:
+    """변동성 목표 크기 — 진입 노출 x clip(`scale` ÷ BTC `days` 일 변동성, `low`, `high`).
+
+    T304 · 320 · 321차.
+
+    Attributes:
+        scale: 목표 변동성 ÷ 정규화 상수(연구 V-inv: 0.48432 ÷ 1.13274 = 0.427565) —
+            배수 1 이 되는 변동성.
+        days: 변동성을 재는 UTC 일봉 로그 수익률 개수(30). 연율 = 표본 표준편차(모집단) x √365.
+        low: 배수 하한(0.5).
+        high: 배수 상한(1.5).
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+
+    Note:
+        변동성이 **낮을 때 크게** 든다(321차: 높을 때 크게는 ⛔). 연구의 `norm`
+        (전체 진입의 배수 평균)은
+        사후 값이라 상수로 박았다 — 운영은 그 상수를 다시 계산하지 않는다(앞보기 없음).
+        값은 러너가 주입한다(`Session.ref_vol`) · 모르면 진입을 보류한다(규칙 #8-1).
+    """
+
+    scale: Decimal
+    days: int
+    low: Decimal
+    high: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 배수로서 말이 되는지."""
+        if self.scale <= 0 or self.days < 2:
+            raise ValueError(f"목표·일수가 범위 밖이다: {self.scale} · {self.days}")
+        if not Decimal(0) < self.low <= self.high:
+            raise ValueError(f"배수 범위가 비었다: {self.low} ~ {self.high}")
+
+    def mult(self, sigma: Decimal) -> Decimal:
+        """이 변동성에서의 크기 배수.
+
+        Args:
+            sigma: BTC 연율 변동성(0.48 = 48%). 0 이하는 받지 않는다.
+
+        Returns:
+            `clip(scale ÷ sigma, low, high)`.
+
+        Raises:
+            ValueError: 변동성이 0 이하인 경우.
+        """
+        if sigma <= 0:
+            raise ValueError(f"변동성은 0 보다 커야 한다: {sigma}")
+        return min(self.high, max(self.low, self.scale / sigma))
+
+
+@dataclass(frozen=True, slots=True)
 class BreadthCap:
     """조건부 총 명목 상한 선언 — `min` 종목 이상이 같이 밴드를 뚫었을 때만 상한을 `cap` 으로.
 
@@ -641,6 +719,27 @@ class Playbook:
     `entry_ref_return_band` 의 형제다 — 값은 러너가 주입한다(`Session.ref_surge`). 🔴 주입값이
     **None(모름)이면 진입을 보류한다**(규칙 #8-1). 보유분은 안 건드린다.
     ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_ref_sma_down: RefSmaDown | None = None
+    """기준 종목(BTC) 4H SMA 가 내려가는 중일 때만 새로 든다 (T304 #2 · MACD 3중 숏 다리).
+
+    값은 러너가 주입한다(`Session.ref_sma_down`). 🔴 **None(모름)이면 진입을 보류한다**(규칙 #8-1).
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_vol_target: VolTarget | None = None
+    """변동성 목표 크기 (T304 · 혼합 2.0.0-V) — 진입 노출에 BTC 변동성 배수를 곱한다.
+
+    다리 노출(`leg_exposure`) 뒤 · 펀드 문(브레이크 · 명목 상한) 앞에서 곱한다 — 연구 원장
+    (`t296_wave62.run` 의 `size_fn`)과 같은 순서다. 값은 러너가 주입한다(`Session.ref_vol`) ·
+    🔴 모르면 진입을 보류한다(규칙 #8-1). ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_fund_dd_max: Decimal | None = None
+    """펀드 낙폭(고점 대비 · 0~1)이 이 값 **이상**이면 이 다리는 새로 안 든다 (T304 #1 · 311차).
+
+    브레이크(`drawdown_brake` · 크기를 줄인다)와 다르다 — 이 다리의 신규 진입을 **통째로 끈다**.
+    브레이크 배수 0 은 단일 다리 흡수 상태(143차)라 자료형이 막으므로, 옆 다리(다른 다리가 잔고를
+    움직여 흡수가 안 생긴다)에만 붙는 별도 필드로 둔다. 연구와 같은 `>=` 다. `split_legs` 묶음의
+    구성원일 때만 읽힌다. ⛔ None 이면 동결이다.
     """
     adx_exit_short: int | None = None
     """숏 거울상 — 진입 TF ADX 가 이 값 이하로 마감하면 숏을 전량 정리한다 (0.7.0).

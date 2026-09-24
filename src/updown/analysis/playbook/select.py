@@ -33,7 +33,9 @@ from updown.analysis.playbook.types import (
     Playbook,
     PlaybookRegime,
     RefReturnBand,
+    RefSmaDown,
     RefSurgeCap,
+    VolTarget,
 )
 from updown.common.domain.evidence import Family, Grade
 from updown.common.domain.instrument import MarketGroup, Timeframe
@@ -311,6 +313,55 @@ def _ref_surge(raw: object, name: str) -> RefSurgeCap:
         raise PlaybookConfigError(f"{name}.entry_ref_surge_cap — {exc}") from exc
 
 
+def _ref_sma_down(raw: object, name: str) -> RefSmaDown:
+    """기준 종목 SMA 하락 문 한 줄 — `{bars: 50, lag: 5}` (T304 #2).
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 1 미만인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_ref_sma_down")
+    try:
+        return RefSmaDown(bars=int(str(body["bars"])), lag=int(str(body["lag"])))
+    except (ArithmeticError, KeyError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_ref_sma_down — {exc}") from exc
+
+
+def _vol_target(raw: object, name: str) -> VolTarget:
+    """변동성 목표 크기 한 줄 — `{scale: "0.4276", days: 30, low: "0.5", high: "1.5"}` (T304).
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_vol_target")
+    try:
+        return VolTarget(
+            scale=Decimal(str(body["scale"])),
+            days=int(str(body["days"])),
+            low=Decimal(str(body["low"])),
+            high=Decimal(str(body["high"])),
+        )
+    except (ArithmeticError, KeyError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_vol_target — {exc}") from exc
+
+
+def _fund_dd_max(body: Mapping[str, object], name: str) -> Decimal | None:
+    """`entry_fund_dd_max` 한 줄 — 0 < 값 < 1 (T304 #1).
+
+    Raises:
+        PlaybookConfigError: 숫자가 아니거나 0 과 1 사이가 아닌 경우.
+    """
+    raw = body.get("entry_fund_dd_max")
+    if raw is None:
+        return None
+    try:
+        made = Decimal(str(raw))
+    except ArithmeticError as exc:
+        raise PlaybookConfigError(f"{name}.entry_fund_dd_max — {exc}") from exc
+    if not Decimal(0) < made < Decimal(1):
+        raise PlaybookConfigError(f"{name}.entry_fund_dd_max {made} — 0 과 1 사이여야 한다")
+    return made
+
+
 _KNOWN_KEYS = frozenset(field.name for field in fields(Playbook)) - {"playbook_id"}
 """선언에 쓸 수 있는 키 — `Playbook` 의 필드에서 나온다(`playbook_id` 는 매핑의 키다).
 
@@ -448,6 +499,17 @@ def _load_file(target: Path) -> list[Playbook]:
                         if body.get("entry_ref_surge_cap") is None
                         else _ref_surge(body["entry_ref_surge_cap"], f"playbooks.{name}")
                     ),
+                    entry_ref_sma_down=(
+                        None
+                        if body.get("entry_ref_sma_down") is None
+                        else _ref_sma_down(body["entry_ref_sma_down"], f"playbooks.{name}")
+                    ),
+                    entry_vol_target=(
+                        None
+                        if body.get("entry_vol_target") is None
+                        else _vol_target(body["entry_vol_target"], f"playbooks.{name}")
+                    ),
+                    entry_fund_dd_max=_fund_dd_max(body, f"playbooks.{name}"),
                     entry_ref_ma_gate=(
                         None
                         if body.get("entry_ref_ma_gate") is None

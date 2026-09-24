@@ -189,7 +189,11 @@ class TestItIsWiredLikeAnyOtherRule:
     def test_macd_exit_is_off_everywhere_else(self) -> None:
         """⛔ None 이면 동결 — 새 청산 가지가 기존 매매법에 켜져 있으면 안 된다."""
         on = {b.playbook_id for b in load_playbooks() if b.macd_exit_above_short is not None}
-        assert on == {"private_strategy", "private_strategy"}  # 334차 측정용 — 룰만 다르다
+        assert on == {
+            "private_strategy",
+            "private_strategy",  # 334차 측정용 — 룰만 다르다
+            "private_strategy",  # T304 — 혼합 2.0.0-V 의 MACD 다리
+        }
 
 
 class TestStopFloorVariant:

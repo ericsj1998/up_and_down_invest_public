@@ -42,6 +42,7 @@ class FundLeg:
         notional_fit: 상한에 걸리면 줄여서 진입.
         drawdown_brake: 낙폭 브레이크. None = 없음.
         breadth_cap: 조건부 총 명목 상한. None = 없음.
+        halt_dd_at: 펀드 낙폭이 이 값 이상이면 이 다리는 새로 안 든다(T304 #1). None = 없음.
     """
 
     playbook: str
@@ -56,6 +57,7 @@ class FundLeg:
     notional_fit: bool = False
     drawdown_brake: DrawdownBrake | None = None
     breadth_cap: BreadthCap | None = None
+    halt_dd_at: Decimal | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """저장용 딕셔너리 — 돌던 펀드의 다리는 선언이 바뀌어도 안 바뀐다(저장본이 이긴다)."""
@@ -84,6 +86,7 @@ class FundLeg:
                     "bars": self.breadth_cap.bars,
                 }
             ),
+            "halt_dd_at": None if self.halt_dd_at is None else str(self.halt_dd_at),
         }
 
     @classmethod
@@ -99,6 +102,7 @@ class FundLeg:
         raw_cap = data.get("notional_cap")
         raw_brake = data.get("drawdown_brake")
         raw_breadth = data.get("breadth_cap")
+        raw_halt = data.get("halt_dd_at")  # 1.17.0 앞 저장본엔 없다 — 없으면 끔(그때 돌던 그대로)
         brake = None
         if isinstance(raw_brake, Mapping):
             body = cast("Mapping[str, Any]", raw_brake)
@@ -122,6 +126,7 @@ class FundLeg:
             notional_fit=bool(data.get("notional_fit", False)),
             drawdown_brake=brake,
             breadth_cap=breadth,
+            halt_dd_at=None if raw_halt in (None, "") else Decimal(str(raw_halt)),
         )
 
 
@@ -184,6 +189,7 @@ def declared_legs(
                 notional_fit=book.notional_fit,
                 drawdown_brake=book.drawdown_brake,
                 breadth_cap=book.breadth_cap,
+                halt_dd_at=book.entry_fund_dd_max,
             )
         )
     covered = {symbol for leg in out for symbol in leg.symbols}
@@ -239,7 +245,8 @@ def leg_gate(
     Args:
         ports: 펀드 조정자의 `{종목: 포트}` — 복사하지 않는다(종목을 넣고 빼면 문도 따라간다).
         legs: 펀드의 다리들.
-        drawdown: 펀드의 고점 대비 낙폭(0~1) — 브레이크를 선언한 다리만 쓴다.
+        drawdown: 펀드의 고점 대비 낙폭(0~1) — 브레이크나 낙폭 끄기(`halt_dd_at`)를
+            선언한 다리만 쓴다.
 
     Returns:
         다리별 문.
@@ -251,6 +258,7 @@ def leg_gate(
     for leg in legs:
         brake = leg.drawdown_brake
         breadth = leg.breadth_cap
+        watch = brake is not None or leg.halt_dd_at is not None
         gates[leg.attribution] = SlotGate(
             ports=LegPorts(ports, leg.attribution, frozenset(leg.symbols)),
             slots=leg.slots,
@@ -258,10 +266,11 @@ def leg_gate(
             notional_cap=leg.notional_cap,
             notional_fit=leg.notional_fit,
             min_grant=leg.exposure / Decimal(4),
-            drawdown=None if brake is None else drawdown,
+            drawdown=drawdown if watch else None,
             brake_at=Decimal(0) if brake is None else brake.at,
             brake_scale=Decimal(1) if brake is None else brake.scale,
             breadth_min=0 if breadth is None else breadth.min,
             breadth_cap=None if breadth is None else breadth.cap,
+            halt_dd_at=Decimal(0) if leg.halt_dd_at is None else leg.halt_dd_at,
         )
     return LegGate(gates)

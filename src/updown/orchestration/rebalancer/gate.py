@@ -123,6 +123,14 @@ class SlotGate:
     brake_scale: Decimal = Decimal(1)
     """브레이크가 걸렸을 때 신규 진입에 곱할 배수(0.5). 걸려도 건너뛰지 않고 **크기만** 줄인다."""
 
+    halt_dd_at: Decimal = Decimal(0)
+    """펀드 낙폭이 이 값 **이상**이면 신규 진입을 **막는다** — 0 = 없음.
+
+    T304 #1 · 혼합 2.0.0 MACD 다리 · 311차.
+
+    브레이크(크기만 줄임)와 다른 장치다 — 옆 다리를 펀드 낙폭 동안 통째로 끈다. 연구(`t296_wave62`
+    `third_dd_mult=0`)와 같은 `>=` 다. `drawdown` 이 있어야 뜻이 있다."""
+
     breadth_min: int = 0
     """**시장 전체 돌파**로 보는 폭의 문턱 (T289 · 177차 등록값 4). 0 = 조건부 상한 없음.
 
@@ -146,6 +154,7 @@ class SlotGate:
 
         Returns:
             `"slots"`(자리 없음) · `"notional"`(총 명목 상한) · `"day_halt"`(그날 정지) ·
+            `"fund_dd"`(펀드 낙폭 동안 이 다리 끔 · 크기를 넘긴 물음에서만) ·
             None(열어도 됨).
 
         Note:
@@ -178,6 +187,15 @@ class SlotGate:
         exits = [item for port in self.ports.values() for item in port.exits()]
         if day_halted(exits, at, self.halt_after_stops):
             return Grant(Decimal(0), "day_halt")
+        if (
+            exposure > 0
+            and self.drawdown is not None
+            and self.halt_dd_at > 0
+            and self.drawdown() >= self.halt_dd_at
+        ):
+            # T304 #1 — 펀드 낙폭 동안 이 다리를 끈다. `exposure > 0` 인 이유는 브레이크 흡수 검사와
+            # 같다 — 크기 없이 묻는 `blocks(at)` 은 "자리·정지만 보자" 는 뜻이다.
+            return Grant(Decimal(0), "fund_dd")
         want = exposure
         shrunk: list[str] = []
         if self.drawdown is not None and self.brake_at > 0:

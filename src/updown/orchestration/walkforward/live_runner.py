@@ -4488,7 +4488,30 @@ class LiveRunner:
             ),
             None,
         )
-        if gate_n is None and band_n is None and surge_days is None:
+        # T304 #2 · 변동성 목표 — SMA 하락 문과 BTC 일봉 변동성도 같은 기준 봉(4H)에서 나온다.
+        slope = next(
+            (
+                item.entry_ref_sma_down
+                for item in self._session.playbooks
+                if item.entry_ref_sma_down is not None
+            ),
+            None,
+        )
+        vol_days = next(
+            (
+                item.entry_vol_target.days
+                for item in self._session.playbooks
+                if item.entry_vol_target is not None
+            ),
+            None,
+        )
+        if (
+            gate_n is None
+            and band_n is None
+            and surge_days is None
+            and slope is None
+            and vol_days is None
+        ):
             return
         from dataclasses import replace as _replace
 
@@ -4496,7 +4519,13 @@ class LiveRunner:
         from updown.common.domain.instrument import Timeframe
 
         ref = _replace(self.instrument, symbol="BTC_USDT", name="BTC 무기한 (기준)")
-        need = max(gate_n or 0, band_n or 0, 6 * ((surge_days or 0) + 2))
+        need = max(
+            gate_n or 0,
+            band_n or 0,
+            6 * ((surge_days or 0) + 2),
+            0 if slope is None else slope.bars + slope.lag + 1,
+            6 * ((vol_days or 0) + 5),
+        )
         try:
             end = datetime.now(UTC)
             rows = await self._quotes.get_candles(
@@ -4526,11 +4555,22 @@ class LiveRunner:
                 if len(daily) <= surge_days or daily[-1 - surge_days] <= 0:
                     raise ValueError(f"기준 일봉 부족: {len(daily)} <= {surge_days}")
                 self._session.ref_surge = daily[-1] / daily[-1 - surge_days] - 1
+            if slope is not None:
+                # 연구 R2(`t296_wave104.btc_regimes`): 마감된 4H 종가 SMA 가 `lag` 봉 전보다 낮다
+                line = _sma([c.close for c in closed], slope.bars)
+                now_, then_ = line[-1], line[-1 - slope.lag]
+                if now_ is None or then_ is None:
+                    raise ValueError("기준 SMA 워밍업 미달(하락 문)")
+                self._session.ref_sma_down = now_ < then_
+            if vol_days is not None:
+                self._session.ref_vol = btc_daily_vol(closed, vol_days)
             self._ref_regime_at = last_ts
         except Exception as exc:
             self._session.ref_above = None  # 모름 = 게이트 잠듦 (0.2.0 동작 폴백)
             self._session.ref_return = None  # 모름 = 국면 문 잠듦 (T290 · 같은 폴백)
             self._session.ref_surge = None  # 모름 = 급등 상한 보류 (T304 #8 · 같은 폴백)
+            self._session.ref_sma_down = None  # 모름 = 하락 문 보류 (T304 #2)
+            self._session.ref_vol = ()  # 모름 = 변동성 목표 크기 보류 (T304)
             self._ref_regime_at = None
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
 
@@ -6210,6 +6250,48 @@ def step_stats_of(values: Sequence[float]) -> dict[str, float | int]:
         "p50_ms": round(ordered[len(ordered) // 2], 1),
         "max_ms": round(ordered[-1], 1),
     }
+
+
+def btc_daily_vol(
+    bars: Sequence[Candle], days: int, keep: int = 3
+) -> tuple[tuple[datetime, Decimal], ...]:
+    """마감된 기준(BTC) 4H 봉에서 **UTC 일봉 연율 변동성**을 최근 `keep` 일 치 낸다.
+
+    T304 · 변동성 목표.
+
+    Args:
+        bars: 마감된 4H 봉(오름차순).
+        days: 로그 수익률 개수(30) — 일봉 종가 `days + 1` 개로 한 값을 낸다.
+        keep: 돌려줄 최근 일수. 세션이 판정 봉 시작 시각까지 끝난 값을 고른다.
+
+    Returns:
+        `(그 일봉이 끝난 시각, 모집단 표준편차 x √365)` 오름차순.
+
+    Raises:
+        ValueError: 일봉이 `days + keep` 개보다 적거나 종가가 0 이하인 경우.
+
+    Note:
+        연구(`t296_wave115.setup`)와 같은 식이다 — 일봉 종가 = 00:00 UTC 에 끝나는 봉의 종가
+        (`t296_wave113.btc_daily`) · `pstdev(rets[i-30:i]) x sqrt(365)`.
+        float 로 계산해 Decimal 로 넘긴다.
+    """
+    import itertools
+    import math
+    import statistics
+
+    daily = [
+        (c.ts + timedelta(hours=4), float(c.close))
+        for c in bars
+        if (c.ts + timedelta(hours=4)).hour == 0
+    ]
+    if len(daily) < days + keep or any(close <= 0 for _, close in daily):
+        raise ValueError(f"기준 일봉 부족·이상: {len(daily)} < {days + keep}")
+    out: list[tuple[datetime, Decimal]] = []
+    for k in range(len(daily) - keep, len(daily)):
+        window = [close for _, close in daily[k - days : k + 1]]
+        rets = [math.log(after / before) for before, after in itertools.pairwise(window)]
+        out.append((daily[k][0], Decimal(str(statistics.pstdev(rets) * math.sqrt(365)))))
+    return tuple(out)
 
 
 def open_seconds(calendar: MarketCalendar | None, market: Market, now: datetime) -> float | None:

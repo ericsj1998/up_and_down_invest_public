@@ -433,6 +433,25 @@ class Session:
     """
     ref_surge_held: int = 0
     """급등 상한(`entry_ref_surge_cap`)이 보류시킨 진입 수 — 관측용 (§1-0s)."""
+    ref_sma_down: bool | None = None
+    """기준 종목(BTC) 4H SMA 가 `lag` 봉 전보다 낮은가 — 러너가 주입한다 (T304 #2).
+
+    길이·비교 봉 수는 선언(`entry_ref_sma_down`)이 정한다.
+    🔴 None = 모름 → 이 문을 선언한 매매법은 **진입을 보류**한다(규칙 #8-1).
+    """
+    ref_sma_held: int = 0
+    """SMA 하락 문(`entry_ref_sma_down`)이 보류시킨 진입 수 — 관측용 (§1-0s)."""
+    ref_vol: tuple[tuple[datetime, Decimal], ...] = ()
+    """기준 종목(BTC) 연율 변동성 — `(그 UTC 일봉이 끝난 시각, 변동성)` 오름차순.
+
+    T304 · 변동성 목표.
+
+    러너가 최근 며칠 치를 주입하고, 진입은 **판정 봉 시작 시각까지 끝난** 일봉의 값을 쓴다 —
+    연구(`t296_wave115.Setup.sigma_at(진입 봉 시작)`)와 같은 자다.
+    비어 있으면 모름 → 보류(규칙 #8-1).
+    """
+    vol_held: int = 0
+    """변동성 목표 크기(`entry_vol_target`)가 값을 몰라 보류시킨 진입 수 — 관측용 (§1-0s)."""
     ref_gate_held: int = 0
     """F1 게이트로 **안 산** 자리 수 (관측 규약 §1-0s)."""
     recent_funding: Decimal | None = None
@@ -2522,6 +2541,47 @@ class Session:
             return exposure
         return exposure * min(wanted, base) / base
 
+    def _book_by_owner(self, owner: str) -> Playbook:
+        """귀속 키로 매매법을 찾는다 — 못 찾으면 대표 매매법(지정가 경로가 쓴다)."""
+        return next((item for item in self.playbooks if item.attribution == owner), self.playbook)
+
+    def _vol_scaled(self, exposure: Decimal, book: Playbook, at: datetime) -> Decimal | None:
+        """변동성 목표 크기를 곱한다 (T304 · 혼합 2.0.0-V · 320 · 321차).
+
+        Args:
+            exposure: 다리 노출까지 반영한 노출.
+            book: 진입을 낸 매매법 — `entry_vol_target` 이 없으면 그대로 돌려준다(동결 무변화).
+            at: 판정 봉의 시작 시각(UTC) — 이 시각까지 **끝난** UTC 일봉의 변동성을 쓴다.
+
+        Returns:
+            배수를 곱한 노출. 변동성을 모르면 None — 호출자는 이 봉을 건너뛴다(규칙 #8-1).
+
+        Note:
+            연구(`t296_wave115` V-inv)는 진입 봉 시작 시각에 `sigma_at` 을 불렀다 — 같은 자를 쓰려고
+            러너가 며칠 치를 주입하고 여기서 고른다.
+            배수 분포는 깔때기(`vol:up` · `vol:down`)에 센다.
+        """
+        target = book.entry_vol_target
+        if target is None:
+            return exposure
+        sigma = next((value for end, value in reversed(self.ref_vol) if end <= at), None)
+        if sigma is None or sigma <= 0:
+            self.vol_held += 1
+            self._count("vol_unknown")
+            _logger.info(
+                "session_entry_vol_held",
+                payload={
+                    "at": at.isoformat(),
+                    "known": len(self.ref_vol),
+                    "note": "기준(BTC) 변동성을 모른다 — 이 봉엔 새로 안 든다 (T304 · 규칙 #8-1)",
+                },
+            )
+            return None
+        mult = target.mult(sigma)
+        if mult != 1:
+            self._count("vol:up" if mult > 1 else "vol:down")
+        return exposure * mult
+
     def _gate(self, at: datetime, exposure: Decimal, leg: str | None = None) -> Decimal | None:
         """펀드 문에 **이 크기로 열어도 되는지** 묻고 허용 크기를 받는다 (T279 P3 · T286).
 
@@ -2806,6 +2866,10 @@ class Session:
         #    decision 이 정한다 — 여기서는 곱하기만 한다.
         exposure *= setup.size_mult
         exposure = self._leg_scaled(exposure, owner)  # T291 — 시장가 경로와 같은 자
+        scaled = self._vol_scaled(exposure, self._book_by_owner(owner), bar.ts)  # T304 — 같은 자
+        if scaled is None:
+            return
+        exposure = scaled
         # 🔴 **펀드의 진입 문** (T279 P3 · T286) — 시장가 경로와 같은 자다. 예전에는 `_enter` 가
         #    문을 **선언 배율**로 한 번 물었고 여기서 계산한 실제 노출과 어긋났다(위험 기반
         #    사이징일 때). 이제 각 경로가 **자기가 쓸 크기**로 묻는다.
@@ -3403,6 +3467,19 @@ class Session:
                 },
             )
             return None
+        if chosen.playbook.entry_ref_sma_down is not None and self.ref_sma_down is not True:
+            # T304 #2 — 기준(BTC) 4H SMA 가 내려가는 중일 때만 든다(311차 R2). 보유분은 그대로.
+            # 🔴 모르면(None) 보류한다 — 신규 진입은 리스크 증가 행동이다(절대 규칙 #8-1).
+            self.ref_sma_held += 1
+            self._count("ref_sma")
+            _logger.info(
+                "session_entry_ref_sma_held",
+                payload={
+                    "ref_sma_down": self.ref_sma_down,
+                    "note": "기준(BTC) 4H SMA 가 내려가는 중이 아니다 — 새로 안 든다 (T304 #2)",
+                },
+            )
+            return None
         if funding_blocks(direction, self.recent_funding, chosen.playbook.funding_cap):
             self.funding_held += 1
             _logger.info(
@@ -3466,6 +3543,11 @@ class Session:
         exposure *= setup.size_mult
         # ⭐ T291 — 다리 배율이 선언돼 있으면 그 다리의 노출로 바꾼다(없으면 그대로).
         exposure = self._leg_scaled(exposure, owner)
+        # ⭐ T304 — 변동성 목표 크기. 다리 노출 뒤 · 펀드 문 앞(연구 `size_fn` 과 같은 순서).
+        scaled = self._vol_scaled(exposure, chosen.playbook, bar.ts)
+        if scaled is None:
+            return None
+        exposure = scaled
         # 🔴 **펀드의 진입 문** (T279 P3 · T286) — 자리 · 같은 날 연속 손절 정지 · 총 명목 상한 ·
         #    낙폭 브레이크. 자리를 지우지 않고 진입에서만 거르거나 **크기를 줄인다**.
         gated = self._gate(bar.ts, exposure, owner)
