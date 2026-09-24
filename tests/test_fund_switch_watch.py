@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -46,6 +47,26 @@ def test_the_switch_protects_the_runs_it_replaces() -> None:
     source = inspect.getsource(rebalancer._change_playbook)  # pyright: ignore[reportPrivateUsage]
     assert source.index("REPLACING.update(") < source.index("await _drop_one(old)")
     assert "finally:" in source and "REPLACING.difference_update(" in source
+
+
+class TestFreshSeed:
+    """1.17.0 전환이 잘못 저장한 seed(69.55)를 복원이 바로잡는다 — 기록이 없는 판만."""
+
+    def test_a_run_without_trades_starts_from_its_share(self) -> None:
+        got = rebalancer.fresh_seed(Decimal("69.55"), Decimal("10.43"), [])
+        assert got == Decimal("10.43")
+
+    def test_a_run_with_any_trade_keeps_its_saved_seed(self) -> None:
+        # T285 — 기록이 있으면 새 시작점에서 과거를 다시 세어 총자본이 샌다
+        assert rebalancer.fresh_seed(Decimal("69.55"), Decimal("10.43"), [object()]) is None
+
+    def test_cent_rounding_is_left_alone(self) -> None:
+        assert rebalancer.fresh_seed(Decimal("10.43"), Decimal("10.4328"), []) is None
+
+    def test_restore_drops_the_mark_of_a_corrected_run(self) -> None:
+        source = inspect.getsource(rebalancer)
+        assert "fresh_seed(" in source
+        assert "sym not in corrected" in source, "mark 를 안 버리면 seed 차이가 가짜 손실이 된다"
 
 
 class FakeStore:

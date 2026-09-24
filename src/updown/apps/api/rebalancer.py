@@ -975,6 +975,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
     #    값으로 잡는다 — 과거 손익을 다시 세지 않는다(재기동마다 누적 손익률이 다시 곱히던 결함).
     seeds = cast("dict[str, Any]", data.get("seeds") or {})
     saved_marks = cast("dict[str, Any]", data.get("marks") or {})
+    corrected: dict[str, tuple[Decimal, Decimal]] = {}
     handles: dict[str, str] = {}
     ports: dict[str, SessionBridge] = {}
     kept: list[BasketMember] = []
@@ -1020,17 +1021,39 @@ async def _restore_one(data: dict[str, Any]) -> None:
                     str(exc)[:160],
                 )
                 continue
+        # 🔴 **매매 기록이 없는 판은 지금 몫에서 시작한다** (1.17.1 · 2026-09-24).
+        #    T285 가 저장된 seed 를 지키는 이유는 "과거 매매를 새 시작점에서 다시 세지 않게" 인데,
+        #    기록이 없으면 다시 셀 과거가 없다. 1.17.0 전환이 seed 를 예산(총자본 ÷ 자리 =
+        #    69.55)으로 잘못 저장해 판 40개 원장 합이 계좌의 6.7배로 잡혔다(`wallet_drift`) —
+        #    여기서 바로잡는다.
+        #    mark 도 버려 첫 틱이 지금 값으로 잡게 한다(안 버리면 seed 차이가 **가짜 손실**로
+        #    펀드 낙폭에 들어가 브레이크 · MACD 끄기를 건드린다).
+        fixed = fresh_seed(port.session.ledger.seed_cash, capital, port.session.ledger.records)
+        if fixed is not None:
+            corrected[member.symbol] = (port.session.ledger.seed_cash, fixed)
+            port.session.ledger.seed_cash = fixed
         handles[member.symbol] = handle
         ports[member.symbol] = port
         kept.append(member)
     if not kept:
         raise RuntimeError("펀드 구성원이 하나도 뜨지 않았다")
+    if corrected:
+        _logger.warning(
+            "fund_seed_corrected: %s %d종 — %s",
+            data.get("fund_id"),
+            len(corrected),
+            ", ".join(
+                f"{sym} {old:.2f}→{new:.2f}" for sym, (old, new) in sorted(corrected.items())
+            ),
+        )
     if len(kept) != len(basket.members):
         basket = Basket(tuple(kept), version=basket.version)
     engine = RebalanceEngine(basket=basket, ledger=ledger, slots=slots)
     marks = {
-        sym: Decimal(str(saved_marks[sym])) for sym in ports if sym in saved_marks
-    }  # 되살린 세션만 · 새로 띄운 세션은 첫 틱이 mark 를 잡는다
+        sym: Decimal(str(saved_marks[sym]))
+        for sym in ports
+        if sym in saved_marks and sym not in corrected
+    }  # 되살린 세션만 · 새로 띄운 세션과 seed 를 바로잡은 세션은 첫 틱이 mark 를 잡는다
     coordinator = Coordinator(engine=engine, ports=dict(ports), marks=marks)  # type: ignore[arg-type]
     _attach_gate(
         coordinator,
@@ -1136,6 +1159,37 @@ def _orders_go_live() -> bool:
         return s.app_env is AppEnv.LIVE and bool(s.live_orders)
     except Exception:  # 설정을 못 읽으면 테스트넷으로 본다 — 종목을 더 빼는 쪽이 안전하다
         return False
+
+
+SEED_FIX_TOLERANCE = Decimal("0.01")
+"""`fresh_seed` 가 바로잡는 최소 차이(몫 대비 비율).
+
+센트 내림(`member_share`) 같은 자투리는 안 건드린다."""
+
+
+def fresh_seed(seed: Decimal, capital: Decimal, records: Sequence[object]) -> Decimal | None:
+    """매매 기록이 없는 판의 seed 가 몫과 다르면 **몫**을 돌려준다 (1.17.1).
+
+    바로잡을 것이 없으면 None 이다.
+
+    Args:
+        seed: 되살린 원장의 걷기 시작점.
+        capital: 지금 몫(총자본 x 비중 ÷ 비중 합).
+        records: 그 판의 매매 기록(열린 것 · 닫힌 것 모두).
+
+    Returns:
+        바로잡을 seed(= `capital`) 또는 None.
+
+    Note:
+        🔴 기록이 **하나라도** 있으면 손대지 않는다 — T285: 시작점을 바꾸면 과거 매매가
+        새 시작점에서 다시 세여 총자본이 샌다. 기록이 없으면 다시 셀 과거가 없어 안전하다.
+        부르는 쪽은 그 종목의 저장된 mark 도 버려야 한다(첫 틱이 새 값으로 잡는다).
+    """
+    if records or capital <= 0:
+        return None
+    if abs(seed - capital) <= capital * SEED_FIX_TOLERANCE:
+        return None
+    return capital
 
 
 def member_share(total_cash: Decimal, weight: Decimal, weight_sum: Decimal) -> Decimal:
