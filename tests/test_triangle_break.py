@@ -254,25 +254,37 @@ class TestRegimeBand:
 class TestSurgeCap:
     """BTC 급등 상한(T304 #8) — 직전 7일 수익률이 +8.204% 를 넘으면 삼각 숏을 새로 안 든다."""
 
-    def test_only_the_measurement_variants_declare_it(self) -> None:
+    def test_the_live_leg_and_the_measurement_variants_declare_it(self) -> None:
+        # 2026-09-24 private_strategy 1.0.1 (1차 배포) — 실계좌 삼각 다리(`_x2`)에 붙였다. 국면 없는 측정판
+        # (`private_strategy`)은 재현 캐시의 대상이라 그대로 둔다.
         books = {b.playbook_id: b for b in load_playbooks()}
         on = {name for name, b in books.items() if b.entry_ref_surge_cap is not None}
-        assert on == {"private_strategy", "private_strategy"}
-        assert books["private_strategy"].entry_ref_surge_cap == RefSurgeCap(
-            days=7, high=Decimal("0.08204173132170967")
-        )
+        assert on == {
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+        }
+        cap = RefSurgeCap(days=7, high=Decimal("0.08204173132170967"))
+        for name in on:
+            assert books[name].entry_ref_surge_cap == cap, name
 
     def test_variants_differ_from_the_originals_only_by_the_cap(self) -> None:
         from dataclasses import fields, replace
 
         books = {b.playbook_id: b for b in load_playbooks()}
         for src in ("private_strategy", "private_strategy"):
-            orig, capped = books[src], books[f"{src}_surge"]
-            same = replace(capped, entry_ref_surge_cap=None)
+            orig = replace(books[src], entry_ref_surge_cap=None)
+            same = replace(books[f"{src}_surge"], entry_ref_surge_cap=None)
             for f in fields(orig):
                 if f.name in ("playbook_id", "backtest_note", "listed"):
                     continue
                 assert getattr(orig, f.name) == getattr(same, f.name), (src, f.name)
+
+    def test_live_bundle_short_leg_carries_the_cap(self) -> None:
+        books = {b.playbook_id: b for b in load_playbooks()}
+        short_leg = books["private_strategy"].bundle[1]
+        assert short_leg == "private_strategy"
+        assert books[short_leg].entry_ref_surge_cap is not None
 
     def test_cap_is_inclusive(self) -> None:
         cap = RefSurgeCap(days=7, high=Decimal("0.082"))

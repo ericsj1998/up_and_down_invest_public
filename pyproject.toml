@@ -1,6 +1,6 @@
 [project]
 name = "updown"
-version = "1.15.1"
+version = "1.16.0"
 description = "업 앤 다운 — 주식·코인을 단타/스윙/장투 3버킷으로 운용하는 자동투자 플랫폼"
 readme = "README.md"
 authors = [{ name = "ericsj1998", email = "ericsj1998@gmail.com" }]
