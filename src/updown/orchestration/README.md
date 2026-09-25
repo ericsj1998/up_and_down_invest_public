@@ -18,6 +18,7 @@
 | Charting 투영 | §4.13 | 분석 산출물을 차트 표현으로 변환만 |
 | `walkforward/` 세션·러너 | T13~T250 | **세션 = 백테스트 = 라이브** 하나의 걸음. 시장 차이는 능력표·캘린더를 읽어 댄다(숏 차단 · 배율 거부 · 갭 손절 · 마감 청산). `stored_candles.py` 는 WS 없는 브로커(토스)의 봉 캐시(DB 먼저 · 꼬리만 REST) |
 | `rebalancer/` · `report/` · `ai_experiment/` | T61 · T114 · Phase 5 | 펀드 바스켓 조립 · 리포트 집계 · AI 실험 골격 — 전부 호출·집계뿐 |
+| `fund_replay/` | T309 | 펀드 재현 도구 — 실계좌 세션 · 펀드 층을 과거 봉 위에서 한 시계로 부른다. 러너 크기 규칙은 실계좌 상수 · 함수(`MARGIN_HEADROOM` · `contracts_for` · `add_pnl_of`)를 그대로 부른다 |
 
 ## 왜 이 패키지가 필요한가 (plan P-1)
 
