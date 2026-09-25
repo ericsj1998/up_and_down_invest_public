@@ -76,11 +76,10 @@ from updown.orchestration.rebalancer.legs import (
     FundLeg,
     LegError,
     declared_legs,
-    leg_gate,
-    legs_on,
     member_leverage,
     member_playbook,
 )
+from updown.orchestration.rebalancer.wiring import wire_legs
 from updown.portfolio.performance import CashFlow, TwrLedger
 
 router = APIRouter(prefix="/rebalancer", tags=["rebalancer"])
@@ -287,21 +286,9 @@ def _wire_gate(
     """
     ledger = coordinator.engine.ledger
     if legs:
-        # ⭐ T291 — 다리마다 자기 문. 세션에는 그 종목에 실린 다리의 노출을 심고, 폭은 조건부
-        #    상한을 선언한 다리의 **종목에서만** 센다(측정이 핵심 6종만 셌다 — 18종으로 세면
-        #    폭 ≥ 4 가 흔해진다).
-        split = leg_gate(coordinator.ports, legs, lambda: ledger.drawdown_pct / Decimal(100))
-        for symbol, port in coordinator.ports.items():
-            if not isinstance(port, SessionBridge):
-                continue
-            mine = legs_on(legs, symbol)
-            port.session.entry_gate = split
-            port.session.leg_leverage = {leg.attribution: leg.exposure for leg in mine}
-            wide = next((leg for leg in mine if leg.breadth_cap is not None), None)
-            port.breadth_bars = (
-                0 if wide is None or wide.breadth_cap is None else wide.breadth_cap.bars
-            )
-            port.breadth_frame = None if wide is None else Timeframe(wide.timeframe)
+        # ⭐ T291 — 다리마다 자기 문(배선은 `orchestration.rebalancer.wiring` · T309 ① 에서 꺼냄 —
+        #    펀드 재현 도구가 같은 배선을 쓴다).
+        wire_legs(coordinator.ports, legs, lambda: ledger.drawdown_pct / Decimal(100))
         return
     if slots <= 0 and halt_after_stops <= 0 and brake is None:
         return
