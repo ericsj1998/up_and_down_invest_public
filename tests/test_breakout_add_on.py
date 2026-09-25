@@ -144,7 +144,12 @@ class TestDeclaration:
         assert books[MACD_RESEARCH].add_on == macd_rule
         assert not books[MACD_RESEARCH].listed
         on = {name for name, book in books.items() if book.add_on is not None}
-        assert on == {RESEARCH, MACD_RESEARCH}
+        assert on == {RESEARCH, MACD_RESEARCH, "private_strategy", "private_strategy"}
+        # 🔴 실계좌 다리는 측정한 값 그대로 · 선언 버전은 그대로(펀드 다리 귀속 키가 버전을 품는다)
+        assert books["private_strategy"].add_on == RULE
+        assert books["private_strategy"].add_on == macd_rule
+        assert books["private_strategy"].version == "0.1.0"
+        assert books["private_strategy"].version == "0.1.0"
 
     @pytest.mark.parametrize(
         ("research", "origin"),

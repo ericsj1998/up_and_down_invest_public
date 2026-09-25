@@ -175,7 +175,10 @@ export function edgesOf(trade: TradeMark, step: number): TradeEdge[] {
       id: trade.id,
       at: to,
       // ⭐ 결말만으로는 "얼마나" 를 못 읽는다 — 손절도 -0.6% 와 -12% 는 다른 사건이다.
-      label: money === "" ? done.label : `${done.label} ${money}`,
+      // ⭐ 불타기(T308)가 있으면 한 줄 덧붙인다 — 금액에 추가분이 들어 있는 이유가 보이게.
+      label:
+        (money === "" ? done.label : `${done.label} ${money}`) +
+        (trade.add ? ` · ${trade.add}` : ""),
       tone: done.tone === "gain" ? "gain" : done.tone === "loss" ? "loss" : "flat",
       side: "close",
     },

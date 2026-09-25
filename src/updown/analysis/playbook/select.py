@@ -327,12 +327,24 @@ def _ref_sma_down(raw: object, name: str) -> RefSmaDown:
         raise PlaybookConfigError(f"{name}.entry_ref_sma_down — {exc}") from exc
 
 
-def _add_on(raw: object, name: str) -> AddOn:
+def _add_on(raw: object, name: str, *, full_ride: bool = True) -> AddOn:
     """불타기 한 줄 — `{confirm_pct: "0.105", frac: "0.5"}` (T308).
 
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+        full_ride: 같은 매매법이 반익 없이 끝까지 가는가.
+
     Raises:
-        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖이거나 · 반익이 있는 매매법인 경우.
+
+    Note:
+        🔴 **반익 없는 매매법(`full_ride`)에만 켠다.** 반익 주문은 처음 계약의 절반을 덜게 짜여 있어
+        불타기로 커진 포지션과 섞이면 덜 계약 · 손익 · 청산가 계산이 모두 어긋난다. 잰 것도
+        반익 없는 두 다리(돌파 롱 · MACD 숏)뿐이다.
     """
+    if not full_ride:
+        raise PlaybookConfigError(f"{name}.add_on — 불타기는 반익 없는(full_ride) 매매법에만 켠다")
     body = _mapping(raw, f"{name}.add_on")
     try:
         return AddOn(
@@ -529,7 +541,11 @@ def _load_file(target: Path) -> list[Playbook]:
                     add_on=(
                         None
                         if body.get("add_on") is None
-                        else _add_on(body["add_on"], f"playbooks.{name}")
+                        else _add_on(
+                            body["add_on"],
+                            f"playbooks.{name}",
+                            full_ride=bool(body.get("full_ride", False)),
+                        )
                     ),
                     entry_fund_dd_max=_fund_dd_max(body, f"playbooks.{name}"),
                     entry_ref_ma_gate=(

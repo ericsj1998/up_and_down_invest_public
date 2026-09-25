@@ -502,6 +502,61 @@ def resize_order(
     )
 
 
+def add_order(
+    record: TradeRecord,
+    instrument: Instrument,
+    contracts: int,
+    *,
+    run: str = "",
+) -> OrderRequest:
+    """불타기 — 열린 포지션과 **같은 방향**으로 한 번 더 싣는 시장가 주문 (T308 ⑤).
+
+    Args:
+        record: 보유 중인 원장 기록(불타기 판정이 적힌 것).
+        instrument: 대상 종목.
+        contracts: 추가 계약 수.
+        run: 판 표식.
+
+    Returns:
+        시장가 추가 주문.
+
+    Raises:
+        OrderMappingError: 계약 수가 0 이하인 경우.
+
+    Note:
+        ⭐ 멱등키는 매매마다 **하나**(`:add:0`)다 — 한 매매에 불타기는 한 번뿐이라, 재시작 · 중복
+        걸음에도 거래소가 같은 이름을 두 번 받지 않는다(규칙 #6). 진입과 같은 ENTRY 라
+        `reduce_only` 가 아니다 — 늘리는 주문이다.
+    """
+    if contracts <= 0:
+        raise OrderMappingError(f"계약 수가 {contracts} 다 — 더할 것이 없다")
+    return OrderRequest(
+        instrument=instrument,
+        side=_entry_side(record.direction),
+        order_kind=OrderKind.ENTRY,
+        order_type=OrderType.MARKET,
+        quantity=Decimal(contracts),
+        price=None,
+        idempotency_key=add_key(record.trade_id, run),
+        approved_order_id=record.trade_id,
+        leg_index=0,
+        revision_id=f"{record.trade_id}:add",
+    )
+
+
+def add_key(record_id: str, run: str = "") -> str:
+    """불타기 주문의 멱등키 — 재시작 뒤 거래소에서 이 이름으로 체결을 찾는다 (T308 ⑤).
+
+    Args:
+        record_id: 매매 id.
+        run: 판 id.
+
+    Returns:
+        `{뿌리}:add:0`.
+    """
+    return order_key(record_id, "add", 0, run)
+
+
 SENTINEL_RR = Decimal(50)
 """이 배수(리스크 대비) 이상의 익절 목표는 **주문하지 않는다** (2026-08-26 실사고).
 

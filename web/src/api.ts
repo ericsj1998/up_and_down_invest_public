@@ -926,6 +926,18 @@ export function escapePlace(
   });
 }
 
+/** 매매 한 건의 불타기 (T308) — 서버 `_add_view` 그대로. */
+export type TradeAdd = {
+  at: string | null;
+  price: string | null;
+  frac: string;
+  exposure: string;
+  held: string | null;
+  contracts: number;
+  fill: string | null;
+  pnl: string;
+};
+
 export type Trade = {
   trade_id: string;
   outcome: string;
@@ -957,6 +969,13 @@ export type Trade = {
   realized_rr: number | null;
   achievement: number | null;
   half_by: string | null;
+  /**
+   * **불타기** (T308) — 확인된 강한 움직임에 처음 크기의 0.5 배를 한 번 더 실은 것.
+   *
+   * `gain_pct` 는 처음 크기만 센다 — 닫힌 매매의 손익은 추가분 `pnl`(USDT)을 더해야 거래소
+   * 실현과 같다(`tradeAdd.ts`). `held` 가 있으면 추가를 버린 사유다(펀드 문 · 증거금 등).
+   */
+  add?: TradeAdd | null;
   /** 시스템인가 · 사람인가 · 거래소에서 이어받았나. 근거가 비는 이유를 가른다. */
   actor?: string;
   /**

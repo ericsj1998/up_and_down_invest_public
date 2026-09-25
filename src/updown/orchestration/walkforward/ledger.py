@@ -467,6 +467,19 @@ class TradeRecord:
     """추가 체결이 실제로 만든 노출(= 추가 체결 명목 ÷ `sizing_base` · T308) — 라이브 러너가 붙인다.
 
     `filled_leverage` 와 같은 **상한 회계 전용** 값이다. None = 모형이거나 아직 안 채워짐."""
+    add_sent: bool = False
+    """러너가 불타기 주문을 **보내려 했다**(T308 ⑤) — 응답 전에 죽으면 재시작 뒤 이 표시로 거래소에
+    먼저 묻는다(재전송하지 않는다 · 규칙 #6). 채워졌으면 `add_contracts` 가 0 보다 크다."""
+    add_contracts: int = 0
+    """불타기로 거래소에서 실제로 채워진 계약 수(T308 ⑤ · 라이브만). 0 = 추가 없음."""
+    add_fill: Decimal | None = None
+    """불타기 체결 평단(T308 ⑤ · 라이브만). None = 추가 없음."""
+    add_pnl: Decimal = Decimal(0)
+    """불타기 추가분의 실현 손익 USDT(부호째 · T308 ⑥).
+
+    청산 뒤 러너가 **청산가 기준으로 다시 적는다**(겹쳐 쌓지 않는다). 원 매매 손익
+    (`gain_pct` · `leverage`)은 처음 크기만 센다 — 추가분은 평단 · 계약이 달라 따로 적고
+    `_walk_wallet` 이 `realized_adjust` 처럼 더한다. 모형 · 옛 기록은 0."""
     note: str = ""
 
     @property
@@ -710,6 +723,10 @@ class TradeRecord:
             add_exposure=self.add_exposure,
             add_held=self.add_held,
             add_filled=self.add_filled,
+            add_sent=self.add_sent,
+            add_contracts=self.add_contracts,
+            add_fill=self.add_fill,
+            add_pnl=self.add_pnl,
         )
 
 
@@ -1205,6 +1222,8 @@ class Ledger:
             pnl = staked * item.filled_ratio * gain / Decimal(100)
             # ⭐ T229 — 재레버 감축으로 이미 실현된 몫. 거래소가 그 자리에서 적은 USDT 그대로.
             pnl += item.realized_adjust
+            # ⭐ T308 ⑥ — 불타기 추가분. 처음 크기의 손익(위)과 평단 · 계약이 달라 따로 적혀 있다.
+            pnl += item.add_pnl
             margin += pnl
             # ⭐ **그때의 증거금으로 센다** — 나중에 곱하면 규모가 달라진다.
             earned += pnl

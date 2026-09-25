@@ -39,6 +39,8 @@ export interface TradeMark {
    * 단독 판 · 옛 행) 화면은 % 만 적는다 — 다른 돈을 끌어다 곱하지 않는다.
    */
   margin?: number | null;
+  /** 불타기 한 줄(T308) — `불타기 +3계약 @132.4 · 추가분 -4.25 USDT` · 없으면 null. */
+  add?: string | null;
 }
 
 export const REASON_LABEL: Record<string, string> = {

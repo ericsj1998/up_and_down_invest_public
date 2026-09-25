@@ -193,6 +193,7 @@ class TestItIsWiredLikeAnyOtherRule:
             "private_strategy",
             "private_strategy",  # 334차 측정용 — 룰만 다르다
             "private_strategy",  # T304 — 혼합 2.0.0-V 의 MACD 다리
+            "private_strategy",  # T308 · 378차 측정용 — 숏 불타기 판정만 켰다
         }
 
 

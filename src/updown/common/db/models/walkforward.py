@@ -181,6 +181,12 @@ class WalkforwardTrade(Base):
 
     NULL = 옛 행 · 백테스트 · 단독 판(걷기 증거금으로 센다).
     """
+    add_json: Mapped[JsonDict | None] = mapped_column(default=None)
+    """불타기(T308) — 판정 · 펀드 문의 답 · 체결(계약 · 평단 · 노출) · 추가분 손익.
+
+    NULL = 옛 행 · 불타기 판정이 없는 매매. 칸을 여럿 두지 않고 한 덩어리로 둔다 —
+    불타기를 켠 매매법만 채우고, 읽을 때 `store.add_from_json` 이 원장 칸으로 푼다.
+    """
     funding_keys_json: Mapped[JsonDict | None] = mapped_column(default=None)
     """이미 붙인 정산 열쇠 `{"keys": ["<epoch>:<change>", ...]}` (T226 · 0114). 옛 행은 NULL.
 

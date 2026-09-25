@@ -14,6 +14,7 @@ import { Live } from "./Live";
 import { Chart, type MarkTone } from "./Chart";
 import type { TradeMark } from "./chart/trades";
 import { openPct } from "./chart/tradeBoxes";
+import { addLabel, closedPct } from "./tradeAdd";
 import { IndicatorPanel } from "./chart/IndicatorPanel";
 import { readStance } from "./adx";
 import { useForming } from "./useForming";
@@ -246,9 +247,13 @@ export function PaperTab({ run, home, named }: Props) {
                 leverage: row.leverage,
                 costPct: row.cost_pct,
               }))
-            : row.gain_pct === null
-              ? null
-              : Number(row.gain_pct),
+            : // ⭐ 닫힌 매매는 불타기 추가분까지 같은 분모로 더한다 (T308 · tradeAdd.ts).
+              closedPct(
+                row.gain_pct === null ? null : Number(row.gain_pct),
+                row.margin_used,
+                row.add,
+              ),
+          add: addLabel(row.add),
           reason: row.outcome,
           open,
           // ⭐ 손익 **금액**의 분모 — 없으면(백테스트·옛 행) 화면이 % 만 적는다.

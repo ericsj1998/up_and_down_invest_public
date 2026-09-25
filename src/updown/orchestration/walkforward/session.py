@@ -1455,6 +1455,9 @@ class Session:
                 "add_broken": item.add_broken,
                 "add_exposure": str(item.add_exposure),
                 "add_held": item.add_held,
+                "add_contracts": item.add_contracts,
+                "add_fill": None if item.add_fill is None else str(item.add_fill),
+                "add_pnl": str(item.add_pnl),
                 # ⭐ 다리를 그대로 싣는다 — 평단만 남기면 *"어디서 얼마나 채워졌나"* 를
                 #   되짚을 수 없고, 그것이 이 실험이 답해야 할 값이다 (T19 §8).
                 "entry_fills": [[str(price), str(ratio)] for price, ratio in item.entry_fills],

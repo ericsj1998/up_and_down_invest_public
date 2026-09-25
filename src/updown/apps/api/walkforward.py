@@ -5714,6 +5714,30 @@ def _record(item: TradeRecord | None) -> dict[str, Any] | None:
         # ⛔ 비어 있는 것이 곧 결함은 아니다. `actor` 가 이어받음·사람이면 근거는
         #    원래 없다 — 그래서 `actor` 를 같이 낸다.
         "evidence": evidence_rows(item.evidence),
+        # ⭐ **불타기** (T308) — 판정 · 체결 · 추가분 손익 · 버린 사유. 없으면 None.
+        #    `gain_pct` 는 처음 크기만 센다 — 닫힌 매매의 손익에 추가분(`add.pnl` USDT)을 더해야
+        #    거래소 실현과 같다(화면 `tradeAdd.ts`).
+        "add": _add_view(item),
+    }
+
+
+def _add_view(item: TradeRecord) -> dict[str, Any] | None:
+    """매매 한 건의 불타기 — 화면용. 판정도 전송도 없으면 None."""
+    if item.add_at is None and not item.add_sent:
+        return None
+
+    def text(value: object) -> str | None:
+        return None if value is None else str(value)
+
+    return {
+        "at": None if item.add_at is None else item.add_at.isoformat(),
+        "price": text(item.add_price),
+        "frac": str(item.add_frac),
+        "exposure": str(item.add_exposure),
+        "held": item.add_held,
+        "contracts": item.add_contracts,
+        "fill": text(item.add_fill),
+        "pnl": str(item.add_pnl),
     }
 
 

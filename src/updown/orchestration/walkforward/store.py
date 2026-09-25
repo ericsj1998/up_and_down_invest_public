@@ -69,6 +69,72 @@ if TYPE_CHECKING:
 _logger = get_logger("orchestration.walkforward.store")
 
 
+def add_to_json(item: TradeRecord) -> JsonDict | None:
+    """불타기 칸(T308 ⑥)을 저장용 한 덩어리로 — 판정도 체결도 없는 매매는 None(NULL).
+
+    Args:
+        item: 원장 기록.
+
+    Returns:
+        JSON 객체 또는 None.
+
+    Note:
+        🔴 **체결 · 전송 표시 · 손익까지 싣는다.** 판정만 실으면 재시작 뒤 원장은 추가를 잊는다 —
+        거래소 포지션이 원장보다 커 보이고(겹침 경보) 추가분 손익이 원장 실현에서 빠진다.
+    """
+    if item.add_at is None and not item.add_broken and not item.add_sent:
+        return None
+
+    def text(value: object) -> str | None:
+        return None if value is None else str(value)
+
+    return {
+        "at": None if item.add_at is None else item.add_at.isoformat(),
+        "price": text(item.add_price),
+        "frac": str(item.add_frac),
+        "broken": item.add_broken,
+        "exposure": str(item.add_exposure),
+        "held": item.add_held,
+        "filled": text(item.add_filled),
+        "sent": item.add_sent,
+        "contracts": item.add_contracts,
+        "fill": text(item.add_fill),
+        "pnl": str(item.add_pnl),
+    }
+
+
+def add_from_json(data: JsonDict | None) -> dict[str, Any]:
+    """저장된 불타기 칸 → `TradeRecord` 인자 — NULL(옛 행)이면 빈 사전(기본값 = 추가 없음).
+
+    Args:
+        data: `add_json` 칸.
+
+    Returns:
+        `TradeRecord(**...)` 에 넘길 불타기 칸들.
+    """
+    if not data:
+        return {}
+
+    def dec(key: str) -> Decimal | None:
+        value = data.get(key)
+        return None if value is None else Decimal(str(value))
+
+    at = data.get("at")
+    return {
+        "add_at": None if at is None else datetime.fromisoformat(str(at)),
+        "add_price": dec("price"),
+        "add_frac": dec("frac") or Decimal(0),
+        "add_broken": bool(data.get("broken", False)),
+        "add_exposure": dec("exposure") or Decimal(0),
+        "add_held": None if data.get("held") is None else str(data.get("held")),
+        "add_filled": dec("filled"),
+        "add_sent": bool(data.get("sent", False)),
+        "add_contracts": int(str(data.get("contracts", 0) or 0)),
+        "add_fill": dec("fill"),
+        "add_pnl": dec("pnl") or Decimal(0),
+    }
+
+
 class RunStoreError(RuntimeError):
     """판 영속화 계층의 오류.
 
@@ -721,6 +787,7 @@ class RunStore:
                 "fee_actual": item.fee_actual,
                 "filled_leverage": item.filled_leverage,  # T288 · 0131 — 상한 회계용 실측 노출
                 "margin_used": item.margin_used,  # T285 · 0130 — 펀드 멤버의 실제 증거금
+                "add_json": add_to_json(item),  # T308 ⑥ · 0132 — 불타기 판정 · 체결 · 손익
                 "leverage": item.leverage,
                 "note": item.note,
                 "evidence_json": evidence_rows(item.evidence),
@@ -1272,4 +1339,5 @@ def _to_record(row: WalkforwardTrade) -> TradeRecord:
         leverage=row.leverage,
         note=row.note,
         evidence=evidence_from_rows(row.evidence_json),
+        **add_from_json(row.add_json),
     )

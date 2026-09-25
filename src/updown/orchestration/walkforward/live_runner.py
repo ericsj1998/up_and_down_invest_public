@@ -71,6 +71,8 @@ from updown.orchestration.walkforward.order_mapping import (
     MAX_SIZE_MULT,
     RUN_CHARS,
     SENTINEL_RR,
+    add_key,
+    add_order,
     can_size,
     close_limit_order,
     close_order,
@@ -557,6 +559,40 @@ def trade_of_text(text: str) -> str:
         # 새 형식: t-<run 6>-<trade 8>-tp1
         return parts[2]
     return parts[1]
+
+
+ADD_STALE = timedelta(minutes=30)
+"""불타기 판정 뒤 이만큼 지나도 못 보냈으면 버린다 (T308 ⑤).
+
+확인 봉 종가에 산다는 규칙이다 — 조회 실패로 한참 뒤에 사면 측정한 매매가 아니다.
+걸음은 5분마다라 30분이면 여섯 번 다시 해 본 셈이다."""
+
+
+def add_pnl_of(record: TradeRecord, multiplier: Decimal) -> Decimal | None:
+    """불타기 추가분의 실현 손익 USDT — 청산가 · 추가 평단 · 계약 · 비용 비율로 (T308 ⑥).
+
+    Args:
+        record: 닫힌 원장 기록(`add_contracts > 0`).
+        multiplier: 계약 승수.
+
+    Returns:
+        (청산가 - 추가 평단) x 방향 x 계약 x 승수 - 비용 비율 x 추가 명목.
+        추가가 없거나 아직 안 닫혔으면 None.
+
+    Note:
+        비용 비율은 원 매매와 같은 `cost_pct` 다 — 거래소 수수료로 맞춘 뒤라면(T236) 그 비율이
+        추가분까지 포함한 청산 행에서 나왔으므로 같은 자로 떼는 것이 맞다.
+    """
+    if (
+        record.add_contracts <= 0
+        or record.add_fill is None
+        or record.exit_price is None
+        or multiplier <= 0
+    ):
+        return None
+    size = Decimal(record.add_contracts) * multiplier
+    gross = (record.exit_price - record.add_fill) * record.direction.sign * size
+    return gross - record.cost_pct * record.add_fill * size
 
 
 def fee_from_close(row: dict[str, object], multiplier: Decimal) -> tuple[Decimal, Decimal] | None:
@@ -2138,6 +2174,7 @@ class LiveRunner:
         self._session.ledger.replace(done)
         self._session.release()
         await self._align_fee(done.trade_id)
+        await self._book_adds()
         self._log.info(
             "live_reconciled",
             payload={
@@ -2364,6 +2401,7 @@ class LiveRunner:
             },
         )
         await self._align_fee(trade_id)
+        await self._book_adds()
 
     async def _loop(self) -> None:
         """스트림을 먹으며 끝나지 않는다 — 끊기면 다시 붙는다."""
@@ -3125,12 +3163,17 @@ class LiveRunner:
         # 🔴 **메이커 청산이 안 채워졌으면 시장가로 마무리한다** (T126 · 1.1.0).
         #    reconcile 뒤라야 거래소의 진짜 잔량을 보고 판단한다.
         await self._expire_maker_exit()
+        # 🔴 **불타기** (T308 ⑤) — reconcile · 청산 뒤라야 포지션이 아직 있는지 안다.
+        #    재레버 · 손절 확인이 그 뒤에 온다(손절은 포지션 전량 닫기라 수량이 따라간다).
+        await self._apply_add()
         # 🔴 **보유 계약을 지금 자본의 목표 노출로 되맞춘다** (0.8.0 재레버).
         await self._resize_position()
         await self._guard_stop()
         # 🔴 **걸음마다 스스로 점검한다** (사용자 요구 2026-08-18). 오늘 나온 버그가
         #    전부 같은 모양이었다 — 무언가 조용히 얼어 있고 아무도 모른다.
         await self._run_audit()
+        # ⭐ 닫힌 매매의 불타기 추가분 손익을 청산가로 적는다 (T308 ⑥ · 겹쳐 쌓지 않는다).
+        await self._book_adds()
         # 🔴 **원장을 DB 에 남긴다** (T16 ②). 여기서 안 남기면 다음 리로드에 이 걸음의
         #    판정이 통째로 사라지고, 거래소 포지션만 관리자 없이 남는다.
         await self._persist()
@@ -4434,7 +4477,8 @@ class LiveRunner:
         except Exception:
             # ⛔ 크기를 못 세면 조용히 넘긴다 — 이것은 경보이지 관문이 아니다.
             return
-        if filled <= want * 3 // 2:
+        # ⭐ 불타기로 더 산 계약은 계획 안이다 (T308) — 빼고 재면 추가마다 거짓 겹침 경보가 뜬다.
+        if filled <= (want + record.add_contracts) * 3 // 2:
             return
         self.last_error = f"포지션이 계획의 {filled / want:.1f}배다 — 판이 겹쳐 쌓였다"[:200]
         self._fired("stacked", f"거래소 {filled} 계약 vs 계획 {want} 계약")
@@ -5050,6 +5094,274 @@ class LiveRunner:
                     payload={"trade_id": trade_id, "error": str(exc)[:140]},
                 )
 
+    async def _apply_add(self) -> None:
+        """세션이 불타기를 판정했으면 거래소에 **같은 방향으로 한 번 더** 싣는다 (T308 ⑤).
+
+        Note:
+            🔴 **리스크 증가 행동이다**(절대 규칙 #8-1). 조금이라도 불확실하면 이번 추가를
+            **버린다**(`add_held` 에 사유 · `add_exposure` 0 — 총 명목 상한이 없는 추가를 안 세게).
+            원 포지션 · 손절은 그대로다.
+
+            순서: 사유 확인(호가 마름 · 낙폭 브레이커 · 새 진입 멈춤 · 펀드 대기 · 늦음) →
+            거래소 포지션이 같은 방향으로 있나 → 계약 수(진입과 같은 반올림 · 0 이면 버림) →
+            **증거금 여유** → 보낸다고 먼저 적고(`add_sent`) → 시장가 → 체결을 원장에 붙인다.
+
+            ⚠️ 응답 전에 죽거나 예외가 나면 `add_sent` 만 남는다 — 다음 걸음에 **거래소에 먼저
+            묻고**(`_recover_add`) 다시 보내지 않는다(규칙 #6).
+        """
+        if self.observe_only:
+            return
+        held = next(
+            (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),
+            None,
+        )
+        if held is None or held.add_at is None or held.add_exposure <= 0:
+            return
+        if held.add_contracts > 0 or held.add_held is not None:
+            return
+        if held.add_sent:
+            await self._recover_add(held)
+            return
+        if not isinstance(self._orders, PositionAware):
+            return
+        why = None
+        if self.dry is not None:
+            why = "book_dry"
+        elif self._session.ledger.tripped_at:
+            why = "breaker"
+        elif not self._session.auto:
+            why = "paused"
+        elif not self.fund_ready:
+            why = "fund_wait"
+        elif datetime.now(UTC) - held.add_at > ADD_STALE:
+            why = "stale"
+        if why is not None:
+            self._drop_add(held, why)
+            return
+        try:
+            snapshot = await self._orders.position_snapshot(self.instrument)
+            spec = await self._contract_spec()
+        except Exception as exc:
+            self._log.warning(
+                "live_add_unreadable",
+                payload={"trade_id": held.trade_id, "error": str(exc)[:140]},
+            )
+            return  # 다음 걸음에 다시 본다(늦으면 `stale` 로 버린다)
+        size = Decimal(str(snapshot.get("size", "0") or "0"))
+        if size == 0 or (size > 0) != (held.direction is Direction.LONG):
+            self._drop_add(held, "no_position")
+            return
+        multiplier = Decimal(str(spec["quanto_multiplier"]))
+        size_min = int(spec.get("order_size_min", 1))
+        size_max = int(spec.get("order_size_max", 0)) or None
+        price = held.add_price if held.add_price else held.entry
+        base = self._session.ledger.sizing_base
+        envelope = self._session.ledger.leverage * MAX_SIZE_MULT
+        if not can_size(
+            base,
+            held.add_exposure,
+            price,
+            multiplier,
+            size_min=size_min,
+            round_to_nearest=True,
+            max_leverage=envelope,
+        ):
+            self._drop_add(held, "size")
+            return
+        contracts = contracts_for(
+            base,
+            held.add_exposure,
+            price,
+            multiplier,
+            size_min=size_min,
+            size_max=size_max,
+            round_to_nearest=True,
+            max_leverage=envelope,
+        )
+        lev = Decimal(str(snapshot.get("leverage") or 0)) or self._session.ledger.leverage
+        need = Decimal(contracts) * price * multiplier / lev if lev > 0 else Decimal(0)
+        spare = await self._spare_margin()
+        if spare is not None and need > spare * MARGIN_HEADROOM:
+            self._drop_add(held, "margin", detail=f"필요 {need:.2f} · 가용 {spare:.2f}")
+            return
+        # 🔴 **보내기 전에 적는다** — 응답을 못 받으면 이 표시가 "보내려 했다" 의 유일한 흔적이다.
+        self._session.ledger.replace(dc_replace(held, add_sent=True))
+        await self._persist()
+        try:
+            done = await self._orders.submit_order(
+                add_order(held, self.instrument, contracts, run=self._run_key)
+            )
+        except Exception as exc:
+            self.failures += 1
+            self.last_error = f"불타기 전송 실패: {exc}"[:200]
+            self._log.error(
+                "live_add_send_failed",
+                payload={
+                    "trade_id": held.trade_id,
+                    "contracts": contracts,
+                    "error": str(exc)[:200],
+                    "note": "다음 걸음에 거래소에 먼저 묻는다 — 다시 보내지 않는다 (규칙 #6)",
+                },
+            )
+            return
+        self.orders += 1
+        await self._note_order(
+            held.trade_id,
+            role="불타기",
+            status=done.status.value,
+            order_id=str(done.broker_order_id or ""),
+            contracts=str(contracts),
+            price=price,
+        )
+        filled = Decimal(str(done.filled_quantity or 0))
+        if done.status not in {OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED} or filled <= 0:
+            self._drop_add(held, "unfilled", detail=done.status.value)
+            return
+        avg = Decimal(str(done.average_price)) if done.average_price else price
+        await self._record_add(held.trade_id, int(filled), avg, multiplier)
+
+    async def _recover_add(self, held: TradeRecord) -> None:
+        """보냈는데 결과를 모르는 불타기를 **거래소 주문 이력에서** 찾는다 (T308 ⑤ · 규칙 #6).
+
+        Args:
+            held: `add_sent` 이고 체결이 안 적힌 보유 기록.
+
+        Note:
+            ⛔ **다시 보내지 않는다.** 찾으면 체결을 붙이고, 이력에 없으면 `lost` 로 버린다 —
+            이중 주문(2026-08-25 67 → 333 계약)의 길이 재전송이다. 이력을 못 읽으면 다음 걸음에.
+        """
+        if not hasattr(self._orders, "recent_orders"):
+            self._drop_add(held, "lost", detail="어댑터에 주문 이력이 없다")
+            return
+        try:
+            rows = cast(
+                "list[dict[str, str]]",
+                await self._orders.recent_orders(self.instrument),  # type: ignore[attr-defined]
+            )
+            spec = await self._contract_spec()
+        except Exception as exc:
+            self._log.warning(
+                "live_add_recover_unreadable",
+                payload={"trade_id": held.trade_id, "error": str(exc)[:140]},
+            )
+            return
+        want = add_key(held.trade_id, self._run_key).replace(":", "-")
+        for row in rows:
+            if str(row.get("text", "")).removeprefix("t-") != want:
+                continue
+            try:
+                size = abs(Decimal(str(row.get("size") or 0)))
+                left = abs(Decimal(str(row.get("left") or 0)))
+                fill = Decimal(str(row.get("fill_price") or 0))
+            except Exception:
+                break
+            if size - left > 0 and fill > 0:
+                multiplier = Decimal(str(spec["quanto_multiplier"]))
+                await self._record_add(held.trade_id, int(size - left), fill, multiplier)
+                return
+            break
+        self._drop_add(held, "lost", detail="보냈는데 거래소 이력에 체결이 없다 — 다시 안 보낸다")
+
+    async def _record_add(
+        self, trade_id: str, contracts: int, fill: Decimal, multiplier: Decimal
+    ) -> None:
+        """불타기 체결을 원장에 붙인다 — 계약 · 평단 · 실측 노출(총 명목 상한 회계) (T308 ⑤).
+
+        Args:
+            trade_id: 매매 id.
+            contracts: 채워진 계약 수.
+            fill: 체결 평단.
+            multiplier: 계약 승수.
+        """
+        live = next(
+            (item for item in self._session.ledger.records if item.trade_id == trade_id), None
+        )
+        if live is None:
+            return
+        base = self._session.ledger.sizing_base
+        filled = Decimal(contracts) * fill * multiplier / base if base > 0 else None
+        self._session.ledger.replace(
+            dc_replace(
+                live, add_sent=True, add_contracts=contracts, add_fill=fill, add_filled=filled
+            )
+        )
+        self._fired("added", f"불타기 {contracts} 계약 @ {fill}")
+        self._log.info(
+            "live_add_filled",
+            payload={
+                "trade_id": trade_id,
+                "contracts": contracts,
+                "fill": str(fill),
+                "granted": str(live.add_exposure),
+                "filled_exposure": None if filled is None else str(filled),
+                "note": "손절가는 그대로 · 손절 주문은 포지션 전량을 닫는다",
+            },
+        )
+        await self._persist()
+
+    def _drop_add(self, held: TradeRecord, why: str, *, detail: str = "") -> None:
+        """이번 불타기를 **버린다** — 사유를 남기고 노출을 0 으로 (원 포지션은 그대로 · T308 ⑤).
+
+        Args:
+            held: 보유 기록.
+            why: 사유 코드(`add_held`).
+            detail: 로그에 남길 설명.
+        """
+        live = next(
+            (item for item in self._session.ledger.records if item.trade_id == held.trade_id),
+            held,
+        )
+        if live.add_contracts > 0:
+            return
+        self._session.ledger.replace(
+            dc_replace(live, add_held=why, add_exposure=Decimal(0), add_filled=None)
+        )
+        self._log.warning(
+            "live_add_dropped",
+            payload={
+                "trade_id": held.trade_id,
+                "why": why,
+                "detail": detail[:160],
+                "note": "불타기만 버린다 — 원 포지션과 손절은 그대로다",
+            },
+        )
+
+    async def _book_adds(self) -> None:
+        """닫힌 매매의 불타기 추가분 손익을 **청산가로 다시 적는다** (T308 ⑥ · 겹쳐 쌓지 않는다).
+
+        Note:
+            청산가는 나중에 체결가로 고쳐질 수 있다(`_correct_exit_to_fill`) — 그래서 누적이 아니라
+            매번 다시 계산해 **바뀌었을 때만** 갈아 끼운다.
+        """
+        done = [
+            item
+            for item in self._session.ledger.records
+            if item.add_contracts > 0 and item.exit_price is not None and item.closed_at is not None
+        ]
+        if not done:
+            return
+        try:
+            spec = await self._contract_spec()
+            multiplier = Decimal(str(spec["quanto_multiplier"]))
+        except Exception as exc:
+            self._log.warning("live_add_book_unreadable", payload={"error": str(exc)[:140]})
+            return
+        for item in done:
+            pnl = add_pnl_of(item, multiplier)
+            if pnl is None or pnl == item.add_pnl:
+                continue
+            self._session.ledger.replace(dc_replace(item, add_pnl=pnl))
+            self._log.info(
+                "live_add_booked",
+                payload={
+                    "trade_id": item.trade_id,
+                    "add_pnl": str(pnl),
+                    "exit": str(item.exit_price),
+                    "add_fill": str(item.add_fill),
+                    "contracts": item.add_contracts,
+                },
+            )
+
     async def _resize_position(self) -> None:
         """보유 계약을 **지금 자본의 목표 노출**로 되맞춘다 (0.8.0 · 설계 B 개정).
 
@@ -5077,6 +5389,10 @@ class LiveRunner:
             None,
         )
         if held is None or not isinstance(self._orders, PositionAware):
+            return
+        if held.add_sent or held.add_contracts > 0:
+            # 🔴 불타기 한 매매는 되맞추지 않는다 (T308) — 재레버 목표는 처음 크기(`leverage`)만
+            #    알아 추가분을 되판다.
             return
         rows = self._feed.observed(self.entry)
         if not rows:
@@ -5672,6 +5988,9 @@ class LiveRunner:
                     size_min=int(spec.get("order_size_min", 1)),
                     size_max=int(spec.get("order_size_max", 0)) or None,
                 )
+                # ⭐ 불타기로 더 산 계약도 같이 던진다 (T308) — 처음 크기만 세면
+                #    추가분이 무방비로 남는다.
+                contracts += held.add_contracts
             done = await self._orders.submit_order(
                 close_order(held, self.instrument, contracts, revision=0)
             )
