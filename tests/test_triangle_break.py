@@ -205,6 +205,8 @@ class TestItIsWiredLikeAnyOtherRule:
             "private_strategy",  # T304 #8 측정용 — 급등 상한만 더함
             "private_strategy",
             "private_strategy",  # T304 — 혼합 2.0.0-V 의 삼각 다리(4x · 변동성 목표)
+            "private_strategy",  # 384차 측정용 — 띠만 뺌
+            "private_strategy",
         }
 
 
@@ -266,6 +268,8 @@ class TestSurgeCap:
             "private_strategy",
             "private_strategy",
             "private_strategy",  # T304 — 혼합 2.0.0-V 의 삼각 다리
+            "private_strategy",  # 384차 측정용 — 띠만 뺌
+            "private_strategy",
         }
         cap = RefSurgeCap(days=7, high=Decimal("0.08204173132170967"))
         for name in on:
@@ -282,6 +286,23 @@ class TestSurgeCap:
                 if f.name in ("playbook_id", "backtest_note", "listed"):
                     continue
                 assert getattr(orig, f.name) == getattr(same, f.name), (src, f.name)
+
+    def test_noband_variants_differ_from_the_surge_ones_only_by_the_band(self) -> None:
+        """384차 구성 검토 — 띠를 뺀 측정판은 `_surge` 판과 띠 · 이름 · 설명만 다르다."""
+        from dataclasses import fields, replace
+
+        books = {b.playbook_id: b for b in load_playbooks()}
+        pairs = (
+            ("private_strategy", "private_strategy"),
+            ("private_strategy", "private_strategy"),
+        )
+        for src, dst in pairs:
+            assert books[dst].entry_ref_return_band is None
+            orig = replace(books[src], entry_ref_return_band=None)
+            for f in fields(orig):
+                if f.name in ("playbook_id", "backtest_note", "label"):
+                    continue
+                assert getattr(orig, f.name) == getattr(books[dst], f.name), (dst, f.name)
 
     def test_live_bundle_short_leg_carries_the_cap(self) -> None:
         books = {b.playbook_id: b for b in load_playbooks()}
