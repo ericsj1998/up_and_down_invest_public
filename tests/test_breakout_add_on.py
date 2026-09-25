@@ -34,6 +34,7 @@ ENTRY_AT = START + timedelta(hours=20)
 ENTRY = Decimal(530)
 RULE = AddOn(confirm_pct=Decimal("0.105"), frac=Decimal("0.5"))
 RESEARCH = "private_strategy"
+MACD_RESEARCH = "private_strategy"
 
 
 def _book(add_on: AddOn | None) -> Playbook:
@@ -139,16 +140,24 @@ class TestDeclaration:
         books = {item.playbook_id: item for item in load_playbooks()}
         assert books[RESEARCH].add_on == RULE
         assert not books[RESEARCH].listed
-        assert {name for name, book in books.items() if book.add_on is not None} == {RESEARCH}
+        macd_rule = AddOn(confirm_pct=Decimal("0.06"), frac=Decimal("0.5"))
+        assert books[MACD_RESEARCH].add_on == macd_rule
+        assert not books[MACD_RESEARCH].listed
+        on = {name for name, book in books.items() if book.add_on is not None}
+        assert on == {RESEARCH, MACD_RESEARCH}
 
-    def test_research_book_is_a_plus_with_one_switch(self) -> None:
+    @pytest.mark.parametrize(
+        ("research", "origin"),
+        [(RESEARCH, "private_strategy"), (MACD_RESEARCH, "private_strategy")],
+    )
+    def test_research_book_is_the_origin_with_one_switch(self, research: str, origin: str) -> None:
         books = {item.playbook_id: item for item in load_playbooks()}
         loose = ("playbook_id", "add_on", "listed", "label", "backtest_note")
         for spec in dataclasses.fields(Playbook):
             if spec.name in loose:
                 continue
-            got = getattr(books[RESEARCH], spec.name)
-            assert got == getattr(books["private_strategy"], spec.name), spec.name
+            got = getattr(books[research], spec.name)
+            assert got == getattr(books[origin], spec.name), spec.name
 
 
 class TestSession:
