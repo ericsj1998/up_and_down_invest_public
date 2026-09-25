@@ -2228,9 +2228,13 @@ class Session:
             return
         seen = self._add_seen.get(held.trade_id)
         fresh: list[Candle] = []
-        # 🔴 진입 **뒤에 열린** 봉만 본다 — 진입 봉(돌파봉) 종가는 진입가 그 자체다.
+        # 🔴 **체결 뒤에 닫힌** 봉만 본다. `opened_at` 은 체결 봉의 **시작**이고 체결은 그 봉
+        #    종가다 — 돌파봉 종가에 들어갔으면 돌파봉은 진입 뒤가 아니다. 실계좌 체결가가 돌파봉
+        #    종가보다 조금 높으면 돌파봉을 세는 순간 "진입가 아래 마감"으로 기회를 잃는다(371차).
+        filled = held.opened_at + interval(self.price_frame or self.step_frame)
+        span = interval(book.timeframe)
         for row in reversed(gauge.rows):
-            if row.ts < held.opened_at or (seen is not None and row.ts <= seen):
+            if row.ts + span <= filled or (seen is not None and row.ts <= seen):
                 break
             fresh.append(row)
         if not fresh:

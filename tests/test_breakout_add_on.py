@@ -51,7 +51,13 @@ def _book(add_on: AddOn | None) -> Playbook:
     )
 
 
-def _session(book: Playbook, closes: dict[int, int]) -> Session:
+def _session(
+    book: Playbook,
+    closes: dict[int, int],
+    *,
+    opened: datetime = ENTRY_AT,
+    entry: Decimal = ENTRY,
+) -> Session:
     """시각(시간 번호)별 1H 종가를 주는 30시간 봉 · 20~28시 봉인 — 한 시간 안의 5m 는 평평하다."""
 
     def close_of(hour: int) -> Decimal:
@@ -89,9 +95,9 @@ def _session(book: Playbook, closes: dict[int, int]) -> Session:
         playbook=book.attribution,
         actor=Actor.SYSTEM,
         direction=Direction.LONG,
-        placed_at=ENTRY_AT,
-        opened_at=ENTRY_AT,
-        entry=ENTRY,
+        placed_at=opened,
+        opened_at=opened,
+        entry=entry,
         planned_stop=Decimal(400),
         planned_target=Decimal(5_000),
         planned_first=Decimal(5_000),
@@ -159,6 +165,21 @@ class TestSession:
         # 진입 봉(19시 · 종가 = 진입가 근처)이 문턱 위여도 진입 뒤가 아니다 — 20시 봉부터 센다
         got = _walk(_session(_book(RULE), {0: 530, 19: 600, 20: 540}))
         assert got.add_at is None and not got.add_broken
+
+    def test_a_fill_above_the_breakout_close_is_not_a_pullback(self) -> None:
+        # 실계좌: 돌파봉(19시) 종가 530 에 신호 · 19:55 5m 봉에서 531 에 체결.
+        # 체결 봉은 20:00 에 닫힌다 —
+        # 돌파봉 종가(530 < 531)는 체결 **전** 마감이라 되돌림이 아니다(371차).
+        got = _walk(
+            _session(
+                _book(RULE),
+                {0: 530, 20: 540, 21: 560, 22: 590},
+                opened=START + timedelta(hours=19, minutes=55),
+                entry=Decimal(531),
+            )
+        )
+        assert not got.add_broken
+        assert got.add_at == START + timedelta(hours=23) and got.add_price == Decimal(590)
 
     def test_frozen_book_writes_nothing(self) -> None:
         got = _walk(_session(_book(None), {0: 530, 20: 540, 21: 560, 22: 590, 23: 620}))
