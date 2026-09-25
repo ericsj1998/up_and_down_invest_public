@@ -906,6 +906,9 @@ class Session:
     "기회가 어디서 죽나" 를 추측하지 않으려고 센다. 키: `bars:<국면>` · `cand:<플레이북>` ·
     `blocked:<플레이북>` · `entered:<플레이북>`. 놓친 돌파는 `missed_breakouts` 그대로.
     """
+    _add_seen: dict[str, datetime] = field(default_factory=lambda: dict[str, datetime]())
+    """불타기 판정이 이미 본 마지막 판정 TF 봉(매매별 · T308). 다시 훑지 않으려는 표시일 뿐 —
+    판정 결과(`add_at` · `add_broken`)는 기록에 있어 재시작해도 같은 답이 나온다."""
     flip_on_event: bool = False
     """반대 **돌파 사건**이 뜨면 보유분을 즉시 청산하고 뒤집는다 (T46 ① · 플레이북 플래그).
 
@@ -1410,6 +1413,11 @@ class Session:
                 "half_at": None if item.half_at is None else item.half_at.isoformat(),
                 "half_by": None if item.half_by is None else item.half_by.value,
                 "half_price": None if item.half_price is None else str(item.half_price),
+                # ⭐ 불타기(T308) — 판정 시각 · 가격 · 비율. 되돌림으로 기회를 잃었는지도 싣는다.
+                "add_at": None if item.add_at is None else item.add_at.isoformat(),
+                "add_price": None if item.add_price is None else str(item.add_price),
+                "add_frac": str(item.add_frac),
+                "add_broken": item.add_broken,
                 # ⭐ 다리를 그대로 싣는다 — 평단만 남기면 *"어디서 얼마나 채워졌나"* 를
                 #   되짚을 수 없고, 그것이 이 실험이 답해야 할 값이다 (T19 §8).
                 "entry_fills": [[str(price), str(ratio)] for price, ratio in item.entry_fills],
@@ -2037,6 +2045,11 @@ class Session:
                     line, signal = series.line[-1], series.signal[-1]
                     if line is not None and signal is not None and line > signal:
                         flipped = True
+            # ⭐ **불타기 판정** (T308) — 이 봉에서 나가지 않는 롱만 본다. 기록만 한다:
+            #    추가 주문 · 펀드 문(명목 상한 · 증거금 · 브레이크)은 원장 · 러너 몫이다.
+            if not flipped and long and book.add_on is not None:
+                self._maybe_add(book)
+                held = self._open if self._open is not None else held
             # 🔴 **추세가 반대로 선언되기 전까지 보유** (T32 후보 D · `hold_while_trend`).
             #    전환 익절(캔들 패턴)은 15m 되돌림에 일찍 끊는다 — 돌파 롱 11건이 상승장에서
             #    -2.43% 였던 이유다. 이 스위치가 켜지면 캔들 패턴을 안 보고, 1h 주 추세가
@@ -2186,6 +2199,62 @@ class Session:
         lost = body < level if direction is TrendDirection.UP else body > level
         if lost:
             self._declared = None
+
+    def _maybe_add(self, book: Playbook) -> None:
+        """확인된 강한 돌파면 불타기 시각 · 가격을 기록에 적는다 (T308 · 366 ~ 370차).
+
+        진입 뒤 판정 TF 종가가 한 번도 진입가 아래로 안 닫힌 채 진입가 x (1 + 문턱) 이상에서
+        닫히면 그 봉 종가가 추가 가격이다. 진입가 아래 마감이 먼저 오면 이 매매는 추가하지 않는다.
+        한 매매에 한 번이다.
+
+        Args:
+            book: 이 매매를 낸 플레이북. `add_on` 이 있어야 부른다.
+
+        Note:
+            ⚠️ 여기서는 **판정만** 한다. 얼마나 살지(처음 실제 명목 x 비율 · 반올림 · 명목 상한 ·
+            증거금 · 브레이크)는 펀드 원장과 실계좌 러너가 정한다 — 세션은 자리를 모른다.
+        """
+        held, rule = self._open, book.add_on
+        if (
+            held is None
+            or rule is None
+            or held.opened_at is None
+            or held.add_at is not None
+            or held.add_broken
+        ):
+            return
+        gauge = self._frame(book.timeframe, None)
+        if gauge is None:
+            return
+        seen = self._add_seen.get(held.trade_id)
+        fresh: list[Candle] = []
+        # 🔴 진입 **뒤에 열린** 봉만 본다 — 진입 봉(돌파봉) 종가는 진입가 그 자체다.
+        for row in reversed(gauge.rows):
+            if row.ts < held.opened_at or (seen is not None and row.ts <= seen):
+                break
+            fresh.append(row)
+        if not fresh:
+            return
+        self._add_seen[held.trade_id] = fresh[0].ts
+        level = held.entry * (Decimal(1) + rule.confirm_pct)
+        for row in reversed(fresh):
+            if row.close < held.entry:
+                held = replace(held, add_broken=True)
+                break
+            if row.close >= level:
+                held = replace(
+                    held,
+                    add_at=row.ts + interval(book.timeframe),
+                    add_price=row.close,
+                    add_frac=rule.frac,
+                )
+                self._count(f"add_on:{book.playbook_id}")
+                break
+        else:
+            return
+        self._open = held
+        self.ledger.replace(held)
+        self.journal()
 
     def _first_reaction(
         self,

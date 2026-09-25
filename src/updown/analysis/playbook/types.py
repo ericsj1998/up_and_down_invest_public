@@ -371,6 +371,37 @@ class VolTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class AddOn:
+    """불타기 선언 — 확인된 강한 돌파에 한 번 더 싣는다 (T308 · 366 ~ 370차).
+
+    진입 뒤 판정 축(`timeframe`) 종가가 한 번도 진입가 아래로 안 닫힌 채
+    진입가 x (1 + `confirm_pct`) 이상에서 닫히면 그 종가에 처음 명목의 `frac` 배를 더 산다 —
+    한 매매에 한 번.
+
+    Attributes:
+        confirm_pct: 확인 문턱(0.105 = +10.5%).
+        frac: 추가 크기 — 처음 명목 대비(0.5).
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+
+    Note:
+        세션은 **판정만** 기록한다(`TradeRecord.add_at` · `add_price`). 크기 · 명목 상한 · 증거금은
+        펀드 층 · 러너의 일이다(T308 §3). 롱만 — 숏 거울은 잰 적이 없다.
+    """
+
+    confirm_pct: Decimal
+    frac: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 불타기로서 말이 되는지."""
+        if self.confirm_pct <= 0:
+            raise ValueError(f"확인 문턱은 0 보다 커야 한다: {self.confirm_pct}")
+        if not Decimal(0) < self.frac <= Decimal(1):
+            raise ValueError(f"추가 크기는 0 초과 1 이하: {self.frac}")
+
+
+@dataclass(frozen=True, slots=True)
 class BreadthCap:
     """조건부 총 명목 상한 선언 — `min` 종목 이상이 같이 밴드를 뚫었을 때만 상한을 `cap` 으로.
 
@@ -726,6 +757,10 @@ class Playbook:
     값은 러너가 주입한다(`Session.ref_sma_down`). 🔴 **None(모름)이면 진입을 보류한다**(규칙 #8-1).
     ⛔ 선언이 None 이면 동결이다 (§5.6.2).
     """
+    add_on: AddOn | None = None
+    """불타기(T308) — 확인된 강한 돌파에 한 번 더. 세션은 판정만 기록한다.
+
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2)."""
     entry_vol_target: VolTarget | None = None
     """변동성 목표 크기 (T304 · 혼합 2.0.0-V) — 진입 노출에 BTC 변동성 배수를 곱한다.
 

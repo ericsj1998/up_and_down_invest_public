@@ -440,6 +440,18 @@ class TradeRecord:
     ⛔ 비어 있는 것이 곧 결함은 아니다. 이어받은 기록(`Actor.ADOPTED`)과 사람이 손으로
     낸 기록에는 근거가 **원래 없다**. 화면이 그 둘을 갈라 보여 준다.
     """
+    add_at: datetime | None = None
+    """불타기 확인 봉 시작 시각(T308) — 그 봉 종가에 추가한다는 **판정**. None = 아직 · 안 함."""
+    add_price: Decimal | None = None
+    """불타기 판정가 = 확인 봉 종가(T308).
+
+    체결 · 크기 · 손익은 이 기록에 안 섞는다(펀드 층 · 러너의 일)."""
+    add_frac: Decimal = Decimal(0)
+    """불타기 추가 크기 — 처음 명목 대비(T308 · 0.5). 판정이 없으면 0."""
+    add_broken: bool = False
+    """진입 뒤 판정 축 종가가 진입가 아래로 닫힌 적이 있다(T308 · 되돌림 없음).
+
+    이 매매는 더 불타기 안 한다."""
     note: str = ""
 
     @property
@@ -663,6 +675,12 @@ class TradeRecord:
             note=self.note,
             # ⭐ 진입 때 건 증거금도 옮긴다 (T285) — 빠지면 청산되는 순간 걷기 증거금으로 돌아간다.
             margin_used=self.margin_used,
+            # ⭐ 불타기 판정도 옮긴다 (T308) — 빠지면 청산되는 순간
+            #    "언제 · 얼마에 더 샀나" 가 사라진다.
+            add_at=self.add_at,
+            add_price=self.add_price,
+            add_frac=self.add_frac,
+            add_broken=self.add_broken,
         )
 
 

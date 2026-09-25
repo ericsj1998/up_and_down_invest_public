@@ -25,6 +25,7 @@ import yaml
 
 from updown.analysis import plugins
 from updown.analysis.playbook.types import (
+    AddOn,
     BreadthCap,
     ConflictAction,
     ConflictRule,
@@ -326,6 +327,22 @@ def _ref_sma_down(raw: object, name: str) -> RefSmaDown:
         raise PlaybookConfigError(f"{name}.entry_ref_sma_down — {exc}") from exc
 
 
+def _add_on(raw: object, name: str) -> AddOn:
+    """불타기 한 줄 — `{confirm_pct: "0.105", frac: "0.5"}` (T308).
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.add_on")
+    try:
+        return AddOn(
+            confirm_pct=Decimal(str(body["confirm_pct"])),
+            frac=Decimal(str(body["frac"])),
+        )
+    except (ArithmeticError, KeyError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.add_on — {exc}") from exc
+
+
 def _vol_target(raw: object, name: str) -> VolTarget:
     """변동성 목표 크기 한 줄 — `{scale: "0.4276", days: 30, low: "0.5", high: "1.5"}` (T304).
 
@@ -508,6 +525,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         None
                         if body.get("entry_vol_target") is None
                         else _vol_target(body["entry_vol_target"], f"playbooks.{name}")
+                    ),
+                    add_on=(
+                        None
+                        if body.get("add_on") is None
+                        else _add_on(body["add_on"], f"playbooks.{name}")
                     ),
                     entry_fund_dd_max=_fund_dd_max(body, f"playbooks.{name}"),
                     entry_ref_ma_gate=(
