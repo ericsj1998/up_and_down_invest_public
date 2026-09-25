@@ -92,7 +92,7 @@ class ReplayEvent:
     Attributes:
         at: 시계 시각.
         symbol: 종목.
-        kind: `entry` · `unfillable` · `add` · `add_dropped` · `close`.
+        kind: `entry` · `unfillable` · `add` · `add_dropped` · `close` · `margin_exhausted`.
         trade_id: 매매 id.
         detail: 계약 수 · 사유 · 보정액.
     """
@@ -194,6 +194,7 @@ class FundReplay:
             due = [b for b in self.boards if t.hour % b.hours == 0]
             self._rnd.shuffle(due)
             for board in due:
+                self._halt_if_exhausted(board, t)
                 board.session.step()
                 self._after_step(board, t)
             if t.hour % 4 == 0:
@@ -201,6 +202,18 @@ class FundReplay:
             if t.hour == 0:
                 self.result.equity.append((t, self.coordinator.engine.balance))
         return self.result
+
+    def _halt_if_exhausted(self, board: ReplayBoard, t: datetime) -> None:
+        """러너와 같다 — 판 원장이 몫을 다 잃었으면(`halted_at`) 새 진입을 끈다.
+
+        실계좌 `_walk_once` 의 `live_margin_exhausted` 와 같은 규칙이다
+        (보유 관리는 계속 · 자동 재개 없음). 펀드 멤버의 몫(총자본 ÷ 판 수)이 한 건
+        증거금(총자본 ÷ 자리)보다 작아 손절 몇 번에 걸린다(T312).
+        """
+        s = board.session
+        if s.auto and s.ledger.halted_at:
+            s.auto = False
+            self._note(t, board, "margin_exhausted", str(s.ledger.halted_at), "")
 
     def _inject_ref(self, t: datetime) -> None:
         """4H 경계마다 기준 봉(마감된 것만)으로 국면값을 넣는다.
