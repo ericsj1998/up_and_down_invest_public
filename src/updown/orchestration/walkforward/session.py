@@ -1060,6 +1060,28 @@ class Session:
         """
         self._open = None
 
+    def _sync_open(self) -> None:
+        """보유 기록을 **원장의 지금 판**으로 맞춘다 — 세션이 고치기 전에 (2026-09-26 · T311).
+
+        Note:
+            🔴 러너는 원장에 직접 적는다 — 실제 노출(`filled_leverage`) · 불타기 전송 ·
+            체결(`add_sent` · `add_contracts` · `add_fill` · `add_filled`) · 손익(`add_pnl`) ·
+            버림(`add_held`). 세션이 들고 있던 옛 사본으로 원장을 다시 쓰면 그 칸이
+            지워지고, 지워진 `add_sent` 는 러너가 불타기를 **한 번 더 보내게** 만든다
+            (규칙 #6 · 펀딩 정산과 같은 시각의 불타기). 세션의 쓰기는 늘 원장과 짝지어
+            가므로 원장 판이 가장 새것이다.
+
+            ⚠️ 원장에서 이미 닫힌 기록으로는 맞추지 않는다 — 보유를 놓는 것은 `release` 가 맡는다.
+        """
+        held = self._open
+        if held is None:
+            return
+        for item in reversed(self.ledger.records):
+            if item.trade_id == held.trade_id:
+                if item.outcome is Outcome.OPEN:
+                    self._open = item
+                return
+
     @property
     def detections(self) -> dict[str, int]:
         """근거별 누적 탐지 수 (T13 ⑩ 대시보드)."""
@@ -1359,6 +1381,7 @@ class Session:
         """
         if self.paused or not self.feed.advance(self.step_frame):
             return None
+        self._sync_open()
         shot = self.look()
         # 🔴 **걸어 둔 것을 먼저 거둔다** (T19 ③). 채워진 뒤라야 같은 봉에서 청산
         #    판정도 성립한다 — 뒤에 두면 채워진 그 봉을 판정 없이 흘려보낸다.
@@ -3196,6 +3219,7 @@ class Session:
         Args:
             amount: USDT · 부호째 (거래소 `pnl` 행과 같은 부호 — 번 것이 양수).
         """
+        self._sync_open()
         held = self._open
         if held is None or amount == 0:
             return
@@ -3219,6 +3243,7 @@ class Session:
             keys: 이번에 붙인 정산 열쇠들 — 매매에 남아 재시작 뒤 같은 정산을 거른다 (0114).
             reset: 누적을 버리고 이번 값으로 시작한다 — 열쇠 없이 부푼 옛 기록을 바로잡을 때만.
         """
+        self._sync_open()
         held = self._open
         if held is None:
             return
@@ -3857,6 +3882,7 @@ class Session:
         Raises:
             RuntimeError: 보유 중이 아닌 경우.
         """
+        self._sync_open()
         held = self._open
         if held is None:
             raise RuntimeError("보유 중이 아니다")
