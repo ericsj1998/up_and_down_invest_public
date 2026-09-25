@@ -727,6 +727,18 @@ class TradeRecord:
             add_contracts=self.add_contracts,
             add_fill=self.add_fill,
             add_pnl=self.add_pnl,
+            # 🔴 2026-09-26 (T309 조사) — 보유 중에 쌓인 값도 옮긴다. 빠져 있어서 **청산하는
+            #    순간** 펀딩 비용(`funding_pct` · `funding_paid`) · 재레버 실현(`realized_adjust`) ·
+            #    실제 수수료(`fee_actual`) · 실제 노출(`filled_leverage`)이 0 으로 돌아갔다 — 봉인
+            #    세션 손익에서 펀딩이 통째로 빠졌고(연구 숫자 포함), 라이브 판 원장도 거래소보다
+            #    펀딩만큼 좋게 적었다. 정산 열쇠(`funding_keys`)가 빠지면 같은 정산을 다시
+            #    붙일 수 있다.
+            funding_paid=self.funding_paid,
+            funding_pct=self.funding_pct,
+            funding_keys=self.funding_keys,
+            realized_adjust=self.realized_adjust,
+            filled_leverage=self.filled_leverage,
+            fee_actual=self.fee_actual,
         )
 
 
