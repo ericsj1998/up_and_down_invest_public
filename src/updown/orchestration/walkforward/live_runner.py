@@ -39,6 +39,9 @@ from typing import Protocol, cast, runtime_checkable
 
 import structlog
 
+from updown.analysis.indicators.reference import btc_daily_vol as btc_daily_vol
+from updown.analysis.indicators.reference import needs_of as ref_needs_of
+from updown.analysis.indicators.reference import reference_regime
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Market, Timeframe
@@ -4505,71 +4508,14 @@ class LiveRunner:
             게이트를 선언한 플레이북이 없으면 아무것도 안 한다 (0.8.1 판 비용 0).
             실패는 None = 게이트 잠듦(0.2.0 동작 · 검증된 폴백)이며 로그는 남긴다 (#8).
             4h 봉당 1회만 계산한다 — 마지막 마감봉 ts 가 같으면 재사용.
+            식은 `analysis.indicators.reference` 에 있다(T309 ① — 펀드 재현 도구가 같은 식을
+            과거 봉에서 부른다).
         """
-        gate_n = next(
-            (
-                item.entry_ref_ma_gate
-                for item in self._session.playbooks
-                if item.entry_ref_ma_gate is not None
-            ),
-            None,
-        )
-        # T290 — 수익률 띠(국면 문)도 같은 기준 봉에서 나온다. 한 번 받아 둘 다 채운다.
-        band_n = next(
-            (
-                item.entry_ref_return_band.bars
-                for item in self._session.playbooks
-                if item.entry_ref_return_band is not None
-            ),
-            None,
-        )
-        # T304 #8 — 급등 상한(직전 며칠 UTC 일봉 종가 수익률)도 같은 기준 봉(4H)에서 나온다.
-        surge_days = next(
-            (
-                item.entry_ref_surge_cap.days
-                for item in self._session.playbooks
-                if item.entry_ref_surge_cap is not None
-            ),
-            None,
-        )
-        # T304 #2 · 변동성 목표 — SMA 하락 문과 BTC 일봉 변동성도 같은 기준 봉(4H)에서 나온다.
-        slope = next(
-            (
-                item.entry_ref_sma_down
-                for item in self._session.playbooks
-                if item.entry_ref_sma_down is not None
-            ),
-            None,
-        )
-        vol_days = next(
-            (
-                item.entry_vol_target.days
-                for item in self._session.playbooks
-                if item.entry_vol_target is not None
-            ),
-            None,
-        )
-        if (
-            gate_n is None
-            and band_n is None
-            and surge_days is None
-            and slope is None
-            and vol_days is None
-        ):
+        needs = ref_needs_of(self._session.playbooks)
+        if needs.empty:
             return
-        from dataclasses import replace as _replace
-
-        from updown.analysis.indicators.ma import sma as _sma
-        from updown.common.domain.instrument import Timeframe
-
-        ref = _replace(self.instrument, symbol="BTC_USDT", name="BTC 무기한 (기준)")
-        need = max(
-            gate_n or 0,
-            band_n or 0,
-            6 * ((surge_days or 0) + 2),
-            0 if slope is None else slope.bars + slope.lag + 1,
-            6 * ((vol_days or 0) + 5),
-        )
+        ref = dc_replace(self.instrument, symbol="BTC_USDT", name="BTC 무기한 (기준)")
+        need = needs.bars
         try:
             end = datetime.now(UTC)
             rows = await self._quotes.get_candles(
@@ -4582,32 +4528,17 @@ class LiveRunner:
             last_ts = closed[-1].ts
             if self._ref_regime_at == last_ts:
                 return  # 같은 4h 봉 — 재계산 불필요 (주입값 유지)
-            if gate_n is not None:
-                level = _sma([c.close for c in closed], gate_n)[-1]
-                if level is None:
-                    raise ValueError("기준 SMA 워밍업 미달")
-                self._session.ref_above = closed[-1].close > level
-            if band_n is not None:
-                before = closed[-1 - band_n].close
-                if before <= 0:
-                    raise ValueError("기준 종가가 0 이하다")
-                self._session.ref_return = closed[-1].close / before - 1
-            if surge_days is not None:
-                # UTC 일봉 종가 = 00:00 UTC 에 끝나는 4H 봉의 종가
-                # (연구 `t296_wave113.btc_daily` 와 같은 값)
-                daily = [c.close for c in closed if (c.ts + timedelta(hours=4)).hour == 0]
-                if len(daily) <= surge_days or daily[-1 - surge_days] <= 0:
-                    raise ValueError(f"기준 일봉 부족: {len(daily)} <= {surge_days}")
-                self._session.ref_surge = daily[-1] / daily[-1 - surge_days] - 1
-            if slope is not None:
-                # 연구 R2(`t296_wave104.btc_regimes`): 마감된 4H 종가 SMA 가 `lag` 봉 전보다 낮다
-                line = _sma([c.close for c in closed], slope.bars)
-                now_, then_ = line[-1], line[-1 - slope.lag]
-                if now_ is None or then_ is None:
-                    raise ValueError("기준 SMA 워밍업 미달(하락 문)")
-                self._session.ref_sma_down = now_ < then_
-            if vol_days is not None:
-                self._session.ref_vol = btc_daily_vol(closed, vol_days)
+            got = reference_regime(closed, needs)
+            if needs.ma_n is not None:
+                self._session.ref_above = got.above
+            if needs.band_n is not None:
+                self._session.ref_return = got.ret
+            if needs.surge_days is not None:
+                self._session.ref_surge = got.surge
+            if needs.sma_bars is not None:
+                self._session.ref_sma_down = got.sma_down
+            if needs.vol_days is not None:
+                self._session.ref_vol = got.vol
             self._ref_regime_at = last_ts
         except Exception as exc:
             self._session.ref_above = None  # 모름 = 게이트 잠듦 (0.2.0 동작 폴백)
@@ -6569,48 +6500,6 @@ def step_stats_of(values: Sequence[float]) -> dict[str, float | int]:
         "p50_ms": round(ordered[len(ordered) // 2], 1),
         "max_ms": round(ordered[-1], 1),
     }
-
-
-def btc_daily_vol(
-    bars: Sequence[Candle], days: int, keep: int = 3
-) -> tuple[tuple[datetime, Decimal], ...]:
-    """마감된 기준(BTC) 4H 봉에서 **UTC 일봉 연율 변동성**을 최근 `keep` 일 치 낸다.
-
-    T304 · 변동성 목표.
-
-    Args:
-        bars: 마감된 4H 봉(오름차순).
-        days: 로그 수익률 개수(30) — 일봉 종가 `days + 1` 개로 한 값을 낸다.
-        keep: 돌려줄 최근 일수. 세션이 판정 봉 시작 시각까지 끝난 값을 고른다.
-
-    Returns:
-        `(그 일봉이 끝난 시각, 모집단 표준편차 x √365)` 오름차순.
-
-    Raises:
-        ValueError: 일봉이 `days + keep` 개보다 적거나 종가가 0 이하인 경우.
-
-    Note:
-        연구(`t296_wave115.setup`)와 같은 식이다 — 일봉 종가 = 00:00 UTC 에 끝나는 봉의 종가
-        (`t296_wave113.btc_daily`) · `pstdev(rets[i-30:i]) x sqrt(365)`.
-        float 로 계산해 Decimal 로 넘긴다.
-    """
-    import itertools
-    import math
-    import statistics
-
-    daily = [
-        (c.ts + timedelta(hours=4), float(c.close))
-        for c in bars
-        if (c.ts + timedelta(hours=4)).hour == 0
-    ]
-    if len(daily) < days + keep or any(close <= 0 for _, close in daily):
-        raise ValueError(f"기준 일봉 부족·이상: {len(daily)} < {days + keep}")
-    out: list[tuple[datetime, Decimal]] = []
-    for k in range(len(daily) - keep, len(daily)):
-        window = [close for _, close in daily[k - days : k + 1]]
-        rets = [math.log(after / before) for before, after in itertools.pairwise(window)]
-        out.append((daily[k][0], Decimal(str(statistics.pstdev(rets) * math.sqrt(365)))))
-    return tuple(out)
 
 
 def open_seconds(calendar: MarketCalendar | None, market: Market, now: datetime) -> float | None:
