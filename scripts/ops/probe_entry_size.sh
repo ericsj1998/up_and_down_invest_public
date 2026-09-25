@@ -6,9 +6,9 @@
 # 왜: 2026-09-25 12:00 UTC 에 SOL · XRP 돌파 롱이 같은 봉에 들었는데 XRP 증거금이 24.03(명목 약 143) · SOL 60.68(약 362)로
 # 두 배 넘게 달랐다. 자리 예산은 같으므로 크기를 만든 장치(기울기 · 변동성 목표 · 펀드 문 · 반올림)를 로그로 가른다.
 # 원격에는 환경 변수가 안 넘어가므로(remote.sh 는 파일만 올린다) 아래 두 줄을 고쳐 쓴다.
-SYMBOLS="XRP_USDT|SOL_USDT"
-SINCE="2026-09-25T11:58:00"
-UNTIL="2026-09-25T12:03:00"
+SYMBOLS="SOL_USDT"
+SINCE="2026-09-25T12:00:00"
+UNTIL="2026-09-25T12:30:00"
 cat > /tmp/probe_entry_size.py <<'PY'
 import json
 import re
