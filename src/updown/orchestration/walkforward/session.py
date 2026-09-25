@@ -180,6 +180,41 @@ class EntryGate(Protocol):
 
 
 @runtime_checkable
+class AddGate(Protocol):
+    """불타기 크기도 답할 수 있는 문 (T308). 이 프로토콜이 없는 문에는 불타기를 묻지 않고 막는다."""
+
+    def grant_add(self, at: datetime, exposure: Decimal) -> Grant:
+        """열린 매매에 더 싣는 크기를 묻는다.
+
+        Args:
+            at: 추가하려는 시각(UTC) — 확인 봉 마감 시각.
+            exposure: 더 실으려는 노출.
+
+        Returns:
+            허용 크기 · 막은 사유 · 크기를 줄인 장치.
+        """
+        ...
+
+
+@runtime_checkable
+class LegAwareAddGate(Protocol):
+    """다리별 문에 불타기 크기를 묻는다 (T308 · `LegAwareGate` 의 불타기 짝)."""
+
+    def grant_add_for(self, leg: str, at: datetime, exposure: Decimal) -> Grant:
+        """그 다리의 문에 불타기 크기를 묻는다.
+
+        Args:
+            leg: 매매를 낸 매매법의 귀속 키.
+            at: 추가하려는 시각(UTC).
+            exposure: 더 실으려는 노출.
+
+        Returns:
+            허용 크기 · 막은 사유 · 크기를 줄인 장치.
+        """
+        ...
+
+
+@runtime_checkable
 class LegAwareGate(Protocol):
     """진입을 **낸 다리**를 알려 주면 그 다리의 문으로 답하는 문 (T291 · 이종 합성 매매법).
 
@@ -1418,6 +1453,8 @@ class Session:
                 "add_price": None if item.add_price is None else str(item.add_price),
                 "add_frac": str(item.add_frac),
                 "add_broken": item.add_broken,
+                "add_exposure": str(item.add_exposure),
+                "add_held": item.add_held,
                 # ⭐ 다리를 그대로 싣는다 — 평단만 남기면 *"어디서 얼마나 채워졌나"* 를
                 #   되짚을 수 없고, 그것이 이 실험이 답해야 할 값이다 (T19 §8).
                 "entry_fills": [[str(price), str(ratio)] for price, ratio in item.entry_fills],
@@ -2048,7 +2085,7 @@ class Session:
             # ⭐ **불타기 판정** (T308) — 이 봉에서 나가지 않는 롱만 본다. 기록만 한다:
             #    추가 주문 · 펀드 문(명목 상한 · 증거금 · 브레이크)은 원장 · 러너 몫이다.
             if not flipped and long and book.add_on is not None:
-                self._maybe_add(book)
+                self._maybe_add(book, bar.ts)
                 held = self._open if self._open is not None else held
             # 🔴 **추세가 반대로 선언되기 전까지 보유** (T32 후보 D · `hold_while_trend`).
             #    전환 익절(캔들 패턴)은 15m 되돌림에 일찍 끊는다 — 돌파 롱 11건이 상승장에서
@@ -2200,7 +2237,7 @@ class Session:
         if lost:
             self._declared = None
 
-    def _maybe_add(self, book: Playbook) -> None:
+    def _maybe_add(self, book: Playbook, now: datetime) -> None:
         """확인된 강한 돌파면 불타기 시각 · 가격을 기록에 적는다 (T308 · 366 ~ 370차).
 
         진입 뒤 판정 TF 종가가 한 번도 진입가 아래로 안 닫힌 채 진입가 x (1 + 문턱) 이상에서
@@ -2209,6 +2246,8 @@ class Session:
 
         Args:
             book: 이 매매를 낸 플레이북. `add_on` 이 있어야 부른다.
+            now: 이 걸음의 가격 축 봉 시각 — 펀드 문에 묻는 시각이다. 진입(`_gate(bar.ts)`)과
+                같은 자로 물어야 조건부 상한의 폭이 진입과 같은 창으로 센다.
 
         Note:
             ⚠️ 여기서는 **판정만** 한다. 얼마나 살지(처음 실제 명목 x 비율 · 반올림 · 명목 상한 ·
@@ -2246,11 +2285,17 @@ class Session:
                 held = replace(held, add_broken=True)
                 break
             if row.close >= level:
+                at = row.ts + span
+                # 요청 = 처음 **실제** 노출 x 비율(체결 실측이 없으면 의도한 노출 · 모형).
+                base = held.filled_leverage if held.filled_leverage is not None else held.leverage
+                given = self._gate_add(now, base * rule.frac, held.playbook)
                 held = replace(
                     held,
-                    add_at=row.ts + interval(book.timeframe),
+                    add_at=at,
                     add_price=row.close,
                     add_frac=rule.frac,
+                    add_exposure=given.size,
+                    add_held=given.blocked,
                 )
                 self._count(f"add_on:{book.playbook_id}")
                 break
@@ -2259,6 +2304,47 @@ class Session:
         self._open = held
         self.ledger.replace(held)
         self.journal()
+
+    def _gate_add(self, at: datetime, exposure: Decimal, leg: str) -> Grant:
+        """펀드 문에 불타기 크기를 묻는다 (T308) — `_gate` 의 불타기 짝.
+
+        Args:
+            at: 추가하려는 시각(UTC).
+            exposure: 더 실으려는 노출.
+            leg: 매매를 낸 매매법의 귀속 키.
+
+        Returns:
+            허용 크기 · 막은 사유 · 줄인 장치. 문이 없는 단독 세션(백테스트 · RUN)은 요청 그대로다.
+
+        Note:
+            🔴 문이 있는데 불타기를 모르는 문이면 **막는다**(`no_add_gate`) — 불타기는 리스크 증가
+            행동이고 분류가 불분명하면 기본값은 보류다(절대 규칙 #8-1).
+        """
+        if self.entry_gate is None:
+            return Grant(exposure)
+        gate = self.entry_gate
+        if isinstance(gate, LegAwareAddGate):
+            given = gate.grant_add_for(leg, at, exposure)
+        elif isinstance(gate, AddGate):
+            given = gate.grant_add(at, exposure)
+        else:
+            given = Grant(Decimal(0), "no_add_gate")
+        if given.blocked is not None:
+            self._count(f"add:gate:{given.blocked}")
+        elif given.shrunk is not None:
+            self._count(f"add:fit:{given.shrunk}")
+        _logger.info(
+            "session_add_gate",
+            payload={
+                "at": at.isoformat(),
+                "want": str(exposure),
+                "granted": str(given.size),
+                "why": given.blocked,
+                "by": given.shrunk,
+                "note": "불타기 크기 — 펀드 문의 답 (T308)",
+            },
+        )
+        return given
 
     def _first_reaction(
         self,

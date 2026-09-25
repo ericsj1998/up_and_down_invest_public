@@ -24,6 +24,7 @@ from updown.common.domain.instrument import (
     MarketGroup,
     Timeframe,
 )
+from updown.decision.portfolio_rules import Grant
 from updown.orchestration.walkforward import Ledger, Seal, SealedFeed, Session
 from updown.orchestration.walkforward.ledger import Actor, Direction, Outcome, TradeRecord
 
@@ -185,3 +186,83 @@ class TestSession:
         got = _walk(_session(_book(None), {0: 530, 20: 540, 21: 560, 22: 590, 23: 620}))
         assert got.add_at is None and got.add_price is None
         assert got.add_frac == Decimal(0) and not got.add_broken
+
+
+CONFIRMED = {0: 530, 20: 540, 21: 560, 22: 590, 23: 620}
+
+
+class _HalvingGate:
+    """불타기를 반으로 줄이는 문 — 받은 물음을 적어 둔다."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[datetime, Decimal]] = []
+
+    def grant(self, at: datetime, exposure: Decimal) -> Grant:
+        _ = at
+        return Grant(exposure)
+
+    def grant_add(self, at: datetime, exposure: Decimal) -> Grant:
+        self.asked.append((at, exposure))
+        return Grant(exposure / 2, None, "notional")
+
+
+class _LegGate:
+    """다리별 문 — 어느 다리로 물었는지 적는다."""
+
+    def __init__(self) -> None:
+        self.legs: list[str] = []
+
+    def grant(self, at: datetime, exposure: Decimal) -> Grant:
+        _ = (at, exposure)
+        return Grant(Decimal(0), "leg")
+
+    def grant_for(self, leg: str, at: datetime, exposure: Decimal) -> Grant:
+        _ = (leg, at)
+        return Grant(exposure)
+
+    def grant_add_for(self, leg: str, at: datetime, exposure: Decimal) -> Grant:
+        _ = (at, exposure)
+        self.legs.append(leg)
+        return Grant(Decimal(0), "notional")
+
+
+class _OldGate:
+    """불타기를 모르는 문."""
+
+    def grant(self, at: datetime, exposure: Decimal) -> Grant:
+        _ = at
+        return Grant(exposure)
+
+
+class TestSessionAsksTheFund:
+    def test_no_gate_takes_the_request(self) -> None:
+        # 단독 세션(백테스트 · RUN) — 처음 노출(기본 1) x 0.5 를 그대로 적는다.
+        got = _walk(_session(_book(RULE), CONFIRMED))
+        assert got.add_exposure == Decimal("0.5") and got.add_held is None
+
+    def test_the_gate_sizes_the_add(self) -> None:
+        session = _session(_book(RULE), CONFIRMED)
+        gate = _HalvingGate()
+        session.entry_gate = gate
+        got = _walk(session)
+        # 물음은 한 번 · 처음 노출 x 비율 · 시각은 진입과 같은 자(걸음 봉 시작) — 22:55 5m 봉이
+        # 닫히며 22시 1H 봉이 마감된다. 기록의 추가 시각은 확인 봉 마감(23:00)이다.
+        assert gate.asked == [(START + timedelta(hours=22, minutes=55), Decimal("0.5"))]
+        assert got.add_at == START + timedelta(hours=23)
+        assert got.add_exposure == Decimal("0.25") and got.add_held is None
+        assert session.funnel.get("add:fit:notional") == 1
+
+    def test_a_leg_gate_is_asked_by_the_leg(self) -> None:
+        session = _session(_book(RULE), CONFIRMED)
+        gate = _LegGate()
+        session.entry_gate = gate
+        got = _walk(session)
+        assert gate.legs == [got.playbook]
+        # 막혀도 판정(시각 · 가격)은 남는다 — 무엇을 놓쳤는지 되물을 수 있어야 한다.
+        assert got.add_at is not None and got.add_exposure == 0 and got.add_held == "notional"
+
+    def test_a_gate_that_does_not_know_adds_holds_them(self) -> None:
+        session = _session(_book(RULE), CONFIRMED)
+        session.entry_gate = _OldGate()
+        got = _walk(session)
+        assert got.add_exposure == 0 and got.add_held == "no_add_gate"

@@ -441,7 +441,9 @@ class TradeRecord:
     낸 기록에는 근거가 **원래 없다**. 화면이 그 둘을 갈라 보여 준다.
     """
     add_at: datetime | None = None
-    """불타기 확인 봉 시작 시각(T308) — 그 봉 종가에 추가한다는 **판정**. None = 아직 · 안 함."""
+    """불타기 확인 봉 **마감** 시각(T308) — 그 봉 종가에 추가한다는 **판정**.
+
+    None = 아직 · 안 함."""
     add_price: Decimal | None = None
     """불타기 판정가 = 확인 봉 종가(T308).
 
@@ -452,7 +454,31 @@ class TradeRecord:
     """진입 뒤 판정 축 종가가 진입가 아래로 닫힌 적이 있다(T308 · 되돌림 없음).
 
     이 매매는 더 불타기 안 한다."""
+    add_exposure: Decimal = Decimal(0)
+    """펀드 문이 **허락한** 추가 노출(명목/자리 예산 · T308). 0 = 추가 없음(판정 없음 · 문이 막음).
+
+    요청은 처음 실제 노출 x `add_frac` 이고, 문이 브레이크 · 총 명목 여유로 줄이거나 막는다.
+    ⛔ `leverage` 에 더하지 않는다 — 손익률 · 청산가 · 재레버가 `leverage` 를 처음 크기로 읽는다."""
+    add_held: str | None = None
+    """펀드 문이 추가를 막은 사유(T308 · 관측).
+
+    `notional` · `brake` · `fund_dd` · `leg` · `no_add_gate`. None = 안 막았다 · 판정 없음."""
+    add_filled: Decimal | None = None
+    """추가 체결이 실제로 만든 노출(= 추가 체결 명목 ÷ `sizing_base` · T308) — 라이브 러너가 붙인다.
+
+    `filled_leverage` 와 같은 **상한 회계 전용** 값이다. None = 모형이거나 아직 안 채워짐."""
     note: str = ""
+
+    @property
+    def held_exposure(self) -> Decimal:
+        """지금 이 매매가 **실제로 들고 있는** 노출 — 총 명목 상한의 입력 (T288 · T308).
+
+        Returns:
+            처음 노출(체결 실측이 있으면 실측) + 불타기 노출(체결 실측이 있으면 실측).
+        """
+        base = self.filled_leverage if self.filled_leverage is not None else self.leverage
+        extra = self.add_filled if self.add_filled is not None else self.add_exposure
+        return base + extra
 
     @property
     def planned_rr(self) -> Decimal | None:
@@ -681,6 +707,9 @@ class TradeRecord:
             add_price=self.add_price,
             add_frac=self.add_frac,
             add_broken=self.add_broken,
+            add_exposure=self.add_exposure,
+            add_held=self.add_held,
+            add_filled=self.add_filled,
         )
 
 

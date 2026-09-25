@@ -147,10 +147,12 @@ class SessionBridge:
             실측이 있으면 실측이 이긴다.
 
             모형(백테스트·페이퍼)과 옛 기록은 `filled_leverage` 가 None 이라 `leverage` 를 쓴다.
+            ⭐ 불타기(T308)로 더 실은 노출도 센다(`held_exposure`) — 빠지면 추가 뒤 새 진입이 상한을
+            넘겨도 모른다(연구 원장은 추가분을 그 자리의 노출에 더했다).
         """
         return sum(
             (
-                item.filled_leverage if item.filled_leverage is not None else item.leverage
+                item.held_exposure
                 for item in self.session.ledger.records
                 if item.outcome is Outcome.OPEN
             ),
@@ -214,7 +216,7 @@ class SessionBridge:
         """
         return sum(
             (
-                item.filled_leverage if item.filled_leverage is not None else item.leverage
+                item.held_exposure
                 for item in self.session.ledger.records
                 if item.outcome is Outcome.OPEN and item.playbook == leg
             ),

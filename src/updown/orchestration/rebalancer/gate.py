@@ -187,6 +187,39 @@ class SlotGate:
         exits = [item for port in self.ports.values() for item in port.exits()]
         if day_halted(exits, at, self.halt_after_stops):
             return Grant(Decimal(0), "day_halt")
+        return self._sized(at, exposure)
+
+    def grant_add(self, at: datetime, exposure: Decimal) -> Grant:
+        """열린 매매에 **더 싣는**(불타기) 크기를 묻는다 (T308 · 368 ~ 371차).
+
+        Args:
+            at: 추가하려는 시각(UTC) — 확인 봉이 마감된 시각.
+            exposure: 더 실으려는 노출(명목/자리 예산 = 처음 실제 노출 x 추가 비율).
+
+        Returns:
+            `Grant` — 허용 크기 · 막은 사유 · 줄인 장치. 크기가 0 이하인 물음은 `"size"` 로 막는다.
+
+        Note:
+            🔴 **자리와 같은 날 정지는 안 본다** — 추가는 새 자리가 아니라 이미 연 자리의 크기다.
+            측정(368 ~ 371차 원장 `t296_wave62.run(long_adds=…)`)이 그렇게 쟀고, 다르게 하면
+            다른 매매법이 된다. 펀드 낙폭 끔 · 브레이크 · 총 명목 여유는 진입과
+            **같은 순서 · 같은 자**다.
+            증거금 여유는 여기서 안 본다 — 거래소 지갑의 사실이라 러너가 주문 직전에 본다.
+        """
+        if exposure <= 0:
+            return Grant(Decimal(0), "size")
+        return self._sized(at, exposure)
+
+    def _sized(self, at: datetime, exposure: Decimal) -> Grant:
+        """펀드 낙폭 끔 → 낙폭 브레이크 → 총 명목 여유 — 진입과 불타기가 같이 쓰는 크기 판단.
+
+        Args:
+            at: 묻는 시각(UTC). 조건부 상한의 폭을 이 시각으로 센다.
+            exposure: 요청 노출. 0 이면 "자리 · 정지만 보자" 는 `blocks(at)` 물음이다.
+
+        Returns:
+            `Grant`.
+        """
         if (
             exposure > 0
             and self.drawdown is not None
@@ -375,6 +408,10 @@ class LegAware(Protocol):
         """그 다리의 문에 묻는다."""
         ...
 
+    def grant_add_for(self, leg: str, at: datetime, exposure: Decimal) -> Grant:
+        """그 다리의 문에 불타기 크기를 묻는다 (T308)."""
+        ...
+
 
 @dataclass(slots=True)
 class LegGate:
@@ -398,8 +435,20 @@ class LegGate:
             return Grant(Decimal(0), "leg")
         return gate.grant(at, exposure)
 
+    def grant_add_for(self, leg: str, at: datetime, exposure: Decimal) -> Grant:
+        """그 다리의 문에 불타기 크기를 묻는다 (T308) — 없는 다리면 막는다."""
+        gate = self.legs.get(leg)
+        if gate is None:
+            return Grant(Decimal(0), "leg")
+        return gate.grant_add(at, exposure)
+
     def grant(self, at: datetime, exposure: Decimal) -> Grant:
         """다리를 모르고 물으면 막는다."""
+        _ = (at, exposure)
+        return Grant(Decimal(0), "leg")
+
+    def grant_add(self, at: datetime, exposure: Decimal) -> Grant:
+        """다리를 모르고 불타기를 물으면 막는다 — 리스크 증가 · 분류 불명은 보류다(#8-1)."""
         _ = (at, exposure)
         return Grant(Decimal(0), "leg")
 
