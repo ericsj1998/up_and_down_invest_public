@@ -2594,7 +2594,23 @@ class LiveRunner:
 
             ⛔ **예산을 자동으로 줄이지 않는다.** 어느 판을 깎을지는 사람이 정한다.
             ⛔ **못 읽으면 막지 않는다** (§1.2.1) — 조회 실패가 곧 정지가 되면 안 된다.
+
+            🔴 **펀드 판은 이 검사를 안 쓴다** (2026-09-26). 펀드 판의 저장 예산은 판을 만든 날의
+            몫(총자본 ÷ 종목 수)이고 갱신되지 않아, 합이 늘 **그날의 자본**이다 — 펀드가 2% 만
+            잃어도 40판이 전부 멈췄고(2026-09-25 17:30 UTC · 예산 합 417.31 > 계좌 406.82) 새
+            진입이 없으니 스스로 풀리지도 않았다. 펀드 판의 크기는 `_usable_equity`(예산 · 거래소
+            가용 중 작은 쪽 x 0.99)가 이미 계좌 안으로 잡고, 예산은 틱마다 지갑 총액에 다시 맞춘다 —
+            이 검사가 막으려던 `LIQUIDATE_IMMEDIATELY` 가 생기지 않는다. 단독 판은 그대로 잰다.
         """
+        if getattr(self._session, "fund_name", None) is not None:
+            if not self._session.funded:
+                self._log.info(
+                    "live_funded_again",
+                    payload={"note": "펀드 판 — 계좌 예산 검사를 안 쓴다(2026-09-26)"},
+                )
+            self._session.funded = True
+            self.short_by = None
+            return
         if self.observe_only or self._store is None:
             return
         if not isinstance(self._orders, MarginAware):

@@ -1569,6 +1569,7 @@ async def _live_start(
     awaited_fund = _awaited_fund(payload, symbol, market.value, reviving=reviving)
     if awaited_fund is not None:
         session.fund_ready = False
+        session.fund_name = awaited_fund  # 2026-09-26 — 계좌 예산 검사(`check_funding`) 면제의 근거
         _logger.info(
             "live_awaiting_fund",
             payload={
