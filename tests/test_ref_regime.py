@@ -32,7 +32,7 @@ def closed_bars(n: int, seed: int = 7) -> list[Any]:
     last_end = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=now.hour % 4)
     rnd = random.Random(seed)
     price = 60_000.0
-    out = []
+    out: list[Any] = []
     for i in range(n):
         price *= math.exp(rnd.gauss(0.0, 0.012))
         ts = last_end - timedelta(hours=4 * (n - i))
@@ -47,6 +47,9 @@ def fake_runner(books: tuple[str, ...], bars: list[Any]) -> Any:
     async def get_candles(_ref: Any, _tf: Any, _start: datetime, _end: datetime) -> list[Any]:
         return bars
 
+    def warning(event: str, **_kw: Any) -> None:
+        warnings.append(event)
+
     return SimpleNamespace(
         instrument=BTC,
         _session=SimpleNamespace(
@@ -59,7 +62,7 @@ def fake_runner(books: tuple[str, ...], bars: list[Any]) -> Any:
         ),
         _quotes=SimpleNamespace(get_candles=get_candles),
         _ref_regime_at=None,
-        _log=SimpleNamespace(warning=lambda event, **_kw: warnings.append(event)),
+        _log=SimpleNamespace(warning=warning),
         warnings=warnings,
     )
 
