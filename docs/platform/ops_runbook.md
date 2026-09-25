@@ -83,6 +83,8 @@ bash scripts/ops/remote.sh -- 'docker logs --since 10m updown_live-api-1 | tail 
 | 느리다 | `status.sh` 의 `steal` | 버스트 크레딧 소진(배포 몰이 + 폴링 폭주). 판 자체는 코어의 0.3% |
 | 배포가 "성공" 인데 태그 이미지가 없다 | 로컬 `docker info` | Docker Desktop WSL 연동 끊김(`docker` 가 안내문만 찍고 0) |
 | 블루그린이 unhealthy 로 롤백 | `docker logs updown_live-api_b-1` 에 `api_started` 가 있나 | 헬스체크 시간 초과(스틸 상태 기동 2~3분) — bash /dev/tcp 로 바꿈 · start_period 240s |
+| 블루그린 롤백 + "옛 슬롯 리더? None" + `trader_lock_lost` 주고받기 | `probe_bluegreen_fail.sh`(헬스 기록 · OOM · 기동 사건 · `free -m`) | **메모리(2026-09-26 v1.18.1)**: 1 GB 에 실계좌 api 약 340 MB · 스왑 700 MB — 새 슬롯이 40판을 되살리는 데 6분 넘게 걸려 헬스체크를 못 넘고, 그 사이 옛 슬롯이 락 갱신을 놓쳐 새 슬롯이 리더를 잠깐 가져갔다. **포지션 · 대기 · 손절 주문이 0 일 때만** `probe_gate.py` 로 확인하고 `swap_stop_first.sh`(옛 슬롯 먼저 내리고 새 슬롯 하나 · 멈춤 약 3분) → `probe_leader_after_swap.sh` · `ship.sh` 가 4단계에서 멈췄으면 태그 · 외부 헬스는 손으로(5 · 6단계). 근본은 T310 |
+| 40판 전부 신규 진입이 멈춤(손절 · 청산은 돈다) | `probe_underfunded.sh` 의 `live_underfunded` · 예산 합 · 계좌 | **1.18.0 까지**: 펀드 판의 저장 예산은 판을 만든 날의 몫이라 펀드가 2% 만 잃어도 `check_funding` 이 전 판을 막았다(2026-09-25 17:30 UTC · 417.31 > 406.82). **1.18.1 부터 펀드 판은 이 검사를 안 쓴다** — 뜨면 단독 판이다(펀드 파일을 못 읽어 `fund_name` 이 비었나) |
 
 로그는 JSON 한 줄이다. `grep -oE '"event_type": "[^"]+"' | sort | uniq -c` 가 가장 빠른 요약이다.
 브라우저가 끊은 요청은 nginx 에 **499** 로 남는다 — api 로그에는 200 으로 남으니 api 만 보면 못 찾는다.
