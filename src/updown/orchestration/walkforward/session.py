@@ -2082,9 +2082,10 @@ class Session:
                     line, signal = series.line[-1], series.signal[-1]
                     if line is not None and signal is not None and line > signal:
                         flipped = True
-            # ⭐ **불타기 판정** (T308) — 이 봉에서 나가지 않는 롱만 본다. 기록만 한다:
-            #    추가 주문 · 펀드 문(명목 상한 · 증거금 · 브레이크)은 원장 · 러너 몫이다.
-            if not flipped and long and book.add_on is not None:
+            # ⭐ **불타기 판정** (T308) — 이 봉에서 나가지 않는 매매만 본다(롱 · 숏 거울 · 376차).
+            #    기록만 한다:
+            #    추가 주문 · 증거금은 러너 몫이고 크기는 펀드 문(`_gate_add`)이 답한다.
+            if not flipped and book.add_on is not None:
                 self._maybe_add(book, bar.ts)
                 held = self._open if self._open is not None else held
             # 🔴 **추세가 반대로 선언되기 전까지 보유** (T32 후보 D · `hold_while_trend`).
@@ -2242,6 +2243,8 @@ class Session:
 
         진입 뒤 판정 TF 종가가 한 번도 진입가 아래로 안 닫힌 채 진입가 x (1 + 문턱) 이상에서
         닫히면 그 봉 종가가 추가 가격이다. 진입가 아래 마감이 먼저 오면 이 매매는 추가하지 않는다.
+        숏은 거울이다 — 진입가 **위** 마감이 없는 채 진입가 x (1 - 문턱) **이하**에서 닫히면
+        추가한다(374 · 376차).
         한 매매에 한 번이다.
 
         Args:
@@ -2279,12 +2282,13 @@ class Session:
         if not fresh:
             return
         self._add_seen[held.trade_id] = fresh[0].ts
-        level = held.entry * (Decimal(1) + rule.confirm_pct)
+        long = held.direction is Direction.LONG
+        level = held.entry * (Decimal(1) + rule.confirm_pct * held.direction.sign)
         for row in reversed(fresh):
-            if row.close < held.entry:
+            if (row.close < held.entry) if long else (row.close > held.entry):
                 held = replace(held, add_broken=True)
                 break
-            if row.close >= level:
+            if (row.close >= level) if long else (row.close <= level):
                 at = row.ts + span
                 # 요청 = 처음 **실제** 노출 x 비율(체결 실측이 없으면 의도한 노출 · 모형).
                 base = held.filled_leverage if held.filled_leverage is not None else held.leverage

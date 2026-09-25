@@ -58,6 +58,7 @@ def _session(
     *,
     opened: datetime = ENTRY_AT,
     entry: Decimal = ENTRY,
+    direction: Direction = Direction.LONG,
 ) -> Session:
     """시각(시간 번호)별 1H 종가를 주는 30시간 봉 · 20~28시 봉인 — 한 시간 안의 5m 는 평평하다."""
 
@@ -95,13 +96,14 @@ def _session(
         trade_id="t-add",
         playbook=book.attribution,
         actor=Actor.SYSTEM,
-        direction=Direction.LONG,
+        direction=direction,
         placed_at=opened,
         opened_at=opened,
         entry=entry,
-        planned_stop=Decimal(400),
-        planned_target=Decimal(5_000),
-        planned_first=Decimal(5_000),
+        # 손절 · 목표는 닿지 않을 만큼 멀다 — 방향에 따라 반대쪽
+        planned_stop=Decimal(400) if direction is Direction.LONG else Decimal(700),
+        planned_target=Decimal(5_000) if direction is Direction.LONG else Decimal(1),
+        planned_first=Decimal(5_000) if direction is Direction.LONG else Decimal(1),
         outcome=Outcome.OPEN,
         cost_pct=Decimal("0.0015"),
     )
@@ -266,3 +268,27 @@ class TestSessionAsksTheFund:
         session.entry_gate = _OldGate()
         got = _walk(session)
         assert got.add_exposure == 0 and got.add_held == "no_add_gate"
+
+
+class TestShortMirror:
+    """숏 거울(374 · 376차) — 진입가 위 마감 없이 진입가 x (1 - 문턱) 이하로 닫히면 추가."""
+
+    def test_confirmed_drop_is_the_add(self) -> None:
+        # 530 → 520 → 500 → 470(≤ 530 x 0.895 = 474.35) — 그 봉 종가 · 마감 시각
+        got = _walk(
+            _session(
+                _book(RULE), {0: 530, 20: 520, 21: 500, 22: 470, 23: 450}, direction=Direction.SHORT
+            )
+        )
+        assert got.outcome is Outcome.OPEN
+        assert got.add_at == START + timedelta(hours=23) and got.add_price == Decimal(470)
+        assert not got.add_broken and got.add_exposure == Decimal("0.5")
+
+    def test_a_close_above_entry_first_kills_it(self) -> None:
+        got = _walk(_session(_book(RULE), {0: 530, 20: 531, 21: 450}, direction=Direction.SHORT))
+        assert got.add_at is None and got.add_broken
+
+    def test_a_rise_is_not_a_short_confirmation(self) -> None:
+        # 롱이면 확인이었을 상승 — 숏에는 진입가 위 마감(되돌림)일 뿐이다
+        got = _walk(_session(_book(RULE), CONFIRMED, direction=Direction.SHORT))
+        assert got.add_at is None and got.add_broken

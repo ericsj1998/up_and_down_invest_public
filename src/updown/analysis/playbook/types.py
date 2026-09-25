@@ -376,7 +376,7 @@ class AddOn:
 
     진입 뒤 판정 축(`timeframe`) 종가가 한 번도 진입가 아래로 안 닫힌 채
     진입가 x (1 + `confirm_pct`) 이상에서 닫히면 그 종가에 처음 명목의 `frac` 배를 더 산다 —
-    한 매매에 한 번.
+    한 매매에 한 번. 숏은 거울이다(진입가 위 마감 없이 x (1 - `confirm_pct`) 이하 · 374 · 376차).
 
     Attributes:
         confirm_pct: 확인 문턱(0.105 = +10.5%).
@@ -387,7 +387,7 @@ class AddOn:
 
     Note:
         세션은 **판정만** 기록한다(`TradeRecord.add_at` · `add_price`). 크기 · 명목 상한 · 증거금은
-        펀드 층 · 러너의 일이다(T308 §3). 롱만 — 숏 거울은 잰 적이 없다.
+        펀드 층 · 러너의 일이다(T308 §3). 삼각 숏 추가는 374차에 ⛔ — 숏은 MACD 다리에만 켠다.
     """
 
     confirm_pct: Decimal
