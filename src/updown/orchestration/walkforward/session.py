@@ -2160,6 +2160,14 @@ class Session:
             # 🔴 **MACD 반대 교차 청산** (T302 · T303) — 판정 TF 의 MACD 선이 시그널
             #    위에서 마감하면 숏을 전량 정리한다. 4H MACD 3중 신호 숏의 청산이다.
             #    None 이면 이 가지는 없는 것과 같다.
+            # ⭐ 419 · 420차 — 거울: 롱은 MACD 선이 시그널 **아래에서** 마감하면 전량.
+            if not flipped and long and book.macd_exit_below_long:
+                gauge = self._frame(book.timeframe, None)
+                if gauge is not None and len(gauge.rows) > MACD_EXIT_MIN_BARS:
+                    series = macd([row.close for row in gauge.rows])
+                    line, signal = series.line[-1], series.signal[-1]
+                    if line is not None and signal is not None and line < signal:
+                        flipped = True
             if not flipped and not long and book.macd_exit_above_short:
                 gauge = self._frame(book.timeframe, None)
                 if gauge is not None and len(gauge.rows) > MACD_EXIT_MIN_BARS:
@@ -2930,7 +2938,12 @@ class Session:
             mine = (
                 (item.ma_exit_above_short, item.adx_exit_short, item.macd_exit_above_short)
                 if short
-                else (item.ma_exit_below_long, item.adx_exit_long, item.adx_exit_above_long)
+                else (
+                    item.ma_exit_below_long,
+                    item.adx_exit_long,
+                    item.adx_exit_above_long,
+                    item.macd_exit_below_long,
+                )
             )
             if any(value is not None for value in mine):
                 return item

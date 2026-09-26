@@ -735,6 +735,12 @@ class Playbook:
 
     ⛔ None 이면 동결이다 (§5.6.2) — 기존 매매법은 한 글자도 다르게 돌지 않는다.
     """
+    macd_exit_below_long: bool | None = None
+    """롱 보유 중 판정 TF 의 MACD 선이 시그널 **아래에서 마감**하면 전량 나간다 (419 · 420차).
+
+    MACD 3중 롱(`private_strategy`)의 청산 — `macd_exit_above_short` 의 거울이고 연구
+    (`t296_wave202.gen_long` · `t296_wave92.exit_fn(+1)`)가 이 규칙으로 쟀다. ⛔ None 이면 동결이다.
+    """
     macd_exit_above_short: bool | None = None
     """숏 보유 중 판정 TF 의 MACD 선이 시그널 **위에서 마감**하면 전량 나간다 (T302).
 
