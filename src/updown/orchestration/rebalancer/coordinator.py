@@ -20,7 +20,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from updown.orchestration.rebalancer.engine import RebalanceEngine
-from updown.portfolio.performance import CashFlow
+from updown.portfolio.performance import CashFlow, TwrLedger
 
 
 class SessionPort(Protocol):
@@ -90,6 +90,56 @@ class Coordinator:
     """
     pending: Decimal = Decimal(0)
     """정리된 세션(`release`)이 남긴 미정산 증분 — 다음 틱이 흡수한다."""
+    core: TwrLedger | None = None
+    """**본 다리 원장** (418 · 419 · 420차).
+
+    브레이크에서 뺀 다리(`excluded`)의 실현 손익을 뺀 잔고의 TWR 이다.
+
+    있으면 낙폭 브레이크 · 낙폭 멈춤이 이 원장의 낙폭을 본다(`brake_drawdown`). 옆 다리 손실이
+    펀드 낙폭을 키워 본 다리(돌파 롱 x0.5 · MACD 숏 x0.25)를 깎던 통로를 끊는다 — 실제 잔고 ·
+    예산은 그대로 펀드 원장(`engine.ledger`)이 든다. None 이면 지금까지와 같다(펀드 원장 낙폭)."""
+    excluded: frozenset[str] = frozenset()
+    """브레이크에서 뺀 다리의 귀속 키들 — `isolate` 가 다리 선언(`drawdown_isolated`)에서 채운다."""
+    leg_marks: dict[str, Decimal] = field(default_factory=dict[str, Decimal])
+    """종목별 **마지막 정산 때의 뺀 다리 누적 실현** — `marks` 와 같은 규칙(없으면 첫 틱 증분 0)."""
+    leg_pending: Decimal = Decimal(0)
+    """정리된 세션이 남긴 뺀 다리의 미정산 증분."""
+
+    def isolate(self, excluded: frozenset[str]) -> None:
+        """브레이크에서 뺄 다리를 정한다 — 처음이면 본 다리 원장을 펀드 원장에서 복제해 연다.
+
+        Args:
+            excluded: 뺄 다리의 귀속 키들. 비면 본 다리 원장을 닫는다(펀드 원장 낙폭으로 돌아간다).
+
+        Note:
+            복제 시점엔 뺀 다리 손익이 0 이므로 본 다리 고점 = 펀드 고점이다
+            (연구 `brake_excl` 과 같다).
+        """
+        self.excluded = excluded
+        if not excluded:
+            self.core = None
+            self.leg_marks = {}
+            return
+        if self.core is None:
+            self.core = TwrLedger.from_dict(self.engine.ledger.to_dict())
+        # 이미 정산 mark 가 있는 세션은 뺀 다리 mark 도 지금 잡는다 — 없으면 다음 틱에 펀드
+        # 증분엔 뺀 다리 몫이 들어가는데 본 다리 원장에선 안 빠진다(mark 가 짝을 잃는다).
+        for sym, port in self.ports.items():
+            if sym in self.marks and sym not in self.leg_marks:
+                now = self._isolated_realized(port)
+                if now is not None:
+                    self.leg_marks[sym] = now
+
+    def brake_drawdown(self) -> Decimal:
+        """브레이크가 볼 낙폭(0~1) — 본 다리 원장이 있으면 그것, 없으면 펀드 원장."""
+        ledger = self.core if self.core is not None else self.engine.ledger
+        return ledger.drawdown_pct / Decimal(100)
+
+    def _isolated_realized(self, port: SessionPort) -> Decimal | None:
+        read = getattr(port, "realized_of", None)
+        if read is None or not self.excluded:
+            return None
+        return read(self.excluded)
 
     def release(self, symbol: str) -> SessionPort | None:
         """세션을 조정자에서 뗀다 — 그 세션의 미정산 실현 손익은 잃지 않고 다음 틱에 흡수한다.
@@ -109,6 +159,11 @@ class Coordinator:
         mark = self.marks.pop(symbol, None)
         if port is not None and mark is not None:
             self.pending += port.realized() - mark
+        leg_mark = self.leg_marks.pop(symbol, None)
+        if port is not None and leg_mark is not None:
+            now = self._isolated_realized(port)
+            if now is not None:
+                self.leg_pending += now - leg_mark
         return port
 
     def tick(self, flow: CashFlow | None = None, *, anchor: Decimal | None = None) -> TickReport:
@@ -139,11 +194,29 @@ class Coordinator:
             if mark is not None:
                 pnl += now - mark
             self.marks[sym] = now
+        # ⭐ 420차 — 뺀 다리의 실현 증분(본 다리 원장에서 뺄 몫)
+        leg_pnl = self.leg_pending
+        self.leg_pending = Decimal(0)
+        if self.core is not None:
+            for sym, port in self.ports.items():
+                now_x = self._isolated_realized(port)
+                if now_x is None:
+                    continue
+                leg_mark = self.leg_marks.get(sym)
+                if leg_mark is not None:
+                    leg_pnl += now_x - leg_mark
+                self.leg_marks[sym] = now_x
+        prev = self.engine.balance
         budgets = (
             self.engine.settle(anchor, flow)
             if anchor is not None
             else self.engine.rebalance(pnl, flow)
         )
+        if self.core is not None:
+            # 펀드 원장이 이 기간에 움직인 만큼(앵커면 장부 교정 몫까지)에서
+            # 뺀 다리 몫만 빼고 적는다.
+            moved = (anchor if anchor is not None else prev + pnl) - prev
+            self.core.step(self.core.equity + moved - leg_pnl, flow)
         for sym, budget in budgets.items():
             port = self.ports.get(sym)
             if port is not None:

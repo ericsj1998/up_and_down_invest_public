@@ -594,6 +594,7 @@ def _load_file(target: Path) -> list[Playbook]:
                     ),
                     bundle=tuple(str(x) for x in _items(body.get("bundle"), "bundle")),
                     split_legs=_split_legs(body, f"playbooks.{name}"),
+                    drawdown_isolated=bool(body.get("drawdown_isolated", False)),
                     legs_revision=_positive_int(body, "legs_revision", f"playbooks.{name}"),
                     leg_exposure=_leg_exposure(body, f"playbooks.{name}"),
                     risk_pct=(

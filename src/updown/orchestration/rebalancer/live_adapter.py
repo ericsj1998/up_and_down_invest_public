@@ -31,6 +31,7 @@ class SessionBridge:
     session: Session
     _last_trusted: Decimal | None = None
     _last_realized: Decimal | None = None
+    _last_isolated: Decimal | None = None
     breadth_bars: int = 0
     """폭을 셀 때 돌아볼 마감 봉 수 (T289). 0 = 이 세션은 폭을 안 센다(`band_breaks` 가 늘 0)."""
     breadth_frame: Timeframe | None = None
@@ -100,6 +101,28 @@ class SessionBridge:
         if self.session.verified_realized is not None:
             return self.session.realized_anchor + self.session.verified_realized
         return self._last_realized if self._last_realized is not None else led.realized_cash
+
+    def realized_of(self, attributions: frozenset[str]) -> Decimal:
+        """그 다리(귀속 키)들의 누적 실현 손익(USDT) — 본 다리 잔고에서 뺄 몫 (420차).
+
+        Args:
+            attributions: 브레이크에서 뺀 다리의 귀속 키들.
+
+        Returns:
+            원장이 신뢰할 수 있으면 원장의 귀속별 실현 합 · 갈렸으면 마지막 신뢰값(없으면 원장값).
+
+        Note:
+            ⚠️ 갈렸을 때 `realized()` 는 거래소 실측으로 갈아끼우지만 거래소 실측은 다리별로 안
+            나뉜다 — 그래서 여기는 동결만 한다(다음에 원장이 맞으면 이어간다).
+        """
+        led = self.session.ledger
+        trusted = self.session.reconciled and self.session.accounting_ok
+        if trusted or self._last_isolated is None:
+            value = led.realized_of(attributions)
+            if trusted:
+                self._last_isolated = value
+            return value
+        return self._last_isolated
 
     def set_budget(self, budget: Decimal) -> None:
         """다음 진입 예산을 갱신한다.

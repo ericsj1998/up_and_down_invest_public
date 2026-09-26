@@ -43,6 +43,7 @@ class FundLeg:
         drawdown_brake: 낙폭 브레이크. None = 없음.
         breadth_cap: 조건부 총 명목 상한. None = 없음.
         halt_dd_at: 펀드 낙폭이 이 값 이상이면 이 다리는 새로 안 든다(T304 #1). None = 없음.
+        isolated: 이 다리의 손익을 펀드 낙폭 브레이크에서 뺀다(420차 · `Coordinator.core`).
     """
 
     playbook: str
@@ -58,6 +59,7 @@ class FundLeg:
     drawdown_brake: DrawdownBrake | None = None
     breadth_cap: BreadthCap | None = None
     halt_dd_at: Decimal | None = None
+    isolated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """저장용 딕셔너리 — 돌던 펀드의 다리는 선언이 바뀌어도 안 바뀐다(저장본이 이긴다)."""
@@ -87,6 +89,7 @@ class FundLeg:
                 }
             ),
             "halt_dd_at": None if self.halt_dd_at is None else str(self.halt_dd_at),
+            "isolated": self.isolated,
         }
 
     @classmethod
@@ -127,6 +130,7 @@ class FundLeg:
             drawdown_brake=brake,
             breadth_cap=breadth,
             halt_dd_at=None if raw_halt in (None, "") else Decimal(str(raw_halt)),
+            isolated=bool(data.get("isolated", False)),  # 1.20 앞 저장본엔 없다 — 없으면 섞음
         )
 
 
@@ -190,6 +194,7 @@ def declared_legs(
                 drawdown_brake=book.drawdown_brake,
                 breadth_cap=book.breadth_cap,
                 halt_dd_at=book.entry_fund_dd_max,
+                isolated=book.drawdown_isolated,
             )
         )
     covered = {symbol for leg in out for symbol in leg.symbols}
@@ -229,6 +234,11 @@ def refresh_legs(
             notes.append(f"{leg.attribution}: {leg.to_dict()} → {made.to_dict()}")
         out.append(made)
     return tuple(out), tuple(notes)
+
+
+def isolated_attributions(legs: Sequence[FundLeg]) -> frozenset[str]:
+    """브레이크에서 뺀 다리들의 귀속 키 (420차)."""
+    return frozenset(leg.attribution for leg in legs if leg.isolated)
 
 
 def legs_on(legs: Sequence[FundLeg], symbol: str) -> tuple[FundLeg, ...]:

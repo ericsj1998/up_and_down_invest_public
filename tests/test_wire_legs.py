@@ -47,6 +47,10 @@ def via_orchestration(coordinator: Any, legs: tuple[FundLeg, ...]) -> None:
     wire_legs(coordinator.ports, legs, lambda: ledger.drawdown_pct / Decimal(100))
 
 
+def _no_isolation(_excluded: frozenset[str]) -> None:
+    return None
+
+
 PATHS: list[Callable[[Any, tuple[FundLeg, ...]], None]] = [via_api, via_orchestration]
 
 
@@ -65,7 +69,14 @@ def wired(path: Callable[[Any, tuple[FundLeg, ...]], None]) -> tuple[Any, ...]:
         for sym in symbols
     }
     ledger = SimpleNamespace(drawdown_pct=Decimal(0))
-    coordinator = SimpleNamespace(engine=SimpleNamespace(ledger=ledger), ports=ports)
+    # 뺀 다리가 없는 판(혼합 2.0.0) — `isolate` 는 아무것도 안 열고
+    # 브레이크는 펀드 원장 낙폭을 읽는다
+    coordinator = SimpleNamespace(
+        engine=SimpleNamespace(ledger=ledger),
+        ports=ports,
+        isolate=_no_isolation,
+        brake_drawdown=lambda: ledger.drawdown_pct / Decimal(100),
+    )
     path(coordinator, legs)
     return legs, ports, ledger
 

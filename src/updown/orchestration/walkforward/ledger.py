@@ -897,6 +897,11 @@ class Purse:
     drawdown_pct: Decimal = Decimal(0)
     max_drawdown_pct: Decimal = Decimal(0)
     tripped_at: str | None = None
+    earned_by: dict[str, Decimal] = field(default_factory=dict[str, Decimal])
+    """`earned` 를 귀속 키(`TradeRecord.playbook`)별로 나눈 것 (420차).
+
+    펀드가 "브레이크에서 뺀 다리" 의 실현 손익을 본 다리 잔고에서 빼려고 읽는다
+    (`Ledger.realized_of` → `SessionBridge.realized_of` → `Coordinator`)."""
 
 
 @dataclass(slots=True)
@@ -1215,6 +1220,7 @@ class Ledger:
         reserved = Decimal(0)
         topped = Decimal(0)
         earned = Decimal(0)
+        by: dict[str, Decimal] = {}
         peak = target
         drawdown = Decimal(0)
         deepest = Decimal(0)
@@ -1240,6 +1246,7 @@ class Ledger:
             margin += pnl
             # ⭐ **그때의 증거금으로 센다** — 나중에 곱하면 규모가 달라진다.
             earned += pnl
+            by[item.playbook] = by.get(item.playbook, Decimal(0)) + pnl  # 420차 귀속별
             # ⭐ 이익의 일부는 **지갑에 남긴다** — 다시 굴리지 않는 것이 유보의 뜻이다.
             #
             # 🔴 **수익선 위에서만 뗀다** (T21 ⑤). 없으면 예전처럼 모든 이익에서 뗀다 —
@@ -1304,6 +1311,7 @@ class Ledger:
                     topped_up=topped,
                     wallet=wallet,
                     earned=earned,
+                    earned_by=by,
                     halted_at=item.trade_id,
                     drawdown_pct=drawdown,
                     max_drawdown_pct=deepest,
@@ -1315,6 +1323,7 @@ class Ledger:
             topped_up=topped,
             wallet=wallet,
             earned=earned,
+            earned_by=by,
             drawdown_pct=drawdown,
             max_drawdown_pct=deepest,
             tripped_at=tripped,
@@ -1353,6 +1362,7 @@ class Ledger:
         reserved = Decimal(0)
         drawn = Decimal(0)
         earned = Decimal(0)
+        by: dict[str, Decimal] = {}
         peak = self.seed_cash
         drawdown = Decimal(0)
         deepest = Decimal(0)
@@ -1365,6 +1375,7 @@ class Ledger:
             # ⚠️ 채워진 만큼만 굴렀다 (T19 ① — 위와 같은 이유).
             equity *= Decimal(1) + gain * item.filled_ratio / Decimal(100)
             earned += equity - before
+            by[item.playbook] = by.get(item.playbook, Decimal(0)) + (equity - before)
             if self.skim_pct > 0 and equity > before:
                 taken = (equity - before) * self.skim_pct
                 reserved += taken
@@ -1392,6 +1403,7 @@ class Ledger:
             reserved=reserved,
             drawn=drawn,
             earned=earned,
+            earned_by=by,
             drawdown_pct=drawdown,
             max_drawdown_pct=deepest,
             tripped_at=tripped,
@@ -1503,6 +1515,20 @@ class Ledger:
               크기는 넉넉히 보고 **부호**를 엄하게 보는 이유가 그것이다.
         """
         return self._walk().earned
+
+    def realized_of(self, attributions: frozenset[str] | set[str]) -> Decimal:
+        """그 귀속 키(`TradeRecord.playbook`)들의 매매가 번(잃은) 금액 (420차).
+
+        `realized_cash` 의 부분합이다 — 같은 걷기에서 같은 금액으로 센다.
+
+        Args:
+            attributions: 귀속 키들(`playbook_id@version`).
+
+        Returns:
+            금액. 해당 매매가 없으면 0.
+        """
+        by = self._walk().earned_by
+        return sum((by.get(key, Decimal(0)) for key in attributions), Decimal(0))
 
     @property
     def sizing_base(self) -> Decimal:

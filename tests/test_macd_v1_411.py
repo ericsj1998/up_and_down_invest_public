@@ -317,7 +317,12 @@ class TestLiveDeclaration:
 
     def test_time_exit_is_only_on_the_new_macd_books(self) -> None:
         on = {b.playbook_id for b in load_playbooks() if b.max_hold_bars is not None}
-        assert on == {"private_strategy", "private_strategy"}
+        assert on == {
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+        }
 
 
 class TestRefreshLegs:

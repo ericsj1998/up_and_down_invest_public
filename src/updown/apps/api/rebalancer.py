@@ -76,6 +76,7 @@ from updown.orchestration.rebalancer.legs import (
     FundLeg,
     LegError,
     declared_legs,
+    isolated_attributions,
     member_leverage,
     member_playbook,
     refresh_legs,
@@ -292,7 +293,9 @@ def _wire_gate(
     if legs:
         # ⭐ T291 — 다리마다 자기 문(배선은 `orchestration.rebalancer.wiring` · T309 ① 에서 꺼냄 —
         #    펀드 재현 도구가 같은 배선을 쓴다).
-        wire_legs(coordinator.ports, legs, lambda: ledger.drawdown_pct / Decimal(100))
+        # ⭐ 420차 — 브레이크에서 뺀 다리가 있으면 본 다리 원장을 열고(없으면 닫고) 그 낙폭을 준다.
+        coordinator.isolate(isolated_attributions(legs))
+        wire_legs(coordinator.ports, legs, coordinator.brake_drawdown)
         return
     if slots <= 0 and halt_after_stops <= 0 and brake is None:
         return
@@ -687,6 +690,9 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
             "members": [{"symbol": m.symbol, "weight": str(m.weight)} for m in basket.members],
         },
         "twr": fund.coordinator.engine.ledger.to_dict(),
+        # ⭐ 420차 — 본 다리 원장(브레이크에서 뺀 다리가 있을 때만) · 그 증분 mark
+        "core_twr": None if fund.coordinator.core is None else fund.coordinator.core.to_dict(),
+        "leg_marks": {sym: str(mark) for sym, mark in fund.coordinator.leg_marks.items()},
         # 판 → 펀드 매핑 (2026-09-04). 지금까지 메모리(`handles`)에만 있어 리포트(스케줄러
         # 프로세스)가 판을 펀드로 못 묶었다 — 파일에 남겨 어느 프로세스든 읽게 한다.
         "runs": dict(fund.handles),
@@ -1055,7 +1061,23 @@ async def _restore_one(data: dict[str, Any]) -> None:
         for sym in ports
         if sym in saved_marks and sym not in corrected
     }  # 되살린 세션만 · 새로 띄운 세션과 seed 를 바로잡은 세션은 첫 틱이 mark 를 잡는다
-    coordinator = Coordinator(engine=engine, ports=dict(ports), marks=marks)  # type: ignore[arg-type]
+    raw_core = data.get("core_twr")
+    saved_leg_marks = cast("dict[str, Any]", data.get("leg_marks") or {})
+    coordinator = Coordinator(
+        engine=engine,
+        ports=dict(ports),  # type: ignore[arg-type]
+        marks=marks,
+        # ⭐ 420차 — 저장된 본 다리 원장. 없으면 `_attach_gate` → `isolate` 가
+        #    펀드 원장에서 복제한다.
+        core=(
+            None
+            if not isinstance(raw_core, dict)
+            else TwrLedger.from_dict(cast("dict[str, Any]", raw_core))
+        ),
+        leg_marks={
+            sym: Decimal(str(saved_leg_marks[sym])) for sym in marks if sym in saved_leg_marks
+        },
+    )
     _attach_gate(
         coordinator,
         slots,
@@ -2342,6 +2364,7 @@ async def _change_playbook(
     fund.coordinator.ports = new_ports  # type: ignore[assignment]
     # 새 세션의 원장은 0 부터 — 옛 정산 mark 를 물려주면 증분이 틀린다 (T285)
     fund.coordinator.marks = {}
+    fund.coordinator.leg_marks = {}  # 420차 — 뺀 다리 증분도 같다(본 다리 원장은 이어간다)
     fund.playbook = new_pb
     fund.legs = new_legs
     fund.legs_revision = _declared_legs_revision(new_pb) if new_legs else 0

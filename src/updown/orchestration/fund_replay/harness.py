@@ -39,6 +39,7 @@ from updown.orchestration.fund_replay.runner_rules import (
 )
 from updown.orchestration.rebalancer.coordinator import Coordinator
 from updown.orchestration.rebalancer.engine import RebalanceEngine
+from updown.orchestration.rebalancer.legs import isolated_attributions
 from updown.orchestration.rebalancer.live_adapter import SessionBridge
 from updown.orchestration.rebalancer.wiring import wire_legs
 from updown.orchestration.walkforward.ledger import Outcome
@@ -140,8 +141,10 @@ def assemble(
     engine = RebalanceEngine(basket=basket, ledger=TwrLedger(equity=capital), slots=slots)
     ports: dict[str, SessionBridge] = {b.symbol: SessionBridge(session=b.session) for b in boards}
     coordinator = Coordinator(engine=engine, ports=dict(ports))
-    ledger = engine.ledger
-    wire_legs(coordinator.ports, legs, lambda: ledger.drawdown_pct / Decimal(100))
+    # ⭐ 420차 — 실계좌 `_wire_gate` 와 같다: 브레이크에서 뺀 다리가 있으면
+    #    본 다리 원장 낙폭을 준다.
+    coordinator.isolate(isolated_attributions(legs))
+    wire_legs(coordinator.ports, legs, coordinator.brake_drawdown)
     coordinator.tick()
     for b in boards:
         b.session.fund_ready = True
