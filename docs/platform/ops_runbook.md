@@ -68,6 +68,17 @@ bash scripts/ops/remote.sh scripts/ops/console_state.py   # 콘솔이 부르는 
 bash scripts/ops/remote.sh -- 'docker logs --since 10m updown_live-api-1 | tail -50'
 ```
 
+**서버 로그를 로컬로 받고 서버에서 지우기** (2026-09-26 · 사용자 요청) — `scripts/ops/pull_logs.sh` 는 로컬(WSL)에서 바로 돈다(remote.sh 아님):
+
+```bash
+bash scripts/ops/pull_logs.sh            # 받기만 — 실계좌 · 데모 앱 로그(runlogs/app · demologs/app)의 지난 날짜 파일 → ~/projects/updown_serverlogs/<실계좌|데모>/*.jsonl.gz
+bash scripts/ops/pull_logs.sh --delete   # 받고 · 파일마다 sha256 이 서버와 같은 것만 서버에서 지운다 (오늘 파일은 안 건드림)
+```
+
+안 건드리는 것: DB `event_logs`(append-only · 규칙 #8-2) · 펀드 원장 · RUN 저널 · 대조 기록 · Docker 로그(상한 50 MB x 5).
+받은 목록은 `manifest-<UTC>.tsv`(이름 · 크기 · sha256 · 지움 여부). 이미 받은 파일은 다시 안 받는다. 2 GB 가 gzip 으로 약 125 MB.
+메모리 · 디스크 실측은 `probe_memory_and_logs.sh` · `probe_disk_detail.sh`(T310).
+
 `.py` 는 api 컨테이너 안 python 으로 돈다(앱 코드·`.env.live` 가 거기 있다). 새 프로브가 필요하면
 `scripts/ops/` 에 파일로 만들고 커밋한다 — scratchpad 에 두면 다음 세션이 못 쓴다.
 
