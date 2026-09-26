@@ -313,7 +313,7 @@ class TestLiveDeclaration:
         assert long_.notional_cap == Decimal("3.6")
         assert long_.breadth_cap is not None and long_.breadth_cap.cap == Decimal("5.4")
         assert long_.add_on is not None and long_.add_on.frac == Decimal("1.0")
-        assert books["private_strategy"].legs_revision == 1
+        assert books["private_strategy"].legs_revision == 2  # P2 다리 크기(437차)
 
     def test_time_exit_is_only_on_the_new_macd_books(self) -> None:
         on = {b.playbook_id for b in load_playbooks() if b.max_hold_bars is not None}
@@ -361,9 +361,9 @@ class TestRefreshLegs:
         stored = (replace(fresh[0], notional_cap=Decimal(3)), *fresh[1:])
         members = sorted({s for leg in fresh for s in leg.symbols})
         got, rev = rebalancer._refresh_stored_legs("f1", "private_strategy", stored, 0, members)  # pyright: ignore[reportPrivateUsage]
-        assert rev == 1 and got[0].notional_cap == Decimal("3.6")
-        again, rev2 = rebalancer._refresh_stored_legs("f1", "private_strategy", stored, 1, members)  # pyright: ignore[reportPrivateUsage]
-        assert rev2 == 1 and again == stored
+        assert rev == 2 and got[0].notional_cap == Decimal("3.6")
+        again, rev2 = rebalancer._refresh_stored_legs("f1", "private_strategy", stored, 2, members)  # pyright: ignore[reportPrivateUsage]
+        assert rev2 == 2 and again == stored
 
         def frozen(_pb: str) -> int:
             return 0

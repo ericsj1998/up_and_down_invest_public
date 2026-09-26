@@ -94,10 +94,10 @@ class TestWireLegs:
         btc, gala, zec = ports["BTC_USDT"], ports["GALA_USDT"], ports["ZEC_USDT"]
         assert btc.session.leg_leverage == {
             long_leg.attribution: Decimal(4),
-            tri_leg.attribution: Decimal(2),
+            tri_leg.attribution: Decimal("1.5"),  # P2 삼각 x0.75(435차)
         }
-        assert gala.session.leg_leverage == {tri_leg.attribution: Decimal(2)}
-        assert zec.session.leg_leverage == {macd_leg.attribution: Decimal("1.5")}
+        assert gala.session.leg_leverage == {tri_leg.attribution: Decimal("1.5")}
+        assert zec.session.leg_leverage == {macd_leg.attribution: Decimal("2.25")}
 
     def test_breadth_is_counted_on_the_core_boards_only(self, path: Any) -> None:
         legs, ports, _ledger = wired(path)

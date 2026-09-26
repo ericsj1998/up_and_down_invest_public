@@ -74,8 +74,14 @@ class TestDeclaration:
         assert set(macd_leg.symbols) == {f"{s}_USDT" for s in MACD22.split()}
         # 거래소 배율 · 노출 (연구 lev_mult 1.5 · 숏은 정수 4 — 4 · 4.5 · 5 가 날별 로그까지 같다)
         assert (long_leg.leverage, long_leg.exposure) == (Decimal(6), Decimal(4))
-        assert (tri_leg.leverage, tri_leg.exposure) == (Decimal(4), Decimal(2))
-        assert (macd_leg.leverage, macd_leg.exposure) == (Decimal(4), Decimal("1.5"))
+        assert (tri_leg.leverage, tri_leg.exposure) == (
+            Decimal(4),
+            Decimal("1.5"),
+        )  # P2 x0.75(435차)
+        assert (macd_leg.leverage, macd_leg.exposure) == (
+            Decimal(4),
+            Decimal("2.25"),
+        )  # P2 x1.5(435차)
         # 계좌 층 — 돌파 브레이크 10% · 명목 상한 3.6 · 폭 상한 5.4(411차 U4 x1.2) /
         # MACD 는 낙폭 10% 면 끄지 않고 x0.25(411차 P25)
         assert long_leg.drawdown_brake is not None and long_leg.drawdown_brake.at == Decimal("0.10")

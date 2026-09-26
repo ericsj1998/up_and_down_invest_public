@@ -121,8 +121,8 @@ class TestLongMirror:
         rules = load_rules()
         long_, short = rules[RULE_ID_V1_LONG].params, rules["private_strategy"].params
         assert long_["sides"] == 1 and short["sides"] == -1
-        assert {k: v for k, v in long_.items() if k != "sides"} == {
-            k: v for k, v in short.items() if k != "sides"
+        assert {k: v for k, v in long_.items() if k != "sides"} == {  # K2 는 숏에만(424 · 437차)
+            k: v for k, v in short.items() if k not in {"sides", "momentum_big", "momentum_small"}
         }
 
 
@@ -247,7 +247,11 @@ class TestLegsAndDeclaration:
         assert m.max_hold_bars == 26 and m.add_on is None
         assert m.drawdown_isolated is True
         assert m.drawdown_brake == DrawdownBrake(at=Decimal("0.10"), scale=Decimal("0.25"))
-        assert (m.leverage, m.leg_exposure, m.slots) == (Decimal(4), Decimal("1.5"), 6)
+        assert (m.leverage, m.leg_exposure, m.slots) == (
+            Decimal(4),
+            Decimal("1.875"),
+            6,
+        )  # P2 x1.25(435차)
 
     def test_mixed_210_bundle(self) -> None:
         from updown.apps.api.rebalancer import _leg_scopes  # pyright: ignore[reportPrivateUsage]
