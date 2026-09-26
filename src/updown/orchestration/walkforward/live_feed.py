@@ -39,6 +39,10 @@ from updown.orchestration.walkforward.sealed import Seal, SealBreachError
 
 _logger = get_logger("walkforward.live_feed")
 
+KEEP_SLACK = 64
+"""창(`window`) 위로 더 쥐는 봉 수 — 커서 뒤에 먼저 들어온 하위 축 봉(4h 진입이면 5m 이 최대 47개)이
+있어도 `judged` 가 창만큼 낼 수 있게 (T313)."""
+
 
 class LiveFeedError(RuntimeError):
     """라이브 급전을 쓸 수 없는 상태.
@@ -64,12 +68,15 @@ class LiveFeed:
         self,
         seed: dict[Timeframe, Sequence[Candle]],
         entry: Timeframe,
+        *,
+        window: int | None = None,
     ) -> None:
         """급전을 만든다.
 
         Args:
             seed: 시간축별 시드 캔들 (REST 로 받은 과거). **전부 마감된 봉**이어야 한다.
             entry: 진입 시간축 — 커서 전진의 단위다.
+            window: 시간축마다 판정에 내주는 봉 상한 (T313). None 이면 상한 없음(예전 동작).
 
         Raises:
             LiveFeedError: 시드가 비었거나 진입 시간축이 없는 경우.
@@ -82,11 +89,20 @@ class LiveFeed:
             raise LiveFeedError(
                 f"진입 시간축 {entry.value} 의 시드가 없다 — 커서를 전진시킬 단위가 없다"
             )
+        self.window = window
+        """시간축마다 판정(`judged`)에 내주는 봉 상한 · 보관은 창 + `KEEP_SLACK` (T313).
+
+        🔴 연구 · 재현 세션은 800봉 창(`CappedFeed` · 시드와 같은 값)으로 판정한다.
+        라이브는 시드 800 에서 시작해 가동 시간만큼 봉이 늘었고(`frame_window` 2,000 까지
+        판정에 씀) 급전이 **덧붙이기만** 해서 메모리도 같이 자랐다. 창을 두면 라이브 판정 =
+        연구 · 재현 판정이 되고 급전이 안 자란다 (2026-09-26).
+        """
         self._rows: dict[Timeframe, dict[datetime, Candle]] = {}
         for frame, rows in seed.items():
             if not rows:
                 raise LiveFeedError(f"{frame.value} 시드가 비었다")
             self._rows[frame] = {item.ts: item for item in rows}
+            self._trim(frame)
         self._entry = entry
         self.judge_on: set[Timeframe] = {entry}
         """**판정을 깨우는 축들** — 기본은 진입 축 하나다 (T17).
@@ -120,6 +136,55 @@ class LiveFeed:
         ⚠️ 구멍을 메우는 것은 소비처의 일이다 (REST 재조회). 이 급전은 세기만 한다 —
         메우려 들면 급전이 네트워크를 알게 되고, 그러면 테스트가 네트워크를 요구한다.
         """
+
+    def _trim(self, frame: Timeframe) -> None:
+        """창 + 여유를 넘는 **가장 옛** 봉을 버린다 (T313) — 창이 없으면 아무것도 안 한다."""
+        if self.window is None:
+            return
+        rows = self._rows[frame]
+        extra = len(rows) - (self.window + KEEP_SLACK)
+        if extra <= 0:
+            return
+        for ts in sorted(rows)[:extra]:
+            del rows[ts]
+
+    def add_frame(self, frame: Timeframe, candles: Sequence[Candle]) -> int:
+        """보기용 축을 **볼 때** 싣는다 (T313 · 화면이 고른 축).
+
+        Args:
+            frame: 시간축.
+            candles: 마감된 봉들(REST 시드).
+
+        Returns:
+            실은 봉 수. 이미 있는 축이면 `backfill` 과 같다 · 봉이 없으면 0(축을 안 만든다).
+
+        Note:
+            ⚠️ 커서 · 판정 깨우기와 무관하다 — 보기용 축은 판정이 안 읽는다(진입 · 걸음 · 한 칸 위 ·
+            방아쇠 축은 처음부터 시드에 있다).
+        """
+        if frame in self._rows:
+            return self.backfill(frame, candles)
+        if not candles:
+            return 0
+        self._rows[frame] = {item.ts: item for item in candles}
+        self._trim(frame)
+        return len(self._rows[frame])
+
+    def drop_frame(self, frame: Timeframe) -> bool:
+        """아무도 안 보는 보기용 축을 **내린다** — 봉을 메모리에서 놓는다 (T313).
+
+        Args:
+            frame: 시간축.
+
+        Returns:
+            내렸으면 True. 진입 축 · 판정을 깨우는 축 · 없는 축이면 False(안 내린다).
+        """
+        if frame is self._entry or frame in self.judge_on or frame not in self._rows:
+            return False
+        del self._rows[frame]
+        self._pending.pop(frame, None)
+        self._received_per.pop(frame, None)
+        return True
 
     def _span(self, frame: Timeframe) -> timedelta:
         """그 시간축 한 봉의 길이."""
@@ -277,7 +342,9 @@ class LiveFeed:
             )
         if frame not in self._rows:
             raise KeyError(f"{frame.value} 는 이 급전에 없다 — 들고 있는 것: {self.timeframes}")
-        return [self._rows[frame][key] for key in sorted(self._rows[frame]) if key < moment]
+        rows = [self._rows[frame][key] for key in sorted(self._rows[frame]) if key < moment]
+        # ⭐ T313 — 연구 · 재현의 `CappedFeed` 와 같은 창(마지막 `window` 봉)
+        return rows if self.window is None else rows[-self.window :]
 
     def push(self, frame: Timeframe, candle: Candle, *, closed: bool) -> bool:
         """봉 하나를 받는다.
@@ -328,6 +395,7 @@ class LiveFeed:
                     },
                 )
         rows[candle.ts] = candle
+        self._trim(frame)
         # 🔴 **두 번째 시계를 올린다** (T15-2). 진입 축이 아니어도 올린다 — 그것이
         #    커서와 갈라지는 이유 전부다. 이 값이 안 움직이면 그 축은 동결이다.
         #
@@ -456,6 +524,7 @@ class LiveFeed:
             if item.ts not in rows:
                 rows[item.ts] = item
                 added += 1
+        self._trim(frame)
         self.gaps = max(0, self.gaps - added)
         if added:
             _logger.info(

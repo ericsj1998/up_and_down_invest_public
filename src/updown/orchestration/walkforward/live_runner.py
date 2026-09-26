@@ -55,6 +55,7 @@ from updown.marketdata.ingest.timeframes import interval_seconds
 from updown.marketdata.stream import CandleStream
 from updown.orchestration.leftovers import held_size, sweep
 from updown.orchestration.liquidity import probe_book
+from updown.orchestration.playbook_run import TF_LADDER
 from updown.orchestration.walkforward import pending as pending_mod
 from updown.orchestration.walkforward.funding import attribute_funding
 from updown.orchestration.walkforward.ledger import (
@@ -817,6 +818,8 @@ class LiveRunner:
         stream: CandleStream,
         quotes: QuoteAdapter,
         orders: BrokerAdapter,
+        *,
+        decision_frames: Iterable[Timeframe] = (),
     ) -> None:
         """러너를 만든다.
 
@@ -826,6 +829,9 @@ class LiveRunner:
             stream: 웹소켓 캔들 스트림.
             quotes: 공개 조회 어댑터 — 봉 구멍을 메울 때 쓴다.
             orders: 주문 어댑터. **`OrderGateway` 가 준 것**이어야 한다 (절대 규칙 #0).
+            decision_frames: 판정이 읽는 축(T313 · `decision_frames()`) — 늘 데우고 안
+                내린다. 주면 그 밖의 축은 **보기용**이라 화면이 볼 때 싣고 안 보면 내린다.
+                비면 예전처럼 급전의 축을 그대로 둔다.
 
         Raises:
             ValueError: `session.feed` 가 `feed` 와 다른 객체인 경우.
@@ -842,6 +848,8 @@ class LiveRunner:
             )
         self._session = session
         self._feed = feed
+        self._decision: frozenset[Timeframe] = frozenset(decision_frames)
+        """판정 축 — 늘 데우고 안 내린다 (T313). 비면 보기용 축 싣기 · 내리기를 안 한다."""
         self._refresh_state: dict[Timeframe, tuple[int, float]] = {}
         """축 → (연속 실패 수, 다음 시도 monotonic) — 갱신 백오프 (T268 #5)."""
         self._stream = stream
@@ -2462,7 +2470,19 @@ class LiveRunner:
         """
         while True:
             await asyncio.sleep(FRESH_TICK)
-            for frame in self._feed.timeframes:
+            # ⭐ T313 — 화면이 고른 보기용 축이 아직 안 실렸으면 이번 차례에 싣는다(`refresh`) ·
+            #    아무도 안 보게 된 보기용 축은 내린다.
+            watched_new = (
+                [
+                    frame
+                    for frame, seen in self._watched.items()
+                    if frame not in self._feed.timeframes and time.monotonic() - seen < WATCH_TTL
+                ]
+                if self._decision
+                else []
+            )
+            self._drop_unwatched()
+            for frame in (*self._feed.timeframes, *watched_new):
                 # 🔴 **아무도 안 보는 축은 안 당긴다** (2026-08-29 실측으로 잡았다).
                 #
                 #    계측이 붙고 나서야 숫자가 나왔다: 한도의 **156%** 를 쓰고 있었다
@@ -3329,10 +3349,46 @@ class LiveRunner:
             ⚠️ 나머지(보기용)는 **마지막으로 본 지 `WATCH_TTL` 안**일 때만 데운다.
             사람이 탭을 닫거나 다른 축으로 옮기면 조용히 식는다.
         """
-        if frame in {STEP_FRAME, self.entry, self.price_frame}:
+        # ⭐ T313 — 판정 축 전부(진입 한 칸 위 · 1d 포함). 예전엔 넷만 데워 주 추세 축(4h · 1d)이
+        #    시드 때 값에 얼어 있었다 — 연구 · 재현 세션은 늘 지금 값을 본다.
+        if frame in {STEP_FRAME, self.entry, self.price_frame} or frame in self._decision:
             return True
         seen = self._watched.get(frame)
         return seen is not None and time.monotonic() - seen < WATCH_TTL
+
+    def viewable(self, frames: Iterable[Timeframe]) -> tuple[Timeframe, ...]:
+        """화면이 고를 수 있는 축 — 지금 실은 축 + 이 거래소가 주는 축 (T313).
+
+        Args:
+            frames: 화면이 아는 축 목록(`FRAMES`).
+
+        Returns:
+            짧은 축부터.
+        """
+        offered = set(self._feed.timeframes)
+        if self._decision:  # 예전 방식 러너(폴링 브로커)는 실은 축만 — 볼 때 싣지 않는다
+            offered |= set(self._quotes.supported_frames(tuple(frames)))
+        return tuple(sorted(offered, key=interval_seconds))
+
+    def _drop_unwatched(self) -> None:
+        """아무도 안 보는 보기용 축을 내린다 — 봉과 세션 계산 캐시를 같이 놓는다 (T313).
+
+        Note:
+            ⚠️ 판정 축이 비어 있으면(예전 방식으로 만든 러너) 아무것도 안 내린다.
+        """
+        if not self._decision:
+            return
+        now = time.monotonic()
+        for frame in self._feed.timeframes:
+            if self._needs(frame):
+                continue
+            seen = self._watched.get(frame)
+            if seen is not None and now - seen < WATCH_TTL:
+                continue
+            if self._feed.drop_frame(frame):
+                self._session.forget_frame(frame)
+                self._refreshed.pop(frame, None)
+                self._refresh_state.pop(frame, None)
 
     async def refresh(self, frame: Timeframe) -> int:
         """**보고 있는 축**을 거래소에서 새로 받아 채운다.
@@ -3364,6 +3420,18 @@ class LiveRunner:
         """
         if frame is self.entry:
             return 0
+        # ⭐ T313 — 화면이 고른 보기용 축이 아직 없으면 시드만큼 받아 싣는다(판정과 무관 · 화면용).
+        if frame not in self._feed.timeframes:
+            if not self._decision or frame not in self._quotes.supported_frames((frame,)):
+                return 0
+            span = timedelta(seconds=interval_seconds(frame))
+            now = datetime.now(UTC)
+            rows = await self._quotes.get_candles(
+                self.instrument, frame, now - span * SEED_BARS, now
+            )
+            self._refreshed[frame] = time.monotonic()
+            # ⛔ 마지막은 진행 중이다 — 버린다(시드와 같다).
+            return self._feed.add_frame(frame, rows[:-1] if rows else rows)
         # 🔴 **그 축의 간격보다 자주 조회하지 않는다.** 화면은 `/state` 를 700ms 마다
         #    치는데, 그때마다 거래소에 물으면 10초봉 하나를 보는 동안 초당 한 번씩
         #    REST 를 때린다 — 새 봉은 10초에 하나뿐인데 14번은 헛걸음이고, 그러다
@@ -6605,7 +6673,37 @@ async def build_live_feed(
         rows = await quotes.get_candles(instrument, frame, now - span * bars, now)
         # ⛔ 마지막 봉을 버린다 — 진행 중일 수 있고, 미마감 값이 확정으로 남으면 안 된다.
         seed[frame] = rows[:-1] if rows else rows
-    return LiveFeed(cast("dict[Timeframe, Sequence[object]]", seed), entry)  # type: ignore[arg-type]
+    # ⭐ T313 — 판정 창 = 시드 길이(연구 · 재현의 800봉 창과 같다) · 급전이 안 자란다
+    return LiveFeed(cast("dict[Timeframe, Sequence[object]]", seed), entry, window=bars)  # type: ignore[arg-type]
+
+
+def decision_frames(
+    entries: Iterable[Timeframe], *, step: Timeframe, extra: Iterable[Timeframe] = ()
+) -> tuple[Timeframe, ...]:
+    """판정이 읽는 시간축 — 이것만 시드하고 늘 데운다 (T313 · 2026-09-26).
+
+    Args:
+        entries: 판의 매매법들의 진입 축.
+        step: 세션 걸음 축(`STEP_FRAME`).
+        extra: 더 넣을 축 — 룰 방아쇠 축 · 셋업 없는 판의 방아쇠 축.
+
+    Returns:
+        걸음 · 진입 · 진입 **한 칸 위**(주 추세 — `major_trend` 가 `TF_LADDER` 에서
+        읽는다) · 1d · 방아쇠. 짧은 축부터.
+
+    Note:
+        🔴 그 밖의 축(10s · 30s · 1m · 15m · 30m 등)은 **화면용**이다 — 진입 축보다 잘은
+        축은 추세를 안 재고(`TF_RANK`) 셋업 · 충돌 · 국면은 진입 축과 한 칸 위만 읽는다.
+        웹소켓 판이 9개 축을 다 시드해 판 40개가 약 28.8만 봉(api 메모리의 대부분)을 쥐고
+        있었다. 보기용 축은 볼 때 싣는다(`LiveRunner`).
+    """
+    wanted = {step, Timeframe.D1, *entries, *extra}
+    for entry in list(wanted & set(entries)):
+        if entry in TF_LADDER:
+            above = TF_LADDER.index(entry) + 1
+            if above < len(TF_LADDER):
+                wanted.add(TF_LADDER[above])
+    return tuple(sorted(wanted, key=interval_seconds))
 
 
 async def seed_within_budget(

@@ -1060,6 +1060,20 @@ class Session:
         """
         self._open = None
 
+    def forget_frame(self, frame: Timeframe) -> None:
+        """급전에서 내린 보기용 축의 계산 캐시를 버린다 (T313).
+
+        Args:
+            frame: 내린 시간축.
+
+        Note:
+            안 버리면 캐시(`FrameState.rows`)가 그 축 봉을 계속 붙잡아 급전에서 내린 뜻이 없다.
+            판정 축은 러너가 안 내리므로 여기 오지 않는다.
+        """
+        self._cache.pop(frame, None)
+        self._shot = None
+        self._shot_key = None
+
     def _sync_open(self) -> None:
         """보유 기록을 **원장의 지금 판**으로 맞춘다 — 세션이 고치기 전에 (2026-09-26 · T311).
 

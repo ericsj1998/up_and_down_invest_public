@@ -131,6 +131,7 @@ from updown.orchestration.walkforward.live_runner import (
     LiveRunner,
     MarginAware,
     attach,
+    decision_frames,
     run_of_text,
     seed_within_budget,
 )
@@ -957,8 +958,19 @@ async def _live_start(
         frames = list(
             quotes.supported_frames(needed_frames(book.timeframe, STEP_FRAME, *extra_frames))
         )
+        decision: tuple[Timeframe, ...] = ()  # 폴링 브로커는 예전 그대로(보기용 축을 싣지 않는다)
     else:
-        frames = list(quotes.supported_frames(FRAMES))
+        # 🔴 T313 (2026-09-26) — **판정이 읽는 축만** 시드한다
+        #    (걸음 · 진입 · 한 칸 위 · 1d · 방아쇠). 9개 축을 다 시드하던 때는 판 40개가
+        #    약 28.8만 봉(api 메모리의 대부분)을 쥐었다. 화면용 축(10s · 1m · 15m …)은
+        #    러너가 **볼 때** 싣고 안 보면 내린다(`LiveRunner.viewable`).
+        rule_trigger = trigger_frame(catalog, book)
+        decision = decision_frames(
+            [item.timeframe for item in books],
+            step=STEP_FRAME,
+            extra=[frame for frame in (rule_trigger, trigger_asked) if frame is not None],
+        )
+        frames = list(quotes.supported_frames(decision))
     # ⭐ T253 — 판 시작의 브로커 요청 수를 세고 상한(`RUN_START_REQUEST_CAP`)을 건다. 세는
     #    것은 캐시 **안쪽** 어댑터(폴링 브로커)뿐이고 웹소켓 거래소는 None 으로 남는다.
     counter = quotes.inner if isinstance(quotes, StoredCandles) else quotes
@@ -1496,7 +1508,9 @@ async def _live_start(
     stream = quotes.candle_stream(
         [instrument], book.timeframe, Decimal(str(spec["quanto_multiplier"]))
     )
-    runner = LiveRunner(session, feed, stream, quotes, orders)
+    runner = LiveRunner(
+        session, feed, stream, quotes, orders, decision_frames=frames if decision else ()
+    )
     # 🔴 **로그가 어느 판인지 말하게 한다** (T76). 이 줄이 없으면 11개 판의
     #    오류가 구분 없이 섞인다 — 실제로 그래서 고아 셋을 손으로 세야 했다.
     runner.identify(handle)
@@ -5497,6 +5511,21 @@ async def _refresh_frame(key: str, frame: Timeframe | None) -> None:
         )
 
 
+def _viewable(key: str, session: Session) -> list[str]:
+    """화면이 고를 수 있는 축 — 실은 축 + 라이브 러너가 **볼 때** 실어 주는 축 (T313).
+
+    Args:
+        key: 세션 id.
+        session: 세션.
+
+    Returns:
+        축 값들(짧은 축부터). 러너가 없는 판(봉인 · 과거)은 급전이 쥔 축 그대로.
+    """
+    runner = LIVE_RUNNERS.get(key)
+    frames = runner.viewable(FRAMES) if runner is not None else session.feed.timeframes
+    return [frame.value for frame in frames]
+
+
 def _state(key: str, at: datetime | None = None, only: Timeframe | None = None) -> dict[str, Any]:
     """세션 전체 상태 — 차트 · 원장 · 대시보드 (T13 ⑧⑩)."""
     live = _live(key)
@@ -5526,7 +5555,7 @@ def _state(key: str, at: datetime | None = None, only: Timeframe | None = None) 
         "paused": session.paused,
         "speed": live.speed,
         "seed": live.seed,
-        "timeframes": [frame.value for frame in session.feed.timeframes],
+        "timeframes": _viewable(key, session),
         "flags": list(live.flags),
         "applied": list(live.applied),
         # 🔴 대기 주문을 따로 낸다 — 화면이 "지금 뭘 기다리는지" 를 그린다.
