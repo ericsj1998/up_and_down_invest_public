@@ -78,6 +78,7 @@ from updown.orchestration.rebalancer.legs import (
     declared_legs,
     member_leverage,
     member_playbook,
+    refresh_legs,
 )
 from updown.orchestration.rebalancer.wiring import wire_legs
 from updown.portfolio.performance import CashFlow, TwrLedger
@@ -140,6 +141,9 @@ class Fund:
     `halt_after_stops`·`notional_cap`·`notional_fit`·`drawdown_brake`·`breadth_cap` 은 **안 쓰인다**
     (다리 것이 쓰인다) — `slots` 만 멤버 예산(`총자본 ÷ 자리`)에 쓰인다.
     """
+    legs_revision: int = 0
+    """저장본 다리의 개정 번호 (411차) — 묶음 선언의 `legs_revision` 이 이보다 크면 되살릴 때 다리
+    계좌 층 값을 선언에서 다시 읽는다(`_refresh_stored_legs`). 옛 저장본은 0 이다."""
     anchor: AnchorState | None = None
     """자동 앵커 상태 (T285) — 첫 틱에서 잡히고 펀드 파일에 저장된다. None = 아직 앵커 전."""
     anchor_skipped: str | None = None
@@ -677,6 +681,7 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
         ),
         # ⭐ T291 — 다리. 옛 저장본에는 없다(빈 목록 = 지금까지의 펀드). 저장본이 선언을 이긴다.
         "legs": [leg.to_dict() for leg in fund.legs],
+        "legs_revision": fund.legs_revision,
         "basket": {
             "version": basket.version,
             "members": [{"symbol": m.symbol, "weight": str(m.weight)} for m in basket.members],
@@ -956,6 +961,15 @@ async def _restore_one(data: dict[str, Any]) -> None:
         for item in cast("list[object]", data.get("legs") or [])
         if isinstance(item, Mapping)
     )
+    # ⭐ 411차 — 묶음 선언이 다리 개정 번호를 올렸으면 계좌 층 값을 선언에서 다시 읽는다
+    #    (종목 · 귀속 그대로).
+    legs, legs_revision = _refresh_stored_legs(
+        str(data["fund_id"]),
+        playbook,
+        legs,
+        int(data.get("legs_revision", 0) or 0),
+        [m.symbol for m in basket.members],
+    )
     total = ledger.balance
     wsum = basket.weight_sum
     # ⭐ T285 — 저장된 몫(seed)·정산 mark. 옛 저장본(없음)은 지금 몫을 seed 로, mark 는 첫 틱이 지금
@@ -1055,6 +1069,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
     )
     fund = Fund(
         legs=legs,
+        legs_revision=legs_revision,
         fund_id=str(data["fund_id"]),
         label=str(data["label"]),
         coordinator=coordinator,
@@ -1292,6 +1307,7 @@ async def _create_fund(
     )
     fund = Fund(
         legs=tuple(legs),
+        legs_revision=_declared_legs_revision(playbook) if legs else 0,
         fund_id=f"fund{uuid4().hex[:8]}",
         label=label,
         coordinator=coordinator,
@@ -1578,6 +1594,60 @@ def _leg_scopes() -> dict[str, list[str]]:
             rows = cast("list[dict[str, Any]]", cast("dict[str, Any]", body).get("members") or [])
             out[str(name)] = [str(row["symbol"]) for row in rows]
     return out
+
+
+def _declared_legs_revision(playbook_id: str) -> int:
+    """묶음 선언의 다리 개정 번호 — 선언이 없거나 None 이면 0 (411차)."""
+    wrapper = next((item for item in load_playbooks() if item.playbook_id == playbook_id), None)
+    return 0 if wrapper is None or wrapper.legs_revision is None else wrapper.legs_revision
+
+
+def _refresh_stored_legs(
+    fund_id: str,
+    playbook_id: str,
+    legs: tuple[FundLeg, ...],
+    stored_revision: int,
+    members: Sequence[str],
+) -> tuple[tuple[FundLeg, ...], int]:
+    """되살릴 때 다리 개정 번호가 올랐으면 계좌 층 값을 선언에서 다시 읽는다 (411차).
+
+    Args:
+        fund_id: 펀드 식별자(로그용).
+        playbook_id: 펀드가 도는 묶음 매매법.
+        legs: 저장본 다리들.
+        stored_revision: 저장본의 개정 번호(옛 저장본 0).
+        members: 펀드 종목 — 선언 다리를 만들 때 쓴다(종목은 저장본 다리 것을 그대로 둔다).
+
+    Returns:
+        (다리들, 개정 번호). 번호가 안 올랐거나 다리가 없거나 선언이 안 맞으면 저장본 그대로.
+
+    Note:
+        ⛔ 선언이 안 맞으면(LegError) 던지지 않고 저장본으로 되살린다 — 펀드를 못 되살리면
+        열린 포지션 관리까지 잃는다. 대신 오류 로그를 남긴다(규칙 #8 · 조용한 실패 금지).
+    """
+    declared_rev = _declared_legs_revision(playbook_id)
+    if not legs or declared_rev <= stored_revision:
+        return legs, stored_revision
+    try:
+        declared = _legs_for(playbook_id, members)
+    except HTTPException as exc:
+        _logger.error(
+            "fund_legs_refresh_failed: %s %s → %s %s",
+            fund_id,
+            stored_revision,
+            declared_rev,
+            exc.detail,
+        )
+        return legs, stored_revision
+    fresh, notes = refresh_legs(legs, declared)
+    _logger.warning(
+        "fund_legs_refreshed: %s 개정 %s → %s · %s",
+        fund_id,
+        stored_revision,
+        declared_rev,
+        " | ".join(notes) or "값 변화 없음",
+    )
+    return fresh, declared_rev
 
 
 def _legs_for(playbook_id: str, members: Sequence[str]) -> tuple[FundLeg, ...]:
@@ -2269,6 +2339,7 @@ async def _change_playbook(
     fund.coordinator.marks = {}
     fund.playbook = new_pb
     fund.legs = new_legs
+    fund.legs_revision = _declared_legs_revision(new_pb) if new_legs else 0
     _reattach_gate(fund)  # 갈아 끼운 세션에도
     await _tick(fund)
     return await _status(fund)

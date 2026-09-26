@@ -105,4 +105,5 @@ class TestWireLegs:
         ledger.drawdown_pct = Decimal("3")
         assert long_gate.drawdown() == Decimal("0.03")
         assert (long_gate.brake_at, long_gate.brake_scale) == (Decimal("0.10"), Decimal("0.5"))
-        assert macd_gate.halt_dd_at == Decimal("0.10")
+        assert macd_gate.halt_dd_at == 0  # 411차 — 끄지 않고 x0.25
+        assert (macd_gate.brake_at, macd_gate.brake_scale) == (Decimal("0.10"), Decimal("0.25"))

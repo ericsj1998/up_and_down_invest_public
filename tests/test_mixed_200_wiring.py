@@ -76,11 +76,16 @@ class TestDeclaration:
         assert (long_leg.leverage, long_leg.exposure) == (Decimal(6), Decimal(4))
         assert (tri_leg.leverage, tri_leg.exposure) == (Decimal(4), Decimal(2))
         assert (macd_leg.leverage, macd_leg.exposure) == (Decimal(4), Decimal("1.5"))
-        # 계좌 층 — 돌파 브레이크 10% · 명목 상한 3 · 폭 상한 4.5 / MACD 낙폭 10% 면 끔
+        # 계좌 층 — 돌파 브레이크 10% · 명목 상한 3.6 · 폭 상한 5.4(411차 U4 x1.2) /
+        # MACD 는 낙폭 10% 면 끄지 않고 x0.25(411차 P25)
         assert long_leg.drawdown_brake is not None and long_leg.drawdown_brake.at == Decimal("0.10")
-        assert long_leg.notional_cap == Decimal(3)
-        assert long_leg.breadth_cap is not None and long_leg.breadth_cap.cap == Decimal("4.5")
-        assert macd_leg.halt_dd_at == Decimal("0.10") and macd_leg.drawdown_brake is None
+        assert long_leg.notional_cap == Decimal("3.6")
+        assert long_leg.breadth_cap is not None and long_leg.breadth_cap.cap == Decimal("5.4")
+        assert macd_leg.halt_dd_at is None and macd_leg.drawdown_brake is not None
+        assert (macd_leg.drawdown_brake.at, macd_leg.drawdown_brake.scale) == (
+            Decimal("0.10"),
+            Decimal("0.25"),
+        )
         assert tri_leg.halt_dd_at is None and tri_leg.drawdown_brake is None
 
     def test_fund_members_are_the_union_of_the_legs(self) -> None:
@@ -105,7 +110,9 @@ class TestDeclaration:
             low=Decimal("0.6"),
             high=Decimal("1.8"),
         )
-        assert books[MACD].entry_ref_sma_down == RefSmaDown(bars=50, lag=5)
+        # 411차 — BTC 4H SMA50 하락 문을 뺐다(408차 V1). 선언 자료형은 그대로 쓸 수 있다.
+        assert books[MACD].entry_ref_sma_down is None
+        assert RefSmaDown(bars=50, lag=5).bars == 50
         assert (
             books[TRI].entry_ref_surge_cap
             == books["private_strategy"].entry_ref_surge_cap
@@ -121,7 +128,8 @@ class TestDeclaration:
                 TRI,
                 (*keep, "ma_exit_above_short", "entry_ref_return_band"),
             ),
-            ("private_strategy", MACD, (*keep, "macd_exit_above_short")),
+            # 411차 — MACD 다리는 새 규칙(영상 1 원형 + 히스토그램 두 봉 · 26봉) · 측정용 판과 같다
+            ("private_strategy", MACD, (*keep, "macd_exit_above_short", "max_hold_bars")),
         )
         for src, leg, names in pairs:
             for name in names:
@@ -209,11 +217,13 @@ class TestFundDrawdownHalt:
     def test_a_sizeless_question_is_not_blocked(self) -> None:
         assert self.gate("0.3").blocks(AT) is None
 
-    def test_only_the_macd_leg_watches_the_drawdown_for_halting(self) -> None:
+    def test_no_leg_halts_on_the_drawdown_macd_shrinks_instead(self) -> None:
         legs = mixed_legs()
         gate = leg_gate({}, legs, lambda: Decimal("0.2"))
         by = {leg.playbook: gate.legs[leg.attribution] for leg in legs}
-        assert by[MACD].halt_dd_at == Decimal("0.10") and by[MACD].drawdown is not None
+        # 411차 P25 — MACD 는 끄지 않고 x0.25
+        assert by[MACD].halt_dd_at == 0 and by[MACD].drawdown is not None
+        assert (by[MACD].brake_at, by[MACD].brake_scale) == (Decimal("0.10"), Decimal("0.25"))
         assert by[TRI].drawdown is None and by[TRI].halt_dd_at == 0
         assert by[LONG].halt_dd_at == 0 and by[LONG].brake_at == Decimal("0.10")
 

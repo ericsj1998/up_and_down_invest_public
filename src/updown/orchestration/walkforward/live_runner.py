@@ -2100,7 +2100,7 @@ class LiveRunner:
             (
                 item
                 for item in reversed(self._session.ledger.records)
-                if item.outcome is Outcome.SIGNAL_EXIT
+                if item.outcome in (Outcome.SIGNAL_EXIT, Outcome.TIME_EXIT)  # 411차 시간 청산도
             ),
             None,
         )
@@ -5623,7 +5623,14 @@ class LiveRunner:
             Outcome.STOP_LOSS,
             Outcome.HALF_BREAKEVEN,
         )
-        if now.outcome is not Outcome.SIGNAL_EXIT and not stop_by_close:
+        # ⭐ 411차 — 시간 청산(`max_hold_bars`)도 세션발 전량 청산이다. 신호 청산과 같은 길로 옮긴다
+        #    (안 옮기면 원장만 닫히고 포지션이 남는다).
+        timed = now.outcome is Outcome.TIME_EXIT
+        # ⭐ 411차 — 목표(2.5R) 청산은 거래소 지정가 익절이 보통 먼저 채운다
+        #    (그러면 아래 size 0 에서 끝).
+        #    세션이 닿음을 먼저 봤는데 지정가가 아직 안 채워졌으면 여기서 시장가로 마무리한다.
+        took = now.outcome is Outcome.TAKE_PROFIT
+        if now.outcome is not Outcome.SIGNAL_EXIT and not (timed or took) and not stop_by_close:
             return
         if any(item.outcome is Outcome.OPEN for item in self._session.ledger.records):
             # 같은 걸음에 뒤집었다 — 반대 진입 주문이 그쪽 경로로 나간다.
@@ -5641,7 +5648,11 @@ class LiveRunner:
             #   만료는 `_expire_maker_exit` 가 시장가로 마무리한다 — **반드시** 돈다.
             bars = self._session.playbook.maker_exit_bars
             # 손절은 손절이다 — 마감 판정 손절은 지정가로 기다리지 않는다.
-            limit = await self._maker_exit_price(now) if (bars > 0 and not stop_by_close) else None
+            limit = (
+                await self._maker_exit_price(now)
+                if (bars > 0 and not stop_by_close and not took)
+                else None
+            )
             if limit is not None:
                 done = await self._orders.submit_order(
                     close_limit_order(
@@ -5657,6 +5668,10 @@ class LiveRunner:
                 role, note = (
                     ("손절(마감판정)", "시장가 전량 — close 매매법의 손절은 세션이 판정한다")
                     if stop_by_close
+                    else ("시간청산", "시장가 전량 — 보유 봉 수를 채웠다")
+                    if timed
+                    else ("목표청산", "시장가 전량 — 목표에 닿았는데 지정가 익절이 안 채워졌다")
+                    if took
                     else ("신호청산", "시장가 전량")
                 )
             self.orders += 1

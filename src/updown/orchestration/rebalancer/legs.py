@@ -12,7 +12,7 @@ Gate 무기한은 종목당 포지션이 하나라, 시간축·방향이 다른 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any, cast
 
@@ -197,6 +197,38 @@ def declared_legs(
     if orphans:
         raise LegError(f"어느 다리에도 안 속하는 종목이 있다: {', '.join(orphans)}")
     return tuple(out)
+
+
+def refresh_legs(
+    stored: Sequence[FundLeg], declared: Sequence[FundLeg]
+) -> tuple[tuple[FundLeg, ...], tuple[str, ...]]:
+    """돌던 펀드의 다리 **계좌 층 값**을 선언에서 다시 읽는다 (411차 · 다리 개정 번호가 오를 때만).
+
+    저장본이 선언을 이기는 원칙(T286 · T291)의 **명시적 예외**다 — 묶음 매매법이 `legs_revision` 을
+    올렸을 때만 불린다. 종목(`symbols`)과 귀속 키(`attribution`)는 저장본 그대로다: 종목은 사람이
+    바구니에서 고친 것이고, 귀속 키가 바뀌면 펀드 문이 모든 진입을 막는다.
+
+    Args:
+        stored: 저장본 다리들.
+        declared: 지금 선언으로 만든 다리들.
+
+    Returns:
+        (새 다리들, 바뀐 다리 설명). 선언에 없는 귀속 키의 다리는 그대로 둔다(설명에 적는다).
+    """
+    by = {leg.attribution: leg for leg in declared}
+    out: list[FundLeg] = []
+    notes: list[str] = []
+    for leg in stored:
+        fresh = by.get(leg.attribution)
+        if fresh is None:
+            out.append(leg)
+            notes.append(f"{leg.attribution}: 선언에 같은 귀속 키가 없어 저장본 그대로")
+            continue
+        made = replace(fresh, symbols=leg.symbols)
+        if made != leg:
+            notes.append(f"{leg.attribution}: {leg.to_dict()} → {made.to_dict()}")
+        out.append(made)
+    return tuple(out), tuple(notes)
 
 
 def legs_on(legs: Sequence[FundLeg], symbol: str) -> tuple[FundLeg, ...]:

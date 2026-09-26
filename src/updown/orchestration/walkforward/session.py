@@ -324,6 +324,22 @@ def funding_blocks(direction: Direction, rate: Decimal | None, cap: Decimal | No
     return rate < -cap
 
 
+def tilted(size_mult: Decimal, book: Playbook) -> Decimal:
+    """탐지기 크기 기울기에 매매법의 제곱을 건다 (T15 · 411차 · 순수).
+
+    Args:
+        size_mult: 탐지기가 낸 크기 승수(돌파 롱 0.5 · 1.0 · 1.5).
+        book: 진입을 낸 매매법 — `size_mult_power` 가 None 이면 그대로 돌려준다(동결 무변화).
+
+    Returns:
+        size_mult ** power. 1 은 어떤 제곱이어도 1 이다.
+    """
+    power = book.size_mult_power
+    if power is None or size_mult == 1:
+        return size_mult
+    return size_mult**power
+
+
 @dataclass(slots=True)
 class Session:
     """걸어가기 한 판.
@@ -1925,6 +1941,20 @@ class Session:
                 self._open = None
                 self.journal()
                 return (done,)
+            # ⭐ 411차 — 시간 청산(`max_hold_bars`). 체결 뒤 판정 TF 봉이 그만큼 닫혔으면
+            #    종가에 전량.
+            #    손절 · 목표는 위에서 먼저 봤다. 신호 청산과 같은 종가라 값은 연구 순서와 같다.
+            if book.max_hold_bars is not None and self._bars_held(held, book) >= book.max_hold_bars:
+                done = held.closed(
+                    at=bar.ts,
+                    price=bar.close,
+                    outcome=Outcome.TIME_EXIT,
+                    cost_pct=self._exit_cost(held, Outcome.TIME_EXIT),
+                )
+                self.ledger.replace(done)
+                self._open = None
+                self.journal()
+                return (done,)
             # 🔴 **국면이 반대로 뒤집혔으면 손절을 본절로 조인다** (T26 B · 사용자 확정
             #    2026-08-22). 신규 차단(`Proposal.blocked`)은 새 진입만 다루고, 이미
             #    든 것이 정확히 그 리스크다 — *"추세 전환 때 리스크를 최대한 줄인다."*
@@ -2292,6 +2322,32 @@ class Session:
         lost = body < level if direction is TrendDirection.UP else body > level
         if lost:
             self._declared = None
+
+    def _bars_held(self, held: TradeRecord, book: Playbook) -> int:
+        """체결 뒤 **닫힌** 판정 TF 봉 수 — 시간 청산(`max_hold_bars`)의 자 (411차).
+
+        `_maybe_add` 와 같은 셈이다: `opened_at` 은 체결 봉의 시작이고 체결은 그 봉 종가라,
+        체결 시각 뒤에 끝난 판정 TF 봉만 센다(4H 걸음이면 신호 봉 다음 봉부터 · 5m 걸음이면
+        신호 4H 봉이 끝난 뒤 닫힌 4H 봉부터 — 둘이 같은 봉을 센다).
+
+        Args:
+            held: 보유 기록.
+            book: 이 매매를 낸 매매법.
+
+        Returns:
+            봉 수. 판정 TF 창이 없거나 체결 시각을 모르면 0.
+        """
+        gauge = self._frame(book.timeframe, None)
+        if gauge is None or held.opened_at is None:
+            return 0
+        filled = held.opened_at + interval(self.price_frame or self.step_frame)
+        span = interval(book.timeframe)
+        count = 0
+        for row in reversed(gauge.rows):
+            if row.ts + span <= filled:
+                break
+            count += 1
+        return count
 
     def _maybe_add(self, book: Playbook, now: datetime) -> None:
         """확인된 강한 돌파면 불타기 시각 · 가격을 기록에 적는다 (T308 · 366 ~ 370차).
@@ -3082,7 +3138,7 @@ class Session:
         # ⭐ **탐지기가 낸 크기 승수** (T81 변동성 타게팅). 기본 1 이라 무변화다.
         #    분석이 *'이 자리는 평소보다 작게'* 를 판단하고, 수량은 여전히
         #    decision 이 정한다 — 여기서는 곱하기만 한다.
-        exposure *= setup.size_mult
+        exposure *= tilted(setup.size_mult, self._book_by_owner(owner))
         exposure = self._leg_scaled(exposure, owner)  # T291 — 시장가 경로와 같은 자
         scaled = self._vol_scaled(exposure, self._book_by_owner(owner), bar.ts)  # T304 — 같은 자
         if scaled is None:
@@ -3760,7 +3816,8 @@ class Session:
         if chosen.playbook.consec_cut:
             exposure *= self._consec_loss_scale()
         # ⭐ 탐지기가 낸 크기 승수 (T81). 기본 1 — 지정가 경로와 같은 규칙이다.
-        exposure *= setup.size_mult
+        #    T15(411차) — 매매법이 제곱을 선언했으면 기울기에 건다(`size_mult_power`).
+        exposure *= tilted(setup.size_mult, chosen.playbook)
         # ⭐ T291 — 다리 배율이 선언돼 있으면 그 다리의 노출로 바꾼다(없으면 그대로).
         exposure = self._leg_scaled(exposure, owner)
         # ⭐ T304 — 변동성 목표 크기. 다리 노출 뒤 · 펀드 문 앞(연구 `size_fn` 과 같은 순서).

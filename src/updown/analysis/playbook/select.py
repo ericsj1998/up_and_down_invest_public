@@ -391,6 +391,38 @@ def _fund_dd_max(body: Mapping[str, object], name: str) -> Decimal | None:
     return made
 
 
+def _positive_int(body: Mapping[str, object], key: str, name: str) -> int | None:
+    """양의 정수 한 줄 — `max_hold_bars`(시간 청산) · `legs_revision`(다리 개정 번호) (411차).
+
+    Raises:
+        PlaybookConfigError: 정수가 아니거나 1 보다 작은 경우.
+    """
+    raw = body.get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise PlaybookConfigError(f"{name}.{key} {raw!r} — 1 이상의 정수여야 한다")
+    return raw
+
+
+def _size_mult_power(body: Mapping[str, object], name: str) -> Decimal | None:
+    """`size_mult_power` 한 줄 — 0 < 값 ≤ 3(T15 기울기 제곱).
+
+    Raises:
+        PlaybookConfigError: 숫자가 아니거나 범위 밖인 경우.
+    """
+    raw = body.get("size_mult_power")
+    if raw is None:
+        return None
+    try:
+        made = Decimal(str(raw))
+    except ArithmeticError as exc:
+        raise PlaybookConfigError(f"{name}.size_mult_power — {exc}") from exc
+    if not Decimal(0) < made <= Decimal(3):
+        raise PlaybookConfigError(f"{name}.size_mult_power {made} — 0 초과 3 이하여야 한다")
+    return made
+
+
 _KNOWN_KEYS = frozenset(field.name for field in fields(Playbook)) - {"playbook_id"}
 """선언에 쓸 수 있는 키 — `Playbook` 의 필드에서 나온다(`playbook_id` 는 매핑의 키다).
 
@@ -548,6 +580,8 @@ def _load_file(target: Path) -> list[Playbook]:
                         )
                     ),
                     entry_fund_dd_max=_fund_dd_max(body, f"playbooks.{name}"),
+                    max_hold_bars=_positive_int(body, "max_hold_bars", f"playbooks.{name}"),
+                    size_mult_power=_size_mult_power(body, f"playbooks.{name}"),
                     entry_ref_ma_gate=(
                         None
                         if body.get("entry_ref_ma_gate") is None
@@ -555,6 +589,7 @@ def _load_file(target: Path) -> list[Playbook]:
                     ),
                     bundle=tuple(str(x) for x in _items(body.get("bundle"), "bundle")),
                     split_legs=_split_legs(body, f"playbooks.{name}"),
+                    legs_revision=_positive_int(body, "legs_revision", f"playbooks.{name}"),
                     leg_exposure=_leg_exposure(body, f"playbooks.{name}"),
                     risk_pct=(
                         None if body.get("risk_pct") is None else Decimal(str(body["risk_pct"]))

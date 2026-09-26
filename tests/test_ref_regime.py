@@ -85,10 +85,9 @@ class TestLiveInjection:
         # T304 #8 급등 — 00:00 UTC 에 끝나는 봉의 종가로 7 일 수익률
         daily = [b.close for b in bars if (b.ts + timedelta(hours=4)).hour == 0]
         assert s.ref_surge == daily[-1] / daily[-1 - 7] - 1
-        # T304 #2 하락 문 — SMA50 이 5 봉 전보다 낮은가
-        now_ = statistics.fmean(closes[-50:])
-        then_ = statistics.fmean(closes[-55:-5])
-        assert s.ref_sma_down == (now_ < then_)
+        # T304 #2 하락 문 — 411차에 MACD 다리에서 뺐다(408차 V1) · 실계좌 세 다리 중 쓰는 곳이 없다
+        assert s.ref_sma_down is None
+        assert len(closes) == 700
         # 변동성 목표 — 30 일
         assert s.ref_vol == btc_daily_vol(bars, 30)
         assert runner._ref_regime_at == bars[-1].ts
@@ -154,7 +153,7 @@ class TestPureFunction:
 
         declared = {b.playbook_id: b for b in load_playbooks()}
         needs = needs_of(declared[name] for name in LIVE)
-        assert needs == RefNeeds(
-            ma_n=None, band_n=360, surge_days=7, sma_bars=50, sma_lag=5, vol_days=30
+        assert needs == RefNeeds(  # 411차 — SMA50 하락 문을 뺐다
+            ma_n=None, band_n=360, surge_days=7, sma_bars=None, sma_lag=None, vol_days=30
         )
         assert needs.bars == 360
