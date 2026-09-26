@@ -72,8 +72,9 @@ for vol in "${VOLS[@]}"; do
   if [ $DELETE = 1 ] && [ ${#verified[@]} -gt 0 ]; then
     # 지우는 목록은 로컬에서 체크섬이 맞은 이름뿐 — 서버에서 한 번 더 이름 규칙 · 오늘 아님을 확인한다
     names="${verified[*]}"
-    "${SSH[@]}" "cd '$dir' && for f in $names; do case \"\$f\" in *-$TODAY.jsonl) continue;; esac; \
-      echo \"\$f\" | grep -Eq '^[a-z_]+-[0-9]{4}-[0-9]{2}-[0-9]{2}\.jsonl$' && sudo -n rm -f -- \"\$f\"; done"
+    # ⚠️ 볼륨 폴더는 root 전용이라 cd 가 안 된다 — 전체 경로로 sudo rm
+    "${SSH[@]}" "for f in $names; do case \"\$f\" in *-$TODAY.jsonl) continue;; esac; \
+      echo \"\$f\" | grep -Eq '^[a-z_]+-[0-9]{4}-[0-9]{2}-[0-9]{2}\.jsonl$' && sudo -n rm -f -- '$dir/'\"\$f\"; done" < /dev/null
     echo "${LABEL[$vol]}: 서버에서 ${#verified[@]} 개 지움"
   fi
 done

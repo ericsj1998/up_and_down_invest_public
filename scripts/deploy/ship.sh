@@ -81,3 +81,8 @@ git tag "$TAG" >/dev/null && git push -q origin "$TAG" && echo "tag $TAG pushed"
 echo "=== 6) 밖에서 확인"
 curl -s -o /dev/null -w "https health: %{http_code}\n" --max-time 20 "https://${PUBLIC_DOMAIN:?scripts/ops/host.env 에 PUBLIC_DOMAIN 이 없다}/api/health"
 echo "✅ $TAG 배포 완료"
+
+# 🔴 T310 R1(2026-09-26) — 옛 이미지를 남기면 배포마다 약 730 MB 씩 디스크가 찬다(89% 까지 갔다).
+#    버전 태그 최신 2개(방금 판 + 되돌림용 하나)와 컨테이너가 쓰는 이미지만 남긴다 · 강제 삭제 없음.
+echo "=== 7) 옛 이미지 정리 (최신 2개 · 쓰는 중인 것은 남김)"
+$SSH "cd $REMOTE_DIR && KEEP=2 bash scripts/deploy/prune_images.sh" || echo "⚠️ 이미지 정리 실패 — 배포는 끝났다 · 손으로: bash scripts/ops/remote.sh scripts/deploy/prune_images.sh"
