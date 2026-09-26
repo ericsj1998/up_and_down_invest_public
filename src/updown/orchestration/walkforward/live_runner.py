@@ -82,6 +82,7 @@ from updown.orchestration.walkforward.order_mapping import (
     close_order,
     contracts_for,
     entry_order,
+    fit_to_margin,
     limit_entry_order,
     order_key,
     resize_order,
@@ -785,6 +786,9 @@ class LiveRunner:
 
     _last_pnl_at: float = 0.0
     """마지막 회계 대조 시각 (monotonic) — `PNL_AUDIT_INTERVAL` 스로틀용."""
+    _entry_spare: Decimal | None = None
+    """마지막 `_usable_equity` 가 읽은 거래소 가용 — `_send` 가 증거금 맞춤(`fit_to_margin`)에 쓴다.
+    None = 모른다(자르지 않는다 · 시험 대역처럼 `_usable_equity` 를 갈아 끼운 경우도 여기)."""
     _pnl_findings: list[dict[str, str]] | None = None
     """마지막 회계 대조 결과 — 스로틀 중에는 이 캐시를 돌려준다 (accounting_ok 유지)."""
 
@@ -6082,6 +6086,7 @@ class LiveRunner:
         """
         budget = self._session.ledger.sizing_base
         spare = await self._spare_margin()
+        self._entry_spare = spare
         equity = (budget if spare is None else min(budget, spare)) * MARGIN_HEADROOM
         if spare is not None and spare < budget:
             self.squeezed = {
@@ -6257,6 +6262,34 @@ class LiveRunner:
             round_to_nearest=True,
             max_leverage=envelope,
         )
+        # 🔴 **증거금이 가용 안에 들게 줄인다** (2026-09-26 · 돌파 롱 크기 x1.2).
+        #    노출(변동성 배수 포함)이 거래소 배율을 넘으면 증거금 = 쓸 돈 x 노출 ÷ 배율
+        #    이 쓸 돈보다 크다 — 거래소가 거절하면 원장만 "보유중" 으로 남는다.
+        #    펀드 재현(`runner_rules.entry_contracts`)도 같은 함수를 부른다.
+        spare = self._entry_spare
+        fitted = fit_to_margin(
+            contracts,
+            record.entry,
+            multiplier,
+            self._session.ledger.leverage,
+            None if spare is None else spare * MARGIN_HEADROOM,
+        )
+        if fitted < contracts:
+            self._log.warning(
+                "live_entry_fit_margin",
+                payload={
+                    "trade_id": record.trade_id,
+                    "wanted": contracts,
+                    "fitted": fitted,
+                    "spare": None if spare is None else str(spare),
+                    "leverage": str(leverage),
+                    "note": "증거금이 가용을 넘어 계약을 줄였다 — 노출이 거래소 배율보다 크다",
+                },
+            )
+            if fitted < max(size_min, 1):
+                self._skip_unfillable(record, equity, multiplier, size_min)
+                return
+            contracts = fitted
         drift = rounding_drift_pct(contracts, equity, leverage, record.entry, multiplier)
         self._log.info(
             "live_runner_sizing",

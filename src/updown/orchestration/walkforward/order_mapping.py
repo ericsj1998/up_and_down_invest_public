@@ -286,6 +286,40 @@ def can_size(
     return True
 
 
+def fit_to_margin(
+    contracts: int,
+    price: Decimal,
+    multiplier: Decimal,
+    leverage: Decimal,
+    spare: Decimal | None,
+) -> int:
+    """격리 증거금이 거래소 가용을 넘지 않게 계약 수를 줄인다 (2026-09-26 · 돌파 롱 크기 x1.2).
+
+    Args:
+        contracts: 이미 정한 계약 수.
+        price: 진입가.
+        multiplier: 계약 승수.
+        leverage: 판의 거래소(격리) 배율 — 증거금 = 계약 x 가격 x 승수 ÷ 이것.
+        spare: 여유를 뺀 거래소 가용. None 이면 모른다(자르지 않는다).
+
+    Returns:
+        줄인 계약 수(0 이상). 가용 안이면 그대로.
+
+    Note:
+        🔴 **노출이 거래소 배율을 넘을 수 있다.** 쓸 돈(예산 · 가용 중 작은 쪽)에
+        노출을 곱해 계약을 정하므로 증거금은 쓸 돈 x 노출 ÷ 배율이다. 돌파 롱은
+        배율 6 = 노출 4 x 변동성 배수 상한 1.5 로 맞춰 두어 증거금이 쓸 돈을 넘지
+        않았는데, 크기 x1.2(배수 0.6 ~ 1.8)에서는 최대 1.2배가 된다. 안 자르면
+        거래소가 `INSUFFICIENT_AVAILABLE` 로 거절하고 원장만 "보유중" 으로 남는다
+        (T286 과 같은 고아).
+        ⚠️ 모르면 자르지 않는다 — `_spare_margin` 이 못 읽은 것과 같은 규칙.
+    """
+    if spare is None or leverage <= 0 or price <= 0 or multiplier <= 0:
+        return contracts
+    room = (spare * leverage / (price * multiplier)).to_integral_value(rounding=ROUND_DOWN)
+    return max(0, min(contracts, int(room)))
+
+
 def rounding_drift_pct(
     contracts: int,
     equity: Decimal,

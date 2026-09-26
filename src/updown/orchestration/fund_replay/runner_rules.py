@@ -4,7 +4,8 @@
 대신 러너가 세션의 진입 · 청산 기록에 얹는 **크기 규칙**만 같은 상수 · 같은 함수로 다시 부른다.
 
 - 진입 크기: 쓸 돈 = min(예산, 거래소 가용) x `MARGIN_HEADROOM` → 계약 = `contracts_for`
-  (반올림 · 봉투 = 판 배율 x `MAX_SIZE_MULT`) → 못 사면 거둔다
+  (반올림 · 봉투 = 판 배율 x `MAX_SIZE_MULT`) → 증거금이 가용을 넘으면 줄인다
+  (`fit_to_margin`) → 못 사면 거둔다
   (`LiveRunner._usable_equity` · `_send` · `_skip_unfillable`).
 - 실제 노출: 계약 x 가격 x 승수 ÷ 자리 예산(`_record_filled_exposure`) — 총 명목 상한이 센다.
 - 계약 손익: 원장은 의도 노출로 손익을 적지만 실계좌 펀드는 틱마다 **지갑**(계약 손익)에
@@ -22,7 +23,12 @@ from typing import TYPE_CHECKING
 
 from updown.orchestration.walkforward.ledger import Outcome
 from updown.orchestration.walkforward.live_runner import MARGIN_HEADROOM, add_pnl_of
-from updown.orchestration.walkforward.order_mapping import MAX_SIZE_MULT, can_size, contracts_for
+from updown.orchestration.walkforward.order_mapping import (
+    MAX_SIZE_MULT,
+    can_size,
+    contracts_for,
+    fit_to_margin,
+)
 
 if TYPE_CHECKING:
     from updown.orchestration.walkforward.ledger import TradeRecord
@@ -88,7 +94,7 @@ def entry_contracts(
         max_leverage=envelope,
     ):
         return 0
-    return contracts_for(
+    made = contracts_for(
         equity,
         record.leverage,
         record.entry,
@@ -98,6 +104,16 @@ def entry_contracts(
         round_to_nearest=True,
         max_leverage=envelope,
     )
+    # 실계좌 `_send` 와 같은 증거금 맞춤(2026-09-26) — 노출이 거래소 배율을 넘으면
+    # 가용 안으로 줄이고 못 사면 거둔다
+    fitted = fit_to_margin(
+        made,
+        record.entry,
+        spec.multiplier,
+        ledger_leverage,
+        None if spare is None else spare * MARGIN_HEADROOM,
+    )
+    return fitted if fitted >= max(spec.size_min, 1) else 0
 
 
 def filled_exposure(

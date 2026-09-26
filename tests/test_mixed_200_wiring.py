@@ -89,6 +89,7 @@ class TestDeclaration:
         assert len(got[WRAP]) == 40 and not set(got[TRI]) & set(got[MACD])
 
     def test_every_leg_carries_the_same_vol_target(self) -> None:
+        """숏 다리는 320 · 321차 값 그대로 · 돌파 롱은 그 x1.2(2026-09-26 · 크기 x1.2)."""
         books = {item.playbook_id: item for item in load_playbooks()}
         want = VolTarget(
             scale=Decimal("0.4275650014064095"),
@@ -96,8 +97,14 @@ class TestDeclaration:
             low=Decimal("0.5"),
             high=Decimal("1.5"),
         )
-        for name in (LONG, TRI, MACD):
+        for name in (TRI, MACD):
             assert books[name].entry_vol_target == want, name
+        assert books[LONG].entry_vol_target == VolTarget(
+            scale=Decimal("0.5130780016876914"),
+            days=30,
+            low=Decimal("0.6"),
+            high=Decimal("1.8"),
+        )
         assert books[MACD].entry_ref_sma_down == RefSmaDown(bars=50, lag=5)
         assert (
             books[TRI].entry_ref_surge_cap
@@ -266,11 +273,12 @@ class TestVolScaledSession:
 
     def test_uses_the_day_that_ended_before_the_bar_start(self) -> None:
         fake = fake_session(self.series)
-        # 23:00 에 시작한 봉 — 00:00 에 끝난 오늘 일봉은 아직 안 끝났다 → 어제 값(0.8 · 배수 0.534)
+        # 23:00 에 시작한 봉 — 00:00 에 끝난 오늘 일봉은 아직 안 끝났다
+        # → 어제 값(0.8 · 배수 0.641 = 0.534 x1.2)
         got = self.call(fake, self.day - timedelta(hours=1))
-        assert got == Decimal(4) * (Decimal("0.4275650014064095") / Decimal("0.8"))
-        # 00:00 에 시작한 봉 — 오늘 값(0.2 · 배수 상한 1.5)
-        assert self.call(fake, self.day) == Decimal(6)
+        assert got == Decimal(4) * (Decimal("0.5130780016876914") / Decimal("0.8"))
+        # 00:00 에 시작한 봉 — 오늘 값(0.2 · 배수 상한 1.8 = 1.5 x1.2 · 돌파 롱 크기 x1.2)
+        assert self.call(fake, self.day) == Decimal("7.2")
         assert fake.counted == ["vol:down", "vol:up"]
 
     def test_unknown_vol_holds_the_entry(self) -> None:
