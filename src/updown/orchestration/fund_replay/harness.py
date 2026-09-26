@@ -207,8 +207,8 @@ class FundReplay:
         """러너와 같다 — 판 원장이 몫을 다 잃었으면(`halted_at`) 새 진입을 끈다.
 
         실계좌 `_walk_once` 의 `live_margin_exhausted` 와 같은 규칙이다
-        (보유 관리는 계속 · 자동 재개 없음). 펀드 멤버의 몫(총자본 ÷ 판 수)이 한 건
-        증거금(총자본 ÷ 자리)보다 작아 손절 몇 번에 걸린다(T312).
+        (보유 관리는 계속 · 자동 재개 없음). T312(2026-09-26) 뒤로 펀드 멤버 원장은
+        몫으로 `halted_at` 을 세우지 않으므로 여기서 걸리는 것은 단독 판뿐이다.
         """
         s = board.session
         if s.auto and s.ledger.halted_at:

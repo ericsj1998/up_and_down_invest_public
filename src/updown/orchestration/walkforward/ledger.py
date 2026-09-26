@@ -1034,7 +1034,8 @@ class Ledger:
     거짓: **채우지 않고 몫 안에서 굴린다** — 펀드 멤버. 펀드 멤버는 `wallet_start=0` 으로 격리돼
     있어 채울 돈이 구조적으로 없다. 참으로 두면 손실 한 번에 영구히 새 진입이 멈춘다
     (실계좌 BTC 실측 2026-09-08~09). 거짓이면 증거금 = 몫 + 누적 실현으로 굴러가고,
-    멈춤은 증거금이 0 이하로 갈 때만이다.
+    **몫으로는 멈추지 않는다**(T312 · 2026-09-26 사용자 확정 — 몫이 음수가 돼도 뒤 매매까지 센다 ·
+    멈춤은 펀드 층 낙폭 브레이크 · 다리 끔 · 거래소 가용이 맡는다).
     """
     wallet_start: Decimal = Decimal(0)
     """`WALLET` 모형의 **지갑 시작 잔액** — 라이브는 RUN 을 열 때 거래소에서 읽는다.
@@ -1271,19 +1272,15 @@ class Ledger:
             if tripped is None and stop is not None and drawdown >= stop:
                 tripped = item.trade_id
             if not self.refill:
-                # ⭐ T235 — 펀드 멤버: 채우지 않는다. 몫이 다 없어졌을 때만 멈춘다.
-                if margin <= 0:
-                    return Purse(
-                        rolling=Decimal(0),
-                        reserved=reserved,
-                        topped_up=topped,
-                        wallet=wallet,
-                        earned=earned,
-                        halted_at=item.trade_id,
-                        drawdown_pct=drawdown,
-                        max_drawdown_pct=deepest,
-                        tripped_at=tripped,
-                    )
+                # ⭐ T235 — 펀드 멤버: 채우지 않는다.
+                # 🔴 T312(2026-09-26 · 사용자 확정) — **몫으로 멈추지도 않는다.**
+                #    매매는 자리 예산(총자본 ÷ 자리)을 거는데 몫은 총자본 ÷ 판 수라
+                #    40판이면 약 1/7 이다(실계좌 몫 10.43 · 한 건 증거금 69.55).
+                #    몫 0 이하에서 멈추면 손절 한두 번에 판의 새 진입이 영구히 꺼지고
+                #    (`live_margin_exhausted` → `auto` 끔) 그 뒤 손익도 안 셌다 —
+                #    펀드 재현 게이트 14개월에서 40판 중 10판이 꺼져 연 +230.9% → +105.8%.
+                #    돈은 펀드 지갑 하나이고 멈춤은 펀드 층(낙폭 브레이크 · 다리 끔 ·
+                #    거래소 가용)이 맡는다. 몫(`rolling`)은 음수가 될 수 있다.
                 continue
             if margin >= target:
                 continue

@@ -137,8 +137,11 @@ class TestReplay:
         ]
         assert r1.equity == r2.equity
 
-    def test_a_board_that_lost_its_share_stops_new_entries_like_the_runner(self) -> None:
-        """실계좌 `live_margin_exhausted` 와 같다 — 몫(500)을 넘게 잃으면 `auto` 를 끈다(T312)."""
+    def test_a_board_that_lost_its_share_keeps_trading(self) -> None:
+        """T312 — 몫(500)을 넘게 잃어도 펀드 판은 안 멈춘다.
+
+        원장에 `halted_at` 이 안 서고 `auto` 도 그대로다.
+        """
         a = ScriptSession("AAA_USDT", {1: ("open", Decimal(130)), 3: ("close", Decimal(40))})
         boards = [
             ReplayBoard(symbol="AAA_USDT", session=cast("Any", a), spec=ContractSpec(Decimal(1)))
@@ -147,9 +150,10 @@ class TestReplay:
         result = FundReplay(boards, coordinator, ref_4h=(), seed=1).run(
             START, START + timedelta(hours=6)
         )
-        assert a.ledger.halted_at is not None
-        assert a.auto is False
-        assert ("AAA_USDT", "margin_exhausted") in [(e.symbol, e.kind) for e in result.events]
+        assert a.ledger.realized_cash < -Decimal(500)
+        assert a.ledger.halted_at is None
+        assert a.auto is True
+        assert ("AAA_USDT", "margin_exhausted") not in [(e.symbol, e.kind) for e in result.events]
 
     def test_daily_equity_is_recorded_at_utc_midnight(self) -> None:
         replay, _a, _b = build()
