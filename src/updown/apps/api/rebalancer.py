@@ -1631,21 +1631,26 @@ def _refresh_stored_legs(
     try:
         declared = _legs_for(playbook_id, members)
     except HTTPException as exc:
-        _logger.error(
-            "fund_legs_refresh_failed: %s %s → %s %s",
-            fund_id,
-            stored_revision,
-            declared_rev,
-            exc.detail,
+        _events.error(
+            "fund_legs_refresh_failed",
+            payload={
+                "fund_id": fund_id,
+                "from": stored_revision,
+                "to": declared_rev,
+                "error": str(exc.detail)[:300],
+                "note": "선언이 안 맞아 저장본 다리로 되살렸다 — 새 다리 값이 안 들어갔다",
+            },
         )
         return legs, stored_revision
     fresh, notes = refresh_legs(legs, declared)
-    _logger.warning(
-        "fund_legs_refreshed: %s 개정 %s → %s · %s",
-        fund_id,
-        stored_revision,
-        declared_rev,
-        " | ".join(notes) or "값 변화 없음",
+    _events.warning(
+        "fund_legs_refreshed",
+        payload={
+            "fund_id": fund_id,
+            "from": stored_revision,
+            "to": declared_rev,
+            "changes": list(notes) or ["값 변화 없음"],
+        },
     )
     return fresh, declared_rev
 
