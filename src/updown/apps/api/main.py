@@ -382,6 +382,10 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         tasks.append(asyncio.create_task(daily_report_loop(), name="daily-report"))
         # ⭐ 자산 시계열 — 매일 한 점 (사용자 2026-09-07: 월별 자산 꺾은선). 리포트와 같은 자리다.
         tasks.append(asyncio.create_task(equity_snapshot_loop(), name="equity-snapshot"))
+        # ⭐ T310 R4 (2026-09-26) — 30분마다 메모리 요약 한 줄(RSS · 스왑 · 판별 급전 봉).
+        from updown.apps.api.resources_admin import memory_beat_loop
+
+        tasks.append(asyncio.create_task(memory_beat_loop(), name="memory-beat"))
 
     app = FastAPI(title="업 앤 다운 API", lifespan=lifespan)
 
