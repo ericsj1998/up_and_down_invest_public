@@ -1402,6 +1402,18 @@ export type ReportDashboard = {
     vault: string | null;
     funds: Record<string, string>;
   }[];
+  /**
+   * 구간 지갑 그래프 — 거래소 자금 원장으로 그린 지갑 잔고(미실현 제외)와 **그때까지 넣은 돈**
+   * (사용자 2026-09-27: 넣은 돈 · 번 돈 · 잃은 돈을 한 그래프에). 장부를 못 읽으면 null.
+   */
+  wallet: {
+    points: { at: string; balance: string; principal: string }[];
+    principal: string;
+    balance: string;
+    earned: string;
+    deposits: string;
+    reached: boolean;
+  } | null;
   configured: boolean;
   default_to: string[];
 };
@@ -2445,17 +2457,22 @@ export type FundMember = FundLeg & {
   bars_error?: string;
 };
 
+/** 펀드 상세보기가 고를 수 있는 시간축 — 서버 `MEMBER_FRAMES` 와 같다 (사용자 2026-09-27). */
+export type MemberFrame = "1h" | "4h" | "1d";
+
 export function fundMembers(
   id: string,
+  timeframe: MemberFrame = "1d",
   bars = 90,
 ): Promise<{
   fund_id: string;
   market: string;
   at: string;
+  timeframe: MemberFrame;
   members: FundMember[];
 }> {
   return request(
-    `/rebalancer/${encodeURIComponent(id)}/members?bars=${bars}`,
+    `/rebalancer/${encodeURIComponent(id)}/members?timeframe=${timeframe}&bars=${bars}`,
     undefined,
     120_000,
   );

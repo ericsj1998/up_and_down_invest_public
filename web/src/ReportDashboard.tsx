@@ -26,6 +26,7 @@ import { useOpenRuns } from "./shell/openRuns";
 import { useThemeValue } from "./shell/theme";
 import { ChartCard, Fact } from "./mtui";
 import { apexBaseOptions } from "./chart/apexBase";
+import { walletLayers } from "./reportWallet";
 
 const POLL_MS = 60_000;
 
@@ -268,7 +269,7 @@ export function ReportDashboard() {
       {/* 차트 */}
       <div className="grid gap-4 xl:grid-cols-3">
         <ChartCard
-          title="계좌 총액 · 월별 (매일 00:05 KST 스냅샷)"
+          title={`계좌 총액 · ${PERIODS.find((p) => p.hours === hours)?.label ?? `${hours}시간`} (지갑 잔고 · 회색 넣은 돈 · 초록 번 돈 · 빨강 잃은 돈)`}
           className="xl:col-span-3"
         >
           <EquityChart data={data} />
@@ -457,42 +458,98 @@ function FundsSection({ data }: { data: Data | null }) {
   );
 }
 
-/** 계좌 총액 시계열 — 달마다 마지막 스냅샷. 배포 뒤부터 쌓이므로 처음엔 점 하나다. */
+/** 넣은 돈(회색) — 번 돈 · 잃은 돈과 한눈에 갈리는 무채색. */
+const PUT_IN = "#9aa4ad";
+
+/**
+ * 계좌 총액 — **고른 기간**의 지갑 잔고를 넣은 돈 · 번 돈 · 잃은 돈 세 층으로 (사용자 2026-09-27).
+ *
+ * 값은 서버(`wallet` · 거래소 자금 원장)가 준 점 그대로다. 층 산식은 `reportWallet.ts` — 입금은 회색만 키운다.
+ * ⚠️ 지갑 잔고는 **실현 기준**이다(미실현 제외) — 위 "계좌 총액" 칸과 같은 정의.
+ */
 function EquityChart({ data }: { data: Data | null }) {
-  const points = (data?.equity_monthly ?? []).filter((p) => p.total !== null);
+  const wallet = data?.wallet ?? null;
+  const layers = useMemo(() => walletLayers(wallet?.points ?? []), [wallet]);
   if (!data) return <Empty text="읽는 중…" />;
-  if (points.length === 0)
-    return (
-      <Empty text="자산 기록이 아직 없다 — 매일 00:05 KST 한 점씩 쌓여 월별 꺾은선이 된다" />
-    );
-  const labels = points.map((p) => {
-    const d = new Date(p.at);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
-  const values = points.map((p) => Number(p.total));
+  if (wallet === null)
+    return <Empty text="거래소 자금 원장을 못 읽었다 — 넣은 돈 · 번 돈을 그릴 수 없다" />;
+  if (layers.x.length === 0) return <Empty text="구간에 그릴 잔고가 없다" />;
+  const earned = n(wallet.earned);
+  const principal = n(wallet.principal);
+  const deposits = n(wallet.deposits);
+  const earnedPct =
+    earned !== null && principal !== null && principal !== 0 ? (earned / principal) * 100 : null;
+  const pair = (ys: number[]) => layers.x.map((x, i) => ({ x, y: ys[i] ?? 0 }));
+  const base = apexBaseOptions();
   const options: ApexOptions = {
-    ...apexBaseOptions(),
-    stroke: { curve: "smooth", width: 2 },
-    colors: [GAIN],
-    markers: { size: 4 },
-    xaxis: { categories: labels },
-    yaxis: { labels: { formatter: (v: number) => usdt(v, 0) } },
+    ...base,
+    chart: { ...base.chart, stacked: true },
+    stroke: { curve: "straight", width: [0, 2, 2] },
+    colors: [PUT_IN, LOSS, GAIN],
+    fill: { type: "solid", opacity: [0.35, 0.55, 0.55] },
+    dataLabels: { enabled: false },
+    legend: { show: true, position: "top", horizontalAlign: "left" },
+    xaxis: { type: "datetime", labels: { datetimeUTC: false } },
+    yaxis: { min: layers.floor, labels: { formatter: (v: number) => usdt(v, 0) } },
     tooltip: {
-      ...apexBaseOptions().tooltip,
-      y: { formatter: (v: number) => `${usdt(v)} USDT` },
+      ...base.tooltip,
+      shared: true,
+      // 층 값 셋 대신 사람이 묻는 것 — 그때 잔고 · 넣은 돈 · 그 차이.
+      custom: ({ dataPointIndex }: { dataPointIndex: number }) => {
+        const bal = layers.balance[dataPointIndex] ?? 0;
+        const put = layers.principal[dataPointIndex] ?? 0;
+        const gap = bal - put;
+        const when = new Date(layers.x[dataPointIndex] ?? 0).toLocaleString("ko-KR", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        return (
+          `<div style="padding:6px 8px;font-size:12px">` +
+          `<div style="opacity:.7">${when}</div>` +
+          `<div>지갑 잔고 <b>${usdt(bal)}</b></div>` +
+          `<div>넣은 돈 <b>${usdt(put)}</b></div>` +
+          `<div style="color:${gap >= 0 ? GAIN : LOSS}">${gap >= 0 ? "번 돈" : "잃은 돈"} ` +
+          `<b>${usdt(Math.abs(gap))}</b></div></div>`
+        );
+      },
     },
   };
   return (
     <>
-      {points.length < 2 ? (
+      <div className="flex flex-wrap gap-x-4 gap-y-1 px-1 pb-1 text-sm">
+        <span>
+          넣은 돈 <b>{usdt(principal)}</b>
+        </span>
+        <span>
+          지갑 잔고 <b>{usdt(n(wallet.balance))}</b>
+        </span>
+        <span className={tone(earned)}>
+          {earned !== null && earned < 0 ? "잃은 돈" : "번 돈"}{" "}
+          <b>
+            {usdt(earned === null ? null : Math.abs(earned))} ({pct(earnedPct)})
+          </b>
+        </span>
+        {deposits !== null && deposits !== 0 ? (
+          <span className="text-blue-gray-500">
+            이 기간 {deposits > 0 ? "입금" : "출금"} <b>{usdt(Math.abs(deposits))}</b>
+          </span>
+        ) : null}
+      </div>
+      {!wallet.reached ? (
         <p className="px-1 pb-1 text-xs text-blue-gray-400">
-          아직 한 달치다 — 다음 달부터 선이 이어진다.
+          받은 장부가 기간 시작까지 닿지 않았다 — 첫 점은 받은 가장 옛 줄에서 거꾸로 푼 값이다.
         </p>
       ) : null}
       <Chart
-        type="line"
-        height={240}
-        series={[{ name: "계좌 총액", data: values }]}
+        type="area"
+        height={260}
+        series={[
+          { name: "넣은 돈", data: pair(layers.kept) },
+          { name: "잃은 돈", data: pair(layers.lost) },
+          { name: "번 돈", data: pair(layers.earned) },
+        ]}
         options={options}
       />
     </>

@@ -33,6 +33,7 @@ from updown.orchestration.report.daily import (
     _fund_rows,  # pyright: ignore[reportPrivateUsage] — 미리보기=발송 같은 길 (T35)
     _market_slices,  # pyright: ignore[reportPrivateUsage]
     build_performance,
+    load_wallet,
     mail_settings_of,
     send_report,
     window_for,
@@ -356,6 +357,7 @@ async def dashboard(hours: int = 24) -> dict[str, Any]:
         default_to=[name.strip() for name in (settings.report_to or "").split(",") if name.strip()],
         funds=dash.fund_rows(load_fund_snapshots()),
         equity=equity.monthly(equity.load()),
+        wallet=await load_wallet(window),
     )
 
 

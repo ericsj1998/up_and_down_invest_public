@@ -16,6 +16,7 @@ from updown.common.domain.instrument import Market
 from updown.common.logging.setup import get_logger
 from updown.execution.gateway import OrderGatewayError, order_adapter
 from updown.marketdata.provider import MarketDataProvider
+from updown.orchestration.report import equity as equity_mod
 from updown.orchestration.report.mail import MailSettings, send_mail
 from updown.orchestration.report.performance import (
     Performance,
@@ -53,13 +54,16 @@ def window_for(hours: int, *, until: datetime | None = None) -> Window:
     return Window(since=end - timedelta(hours=hours), until=end)
 
 
-async def _exchange_rows(limit: int = 1000, *, market: str = "GATE") -> list[dict[str, str]] | None:
+async def _exchange_rows(
+    limit: int = 1000, *, market: str = "GATE", kind: str | None = None
+) -> list[dict[str, str]] | None:
     """거래소 자금 원장 — 못 읽으면 None (0 으로 꾸미지 않는다).
 
     Args:
         limit: 최대 행 수.
         market: 어느 거래소의 원장인가 (2026-08-26 — Gate 하드코딩이던 것을 파라미터로.
             바이낸스 매매가 리포트 대조에서 통째로 빠져 있었다).
+        kind: 이 `type` 만(예: `dnw` 입출금). 이 인자를 모르는 어댑터면 None.
 
     Note:
         어댑터는 게이트에서 받는다 (절대 규칙 #0). 자격증명이 없으면 None 이고,
@@ -77,7 +81,7 @@ async def _exchange_rows(limit: int = 1000, *, market: str = "GATE") -> list[dic
     if book is None:
         return None
     try:
-        return await book(limit=limit)
+        return await (book(limit=limit, kind=kind) if kind else book(limit=limit))
     except Exception as exc:  # 외부 I/O — 리포트는 매매를 막지 않는다 (§1.2.1)
         _logger.warning("report_exchange_read_failed", payload={"reason": str(exc)[:200]})
         return None
@@ -124,6 +128,30 @@ async def build_performance(
     diverged, note = compare(ledger, exchange)
     return Performance(
         window=window, ledger=ledger, exchange=exchange, diverged=diverged, note=note
+    )
+
+
+async def load_wallet(window: Window, *, market: str = "GATE") -> dict[str, Any] | None:
+    """구간 지갑 그래프 재료 — 넣은 돈 · 번 돈 · 잃은 돈 (사용자 2026-09-27).
+
+    Args:
+        window: 구간.
+        market: 거래소. 입출금 종류(`kind`)를 받는 어댑터만 그린다(지금 Gate).
+
+    Returns:
+        `equity.wallet_payload` 모양. 장부를 못 읽으면 None — 화면이 "못 읽었다" 를
+        적는다(규칙 #8).
+
+    Note:
+        최근 장부 1,000줄(`_exchange_rows` · 손익 카드와 같은 길)과 입출금 줄을 따로 받는다 —
+        입출금은 몇 줄 안 되지만 최근 1,000줄 밖(오래전 첫 입금)에 있을 수 있어서다.
+    """
+    book = await _exchange_rows(market=market)
+    moves = await _exchange_rows(market=market, kind="dnw")
+    if book is None or moves is None:
+        return None
+    return equity_mod.wallet_payload(
+        equity_mod.wallet_series(book, moves, window.since, window.until)
     )
 
 

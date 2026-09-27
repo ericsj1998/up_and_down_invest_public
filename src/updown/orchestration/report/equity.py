@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -24,6 +24,7 @@ from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from updown.common import paths
+from updown.orchestration.rebalancer.anchor import DNW_TYPES
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -207,3 +208,152 @@ def monthly(points: Sequence[EquityPoint]) -> list[EquityPoint]:
         local = point.at.astimezone(KST)
         last[(local.year, local.month)] = point
     return [last[key] for key in sorted(last)]
+
+
+WALLET_POINTS = 120
+"""기간별 지갑 그래프의 점 수 — 24시간이면 12분 · 30일이면 6시간 간격."""
+
+
+@dataclass(frozen=True, slots=True)
+class WalletPoint:
+    """기간별 지갑 그래프 한 점 — 그 시각의 지갑 잔고와 **그때까지 넣은 돈**."""
+
+    at: datetime
+    balance: Decimal
+    principal: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class WalletSeries:
+    """기간별 지갑 그래프 — 넣은 돈 · 번 돈 · 잃은 돈을 한 그래프에.
+
+    사용자 2026-09-27: *"내가 벌어서 얻은 수익과 내가 넣은 돈과, 잃은 돈이 그래프에서 한번에
+    보여야 해"*.
+
+    Attributes:
+        points: 시각 순 점들 — 첫 점이 구간 시작, 마지막 점이 구간 끝.
+        principal: 구간 끝까지 넣은 돈(입금에서 출금을 뺀 합).
+        balance: 구간 끝 지갑 잔고.
+        deposits: 구간 **안** 입출금 합 — 이 구간의 잔고 변화 중 번 돈이 아닌 몫.
+        reached: 받은 장부가 구간 시작까지 닿았나. 거짓이면 첫 점은 받은 가장 옛 줄에서
+            거꾸로 푼 값이다.
+    """
+
+    points: list[WalletPoint]
+    principal: Decimal
+    balance: Decimal
+    deposits: Decimal
+    reached: bool
+
+
+def _when(raw: object) -> datetime | None:
+    """장부 `time`(Gate 초 · 바이낸스 ms) → aware UTC. 못 읽으면 None."""
+    try:
+        value = float(str(raw))
+    except ValueError:
+        return None
+    if value > 1e12:  # 밀리초
+        value /= 1000
+    return datetime.fromtimestamp(value, UTC)
+
+
+def wallet_series(
+    book: Sequence[Mapping[str, str]],
+    deposits: Sequence[Mapping[str, str]],
+    since: datetime,
+    until: datetime,
+    *,
+    points: int = WALLET_POINTS,
+) -> WalletSeries | None:
+    """자금 원장 → 구간의 지갑 잔고 · 넣은 돈 시계열 (순수 · 2026-09-27).
+
+    Args:
+        book: 최근 자금 원장 줄들(`type` · `change` · `balance` · `time`) — 순서 무관.
+            `balance` 는 그 변동 **뒤** 잔고다(Gate). 구간 앞의 줄이 섞여 있어야 구간 시작
+            잔고를 안다.
+        deposits: 입출금 줄들(전 기간) — 넣은 돈의 원천. `book` 과 겹쳐도 된다(여기서만 센다).
+        since: 구간 시작(aware).
+        until: 구간 끝(aware).
+        points: 구간을 나눌 점 수. 점마다 **그 시각까지의 마지막 줄**의 잔고를 쓴다(계단).
+
+    Returns:
+        시계열. `balance` 를 읽을 줄이 하나도 없으면 None — 지어내지 않는다(규칙 #8).
+
+    Note:
+        🔴 **지갑 잔고 = 실현 기준**이다(미실현 제외 · 리포트 계좌 총액 카드와 같은 정의).
+        입금은 잔고를 올리지만 번 돈이 아니므로 넣은 돈(`principal`)에도 같이 더한다 — 둘의
+        차이가 번 돈(양수) · 잃은 돈(음수)이다. 넣은 돈은 거래소가 주는 입출금 기록의 합이라,
+        기록이 거래소 보관 기간(Gate 약 180일) 밖이면 모자랄 수 있다.
+    """
+    rows: list[tuple[datetime, Decimal, Decimal]] = []
+    for raw in book:
+        at = _when(raw.get("time"))
+        bal = _dec(raw.get("balance"))
+        change = _dec(raw.get("change")) or Decimal(0)
+        if at is None or bal is None:
+            continue
+        rows.append((at, change, bal))
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r[0])
+    moves: list[tuple[datetime, Decimal]] = []
+    for raw in deposits:
+        at = _when(raw.get("time"))
+        change = _dec(raw.get("change"))
+        if at is not None and change is not None and str(raw.get("type", "dnw")) in DNW_TYPES:
+            moves.append((at, change))
+    moves.sort(key=lambda m: m[0])
+
+    def principal_at(t: datetime) -> Decimal:
+        return sum((c for at, c in moves if at <= t), Decimal(0))
+
+    before = [r for r in rows if r[0] <= since]
+    reached = bool(before)
+    start = before[-1][2] if before else rows[0][2] - rows[0][1]
+    edges = [since + (until - since) * k / points for k in range(points + 1)]
+    out: list[WalletPoint] = []
+    idx, bal = 0, start
+    for edge in edges:
+        while idx < len(rows) and rows[idx][0] <= edge:
+            if rows[idx][0] > since:
+                bal = rows[idx][2]
+            idx += 1
+        out.append(WalletPoint(at=edge, balance=bal, principal=principal_at(edge)))
+    inside = sum((c for at, c in moves if since < at <= until), Decimal(0))
+    last = out[-1]
+    return WalletSeries(
+        points=out,
+        principal=last.principal,
+        balance=last.balance,
+        deposits=inside,
+        reached=reached,
+    )
+
+
+def wallet_payload(series: WalletSeries | None) -> dict[str, Any] | None:
+    """`wallet_series` → 대시보드 JSON — Decimal 은 문자열, 없으면 None.
+
+    Args:
+        series: 시계열.
+
+    Returns:
+        `{points: [{at, balance, principal}], principal, balance, earned, deposits, reached}`
+        또는 None.
+    """
+    if series is None:
+        return None
+    return {
+        "points": [
+            {
+                "at": p.at.astimezone(UTC).isoformat(),
+                "balance": str(p.balance),
+                "principal": str(p.principal),
+            }
+            for p in series.points
+        ],
+        "principal": str(series.principal),
+        "balance": str(series.balance),
+        "earned": str(series.balance - series.principal),
+        "deposits": str(series.deposits),
+        "reached": series.reached,
+    }

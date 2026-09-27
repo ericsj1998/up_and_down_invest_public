@@ -1866,7 +1866,12 @@ async def listing() -> dict[str, Any]:
 
 
 MEMBER_BARS = 90
-"""상세보기가 그리는 일봉 수 (기본)."""
+"""상세보기가 그리는 봉 수 (기본)."""
+MEMBER_FRAMES = (Timeframe.H1, Timeframe.H4, Timeframe.D1)
+"""상세보기가 고를 수 있는 시간축 — 화면이 한 번에 바꾼다.
+
+사용자 2026-09-27: *"일괄로 1시간봉, 4시간봉 등을 선택해서 볼 수 있으면 좋겠어."*
+"""
 MEMBERS_TTL_S = 300.0
 """상세 응답 기억 시간 — 종목마다 브로커 일봉이라 폴링마다 부르지 않는다."""
 _MEMBERS_CACHE = TtlCache[dict[str, Any]]("fund.members", MEMBERS_TTL_S)
@@ -1894,13 +1899,65 @@ def bar_changes(closes: Sequence[Decimal]) -> dict[str, str | None]:
     }
 
 
+def time_changes(stamps: Sequence[datetime], closes: Sequence[Decimal]) -> dict[str, str | None]:
+    """마지막 종가 기준 1일 · 5일 등락(%) — **시각으로** 잰다 (순수 · 2026-09-27).
+
+    Args:
+        stamps: 봉 시작 시각 오름차순.
+        closes: 같은 순서의 종가.
+
+    Returns:
+        `{last, change_1d_pct, change_5d_pct}` — 그만큼 거슬러 갈 봉이 없으면 그 칸은 None.
+
+    Note:
+        시간축을 고르게 되면서(1시간 · 4시간 · 일봉) "1일" 이 "1봉 전" 이 아니게 됐다. 마지막 봉
+        시작에서 하루(닷새) 전 이하인 가장 늦은 봉과 견준다 — 일봉이면 `bar_changes` 와 같다.
+    """
+    out: dict[str, str | None] = {
+        "last": str(closes[-1]) if closes else None,
+        "change_1d_pct": None,
+        "change_5d_pct": None,
+    }
+    if not closes:
+        return out
+    for days, key in ((1, "change_1d_pct"), (5, "change_5d_pct")):
+        target = stamps[-1] - timedelta(days=days)
+        back = [i for i, t in enumerate(stamps) if t <= target]
+        if back and closes[back[-1]] != 0:
+            out[key] = str(((closes[-1] / closes[back[-1]]) - 1) * 100)
+    return out
+
+
+def member_frame(raw: str) -> Timeframe:
+    """상세보기 시간축 문자열 → `Timeframe` — 고를 수 있는 것만.
+
+    Args:
+        raw: `1h` · `4h` · `1d`.
+
+    Returns:
+        시간축.
+
+    Raises:
+        HTTPException: 400 — 목록 밖.
+    """
+    for frame in MEMBER_FRAMES:
+        if frame.value == raw:
+            return frame
+    allowed = ", ".join(f.value for f in MEMBER_FRAMES)
+    raise HTTPException(400, f"상세보기 시간축은 {allowed} 중 하나 — 받은 값 {raw!r}")
+
+
 @router.get("/{fund_id}/members")
-async def members(fund_id: str, bars: int = MEMBER_BARS) -> dict[str, Any]:
-    """펀드 종목 상세 — 종목마다 마감 일봉과 간단한 상태 (사용자 요구 2026-09-10 "상세보기").
+async def members(
+    fund_id: str, bars: int = MEMBER_BARS, timeframe: str = Timeframe.D1.value
+) -> dict[str, Any]:
+    """펀드 종목 상세 — 종목마다 마감 봉과 간단한 상태 (사용자 요구 2026-09-10 "상세보기").
 
     Args:
         fund_id: 펀드 id.
-        bars: 일봉 수 (10~250).
+        bars: 봉 수 (10~250).
+        timeframe: 시간축 — `1h` · `4h` · `1d`(기본 · 전과 같다). 화면이 카드 전부를 한 번에 바꾼다
+            (사용자 2026-09-27).
 
     Returns:
         `{fund_id, market, at, members: [{symbol, weight, equity, holding, position, unrealized,
@@ -1911,15 +1968,17 @@ async def members(fund_id: str, bars: int = MEMBER_BARS) -> dict[str, Any]:
         HTTPException: 404 — 펀드가 없다.
     """
     fund = _fund_or_404(fund_id)
+    frame = member_frame(timeframe)
     wanted = max(10, min(int(bars), 250))
-    key = f"{fund_id}:{wanted}"
+    key = f"{fund_id}:{frame.value}:{wanted}"
     cached = _MEMBERS_CACHE.get(key)
     if cached is not None:
         return cached
     market = Market(fund.market)
     end = datetime.now(UTC)
-    start = end - timedelta(days=int(wanted * 1.6) + 7)
-    span = interval(Timeframe.D1)
+    span = interval(frame)
+    # 일봉이면 전과 같다(봉 수 x 1.6 일 + 7일 — 휴장 · 빠진 봉 여유).
+    start = end - span * int(wanted * 1.6) - timedelta(days=7)
     rows: list[dict[str, Any]] = []
     async with MarketDataProvider() as provider:
         adapter = provider.adapter_for(market)
@@ -1928,7 +1987,7 @@ async def members(fund_id: str, bars: int = MEMBER_BARS) -> dict[str, Any]:
             candles: list[Any] = []
             try:
                 candles = list(
-                    await adapter.get_candles(instrument_of(sym, market), Timeframe.D1, start, end)
+                    await adapter.get_candles(instrument_of(sym, market), frame, start, end)
                 )
             except Exception as exc:
                 leg["bars_error"] = str(exc)[:120]
@@ -1940,7 +1999,7 @@ async def members(fund_id: str, bars: int = MEMBER_BARS) -> dict[str, Any]:
                 {
                     **leg,
                     "symbol": sym,
-                    **bar_changes([c.close for c in closed]),
+                    **time_changes([c.ts for c in closed], [c.close for c in closed]),
                     "bars": [
                         {
                             "time": int(c.ts.timestamp()),
@@ -1958,6 +2017,7 @@ async def members(fund_id: str, bars: int = MEMBER_BARS) -> dict[str, Any]:
         "fund_id": fund.fund_id,
         "market": market.value,
         "at": end.isoformat(),
+        "timeframe": frame.value,
         "members": rows,
     }
     _MEMBERS_CACHE.put(key, body)

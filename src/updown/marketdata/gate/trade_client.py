@@ -354,11 +354,14 @@ class GateTradeClient:
             raise GateApiError(f"계좌 응답이 객체가 아니다: {type(found).__name__}")
         return cast("dict[str, Any]", found)
 
-    async def account_book(self, *, limit: int = 30) -> list[dict[str, Any]]:
+    async def account_book(
+        self, *, limit: int = 30, kind: str | None = None
+    ) -> list[dict[str, Any]]:
         """**자금 변동 원장** — 돈이 왜 움직였는지 (T14-2).
 
         Args:
             limit: 가져올 줄 수.
+            kind: 이 `type` 만 (예: `dnw` 입출금 — 리포트 "넣은 돈" · 2026-09-27). None 이면 전부.
 
         Returns:
             최근 변동들. 각 줄에 `type` · `change` · `time` · `text` 가 있다.
@@ -384,9 +387,10 @@ class GateTradeClient:
             `text` 에 남는다 — 그래서 부르는 쪽이 문자열을 본다. 여기서는 **읽어 주기만**
             한다 (해석을 클라이언트에 넣으면 거래소 문구가 바뀔 때 여기가 깨진다).
         """
-        found = await self._request(
-            "GET", f"/futures/{SETTLE}/account_book", params={"limit": str(limit)}
-        )
+        # ⚠️ `from` 만 주면 빈 목록이 오고 180일 넘게 거슬러 가면 400 이다(2026-09-27 실측
+        #    `scripts/ops/probe_account_book.py`) — 시각 칸은 안 쓰고 최근 `limit` 줄을 받는다.
+        params = {"limit": str(limit)} | ({"type": kind} if kind else {})
+        found = await self._request("GET", f"/futures/{SETTLE}/account_book", params=params)
         if not isinstance(found, list):
             raise GateApiError(f"자금 원장 응답이 배열이 아니다: {type(found).__name__}")
         return cast("list[dict[str, Any]]", found)

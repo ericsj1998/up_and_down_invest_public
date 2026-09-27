@@ -127,6 +127,7 @@ def test_payload_without_exchange_or_account() -> None:
         "runs",
         "curve",
         "equity_monthly",
+        "wallet",  # 2026-09-27 기간별 지갑 그래프(넣은 돈 · 번 돈 · 잃은 돈)
         "configured",
         "default_to",
     }

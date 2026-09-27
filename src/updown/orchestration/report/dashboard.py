@@ -141,6 +141,7 @@ def payload(
     default_to: list[str],
     funds: Sequence[FundRow] = (),
     equity: Sequence[equity_mod.EquityPoint] = (),
+    wallet: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """대시보드 JSON 한 벌.
 
@@ -153,6 +154,8 @@ def payload(
         default_to: 기본 수신자.
         funds: 펀드 카드들 — 계좌와 판 사이 (사용자 2026-09-07).
         equity: 자산 시계열(월별 요약) — 비면 화면이 "쌓이는 중" 을 적는다.
+        wallet: 구간 지갑 그래프(`equity.wallet_payload` · 넣은 돈 · 번 돈 · 잃은 돈) —
+            장부를 못 읽으면 None.
 
     Returns:
         화면이 그대로 그리는 JSON — 구간 · 원장 · 거래소 · 계좌 · 판 표 · 곡선 · 발송 설정.
@@ -234,6 +237,7 @@ def payload(
             for p in curve
         ],
         "equity_monthly": equity_mod.to_rows(equity),
+        "wallet": wallet,
         "configured": configured,
         "default_to": default_to,
     }

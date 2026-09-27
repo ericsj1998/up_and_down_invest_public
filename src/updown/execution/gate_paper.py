@@ -474,14 +474,16 @@ class GatePaperAdapter:
             out.append(row)
         return out
 
-    async def account_book(self, limit: int = 30) -> list[dict[str, str]]:
+    async def account_book(self, limit: int = 30, kind: str | None = None) -> list[dict[str, str]]:
         """자금 변동 원장 — **청산을 가르는 근거** (T14-2).
 
         Args:
             limit: 가져올 줄 수.
+            kind: 이 `type` 만 (예: `dnw` 입출금). None 이면 전부.
 
         Returns:
-            `{type, change, time, text}` 목록. 못 읽으면 빈 목록.
+            `{type, change, balance, time, text, contract}` 목록. `balance` 는 그 변동 **뒤**
+            지갑 잔고다(리포트 기간별 계좌 총액 · 2026-09-27). 못 읽으면 빈 목록.
 
         Note:
             ⛔ **여기서 해석하지 않는다.** 무엇이 청산인지는 부르는 쪽(`LiveRunner`)이
@@ -490,11 +492,12 @@ class GatePaperAdapter:
             ⚠️ 실패해도 빈 목록이다. 이 값은 **분류**에 쓰이지 리스크 감소 행동을 막는
             데 쓰이지 않는다 (§1.2.1).
         """
-        rows = await self._trade.account_book(limit=limit)
+        rows = await self._trade.account_book(limit=limit, kind=kind)
         return [
             {
                 "type": str(row.get("type", "")),
                 "change": str(row.get("change", "")),
+                "balance": str(row.get("balance", "")),
                 "time": str(row.get("time", "")),
                 "text": str(row.get("text", "")),
                 "contract": str(row.get("contract", "")),

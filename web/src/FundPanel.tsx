@@ -9,12 +9,34 @@
 import { useEffect, useState } from "react";
 
 import * as api from "./api";
-import type { FundRules, FundStatus, MarketInfo } from "./api";
+import type { FundRules, FundStatus, MarketInfo, MemberFrame } from "./api";
 import { useMe } from "./Gate";
 import { bookInGroup, groupOfName, marketTradeAllowed, useMarketGroup } from "./shell/marketGroup";
 import { when } from "./shell/MarketHours";
-import { FundMembers } from "./FundMembers";
+import { CARD_WIDTH, FundMembers, MEMBER_FRAME_SPEC } from "./FundMembers";
 import { ErrorCard, SelectField } from "./ui";
+
+/** 상세보기 시간축 단추 순서. */
+const MEMBER_FRAMES: MemberFrame[] = ["1h", "4h", "1d"];
+const PREF_TF = "fund.members.timeframe";
+const PREF_WIDTH = "fund.members.width";
+
+/** 보는 사람 편의 값 읽기 — 저장소가 막힌 브라우저(사생활 창 등)에서도 화면은 기본값으로 뜬다. */
+function readPref(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writePref(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // 못 적어도 이번 화면에서는 그대로 쓴다 — 다음에 기본값으로 뜰 뿐이다.
+  }
+}
 
 // ⭐ 기본 바스켓·전략은 서버가 준다 (/rebalancer/defaults · SSoT = config/baskets.yml).
 //    화면 상수로 두면 반드시 낡는다 — "코어4" 상수가 실제 라이브 6종과 어긋났던 게
@@ -114,6 +136,23 @@ export function FundPanel({
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [editing, setEditing] = useState("");
+  // 상세보기 차트 시간축 · 칸 너비 — 보는 사람 편의라 이 브라우저에만 기억한다(사용자 2026-09-27).
+  const [memberTf, setMemberTfState] = useState<MemberFrame>(() => {
+    const saved = readPref(PREF_TF);
+    return MEMBER_FRAMES.includes(saved as MemberFrame) ? (saved as MemberFrame) : "1d";
+  });
+  const [memberWidth, setMemberWidthState] = useState<number>(() => {
+    const saved = Number(readPref(PREF_WIDTH));
+    return saved >= CARD_WIDTH.min && saved <= CARD_WIDTH.max ? saved : CARD_WIDTH.initial;
+  });
+  const setMemberTf = (tf: MemberFrame) => {
+    setMemberTfState(tf);
+    writePref(PREF_TF, tf);
+  };
+  const setMemberWidth = (px: number) => {
+    setMemberWidthState(px);
+    writePref(PREF_WIDTH, String(px));
+  };
   const [editRows, setEditRows] = useState<
     { symbol: string; weight: string }[]
   >([]);
@@ -571,17 +610,56 @@ export function FundPanel({
               ))}
             </tbody>
           </table>
-          <div className="row" style={{ marginTop: 6 }}>
+          <div
+            className="row"
+            style={{ marginTop: 6, gap: 12, alignItems: "center", flexWrap: "wrap" }}
+          >
             <button
               className="btn small"
               onClick={() => setDetail(detail === f.fund_id ? null : f.fund_id)}
-              title="종목마다 마감 일봉 차트와 몫·포지션·등락을 한눈에"
+              title="종목마다 마감 봉 차트와 몫·포지션·등락을 한눈에"
             >
               {detail === f.fund_id ? "상세 접기" : "상세보기"}
             </button>
+            {/* ⭐ 사용자 2026-09-27: 시간축을 카드 전부 한 번에 · 칸 크기 가로 슬라이더 — "상세 접기" 오른쪽. */}
+            {detail === f.fund_id ? (
+              <>
+                <span className="row" style={{ gap: 4 }} role="group" aria-label="차트 시간축">
+                  {MEMBER_FRAMES.map((tf) => (
+                    <button
+                      key={tf}
+                      type="button"
+                      className={`btn small${memberTf === tf ? " picked" : ""}`}
+                      aria-pressed={memberTf === tf}
+                      onClick={() => setMemberTf(tf)}
+                    >
+                      {MEMBER_FRAME_SPEC[tf].label}
+                    </button>
+                  ))}
+                </span>
+                <label className="row text-sm faint" style={{ gap: 6 }}>
+                  칸 크기
+                  <input
+                    type="range"
+                    min={CARD_WIDTH.min}
+                    max={CARD_WIDTH.max}
+                    step={CARD_WIDTH.step}
+                    value={memberWidth}
+                    onChange={(e) => setMemberWidth(Number(e.target.value))}
+                    aria-label="차트 칸 크기"
+                    style={{ width: 160 }}
+                  />
+                </label>
+              </>
+            ) : null}
           </div>
           {detail === f.fund_id ? (
-            <FundMembers fundId={f.fund_id} {...(openRun ? { openRun } : {})} />
+            <FundMembers
+              fundId={f.fund_id}
+              timeframe={memberTf}
+              cardWidth={memberWidth}
+              {...(openRun ? { openRun } : {})}
+            />
           ) : null}
 
           {editing === f.fund_id ? (

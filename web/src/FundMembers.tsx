@@ -1,5 +1,5 @@
 /**
- * 펀드 종목 상세 (T261 · 사용자 요구 2026-09-10 "상세보기") — 종목마다 마감 일봉 차트 + 몫·포지션·등락.
+ * 펀드 종목 상세 (T261 · 사용자 요구 2026-09-10 "상세보기") — 종목마다 마감 봉 차트 + 몫·포지션·등락.
  *
  * 값은 전부 서버(`GET /rebalancer/{id}/members`)에서 온다. 차트는 RUN 상세와 같은 부품(`PriceChart`)이라
  * 겹칩선·자릿수 규칙이 같다. 팝업 없음 — 카드 아래에 펼쳐진다.
@@ -9,17 +9,33 @@
  *   ② 카드 차트에도 진입가 · 손절가 · 상자
  *   ③ 우측 하단 **접힘 모서리**를 누르면 그 RUN 상세로
  *   ④ 포지션 · 손익 · 손익금액 · 증거금을 **먼저**, 나머지는 아래 작은 글씨로
+ *
+ * 2026-09-27 사용자 요구 둘 — 시간축(1시간 · 4시간 · 일봉)을 **카드 전부 한 번에** 바꾼다 · 칸 크기를 가로
+ * 슬라이더로 조절한다. 둘 다 "상세 접기" 오른쪽(`FundPanel`)에 있고 여기는 받기만 한다.
  */
 
 import { useEffect, useState } from "react";
-import { fundMembers, type FundMember } from "./api";
+import { fundMembers, type FundMember, type MemberFrame } from "./api";
 import { DEFAULT_SETTINGS } from "./chart/indicators";
 import { PriceChart } from "./chart/PriceChart";
 import type { TradeMark } from "./chart/trades";
 import { cardTone, changeText, changeTone, toOhlc, unrealizedPct } from "./fundMembers";
 import { ErrorCard } from "./ui";
 
-const DAY_SECONDS = 86_400;
+/** 시간축 → 봉 한 칸(초) · 받을 봉 수 — 일봉 90개(석 달) · 4시간 180개(한 달) · 1시간 168개(일주일). */
+export const MEMBER_FRAME_SPEC: Record<MemberFrame, { step: number; bars: number; label: string }> = {
+  "1h": { step: 3_600, bars: 168, label: "1시간" },
+  "4h": { step: 14_400, bars: 180, label: "4시간" },
+  "1d": { step: 86_400, bars: 90, label: "일봉" },
+};
+
+/** 칸 너비 슬라이더 범위(px) — 기본은 전과 같은 320. */
+export const CARD_WIDTH = { min: 240, max: 900, step: 20, initial: 320 } as const;
+
+/** 칸 너비 → 차트 높이 — 너비를 키우면 차트도 같은 비율로 커진다(160 ~ 420). */
+export function chartHeight(width: number): number {
+  return Math.round(Math.min(420, Math.max(160, width * 0.56)));
+}
 
 function money(v?: string | null): string {
   const n = Number(v);
@@ -55,7 +71,7 @@ function markOf(m: FundMember): TradeMark | null {
     exit: last,
     stop,
     openedTs,
-    // 마지막 마감 봉까지 — 일봉 카드라 "지금" 은 마지막 봉이다.
+    // 마지막 마감 봉까지 — 마감 봉만 그리는 카드라 "지금" 은 마지막 봉이다.
     closedTs: m.bars.length > 0 ? (m.bars[m.bars.length - 1]?.time ?? openedTs) : openedTs,
     pnl: pct,
     reason: "보유중",
@@ -65,9 +81,13 @@ function markOf(m: FundMember): TradeMark | null {
 
 function MemberCard({
   m,
+  step,
+  height,
   openRun,
 }: {
   m: FundMember;
+  step: number;
+  height: number;
   openRun?: (run: string, name?: string) => void;
 }) {
   const bars = toOhlc(m.bars);
@@ -132,11 +152,11 @@ function MemberCard({
       {bars.length > 1 ? (
         <PriceChart
           bars={bars}
-          step={DAY_SECONDS}
+          step={step}
           settings={DEFAULT_SETTINGS}
-          height={180}
+          height={height}
           // ⭐ 진입가 · 손절가 가로선 + 상자 (사용자 요구 2026-09-21).
-          //    ⚠️ 90일 개요를 보는 카드라 **확대는 끈다** — 하루짜리 매매로 당기면 목적이 사라진다.
+          //    ⚠️ 개요를 보는 카드라 **확대는 끈다** — 짧은 매매로 당기면 목적이 사라진다.
           {...(mark ? { trades: [mark], focusId: mark.id } : {})}
           autoZoom={false}
         />
@@ -161,18 +181,23 @@ function MemberCard({
 
 export function FundMembers({
   fundId,
+  timeframe = "1d",
+  cardWidth = CARD_WIDTH.initial,
   openRun,
 }: {
   fundId: string;
+  timeframe?: MemberFrame;
+  cardWidth?: number;
   openRun?: (run: string, name?: string) => void;
 }) {
   const [rows, setRows] = useState<FundMember[] | null>(null);
   const [error, setError] = useState("");
+  const spec = MEMBER_FRAME_SPEC[timeframe];
   useEffect(() => {
     let alive = true;
     setRows(null);
     setError("");
-    fundMembers(fundId)
+    fundMembers(fundId, timeframe, spec.bars)
       .then((body) => {
         if (alive) setRows(body.members);
       })
@@ -182,21 +207,29 @@ export function FundMembers({
     return () => {
       alive = false;
     };
-  }, [fundId]);
+  }, [fundId, timeframe, spec.bars]);
   if (error) return <ErrorCard title="상세를 못 읽었다" message={error} />;
-  if (rows === null) return <p className="faint text-sm">종목 봉을 읽는 중…</p>;
+  if (rows === null) return <p className="faint text-sm">종목 {spec.label} 봉을 읽는 중…</p>;
   if (rows.length === 0) return <p className="faint text-sm">종목이 없다.</p>;
+  const height = chartHeight(cardWidth);
   return (
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+        // ⭐ 칸 너비는 슬라이더 값 — 화면이 좁으면 한 줄에 하나로 줄어든다(`min(…, 100%)`).
+        gridTemplateColumns: `repeat(auto-fill, minmax(min(${cardWidth}px, 100%), 1fr))`,
         gap: 8,
         marginTop: 6,
       }}
     >
       {rows.map((m) => (
-        <MemberCard key={m.symbol} m={m} {...(openRun ? { openRun } : {})} />
+        <MemberCard
+          key={m.symbol}
+          m={m}
+          step={spec.step}
+          height={height}
+          {...(openRun ? { openRun } : {})}
+        />
       ))}
     </div>
   );
