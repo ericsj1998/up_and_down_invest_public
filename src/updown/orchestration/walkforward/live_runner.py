@@ -4040,7 +4040,15 @@ class LiveRunner:
         #    ⇒ **끝난 매매 단위로** 잰다. 그러면 첫 건에서 갈린다:
         #
         #      1건 끝난 시점   원장 +2.3%   거래소 -3.7%   →  즉시 경보
-        found += await self._pnl_audit()
+        #
+        # 🔴 T293 — **펀드를 기다리는 판은 대조하지 않는다** (⑦ 잔액 대조와 같은 문).
+        #    격리 전 원장은 단독 판처럼(refill) DB 의 옛 예산에서 걷는다 — 2026-09-27 17:46 UTC
+        #    재기동 2분 뒤 SOL 이 원장 -0.97(옛 예산 10.17 x -9.53%) 대 거래소 -8.32 로
+        #    `pnl_drift` 를 냈고, 붙은 뒤(-6.46) 7분 만에 풀렸다. 부호까지 갈리면
+        #    `accounting_ok` 가 꺼져 펀드가 멀쩡한 판을 격리한다.
+        #    기다리는 동안은 `awaiting_fund` 가 말한다.
+        if self.fund_ready:
+            found += await self._pnl_audit()
 
         # ⑧ 원장과 거래소가 같은 것을 말하는가.
         if isinstance(self._orders, PositionAware):

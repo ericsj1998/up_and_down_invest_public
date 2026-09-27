@@ -19,6 +19,8 @@
     ⑤ 기다리는 동안 겹침 경보는 미루고, 붙은 뒤 **같은 기록을 다시 잰다** (버리지 않는다)
     ⑥ 기다리는 판이 있으면 잔액 합계 대조를 미룬다 — 대신 `awaiting_fund` 가 말한다
     ⑦ 감시견이 되살린 멤버는 펀드에 다시 묶인다 (전에는 다음 재기동까지 문 없이 돌았다)
+    ⑧ 기다리는 판은 손익 대조(`pnl_drift` · `pnl_sign_split`)도 미룬다 — 격리 전 원장은
+       옛 예산에서 걷는다
 """
 
 from __future__ import annotations
@@ -262,6 +264,18 @@ class TestFalseAlarmsWait:
         assert '"code": "awaiting_fund"' in source, "미루는 동안 조용하면 안 된다 (규칙 #8)"
         wired = inspect.getsource(api._live_start)  # pyright: ignore[reportPrivateUsage]
         assert "runner.account_settled = lambda" in wired
+
+    def test_pnl_audit_waits_for_the_fund(self) -> None:
+        """⑧ 격리 전 원장으로 손익을 대조하면 거짓 갈림이 난다 — 붙은 뒤에 잰다.
+
+        2026-09-27 17:46 UTC(v1.23.0 재기동 2분 뒤 · 펀드 재부착 전): SOL `pnl_drift`
+        원장 -0.97 대 거래소 -8.32. 원장이 아직 단독 판(refill)이라 DB 의 옛 예산 10.17 에서
+        걸었다(10.17 x -9.53% = -0.97) — 붙은 뒤엔 매매 증거금 67.80 으로 -6.46 이 되어
+        7분 뒤 스스로 풀렸다. 단독 판은 `fund_ready` 가 늘 참이라 지금처럼 바로 잰다.
+        """
+        source = inspect.getsource(LiveRunner.audit)
+        assert "if self.fund_ready:\n            found += await self._pnl_audit()" in source
+        assert source.count("self._pnl_audit()") == 1, "문 밖에서 또 부르면 안 된다"
 
     def test_resize_does_not_run_on_the_booked_budget(self) -> None:
         """장부값(총자본 ÷ 종목 수)으로 되맞추면 멀쩡한 포지션을 1/3 로 팔아 내린다."""
