@@ -79,6 +79,38 @@ class TestWalletSeries:
         assert got is not None
         assert (got.balance, got.principal) == (Decimal(307), Decimal(300))
 
+    def test_same_second_rows_are_ordered_by_row_id(self) -> None:
+        """🔴 실측(2026-09-27): 같은 초에 수수료(171) · 청산 손익(172) — 거래소는 최신부터 준다.
+
+        시각만으로 줄 세우면 171 이 마지막이 되어 잔고를 410.84 로 읽었다(실제 406.82).
+        """
+        at = str((T0 + timedelta(hours=10)).timestamp())
+        newest_first = [
+            {"id": "172", "type": "pnl", "change": "-4.023", "balance": "406.817", "time": at},
+            {"id": "171", "type": "fee", "change": "-0.070", "balance": "410.840", "time": at},
+            row(0, "dnw", "366", "366") | {"id": "1"},
+        ]
+        got = wallet_series(
+            newest_first, newest_first[2:], T0 + timedelta(hours=1), T0 + timedelta(hours=20)
+        )
+        assert got is not None
+        assert got.balance == Decimal("406.817")
+
+    def test_same_second_without_ids_keeps_the_exchange_order(self) -> None:
+        at = str((T0 + timedelta(hours=10)).timestamp())
+        newest_first = [
+            {"type": "pnl", "change": "-4", "balance": "406", "time": at},
+            {"type": "fee", "change": "-1", "balance": "410", "time": at},
+        ]
+        got = wallet_series(newest_first, [], T0 + timedelta(hours=1), T0 + timedelta(hours=20))
+        assert got is not None and got.balance == Decimal(406)
+
+    def test_window_older_than_the_account_counts_as_reached(self) -> None:
+        """계좌가 구간 안에서 시작했으면(첫 줄이 첫 입금 · 그 전 잔고 0) 모자란 게 아니다."""
+        got = wallet_series(BOOK, MOVES, T0 - timedelta(days=10), T0 + timedelta(hours=40))
+        assert got is not None
+        assert got.reached is True and got.points[0].balance == Decimal(0)
+
     def test_no_balance_is_none_not_zero(self) -> None:
         book = [{"type": "pnl", "change": "1", "time": str(T0.timestamp())}]
         assert wallet_series(book, [], T0, T0 + timedelta(hours=1)) is None

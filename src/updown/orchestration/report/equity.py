@@ -285,17 +285,24 @@ def wallet_series(
         차이가 번 돈(양수) · 잃은 돈(음수)이다. 넣은 돈은 거래소가 주는 입출금 기록의 합이라,
         기록이 거래소 보관 기간(Gate 약 180일) 밖이면 모자랄 수 있다.
     """
-    rows: list[tuple[datetime, Decimal, Decimal]] = []
-    for raw in book:
+    # (시각, 같은 초 안 순서, 변동, 뒤 잔고, 종류).
+    # 🔴 같은 초에 여러 줄이 찍힌다(청산 손익 + 수수료 · 2026-09-27 실측 171 · 172).
+    #    시각만으로 줄 세우면 최신부터 온 순서 그대로 옛 줄이 마지막이 되어
+    #    잔고를 틀리게 읽었다(410.84 · 실제 406.82). 줄 번호(`id`)로 가르고,
+    #    없으면 받은 순서를 거꾸로 본다(최신부터 오므로).
+    rows: list[tuple[datetime, int, Decimal, Decimal, str]] = []
+    for index, raw in enumerate(book):
         at = _when(raw.get("time"))
         bal = _dec(raw.get("balance"))
         change = _dec(raw.get("change")) or Decimal(0)
         if at is None or bal is None:
             continue
-        rows.append((at, change, bal))
+        ident = str(raw.get("id", "") or "")
+        order = int(ident) if ident.isdigit() else -index
+        rows.append((at, order, change, bal, str(raw.get("type", ""))))
     if not rows:
         return None
-    rows.sort(key=lambda r: r[0])
+    rows.sort(key=lambda r: (r[0], r[1]))
     moves: list[tuple[datetime, Decimal]] = []
     for raw in deposits:
         at = _when(raw.get("time"))
@@ -308,15 +315,17 @@ def wallet_series(
         return sum((c for at, c in moves if at <= t), Decimal(0))
 
     before = [r for r in rows if r[0] <= since]
-    reached = bool(before)
-    start = before[-1][2] if before else rows[0][2] - rows[0][1]
+    start = before[-1][3] if before else rows[0][3] - rows[0][2]
+    # 구간 앞 줄이 없어도, 받은 가장 옛 줄이 **계좌의 첫 입금**(그 전 잔고 0)이면 모자란 게 아니다
+    # — 계좌가 구간 안에서 시작했다.
+    reached = bool(before) or (start == 0 and rows[0][4] in DNW_TYPES)
     edges = [since + (until - since) * k / points for k in range(points + 1)]
     out: list[WalletPoint] = []
     idx, bal = 0, start
     for edge in edges:
         while idx < len(rows) and rows[idx][0] <= edge:
             if rows[idx][0] > since:
-                bal = rows[idx][2]
+                bal = rows[idx][3]
             idx += 1
         out.append(WalletPoint(at=edge, balance=bal, principal=principal_at(edge)))
     inside = sum((c for at, c in moves if since < at <= until), Decimal(0))

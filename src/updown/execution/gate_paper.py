@@ -495,6 +495,9 @@ class GatePaperAdapter:
         rows = await self._trade.account_book(limit=limit, kind=kind)
         return [
             {
+                # `id` 는 늘어나는 줄 번호 — 같은 초에 찍힌 줄의 순서를 가른다
+                # (리포트 지갑 그래프 · 2026-09-27).
+                "id": str(row.get("id", "")),
                 "type": str(row.get("type", "")),
                 "change": str(row.get("change", "")),
                 "balance": str(row.get("balance", "")),
