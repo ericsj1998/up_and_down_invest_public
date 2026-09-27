@@ -6,7 +6,7 @@
  *
  * 40줄 표(대부분 "현금 · — · 0")는 "종목 표" 단추 뒤로 접었다(`FundPanel`). 여기는 늘 보이는 것만:
  *   ① 보유 · 현금 대기 수와 다리(매매법)별 종목 수 · 자리
- *   ② **보유 중인 종목만** 짧은 표 — 포지션이 없으면 표도 없다
+ *   ② 보유 중인 종목은 **종목 표와 같은 표**로(`FundPanel` · 표를 접어 둬도 보유 줄만 보인다)
  *   ③ 히트맵 — 다리 조합으로 묶고(`fundLayout.legGroups`) 묶음 안은 거래대금 순 · 색은 24시간 등락 · 보유 칸은 테두리
  *
  * 값은 전부 서버에서 온다 — 펀드 현황(`/rebalancer`) · 종목 순위(`/exchange/ranking`). 못 읽은 칸은 "—" 와 무채색.
@@ -99,36 +99,6 @@ export function FundOverview({
           </span>
         ))}
       </div>
-
-      {/* ② 보유 중인 종목만 — 포지션이 없으면 표도 없다 (사용자: "포지션 진입하면 말이 다르지만"). */}
-      {held.length > 0 ? (
-        <table className="mini fund-held" style={{ marginTop: 6 }}>
-          <thead>
-            <tr>
-              <th>종목</th>
-              <th>포지션</th>
-              <th style={{ textAlign: "right" }}>미실현</th>
-              <th style={{ textAlign: "right" }}>증거금</th>
-            </tr>
-          </thead>
-          <tbody>
-            {held.map((sym) => {
-              const v = f.per_symbol[sym];
-              const u = Number(v?.unrealized);
-              return (
-                <tr key={sym}>
-                  <td>{sym.replace("_USDT", "")}</td>
-                  <td>{v?.position ? `${v.position.side} @ ${money(v.position.entry)}` : "보유"}</td>
-                  <td style={{ textAlign: "right" }} className={u > 0 ? "gain" : u < 0 ? "loss" : undefined}>
-                    {money(v?.unrealized)}
-                  </td>
-                  <td style={{ textAlign: "right" }}>{money(v?.margin)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      ) : null}
 
       {/* ③ 히트맵 */}
       <div className="text-xs faint" style={{ marginTop: 8 }}>

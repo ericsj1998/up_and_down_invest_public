@@ -23,18 +23,30 @@ function groupsOf(f: FundStatus, ticks: Record<string, Tick>): SymbolGroupView[]
   return legGroups(f.legs ?? [], Object.keys(f.per_symbol), ticks);
 }
 
-/** 종목 표 줄 — 묶음 머리 줄과 종목 줄을 잇는다. 묶음이 하나면 머리 줄 없이. */
+/**
+ * 종목 표 줄 — 묶음 머리 줄과 종목 줄을 잇는다. 묶음이 하나면 머리 줄 없이.
+ *
+ * `onlyHeld` 면 **보유 종목만** — 표를 접어 둬도 포지션이 잡힌 종목은 같은 표로 보인다(사용자 2026-09-27).
+ * 보유 종목이 없는 묶음은 머리 줄도 뺀다.
+ */
 function tableRows(
   groups: SymbolGroupView[],
   f: FundStatus,
+  onlyHeld = false,
 ): ({ group: SymbolGroupView } | { sym: string; v: FundLeg })[] {
-  return groups.flatMap((g) => [
-    ...(groups.length > 1 ? [{ group: g }] : []),
-    ...g.symbols.flatMap((sym) => {
+  return groups.flatMap((g) => {
+    const rows = g.symbols.flatMap((sym) => {
       const v = f.per_symbol[sym];
-      return v ? [{ sym, v }] : [];
-    }),
-  ]);
+      return v && (!onlyHeld || v.holding === true) ? [{ sym, v }] : [];
+    });
+    if (rows.length === 0) return [];
+    return [...(groups.length > 1 ? [{ group: g }] : []), ...rows];
+  });
+}
+
+/** 보유 종목 수. */
+function heldCount(f: FundStatus): number {
+  return Object.values(f.per_symbol).filter((v) => v.holding === true).length;
 }
 
 /** 상세보기 시간축 단추 순서. */
@@ -561,7 +573,13 @@ export function FundPanel({
             ticks={ticks[f.market || "GATE"] ?? {}}
             {...(openRun ? { openRun } : {})}
           />
-          {tableOpen === f.fund_id ? (
+          {tableOpen === f.fund_id || heldCount(f) > 0 ? (
+          <>
+          {tableOpen !== f.fund_id ? (
+            <div className="text-xs faint" style={{ marginTop: 8 }}>
+              보유 중인 종목 — 40종 전체는 아래 "종목 표"
+            </div>
+          ) : null}
           <table
             className="fund-table"
             style={{
@@ -598,7 +616,11 @@ export function FundPanel({
               </tr>
             </thead>
             <tbody>
-              {tableRows(groupsOf(f, ticks[f.market || "GATE"] ?? {}), f).map((item) =>
+              {tableRows(
+                groupsOf(f, ticks[f.market || "GATE"] ?? {}),
+                f,
+                tableOpen !== f.fund_id,
+              ).map((item) =>
                 "group" in item ? (
                   <tr key={`g-${item.group.key}`} className="fund-group-row">
                     <td colSpan={7}>
@@ -679,6 +701,7 @@ export function FundPanel({
               )}
             </tbody>
           </table>
+          </>
           ) : null}
           <div
             className="row"
