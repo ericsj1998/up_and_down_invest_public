@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# T293 — `awaiting_fund` 감사가 **풀린 뒤에도** 뜨나 (읽기 전용). 풀린 시각 뒤의 것이 있으면 결함이다.
+# 배포 뒤 `awaiting_fund` 감사 코드가 계속 나는가 — 최근 1 · 3분 수와 표본 한 줄(주소 없음).
+#
 #   bash scripts/ops/remote.sh scripts/ops/probe_awaiting_fund.sh
-API=$(docker ps --filter "status=running" --format "{{.Names}}" | grep -E "updown_live-api(_b)?-1" | head -1)
-FREED=$(docker logs "$API" 2>&1 | grep '"event_type": "fund_members_released"' | tail -1 | grep -oE '"ts": "[0-9T:.-]{19}' | cut -c8-)
-echo "도는 API $API · 풀린 시각 $FREED (UTC)"
-echo "awaiting_fund 감사 — 시각별"
-docker logs "$API" 2>&1 | grep '"code": "awaiting_fund"' | grep -oE '"ts": "[0-9T:.-]{19}' | cut -c8- | sort | uniq -c
-LATE=$(docker logs "$API" 2>&1 | grep '"code": "awaiting_fund"' | grep -oE '"ts": "[0-9T:.-]{19}' | cut -c8- | awk -v f="$FREED" '$1 > f' | wc -l)
-echo "풀린 뒤에 뜬 것: $LATE 건 (0 이어야 한다)"
-echo "지금 시각 $(date -u '+%FT%T') · 마지막 감사 발견 5줄:"
-docker logs "$API" 2>&1 | grep '"event_type": "live_audit_found"' | tail -5 | grep -oE '"code": "[a-z_]+"|"ts": "[0-9T:.-]{19}' | paste - - | cut -c1-120
-echo "awaiting_fund 가 실린 이벤트 종류 (발견 vs 해소):"
-docker logs "$API" 2>&1 | grep 'awaiting_fund' | grep -oE '"event_type": "[a-z_]+"' | sort | uniq -c
-echo "풀린 뒤(> $FREED)의 것만:"
-docker logs "$API" 2>&1 | grep 'awaiting_fund' | awk -v f="$FREED" '{ if (match($0, /"ts": "[0-9T:.-]{19}/)) { t = substr($0, RSTART + 7, 19); if (t > f) print } }' | grep -oE '"event_type": "[a-z_]+"' | sort | uniq -c
+API=$(docker ps --format "{{.Names}}" | grep -E "^updown_live-api(_b)?-1$" | head -1)
+echo "=== $API"
+for w in 1m 3m; do
+  n=$(docker logs --since "$w" "$API" 2>&1 | grep -c '"code": "awaiting_fund"')
+  echo "awaiting_fund since $w: $n"
+done
+echo "=== 표본(마지막 한 줄 · 사건 · 판 · 시각)"
+docker logs --timestamps --since 3m "$API" 2>&1 | grep '"code": "awaiting_fund"' | tail -1 \
+  | grep -oE '^[0-9T:.-]{19}|"(event_type|run_id|symbol|code|detail|message)": "[^"]{0,120}"'
+echo "=== 최근 3분 펀드 사건"
+docker logs --since 3m "$API" 2>&1 | grep -oE '"event_type": "(fund_[a-z_]+|live_fund_[a-z_]+|live_awaiting_fund)[^"]*"' | sort | uniq -c
