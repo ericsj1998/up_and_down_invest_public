@@ -1496,6 +1496,60 @@ class Session:
                 found.append(item)
         return tuple(found)
 
+    def prior_high(self, bar: Candle, days: int) -> Decimal | None:
+        """돌파봉 **앞** `days` 일 최고가 — 닫힌 일봉 + 그날 돌파봉 앞 봉(부작용 없음).
+
+        Args:
+            bar: 돌파봉(방아쇠 축 · 방금 닫힌 봉).
+            days: 창(일).
+
+        Returns:
+            최고가. 일봉 축이 없거나 창의 대부분이 비면 None(모름).
+
+        Note:
+            연구(447차)는 1H 봉 `days x 24` 개의 최고가를 썼다 — 여기는 닫힌 일봉 `days` 개 +
+            그날 1H 라 창이 최대 하루 길다(돌파봉이 그날 늦을수록). 일봉은 판정이 이미 들고 있다
+            (`decision_frames` · 800개).
+        """
+        if Timeframe.D1 not in self.feed.timeframes:
+            return None
+        day = bar.ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = day - timedelta(days=days)
+        daily = [c for c in self.feed.judged(Timeframe.D1) if start <= c.ts < day]
+        if len(daily) < days - 3:
+            return None
+        high = max(c.high for c in daily)
+        if bar.timeframe in self.feed.timeframes:
+            today = [c.high for c in self.feed.judged(bar.timeframe) if day <= c.ts < bar.ts]
+            if today:
+                high = max(high, max(today))
+        return high
+
+    def _new_high_mult(self, book: Playbook, bar: Candle) -> Decimal:
+        """전고점 크기 기울이기(446 · 447차) — 전고점 위 돌파면 `on` 배 · 아니면 `off` 배.
+
+        Args:
+            book: 후보를 낸 매매법.
+            bar: 돌파봉.
+
+        Returns:
+            노출 배수. 선언이 없으면 1(동결 · §5.6.2).
+
+        Note:
+            모르면(일봉 부족) `off` — 연구가 표식 없음으로 센 것과 같다.
+            깔때기에 `new_high:on · off · unknown` 을 센다.
+        """
+        rule = book.new_high_tilt
+        if rule is None:
+            return Decimal(1)
+        high = self.prior_high(bar, rule.days)
+        if high is None:
+            self._count("new_high:unknown")
+            return rule.off
+        marked = bar.close > high
+        self._count("new_high:on" if marked else "new_high:off")
+        return rule.on if marked else rule.off
+
     def _may_enter(self, *, idle: bool, tripped: bool) -> bool:
         """**신규 진입을 받아도 되는가** — 스위치를 한 자리에 모은다.
 
@@ -3978,6 +4032,8 @@ class Session:
         # ⭐ 탐지기가 낸 크기 승수 (T81). 기본 1 — 지정가 경로와 같은 규칙이다.
         #    T15(411차) — 매매법이 제곱을 선언했으면 기울기에 건다(`size_mult_power`).
         exposure *= tilted(setup.size_mult, chosen.playbook)
+        # ⭐ 446 · 447차 — 전고점 크기 기울이기(선언이 있을 때만 · 없으면 1).
+        exposure *= self._new_high_mult(chosen.playbook, bar)
         # ⭐ T291 — 다리 배율이 선언돼 있으면 그 다리의 노출로 바꾼다(없으면 그대로).
         exposure = self._leg_scaled(exposure, owner)
         # ⭐ T304 — 변동성 목표 크기. 다리 노출 뒤 · 펀드 문 앞(연구 `size_fn` 과 같은 순서).

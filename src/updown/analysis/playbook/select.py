@@ -31,6 +31,7 @@ from updown.analysis.playbook.types import (
     ConflictRule,
     ConflictSide,
     DrawdownBrake,
+    NewHighTilt,
     Playbook,
     PlaybookRegime,
     RefReturnBand,
@@ -355,6 +356,30 @@ def _add_on(raw: object, name: str, *, full_ride: bool = True) -> AddOn:
         raise PlaybookConfigError(f"{name}.add_on — {exc}") from exc
 
 
+def new_high_tilt(raw: object, name: str) -> NewHighTilt:
+    """전고점 크기 기울이기 한 줄 — `{days: 120, on: "1.88", off: "0.94"}` (446 · 447차).
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.new_high_tilt")
+    try:
+        return NewHighTilt(
+            days=int(body["days"]),
+            on=Decimal(str(body["on"])),
+            off=Decimal(str(body["off"])),
+        )
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.new_high_tilt — {exc}") from exc
+
+
 def _vol_target(raw: object, name: str) -> VolTarget:
     """변동성 목표 크기 한 줄 — `{scale: "0.4276", days: 30, low: "0.5", high: "1.5"}` (T304).
 
@@ -583,6 +608,11 @@ def _load_file(target: Path) -> list[Playbook]:
                             f"playbooks.{name}",
                             full_ride=bool(body.get("full_ride", False)),
                         )
+                    ),
+                    new_high_tilt=(
+                        None
+                        if body.get("new_high_tilt") is None
+                        else new_high_tilt(body["new_high_tilt"], f"playbooks.{name}")
                     ),
                     entry_fund_dd_max=_fund_dd_max(body, f"playbooks.{name}"),
                     max_hold_bars=_positive_int(body, "max_hold_bars", f"playbooks.{name}"),

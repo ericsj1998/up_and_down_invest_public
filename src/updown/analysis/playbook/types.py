@@ -402,6 +402,42 @@ class AddOn:
 
 
 @dataclass(frozen=True, slots=True)
+class NewHighTilt:
+    """전고점 크기 기울이기 선언 — 직전 `days` 일 최고가 위 돌파면 `on` 배 · 아니면 `off` 배.
+
+    446 · 447차.
+
+    사용자 2026-09-27: *"6개월 전고점 돌파 시에는 … 좀 더 손익을 효율적으로 굴릴 수 있을 것"* —
+    447차 연구 원장에서
+    NH120 같은 위험 기울이기(x1.88 · x0.94 · 평균 1)가 판정을 통과했다(효율 13.29 · 앞 창 +4.9).
+
+    Attributes:
+        days: 전고점 창(일) — 돌파봉 **앞** 닫힌 일봉 `days` 개 + 그날 돌파봉 앞 1H 봉의 최고가.
+        on: 전고점 위 돌파의 크기 배수.
+        off: 나머지 돌파의 크기 배수(모르면 이것 — 연구에서 표식 없음으로 셌다).
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+
+    Note:
+        크기만 바꾼다(진입 · 손절 · 청산은 그대로) — 같은 위험이 되려면 `on` · `off` 를
+        표식 비율에 맞춰 평균 1 로 고른다(447차: 표식 7% → 1.88 · 0.94).
+        펀드 문(자리 · 명목 상한 · 브레이크)은 그 뒤에 그대로 건다.
+    """
+
+    days: int
+    on: Decimal
+    off: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 기울이기로서 말이 되는지."""
+        if not 1 <= self.days <= 730:
+            raise ValueError(f"전고점 창은 1 ~ 730일: {self.days}")
+        if self.on <= 0 or self.off <= 0:
+            raise ValueError(f"배수는 0 보다 커야 한다: on {self.on} · off {self.off}")
+
+
+@dataclass(frozen=True, slots=True)
 class BreadthCap:
     """조건부 총 명목 상한 선언 — `min` 종목 이상이 같이 밴드를 뚫었을 때만 상한을 `cap` 으로.
 
@@ -783,6 +819,10 @@ class Playbook:
     """불타기(T308) — 확인된 강한 돌파에 한 번 더. 세션은 판정만 기록한다.
 
     ⛔ 선언이 None 이면 동결이다 (§5.6.2)."""
+    new_high_tilt: NewHighTilt | None = None
+    """전고점 크기 기울이기(446 · 447차) — 시장가 진입의 노출에 곱한다.
+
+    ⛔ None 이면 동결이다 (§5.6.2)."""
     max_hold_bars: int | None = None
     """시간 청산 (410 · 411차 · 영상 1 "26봉").
 
