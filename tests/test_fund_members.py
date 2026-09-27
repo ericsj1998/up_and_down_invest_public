@@ -8,8 +8,17 @@ from decimal import Decimal
 import pytest
 from fastapi import HTTPException
 
-from updown.apps.api.rebalancer import bar_changes, member_frame, time_changes
+from updown.analysis.playbook.select import load_playbooks
+from updown.apps.api.rebalancer import (
+    _leg_scopes,  # pyright: ignore[reportPrivateUsage]
+    _legs_for,  # pyright: ignore[reportPrivateUsage]
+    bar_changes,
+    leg_summary,
+    member_frame,
+    time_changes,
+)
 from updown.common.domain.instrument import Timeframe
+from updown.orchestration.rebalancer.legs import FundLeg
 
 
 class TestBarChanges:
@@ -57,3 +66,27 @@ class TestMemberFrame:
             with pytest.raises(HTTPException) as exc:
                 member_frame(raw)
             assert exc.value.status_code == 400
+
+
+class TestLegSummary:
+    """2026-09-27 — 펀드 화면이 종목을 매매법별로 묶는 재료(다리 · 짧은 이름)."""
+
+    def test_names_come_from_short_label_in_leg_order(self) -> None:
+        books = load_playbooks()
+        members = sorted(_leg_scopes()["private_strategy"])
+        got = leg_summary(_legs_for("private_strategy", members), books)
+        assert [g["name"] for g in got] == ["돌파 롱", "삼각 숏", "MACD 숏", "MACD 롱"]
+        assert [len(g["symbols"]) for g in got] == [6, 18, 22, 40]
+        assert got[3]["isolated"] is True and got[0]["isolated"] is False
+
+    def test_unknown_playbook_falls_back_to_its_id(self) -> None:
+        leg = FundLeg(
+            playbook="x_v",
+            attribution="x_v@0.1.0",
+            symbols=("BTC_USDT",),
+            leverage=Decimal(4),
+            exposure=Decimal(1),
+            timeframe="4h",
+            slots=6,
+        )
+        assert leg_summary((leg,), [])[0]["name"] == "x_v"

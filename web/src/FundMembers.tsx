@@ -181,11 +181,14 @@ function MemberCard({
 
 export function FundMembers({
   fundId,
+  order,
   timeframe = "1d",
   cardWidth = CARD_WIDTH.initial,
   openRun,
 }: {
   fundId: string;
+  /** 카드 순서 — 펀드 표 · 히트맵과 같은 순서(다리 묶음 · 거래대금 · 사용자 2026-09-27). 없으면 서버 순서. */
+  order?: string[];
   timeframe?: MemberFrame;
   cardWidth?: number;
   openRun?: (run: string, name?: string) => void;
@@ -212,6 +215,10 @@ export function FundMembers({
   if (rows === null) return <p className="faint text-sm">종목 {spec.label} 봉을 읽는 중…</p>;
   if (rows.length === 0) return <p className="faint text-sm">종목이 없다.</p>;
   const height = chartHeight(cardWidth);
+  const rank = new Map((order ?? []).map((sym, i) => [sym, i]));
+  const shown = order
+    ? [...rows].sort((a, b) => (rank.get(a.symbol) ?? 1e9) - (rank.get(b.symbol) ?? 1e9))
+    : rows;
   return (
     <div
       style={{
@@ -222,7 +229,7 @@ export function FundMembers({
         marginTop: 6,
       }}
     >
-      {rows.map((m) => (
+      {shown.map((m) => (
         <MemberCard
           key={m.symbol}
           m={m}

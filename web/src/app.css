@@ -1165,6 +1165,54 @@ textarea.input {
 .chat-starters { scrollbar-width: thin; }
 .chat-hello { animation: chat-pop-in 300ms ease-out; }
 
+/* ── 펀드 한눈에 — 다리 칩 · 종목 히트맵 · 묶음 머리 줄 (사용자 2026-09-27) ── */
+.leg-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--stone-border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--warm-gray);
+}
+.heat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
+  gap: 4px;
+}
+.heat-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 4px 2px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.heat-tile:disabled {
+  cursor: default;
+}
+.heat-tile.held {
+  border: 2px solid var(--soot);
+}
+.heat-tile b {
+  font-size: 12px;
+}
+.heat-pos {
+  font-weight: 600;
+}
+.fund-group-row td {
+  padding-top: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--warm-gray);
+  background: rgba(96, 125, 139, 0.06);
+}
+
 /* ── 폰 폭(540px 미만 = Tailwind `sm` 아래 · MT 화면 구간) — 사용자 2026-09-27: "모바일에서는 너무 칸이나 배치가 많고 문자도 겹친다" ──
    컴퓨터 화면은 그대로 두고 좁을 때만 덧붙인다. */
 @media (max-width: 539.98px) {

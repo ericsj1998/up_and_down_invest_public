@@ -1803,6 +1803,18 @@ export type FundStatus = {
     skipped?: string | null;
   } | null;
   per_symbol: Record<string, FundLeg>;
+  /**
+   * 다리 요약 — 매매법 짧은 이름 · 종목 · 자리 (사용자 2026-09-27: 펀드 종목을 매매법별로 묶어 보여 달라).
+   * 다리 없는 펀드는 빈 목록. 옛 서버는 칸이 없다.
+   */
+  legs?: {
+    playbook: string;
+    name: string;
+    symbols: string[];
+    slots: number;
+    exposure: string;
+    isolated: boolean;
+  }[];
 };
 
 /** 거래소별 잔액 — 콘솔 상단 카드 (T63 §2c 파생 · 사용자 요구 2026-08-26). */

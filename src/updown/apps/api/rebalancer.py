@@ -36,7 +36,7 @@ import yaml
 from fastapi import APIRouter, Body, HTTPException, Request
 
 from updown.analysis.playbook.select import default_playbook, load_playbooks
-from updown.analysis.playbook.types import BreadthCap, DrawdownBrake
+from updown.analysis.playbook.types import BreadthCap, DrawdownBrake, Playbook
 from updown.apps.api.admin import instrument_of
 from updown.apps.api.auth import require_market_trade, require_playbook_trade
 from updown.apps.api.walkforward import (
@@ -1517,7 +1517,41 @@ async def _status(fund: Fund) -> dict[str, Any]:
             }
         ),
         "per_symbol": per_symbol,
+        "legs": leg_summary(fund.legs, load_playbooks()),
     }
+
+
+def leg_summary(legs: Sequence[FundLeg], books: Sequence[Playbook]) -> list[dict[str, Any]]:
+    """펀드 다리 요약 — 화면이 종목을 매매법별로 묶고 이름을 붙이는 재료 (순수 · 2026-09-27).
+
+    Args:
+        legs: 펀드의 다리들(저장본 순서 = 선언 순서).
+        books: 매매법 선언들 — 짧은 이름(`short_label`)을 찾는다.
+
+    Returns:
+        `[{playbook, name, symbols, slots, exposure, isolated}]`. 이름은 `short_label` → `label` →
+        매매법 id 순으로 있는 것. 다리 없는 펀드는 빈 목록(화면이 한 묶음으로 그린다).
+
+    Note:
+        사용자 2026-09-27: *"각 매매법마다로 그루핑되어야 할 것 같고"* — 묶음 규칙(어느 다리들이 그
+        종목을 덮나)은 화면 `fundLayout.ts` 가 정한다. 여기는 사실만 싣는다.
+    """
+    by_id = {b.playbook_id: b for b in books}
+    out: list[dict[str, Any]] = []
+    for leg in legs:
+        book = by_id.get(leg.playbook)
+        name = (book.short_label or book.label) if book is not None else ""
+        out.append(
+            {
+                "playbook": leg.playbook,
+                "name": name or leg.playbook,
+                "symbols": list(leg.symbols),
+                "slots": leg.slots,
+                "exposure": str(leg.exposure),
+                "isolated": leg.isolated,
+            }
+        )
+    return out
 
 
 BASKETS_CONFIG = Path(os.environ.get("BASKETS_CONFIG", "config/baskets.yml"))

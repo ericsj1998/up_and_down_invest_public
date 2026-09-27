@@ -647,6 +647,7 @@ def _load_file(target: Path) -> list[Playbook]:
                         else _breadth(body, f"playbooks.{name}")
                     ),
                     label=str(body.get("label", "") or ""),
+                    short_label=str(body.get("short_label", "") or ""),
                     flip_on_opposite=bool(body.get("flip_on_opposite", False)),
                     regime_source=_regime_source(body.get("regime_source", "trend"), name),
                 )

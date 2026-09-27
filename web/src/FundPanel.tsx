@@ -9,12 +9,33 @@
 import { useEffect, useState } from "react";
 
 import * as api from "./api";
-import type { FundRules, FundStatus, MarketInfo, MemberFrame } from "./api";
+import type { FundLeg, FundRules, FundStatus, MarketInfo, MemberFrame } from "./api";
 import { useMe } from "./Gate";
 import { bookInGroup, groupOfName, marketTradeAllowed, useMarketGroup } from "./shell/marketGroup";
 import { when } from "./shell/MarketHours";
 import { CARD_WIDTH, FundMembers, MEMBER_FRAME_SPEC } from "./FundMembers";
+import { FundOverview } from "./FundOverview";
+import { groupedOrder, legGroups, type SymbolGroupView, type Tick } from "./fundLayout";
 import { ErrorCard, SelectField } from "./ui";
+
+/** 펀드 종목 → 다리 조합 묶음(거래대금 순) — 표 · 히트맵 · 차트 카드가 같은 순서를 쓴다 (사용자 2026-09-27). */
+function groupsOf(f: FundStatus, ticks: Record<string, Tick>): SymbolGroupView[] {
+  return legGroups(f.legs ?? [], Object.keys(f.per_symbol), ticks);
+}
+
+/** 종목 표 줄 — 묶음 머리 줄과 종목 줄을 잇는다. 묶음이 하나면 머리 줄 없이. */
+function tableRows(
+  groups: SymbolGroupView[],
+  f: FundStatus,
+): ({ group: SymbolGroupView } | { sym: string; v: FundLeg })[] {
+  return groups.flatMap((g) => [
+    ...(groups.length > 1 ? [{ group: g }] : []),
+    ...g.symbols.flatMap((sym) => {
+      const v = f.per_symbol[sym];
+      return v ? [{ sym, v }] : [];
+    }),
+  ]);
+}
 
 /** 상세보기 시간축 단추 순서. */
 const MEMBER_FRAMES: MemberFrame[] = ["1h", "4h", "1d"];
@@ -183,6 +204,33 @@ export function FundPanel({
   );
   // ⭐ T261 — 펀드 하나의 상세(종목마다 일봉 + 상태). 한 번에 하나만 편다.
   const [detail, setDetail] = useState<string | null>(null);
+  // ⭐ 40줄 종목 표는 접어 둔다 — 대부분 "현금 · — · 0" 이라 늘 펼칠 까닭이 없다 (사용자 2026-09-27).
+  const [tableOpen, setTableOpen] = useState<string | null>(null);
+  // 종목 순위(거래대금 · 24시간 등락) — 히트맵 색과 묶음 안 순서. 거래소별로 1분마다.
+  const [ticks, setTicks] = useState<Record<string, Record<string, Tick>>>({});
+  const fundMarkets = [...new Set(funds.map((f) => f.market || "GATE"))].join(",");
+  useEffect(() => {
+    let alive = true;
+    const pull = () => {
+      for (const market of fundMarkets.split(",").filter(Boolean)) {
+        api
+          .ranking(market)
+          .then((r) => {
+            if (!alive) return;
+            const map: Record<string, Tick> = {};
+            for (const row of r.rows) map[row.symbol] = { change: row.change ?? null, turnover: row.turnover ?? null };
+            setTicks((old) => ({ ...old, [market]: map }));
+          })
+          .catch(() => undefined); // 시세를 못 읽으면 히트맵이 무채색 · 순서는 이름순 — 화면이 그 사실을 적는다
+      }
+    };
+    pull();
+    const timer = setInterval(pull, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [fundMarkets]);
   const [members, setMembers] = useState<{ symbol: string; weight: string }[]>(
     [],
   );
@@ -507,6 +555,13 @@ export function FundPanel({
               </button>
             </p>
           ) : null}
+          <FundOverview
+            f={f}
+            groups={groupsOf(f, ticks[f.market || "GATE"] ?? {})}
+            ticks={ticks[f.market || "GATE"] ?? {}}
+            {...(openRun ? { openRun } : {})}
+          />
+          {tableOpen === f.fund_id ? (
           <table
             className="fund-table"
             style={{
@@ -537,13 +592,21 @@ export function FundPanel({
                 >
                   포지션 증거금
                 </td>
-                <td className="col-pnl" style={{ width: "18%", textAlign: "right" }}>미실현</td>
-                <td className="col-pnl" style={{ width: "12%", textAlign: "right" }}>실현손익</td>
-                <td className="col-pos" style={{ width: "25%", paddingLeft: 16 }}>포지션</td>
+                <td className="col-pnl" style={{ width: "16%", textAlign: "right" }}>미실현</td>
+                <td className="col-pnl" style={{ width: "18%", textAlign: "right" }}>실현손익</td>
+                <td className="col-pos" style={{ width: "21%", paddingLeft: 16 }}>포지션</td>
               </tr>
             </thead>
             <tbody>
-              {Object.entries(f.per_symbol).map(([sym, v]) => (
+              {tableRows(groupsOf(f, ticks[f.market || "GATE"] ?? {}), f).map((item) =>
+                "group" in item ? (
+                  <tr key={`g-${item.group.key}`} className="fund-group-row">
+                    <td colSpan={7}>
+                      {item.group.label} · {item.group.symbols.length}종
+                    </td>
+                  </tr>
+                ) : (
+                  ((sym: string, v: FundLeg) => (
                 <tr key={sym}>
                   <td>{sym}</td>
                   <td className="opt" style={{ textAlign: "right" }}>{v.weight}</td>
@@ -611,13 +674,23 @@ export function FundPanel({
                         : "현금"}
                   </td>
                 </tr>
-              ))}
+                  ))(item.sym, item.v)
+                ),
+              )}
             </tbody>
           </table>
+          ) : null}
           <div
             className="row"
             style={{ marginTop: 6, gap: 12, alignItems: "center", flexWrap: "wrap" }}
           >
+            <button
+              className="btn small"
+              onClick={() => setTableOpen(tableOpen === f.fund_id ? null : f.fund_id)}
+              title="종목마다 비중 · 몫 · 증거금 · 손익 · 포지션 — 매매법 묶음 · 거래대금 순"
+            >
+              {tableOpen === f.fund_id ? "종목 표 접기" : `종목 표 (${f.symbols.length}종)`}
+            </button>
             <button
               className="btn small"
               onClick={() => setDetail(detail === f.fund_id ? null : f.fund_id)}
@@ -660,6 +733,7 @@ export function FundPanel({
           {detail === f.fund_id ? (
             <FundMembers
               fundId={f.fund_id}
+              order={groupedOrder(groupsOf(f, ticks[f.market || "GATE"] ?? {}))}
               timeframe={memberTf}
               cardWidth={memberWidth}
               {...(openRun ? { openRun } : {})}
