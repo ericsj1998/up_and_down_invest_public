@@ -14,4 +14,15 @@ for name in ("private_strategy", "private_strategy", "private_strategy"):
     if b is None:
         print("!!", name, "없다")
         continue
-    print(name, b.attribution, "| new_high_tilt=", b.new_high_tilt, "| add_on=", b.add_on)
+    print(
+        name,
+        b.attribution,
+        "| new_high_tilt=",
+        b.new_high_tilt,
+        "| entry_limit=",
+        b.entry_limit,
+        "| entry_exposure_cap=",
+        b.entry_exposure_cap,
+    )
+bundle = books.get("private_strategy")
+print("private_strategy legs_revision", None if bundle is None else bundle.legs_revision)
