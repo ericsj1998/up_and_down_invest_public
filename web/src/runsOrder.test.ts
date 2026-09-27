@@ -1,5 +1,5 @@
 /**
- * 도는 RUN 정렬 — 포지션 먼저 · 이득 내림차순 (사용자 요구 2026-09-21).
+ * 도는 RUN 정렬 — 실현 + · 미실현 + · 실현 − · 미실현 − · 진입 대기 (사용자 요구 2026-09-21 → 2026-09-27).
  *
  * 🔴 여기서 못 박는 것 하나: **순서가 들어온 순서에 딸려 가면 안 된다.** 막 만든 18종은
  * 미실현도 손익도 전부 0 이라, 그때 기준이 없으면 화면 순서가 서버의 정렬(만든 시각)을
@@ -7,7 +7,15 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { holdsNow, livePnl, orderAlive, type Beat, type Sortable } from "./runsOrder";
+import {
+  GROUP,
+  groupOf,
+  holdsNow,
+  livePnl,
+  orderAlive,
+  type Beat,
+  type Sortable,
+} from "./runsOrder";
 
 const row = (over: Partial<Sortable> & { session_id: string }): Sortable => ({
   symbol: over.session_id,
@@ -49,14 +57,41 @@ describe("livePnl — 미실현", () => {
   });
 });
 
+describe("groupOf — 묶음", () => {
+  it("들고 있으면 미실현 부호 · 안 들고 있으면 실현 부호 · 둘 다 없으면 진입 대기", () => {
+    const held = row({ session_id: "h", trades: 1, closed: 0, return_pct: 9 });
+    expect(groupOf(held, pos("2"))).toBe(GROUP.LIVE_UP);
+    expect(groupOf(held, pos("-2"))).toBe(GROUP.LIVE_DOWN);
+    expect(groupOf(row({ session_id: "u", return_pct: 3 }), null)).toBe(GROUP.REALIZED_UP);
+    expect(groupOf(row({ session_id: "d", return_pct: -3 }), null)).toBe(GROUP.REALIZED_DOWN);
+    expect(groupOf(row({ session_id: "w" }), null)).toBe(GROUP.WAITING);
+  });
+
+  it("들고 있는데 미실현이 아직 안 왔으면 양수 쪽 — 모르는 것을 손실로 내리지 않는다", () => {
+    expect(groupOf(row({ session_id: "h", trades: 1, closed: 0 }), undefined)).toBe(GROUP.LIVE_UP);
+  });
+});
+
 describe("orderAlive", () => {
-  it("포지션 잡힌 판이 먼저다 — 손익이 더 좋아도 빈 판은 아래", () => {
+  it("🔴 실현 + · 미실현 + · 실현 − · 미실현 − · 진입 대기 순이다 (사용자 2026-09-27)", () => {
     const rows = [
-      row({ session_id: "빈판", return_pct: 40 }),
-      row({ session_id: "보유", trades: 1, closed: 0, return_pct: -5 }),
+      row({ session_id: "대기" }),
+      row({ session_id: "미실현-", trades: 1, closed: 0 }),
+      row({ session_id: "실현-", return_pct: -4 }),
+      row({ session_id: "미실현+", trades: 1, closed: 0 }),
+      row({ session_id: "실현+", return_pct: 2 }),
     ];
-    const got = orderAlive(rows, { 보유: pos("1") });
-    expect(got.map((r) => r.session_id)).toEqual(["보유", "빈판"]);
+    const got = orderAlive(rows, { "미실현-": pos("-1"), "미실현+": pos("5") });
+    expect(got.map((r) => r.session_id)).toEqual(["실현+", "미실현+", "실현-", "미실현-", "대기"]);
+  });
+
+  it("실현 이익 판이 미실현 이익이 더 큰 보유 판보다 위다", () => {
+    const rows = [
+      row({ session_id: "보유", trades: 1, closed: 0 }),
+      row({ session_id: "빈판", return_pct: 0.1 }),
+    ];
+    const got = orderAlive(rows, { 보유: pos("50") });
+    expect(got.map((r) => r.session_id)).toEqual(["빈판", "보유"]);
   });
 
   it("들고 있는 판끼리는 미실현 내림차순", () => {

@@ -38,13 +38,15 @@ class TestDeclaration:
     def test_live_playbook_is_untouched(self) -> None:
         books = {p.playbook_id: p for p in load_playbooks()}
         assert books["private_strategy"].breadth_cap is None
-        assert books["private_strategy"].listed is True
+        assert (
+            books["private_strategy"].listed is False
+        )  # 2026-09-27 선택창에서 내림(혼합 2.1.0 만)
 
     def test_variant_declares_it_and_is_listed(self) -> None:
-        """1.12.0 부터 선택창에 올라간다 — 전환은 사용자가 화면에서 한다(2026-09-20)."""
+        """1.12.0 에 선택창에 올랐다가 2026-09-27 내려갔다(혼합 2.1.0 만) — 선언은 남는다."""
         book = {p.playbook_id: p for p in load_playbooks()}["private_strategy"]
         assert book.breadth_cap == BreadthCap(min=4, cap=Decimal(3), bars=3)
-        assert book.listed is True
+        assert book.listed is False
 
     def test_variant_differs_from_live_only_by_breadth_cap(self) -> None:
         books = {p.playbook_id: p for p in load_playbooks()}
