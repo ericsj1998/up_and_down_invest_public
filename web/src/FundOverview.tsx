@@ -13,7 +13,7 @@
  */
 
 import type { FundLeg, FundStatus } from "./api";
-import { heatColor, tickOf, type SymbolGroupView, type Tick } from "./fundLayout";
+import { heatColor, previewText, tickOf, type SymbolGroupView, type Tick } from "./fundLayout";
 
 function money(v?: string | null): string {
   const n = Number(v);
@@ -45,15 +45,20 @@ function Tile({
 }) {
   const color = heatColor(tick?.change);
   const held = leg?.holding === true;
+  const soon = !held && leg?.preview ? leg.preview : null;
   const unreal = Number(leg?.unrealized);
   const canOpen = openRun !== undefined && !!leg?.handle;
   return (
     <button
       type="button"
-      className={`heat-tile${held ? " held" : ""}`}
+      className={`heat-tile${held ? " held" : ""}${soon ? " entry-soon" : ""}`}
       style={{ background: color.bg, color: color.fg }}
       title={`${sym} · 24시간 ${signedPct(tick?.change)} · 거래대금 ${turnoverText(tick?.turnover)} USDT · ${
-        held && leg?.position ? `${leg.position.side} @ ${money(leg.position.entry)}` : "현금"
+        held && leg?.position
+          ? `${leg.position.side} @ ${money(leg.position.entry)}`
+          : soon
+            ? previewText(soon)
+            : "현금"
       }`}
       disabled={!canOpen}
       onClick={() => (canOpen && leg ? openRun?.(leg.handle, sym) : undefined)}
@@ -65,6 +70,8 @@ function Tile({
           {leg?.position?.side ?? "보유"}
           {Number.isFinite(unreal) ? ` ${unreal > 0 ? "+" : ""}${unreal.toFixed(1)}` : ""}
         </span>
+      ) : soon ? (
+        <span className="heat-pos">{soon.kind === "waiting" ? "주문" : "예비"} {soon.side}</span>
       ) : null}
     </button>
   );
@@ -84,6 +91,7 @@ export function FundOverview({
   const order = groups.flatMap((g) => g.symbols);
   const held = order.filter((sym) => f.per_symbol[sym]?.holding === true);
   const cash = order.length - held.length;
+  const soon = order.filter((sym) => !held.includes(sym) && !!f.per_symbol[sym]?.preview);
   const haveTicks = Object.keys(ticks).length > 0;
   return (
     <div className="fund-overview">
@@ -92,6 +100,14 @@ export function FundOverview({
           보유 <b>{held.length}</b>종
         </span>
         <span className="faint">· 현금 대기 {cash}종</span>
+        {soon.length > 0 ? (
+          <span
+            className="entry-soon-tag"
+            title="마감 전 예비 신호(형성 중 봉이 지금 값으로 닫히면 진입 후보) 또는 걸어 둔 진입 주문 — 펀드 자리 · 상한 전이라 약속은 아니다"
+          >
+            · 진입 가능 {soon.length}종
+          </span>
+        ) : null}
         {(f.legs ?? []).map((leg) => (
           <span key={leg.playbook} className="leg-chip" title={`${leg.playbook} · 노출 ${leg.exposure}`}>
             {leg.name} {leg.symbols.length}종 · 자리 {leg.slots}
@@ -102,7 +118,8 @@ export function FundOverview({
 
       {/* ③ 히트맵 */}
       <div className="text-xs faint" style={{ marginTop: 8 }}>
-        종목 히트맵 — 색은 24시간 등락 · 묶음 안은 거래대금 순 · 테두리는 보유 · 칸을 누르면 그 판으로
+        종목 히트맵 — 색은 24시간 등락 · 묶음 안은 거래대금 순 · 테두리는 보유 · 호박색 깜빡임은 진입 가능(마감 전
+        예비 신호 · 걸어 둔 진입 주문) · 칸을 누르면 그 판으로
         {haveTicks ? "" : " · 시세를 아직 못 읽었다"}
       </div>
       {groups.map((g) => (

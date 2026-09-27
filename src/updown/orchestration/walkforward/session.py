@@ -78,7 +78,7 @@ from updown.orchestration.walkforward.ledger import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from updown.common.domain.candle import Candle
     from updown.common.domain.reports import Indicators
@@ -1226,6 +1226,25 @@ class Session:
         #    마지막 봉 시각까지 같아야 같은 창이다.
         if cached is not None and cached.bars == len(rows) and cached.rows[-1].ts == rows[-1].ts:
             return cached
+        state = self._frame_state(frame, rows)
+        if live:
+            self._cache[frame] = state
+        return state
+
+    def _frame_state(self, frame: Timeframe, rows: list[Candle]) -> FrameState:
+        """봉들 → 그 시간축의 계산 결과 (캐시 없음 · 부작용 없음).
+
+        Args:
+            frame: 시간축.
+            rows: `ts` 오름차순 봉(비어 있지 않다).
+
+        Returns:
+            계산 결과.
+
+        Note:
+            `_frame` 의 계산 몸통을 떼어 낸 것이다 — 마감 전 예비 신호(`preview`)가 형성 중 봉을
+            붙인 봉으로 **같은 계산**을 하되 판정 캐시를 건드리지 않게 (2026-09-27).
+        """
         series = indicator_snapshot.compute(rows)
         # 🔴 진입 TF 보다 잘은 축은 추세를 안 잰다 (`TF_RANK`).
         entry_rank = TF_RANK.get(self.playbook.timeframe, 0)
@@ -1256,7 +1275,7 @@ class Session:
             box_high = None if roles.upper is None else roles.upper.zone.high
         else:
             box_low = box_high = None
-        state = FrameState(
+        return FrameState(
             bars=len(rows),
             rows=rows,
             trend=state_of,
@@ -1265,9 +1284,6 @@ class Session:
             box_low=box_low,
             box_high=box_high,
         )
-        if live:
-            self._cache[frame] = state
-        return state
 
     def look(self, at: datetime | None = None) -> Snapshot:
         """분석만 한다 — **매매는 안 한다** (되감기 관찰용).
@@ -1350,6 +1366,135 @@ class Session:
         if at is None:
             self._shot, self._shot_key = shot, key
         return shot
+
+    def entry_hold(self, book: Playbook, direction: Direction) -> str | None:
+        """이 매매법 · 방향의 신규 진입을 **지금 보류하는 사유** — 부작용 없음.
+
+        Args:
+            book: 후보를 낸 매매법.
+            direction: 계획 기하가 말한 방향.
+
+        Returns:
+            `ref_gate` · `ref_band` · `ref_surge` · `ref_sma` · `funding` 중 처음 걸린 것.
+            없으면 None.
+
+        Note:
+            `_enter` 가 이 순서 그대로 읽고 센다 · 적는다. 마감 전 예비 신호(`preview`)도 같은
+            함수를 읽어 두 곳의 규칙이 갈리지 않는다 (2026-09-27). 모르면(None) 보류 — 신규 진입은
+            리스크 증가 행동이다(절대 규칙 #8-1).
+        """
+        if book.entry_ref_ma_gate is not None and self.ref_above is False:
+            return "ref_gate"
+        band = book.entry_ref_return_band
+        if band is not None and (self.ref_return is None or not band.holds(self.ref_return)):
+            return "ref_band"
+        surge = book.entry_ref_surge_cap
+        if surge is not None and (self.ref_surge is None or not surge.holds(self.ref_surge)):
+            return "ref_surge"
+        if book.entry_ref_sma_down is not None and self.ref_sma_down is not True:
+            return "ref_sma"
+        if funding_blocks(direction, self.recent_funding, book.funding_cap):
+            return "funding"
+        return None
+
+    def preview(self, forming: Mapping[Timeframe, Candle]) -> tuple[Proposal, ...]:
+        """**마감 전 예비 신호** — 형성 중 봉이 지금 값으로 닫힌다면 나올 후보 (화면 전용).
+
+        Args:
+            forming: 시간축 → 형성 중 봉(`LiveRunner.forming`). 마지막 마감 봉 바로
+                다음 봉만 붙인다.
+
+        Returns:
+            진입 보류(`blocked` · `entry_hold` · 현물 숏)를 통과한 후보. 매매는 **안 한다**.
+
+        Note:
+            🔴 사용자 2026-09-27: *"진입 가능성이 있는 종목은 테두리가 깜빡이는 느낌이면"* —
+            정의는 **같은 탐지기를 형성 중 봉에 한 번 더 돌린다**.
+
+            ⛔ **판정 경로와 갈라져 있다.** 형성 중 봉으로 잰 값은 판정 캐시(`_cache` · `_shot`)에
+            넣지 않고, 원장 · 깔때기 · 주문을 건드리지 않는다 — 미마감 봉이 판정에 들어가면
+            같은 상황에서 매 틱 다른 답이 난다(절대 규칙 #5). 그래서 이 값은 **예비**다:
+            펀드 문(자리 · 명목 상한 ·
+            브레이크) · 캔들 문법 · 진입 뒤 기하 점검은 안 거친다.
+
+            진입 시간축마다 따로 묻는다 — 1h 봉 마감을 물을 때 4h 는 닫힌 봉 그대로다(상위 TF 문은
+            닫힌 봉만). 4h 마감을 물으면 그 순간 1h 도 같이 닫히므로 둘 다 붙인다.
+        """
+        # 지금 새로 들어갈 수 없는 판(보유 · 걸어 둔 표 · 중지 · 브레이커 · 펀드 문 대기)은
+        # 묻지 않는다.
+        idle = self._open is None and self._waiting is None
+        if not self._may_enter(idle=idle, tripped=self.breaker_tripped_at is not None):
+            return ()
+        spot_only = not self.short_allowed
+        entries = sorted({item.timeframe for item in self.playbooks}, key=frame_span)
+        override = self._regime_override()
+        found: list[Proposal] = []
+        for entry in entries:
+            closing = {f for f in forming if frame_span(f) <= frame_span(entry)}
+            if entry not in closing:
+                continue
+            candles: dict[Timeframe, list[Candle]] = {}
+            trend: dict[Timeframe, TrendState] = {}
+            indicators: dict[Timeframe, Indicators] = {}
+            wanted = {item.timeframe for item in self.playbooks}
+            if self.price_frame is not None:
+                wanted.add(self.price_frame)
+            box: FrameState | None = None
+            usable = True
+            for frame in self.feed.timeframes:
+                if frame in closing:
+                    rows = list(self.feed.judged(frame))
+                    bar = forming[frame]
+                    # 마지막 마감 봉 바로 다음 봉이어야 "지금 닫히면" 이 성립한다.
+                    # 틈이 있으면 묻지 않는다.
+                    if not rows or rows[-1].ts + frame_span(frame) != bar.ts:
+                        usable = False
+                        break
+                    rows.append(bar)
+                    if self.frame_window > 0 and len(rows) > self.frame_window:
+                        rows = rows[-self.frame_window :]
+                    state = self._frame_state(frame, rows)
+                else:
+                    state = self._frame(frame, None)
+                if state is None:
+                    continue
+                if frame in wanted:
+                    candles[frame] = state.rows
+                indicators[frame] = state.indicators
+                if state.trend is not None:
+                    trend[frame] = state.trend
+                if frame == entry:
+                    box = state
+            if not usable or box is None:
+                continue
+            ctx = MarketContext(
+                instrument=self.instrument,
+                as_of=self.cursor,
+                candles=candles,
+                indicators=indicators,
+                structures=(),
+                geometry={},
+                trend=trend,
+                deltas=self._bar_deltas(),
+            )
+            for item in propose(
+                ctx,
+                timeframe=entry,
+                has_box=box.has_box,
+                playbooks=[book for book in self.playbooks if book.timeframe == entry],
+                trend_override=override,
+                registry=self.registry,
+            ):
+                if item.blocked:
+                    continue
+                short = item.setup.stop_loss > item.setup.avg_entry
+                if short and spot_only:
+                    continue
+                side = Direction.SHORT if short else Direction.LONG
+                if self.entry_hold(item.playbook, side) is not None:
+                    continue
+                found.append(item)
+        return tuple(found)
 
     def _may_enter(self, *, idle: bool, tripped: bool) -> bool:
         """**신규 진입을 받아도 되는가** — 스위치를 한 자리에 모은다.
@@ -3716,7 +3861,9 @@ class Session:
         #    극단 양수 요율에 새 롱을 열면 보유 비용 최고점 + 쏠림 꼭짓점 근처를 사는
         #    셈이다 (음수 극단의 숏도 거울상). 자리를 지우지 않는다 — 다음 봉에 요율이
         #    내려오면 정상 진입한다. 보유분은 안 건드린다.
-        if chosen.playbook.entry_ref_ma_gate is not None and self.ref_above is False:
+        # ⭐ 보류 판정은 `entry_hold` 한 곳 — 마감 전 예비 신호(`preview`)가 같은 규칙을 읽는다.
+        hold = self.entry_hold(chosen.playbook, direction)
+        if hold == "ref_gate":
             # F1 (0.3.0) — BTC 레짐이 죽어 있으면 새로 안 산다. 보유분은 안 건드린다.
             self.ref_gate_held += 1
             _logger.info(
@@ -3725,7 +3872,7 @@ class Session:
             )
             return None
         band = chosen.playbook.entry_ref_return_band
-        if band is not None and (self.ref_return is None or not band.holds(self.ref_return)):
+        if hold == "ref_band" and band is not None:
             # T290 — 기준(BTC) 수익률이 띠 밖(상승·하락 국면)이면 새로 안 들어간다. 보유분은 그대로.
             # 🔴 **모르면(None) 보류한다** — `entry_ref_ma_gate` 는 모르면 잠들지만(검증된 0.2.0
             #    폴백이 있어서다) 이 매매법은 국면 밖에서 음수라 폴백이 없다. 신규 진입은 리스크
@@ -3742,7 +3889,7 @@ class Session:
             )
             return None
         surge = chosen.playbook.entry_ref_surge_cap
-        if surge is not None and (self.ref_surge is None or not surge.holds(self.ref_surge)):
+        if hold == "ref_surge" and surge is not None:
             # T304 #8 — 기준(BTC)이 직전 며칠 급등했으면 새로 안 들어간다. 보유분은 그대로.
             # 🔴 모르면(None) 보류한다 — 신규 진입은 리스크 증가 행동이다(절대 규칙 #8-1).
             self.ref_surge_held += 1
@@ -3756,7 +3903,7 @@ class Session:
                 },
             )
             return None
-        if chosen.playbook.entry_ref_sma_down is not None and self.ref_sma_down is not True:
+        if hold == "ref_sma":
             # T304 #2 — 기준(BTC) 4H SMA 가 내려가는 중일 때만 든다(311차 R2). 보유분은 그대로.
             # 🔴 모르면(None) 보류한다 — 신규 진입은 리스크 증가 행동이다(절대 규칙 #8-1).
             self.ref_sma_held += 1
@@ -3769,7 +3916,7 @@ class Session:
                 },
             )
             return None
-        if funding_blocks(direction, self.recent_funding, chosen.playbook.funding_cap):
+        if hold == "funding":
             self.funding_held += 1
             _logger.info(
                 "session_entry_funding_held",

@@ -13,6 +13,8 @@
  * ⚠️ 화면(`FundPanel.tsx`)이 아니라 여기에 두는 이유: 묶음과 순서는 **규칙**이라 시험이 있어야 한다.
  */
 
+import type { FundPreview } from "./api";
+
 export type FundLegInfo = {
   playbook: string;
   name: string;
@@ -86,4 +88,31 @@ export function heatColor(change: number | null | undefined): { bg: string; fg: 
   const alpha = 0.12 + 0.73 * strength;
   const rgb = change >= 0 ? "15,123,108" : "180,66,58";
   return { bg: `rgba(${rgb},${alpha.toFixed(2)})`, fg: alpha > 0.5 ? "#fff" : "inherit" };
+}
+
+/**
+ * 진입 가능성 한 줄 (깜빡임 설명 · 사용자 2026-09-27).
+ *
+ * `signal` 은 **마감 전 예비 신호**다 — 형성 중 봉이 지금 값으로 닫히면 같은 탐지기가 후보를 낸다.
+ * 펀드 문(자리 · 명목 상한 · 브레이크) 전이라 진입이 약속된 것은 아니다. 그 말을 툴팁에 그대로 싣는다.
+ */
+export function previewText(p: FundPreview, legName?: string): string {
+  const leg = legName || p.leg.split("@")[0] || "";
+  if (p.kind === "waiting") {
+    return `진입 주문 대기 · ${p.side} @ ${trimNum(p.entry)} · 손절 ${trimNum(p.stop)} · ${leg}`;
+  }
+  return (
+    `마감 전 예비 신호 · ${p.side}${p.frame ? ` · ${p.frame} 봉` : ""} · ${leg} — ` +
+    "봉이 지금 값으로 닫히면 진입 후보가 된다(펀드 자리 · 상한 전이라 약속은 아니다)"
+  );
+}
+
+/** 표 · 칸에 들어갈 짧은 말. */
+export function previewShort(p: FundPreview): string {
+  return p.kind === "waiting" ? `진입 주문 · ${p.side}` : `예비 신호 · ${p.side}`;
+}
+
+function trimNum(value: string): string {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumSignificantDigits: 6 }) : "—";
 }

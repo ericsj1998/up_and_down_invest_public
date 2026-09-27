@@ -15,11 +15,12 @@
  */
 
 import { useEffect, useState } from "react";
-import { fundMembers, type FundMember, type MemberFrame } from "./api";
+import { fundMembers, type FundMember, type FundPreview, type MemberFrame } from "./api";
 import { DEFAULT_SETTINGS } from "./chart/indicators";
 import { PriceChart } from "./chart/PriceChart";
 import type { TradeMark } from "./chart/trades";
 import { cardTone, changeText, changeTone, toOhlc, unrealizedPct } from "./fundMembers";
+import { previewShort, previewText } from "./fundLayout";
 import { ErrorCard } from "./ui";
 
 /** 시간축 → 봉 한 칸(초) · 받을 봉 수 — 일봉 90개(석 달) · 4시간 180개(한 달) · 1시간 168개(일주일). */
@@ -84,11 +85,14 @@ function MemberCard({
   step,
   height,
   openRun,
+  soon,
 }: {
   m: FundMember;
   step: number;
   height: number;
   openRun?: (run: string, name?: string) => void;
+  /** 진입 가능성 — 펀드 현황(짧은 주기)에서 온 값. 상세 봉 응답(5분 기억)보다 새것이다. */
+  soon?: FundPreview | null;
 }) {
   const bars = toOhlc(m.bars);
   const tone = cardTone(m);
@@ -100,8 +104,9 @@ function MemberCard({
   const canOpen = openRun !== undefined && m.handle !== "";
   return (
     <div
-      className={`card member-card${tone ? ` ${tone}` : ""}`}
+      className={`card member-card${tone ? ` ${tone}` : ""}${soon && !m.holding ? " entry-soon" : ""}`}
       style={{ padding: 8, position: "relative" }}
+      title={soon && !m.holding ? previewText(soon) : undefined}
     >
       <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
         <strong>
@@ -132,6 +137,7 @@ function MemberCard({
       ) : (
         <div style={{ margin: "4px 0 2px" }} className="faint">
           포지션 없음
+          {soon ? <span className="entry-soon-tag"> · {previewShort(soon)}</span> : null}
         </div>
       )}
 
@@ -185,6 +191,7 @@ export function FundMembers({
   timeframe = "1d",
   cardWidth = CARD_WIDTH.initial,
   openRun,
+  previews,
 }: {
   fundId: string;
   /** 카드 순서 — 펀드 표 · 히트맵과 같은 순서(다리 묶음 · 거래대금 · 사용자 2026-09-27). 없으면 서버 순서. */
@@ -192,6 +199,8 @@ export function FundMembers({
   timeframe?: MemberFrame;
   cardWidth?: number;
   openRun?: (run: string, name?: string) => void;
+  /** 종목 → 진입 가능성(깜빡임 · 2026-09-27). 펀드 현황에서 넘겨받는다. */
+  previews?: Record<string, FundPreview | null | undefined>;
 }) {
   const [rows, setRows] = useState<FundMember[] | null>(null);
   const [error, setError] = useState("");
@@ -235,6 +244,7 @@ export function FundMembers({
           m={m}
           step={spec.step}
           height={height}
+          soon={previews?.[m.symbol] ?? null}
           {...(openRun ? { openRun } : {})}
         />
       ))}

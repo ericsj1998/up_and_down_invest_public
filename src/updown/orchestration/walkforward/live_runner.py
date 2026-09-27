@@ -35,7 +35,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
-from typing import Protocol, cast, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 import structlog
 
@@ -3541,6 +3541,57 @@ class LiveRunner:
             latest = None
         self._forming[frame] = (now_mono, latest)
         return latest
+
+    async def preview(self) -> dict[str, Any] | None:
+        """**진입 가능성** 한 줄 — 걸어 둔 진입 표 또는 마감 전 예비 신호 (화면 전용 · 2026-09-27).
+
+        Returns:
+            `{kind, side, leg, frame, entry, stop}` · 없으면 None.
+            `kind` 는 `waiting`(지정가 진입 표가 걸려 있다) · `signal`(형성 중 봉이
+            지금 값으로 닫히면
+            같은 탐지기가 후보를 낸다).
+
+        Note:
+            ⛔ **판정 · 원장 · 주문을 안 건드린다** — `Session.preview` 가 판정 캐시 밖에서 잰다.
+            형성 중 봉은 `forming()` 그대로(TTL · 실패는 None). 예비라서 펀드 문(자리 · 상한 ·
+            브레이크)은 안 거친다 — 깜빡여도 진입이 약속된 것이 아니다.
+        """
+        session = self._session
+        waiting = session.waiting_trade
+        if waiting is not None:
+            return {
+                "kind": "waiting",
+                "side": waiting.direction.value,
+                "leg": waiting.playbook,
+                "frame": "",
+                "entry": str(waiting.entry),
+                "stop": str(waiting.planned_stop),
+            }
+        if session.position is not None:
+            return None
+        held = set(self._feed.timeframes)
+        forming: dict[Timeframe, Candle] = {}
+        for frame in {book.timeframe for book in session.playbooks}:
+            if frame not in held:
+                continue
+            bar = await self.forming(frame)
+            if bar is not None:
+                forming[frame] = bar
+        if not forming:
+            return None
+        found = session.preview(forming)
+        if not found:
+            return None
+        item = found[0]
+        short = item.setup.stop_loss > item.setup.avg_entry
+        return {
+            "kind": "signal",
+            "side": (Direction.SHORT if short else Direction.LONG).value,
+            "leg": item.playbook.attribution,
+            "frame": item.playbook.timeframe.value,
+            "entry": str(item.setup.avg_entry),
+            "stop": str(item.setup.stop_loss),
+        }
 
     async def frame_ages(self) -> dict[str, float]:
         """축마다 **마지막 봉이 몇 초 됐는지** — 화면이 신선도를 보여 줄 수 있게.

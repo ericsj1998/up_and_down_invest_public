@@ -5,7 +5,15 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { groupedOrder, heatColor, legGroups, tickOf, type FundLegInfo } from "./fundLayout";
+import {
+  groupedOrder,
+  heatColor,
+  legGroups,
+  previewShort,
+  previewText,
+  tickOf,
+  type FundLegInfo,
+} from "./fundLayout";
 
 const leg = (name: string, symbols: string[]): FundLegInfo => ({
   playbook: name,
@@ -70,5 +78,30 @@ describe("heatColor", () => {
 
   it("값 없으면 무채색 — 0 으로 꾸미지 않는다", () => {
     expect(heatColor(null).bg).toBe("rgba(96,125,139,0.12)");
+  });
+});
+
+describe("previewText · previewShort", () => {
+  const signal = {
+    kind: "signal" as const,
+    side: "롱",
+    leg: "private_strategy@1.1.0",
+    frame: "1h",
+    entry: "1.2345",
+    stop: "1.2",
+  };
+
+  it("예비 신호는 약속이 아니라고 말한다 · 다리 이름을 쓴다", () => {
+    const text = previewText(signal, "돌파 롱");
+    expect(text).toContain("마감 전 예비 신호 · 롱 · 1h 봉 · 돌파 롱");
+    expect(text).toContain("약속은 아니다");
+    expect(previewText(signal)).toContain("private_strategy");
+    expect(previewShort(signal)).toBe("예비 신호 · 롱");
+  });
+
+  it("걸어 둔 진입 주문은 가격 · 손절을 싣는다", () => {
+    const waiting = { ...signal, kind: "waiting" as const, side: "숏", frame: "" };
+    expect(previewText(waiting)).toContain("진입 주문 대기 · 숏 @ 1.2345 · 손절 1.2");
+    expect(previewShort(waiting)).toBe("진입 주문 · 숏");
   });
 });

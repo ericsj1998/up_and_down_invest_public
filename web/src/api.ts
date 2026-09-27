@@ -1769,6 +1769,22 @@ export type FundLeg = {
      */
     full_ride?: boolean;
   };
+  /**
+   * 진입 가능성 — 화면이 테두리를 깜빡인다 (2026-09-27). 없으면 null.
+   * `waiting` = 지정가 진입 표가 걸려 있다 · `signal` = **마감 전 예비 신호**(형성 중 봉이 지금 값으로
+   * 닫히면 같은 탐지기가 후보를 낸다 — 펀드 문 전이라 진입이 약속된 것은 아니다).
+   */
+  preview?: FundPreview | null;
+};
+
+export type FundPreview = {
+  kind: "waiting" | "signal";
+  side: string;
+  /** 귀속 키(`playbook@version`). */
+  leg: string;
+  frame: string;
+  entry: string;
+  stop: string;
 };
 
 export type FundStatus = {

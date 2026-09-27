@@ -1,0 +1,106 @@
+"""진입 가능성 모으기 — 펀드 화면의 **깜빡임** 재료 (사용자 2026-09-27).
+
+> *"측정할 수 있는 선에서, 진입 가능성이 있는 종목은 테두리가 깜빡이는 느낌이면 어떨까?"*
+
+정의(사용자 확정 "그 정의로 진행"): ① 지정가 진입 표가 걸려 있다(`waiting`)
+② 형성 중 봉이 지금 값으로
+닫히면 같은 탐지기가 후보를 낸다(`signal` · "마감 전 예비 신호"). 계산은 `LiveRunner.preview` —
+판정 · 원장 · 주문을 안 건드린다.
+
+- **누가 보고 있을 때만 돈다.** 펀드 현황(`/rebalancer`)을 부르면 `touch()` 가 시각을
+  적고, 10분 넘게
+  아무도 안 보면 한 바퀴도 안 돈다 — 1 GB 서버에서 보는 사람 없는 계산을 하지 않는다.
+- 한 바퀴 = 판마다 한 번 · 판 사이 0.3초 쉼 · 바퀴 사이 2분. 거래 리더에서만 돈다(판이 거기 있다).
+  한 바퀴가 10초를 넘으면 경고 한 줄(`preview_sweep_slow`).
+- 실패는 그 판만 비우고 로그 한 줄 — 매매를 막지 않는다.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from typing import Any
+
+from updown.common.logging.setup import get_logger
+
+_logger = get_logger("api.preview")
+
+SWEEP_EVERY = 120.0
+"""바퀴 사이(초)."""
+
+BETWEEN_RUNS = 0.3
+"""판 사이 쉼(초) — 한 판 계산이 이벤트 루프를 오래 쥐지 않게 나눈다."""
+
+WATCH_WINDOW = 600.0
+"""마지막으로 화면이 본 뒤 이만큼(초) 지나면 멈춘다."""
+
+STALE_AFTER = 600.0
+"""이보다 오래된 값은 화면에 싣지 않는다(초)."""
+
+PREVIEWS: dict[str, tuple[float, dict[str, Any] | None]] = {}
+"""판 id → (잰 시각 monotonic, 진입 가능성 또는 None)."""
+
+_seen_at: float | None = None
+
+
+def touch() -> None:
+    """화면이 펀드 현황을 읽었다 — 다음 바퀴를 돌게 한다."""
+    global _seen_at
+    _seen_at = time.monotonic()
+
+
+def preview_of(handle: str) -> dict[str, Any] | None:
+    """그 판의 진입 가능성 — 없거나 낡았으면 None."""
+    got = PREVIEWS.get(handle)
+    if got is None or time.monotonic() - got[0] > STALE_AFTER:
+        return None
+    return got[1]
+
+
+def watched(now: float, seen_at: float | None) -> bool:
+    """누가 보고 있나(순수)."""
+    return seen_at is not None and now - seen_at <= WATCH_WINDOW
+
+
+async def sweep_once() -> int:
+    """판마다 한 번 잰다.
+
+    Returns:
+        잰 판 수.
+    """
+    from updown.apps.api.walkforward import LIVE_RUNNERS
+
+    runs = dict(LIVE_RUNNERS)
+    done = 0
+    for run_id, runner in runs.items():
+        try:
+            PREVIEWS[run_id] = (time.monotonic(), await runner.preview())
+            done += 1
+        except Exception as exc:  # 화면용 — 한 판 실패가 다른 판 · 매매를 막지 않는다
+            PREVIEWS.pop(run_id, None)
+            _logger.warning("preview_failed", payload={"run": run_id, "error": str(exc)[:160]})
+        await asyncio.sleep(BETWEEN_RUNS)
+    for gone in set(PREVIEWS) - set(runs):
+        PREVIEWS.pop(gone, None)
+    return done
+
+
+SLOW_SWEEP = 10.0
+"""한 바퀴가 이보다 오래 걸리면(초) 로그에 남긴다 — 1 GB 서버의 CPU 를 지켜본다."""
+
+
+async def preview_loop() -> None:
+    """누가 보고 있으면 2분마다 한 바퀴 — 화면을 연 직후엔 5초 안에 첫 바퀴."""
+    last: float | None = None
+    while True:
+        now = time.monotonic()
+        if watched(now, _seen_at) and (last is None or now - last >= SWEEP_EVERY):
+            last = now
+            done = await sweep_once()
+            took = time.monotonic() - now
+            if took > SLOW_SWEEP:
+                _logger.warning(
+                    "preview_sweep_slow",
+                    payload={"runs": done, "seconds": round(took, 1)},
+                )
+        await asyncio.sleep(5.0)

@@ -26,7 +26,7 @@ import { useOpenRuns } from "./shell/openRuns";
 import { useThemeValue } from "./shell/theme";
 import { ChartCard, Fact } from "./mtui";
 import { apexBaseOptions } from "./chart/apexBase";
-import { walletLayers } from "./reportWallet";
+import { walletLayers, windowGain } from "./reportWallet";
 
 const POLL_MS = 60_000;
 
@@ -459,16 +459,28 @@ function FundsSection({ data }: { data: Data | null }) {
   );
 }
 
-/** 넣은 돈(회색) — 번 돈 · 잃은 돈과 한눈에 갈리는 무채색. */
-const PUT_IN = "#9aa4ad";
+/**
+ * 지갑 그래프 칠 — **불투명한 옅은 색**(밝음 · 어두움). 반투명을 겹치면 회색 위에 빨강이 비쳐 "넣은 돈" 이
+ * 갈색(= 잃은 돈처럼)으로 보였다 (사용자 2026-09-27: *"넣은 돈 잃은 돈 번 돈이 분리가 잘 안되어 있는 걸로 보여"*).
+ */
+const WALLET_FILL = {
+  light: { put: "#d3d9de", lost: "#eeaea7", earned: "#b8e2d9", line: "#37474f", putLine: "#8a959e" },
+  dark: { put: "#3a4550", lost: "#6e302b", earned: "#1d5a50", line: "#e0e6ea", putLine: "#9aa4ad" },
+} as const;
 
 /**
  * 계좌 총액 — **고른 기간**의 지갑 잔고를 넣은 돈 · 번 돈 · 잃은 돈 세 층으로 (사용자 2026-09-27).
  *
  * 값은 서버(`wallet` · 거래소 자금 원장)가 준 점 그대로다. 층 산식은 `reportWallet.ts` — 입금은 회색만 키운다.
  * ⚠️ 지갑 잔고는 **실현 기준**이다(미실현 제외) — 위 "계좌 총액" 칸과 같은 정의.
+ *
+ * 🔴 **쌓지 않고 덮는다.** ApexCharts 쌓기(stacked area)는 값이 늘 0 인 층(번 동안의 "잃은 돈")을 바닥까지
+ * 칠해 회색과 섞었다. 그래서 바닥부터 칠하는 불투명 면 셋을 **뒤에서 앞으로** 겹친다:
+ *   ① 초록 = 바닥 ~ 잔고 · ② 빨강 = 바닥 ~ 넣은 돈 · ③ 회색 = 바닥 ~ min(잔고, 넣은 돈)
+ * 남는 것: 회색(넣은 돈 중 남은 몫) · 그 위 빨강(넣은 돈 > 잔고인 몫) 또는 초록(잔고 > 넣은 돈인 몫) — 한 점에 하나만.
  */
 function EquityChart({ data }: { data: Data | null }) {
+  const theme = useThemeValue();
   const wallet = data?.wallet ?? null;
   const layers = useMemo(() => walletLayers(wallet?.points ?? []), [wallet]);
   if (!data) return <Empty text="읽는 중…" />;
@@ -480,16 +492,31 @@ function EquityChart({ data }: { data: Data | null }) {
   const deposits = n(wallet.deposits);
   const earnedPct =
     earned !== null && principal !== null && principal !== 0 ? (earned / principal) * 100 : null;
+  const span = windowGain(layers);
+  const paint = WALLET_FILL[theme];
   const pair = (ys: number[]) => layers.x.map((x, i) => ({ x, y: ys[i] ?? 0 }));
   const base = apexBaseOptions();
   const options: ApexOptions = {
     ...base,
-    chart: { ...base.chart, stacked: true },
-    stroke: { curve: "straight", width: [0, 2, 2] },
-    colors: [PUT_IN, LOSS, GAIN],
-    fill: { type: "solid", opacity: [0.35, 0.55, 0.55] },
+    chart: { ...base.chart, stacked: false },
+    // 선은 둘만 — 잔고(진한 실선) · 넣은 돈(회색 점선). 회색 면에는 선을 긋지 않는다.
+    stroke: {
+      curve: "stepline",
+      width: [2, 1.5, 0],
+      dashArray: [0, 4, 0],
+      colors: [paint.line, paint.putLine, "transparent"],
+    },
+    colors: [paint.earned, paint.lost, paint.put],
+    fill: { type: "solid", opacity: [1, 1, 1] },
     dataLabels: { enabled: false },
-    legend: { show: true, position: "top", horizontalAlign: "left" },
+    legend: {
+      show: true,
+      position: "top",
+      horizontalAlign: "left",
+      // 한 층을 끄면 덮기 순서가 깨져 색이 거짓말을 한다 — 누르기를 막는다.
+      onItemClick: { toggleDataSeries: false },
+      markers: { fillColors: [paint.earned, paint.lost, paint.put] },
+    },
     xaxis: { type: "datetime", labels: { datetimeUTC: false } },
     yaxis: { min: layers.floor, labels: { formatter: (v: number) => usdt(v, 0) } },
     tooltip: {
@@ -527,10 +554,13 @@ function EquityChart({ data }: { data: Data | null }) {
           지갑 잔고 <b>{usdt(n(wallet.balance))}</b>
         </span>
         <span className={tone(earned)}>
-          {earned !== null && earned < 0 ? "잃은 돈" : "번 돈"}{" "}
+          지금까지 {earned !== null && earned < 0 ? "잃은 돈" : "번 돈"}{" "}
           <b>
             {usdt(earned === null ? null : Math.abs(earned))} ({pct(earnedPct)})
           </b>
+        </span>
+        <span className={tone(span)}>
+          이 기간 손익 <b>{span === null ? "—" : `${span > 0 ? "+" : ""}${usdt(span)}`}</b>
         </span>
         {deposits !== null && deposits !== 0 ? (
           <span className="text-blue-gray-500">
@@ -547,9 +577,10 @@ function EquityChart({ data }: { data: Data | null }) {
         type="area"
         height={260}
         series={[
+          // 뒤에서 앞으로 — 순서가 곧 색 규칙이다(위 설명). 이름은 보이는 몫의 이름이다.
+          { name: "번 돈", data: pair(layers.balance) },
+          { name: "잃은 돈", data: pair(layers.principal) },
           { name: "넣은 돈", data: pair(layers.kept) },
-          { name: "잃은 돈", data: pair(layers.lost) },
-          { name: "번 돈", data: pair(layers.earned) },
         ]}
         options={options}
       />

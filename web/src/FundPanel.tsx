@@ -15,7 +15,14 @@ import { bookInGroup, groupOfName, marketTradeAllowed, useMarketGroup } from "./
 import { when } from "./shell/MarketHours";
 import { CARD_WIDTH, FundMembers, MEMBER_FRAME_SPEC } from "./FundMembers";
 import { FundOverview } from "./FundOverview";
-import { groupedOrder, legGroups, type SymbolGroupView, type Tick } from "./fundLayout";
+import {
+  groupedOrder,
+  legGroups,
+  previewShort,
+  previewText,
+  type SymbolGroupView,
+  type Tick,
+} from "./fundLayout";
 import { ErrorCard, SelectField } from "./ui";
 
 /** 펀드 종목 → 다리 조합 묶음(거래대금 순) — 표 · 히트맵 · 차트 카드가 같은 순서를 쓴다 (사용자 2026-09-27). */
@@ -26,8 +33,8 @@ function groupsOf(f: FundStatus, ticks: Record<string, Tick>): SymbolGroupView[]
 /**
  * 종목 표 줄 — 묶음 머리 줄과 종목 줄을 잇는다. 묶음이 하나면 머리 줄 없이.
  *
- * `onlyHeld` 면 **보유 종목만** — 표를 접어 둬도 포지션이 잡힌 종목은 같은 표로 보인다(사용자 2026-09-27).
- * 보유 종목이 없는 묶음은 머리 줄도 뺀다.
+ * `onlyHeld` 면 **보유 · 진입 가능 종목만** — 표를 접어 둬도 포지션이 잡힌 종목과 깜빡이는 종목은 같은 표로
+ * 보인다(사용자 2026-09-27). 그런 종목이 없는 묶음은 머리 줄도 뺀다.
  */
 function tableRows(
   groups: SymbolGroupView[],
@@ -37,16 +44,16 @@ function tableRows(
   return groups.flatMap((g) => {
     const rows = g.symbols.flatMap((sym) => {
       const v = f.per_symbol[sym];
-      return v && (!onlyHeld || v.holding === true) ? [{ sym, v }] : [];
+      return v && (!onlyHeld || v.holding === true || !!v.preview) ? [{ sym, v }] : [];
     });
     if (rows.length === 0) return [];
     return [...(groups.length > 1 ? [{ group: g }] : []), ...rows];
   });
 }
 
-/** 보유 종목 수. */
+/** 접힌 표에도 보일 종목 수 — 보유 + 진입 가능. */
 function heldCount(f: FundStatus): number {
-  return Object.values(f.per_symbol).filter((v) => v.holding === true).length;
+  return Object.values(f.per_symbol).filter((v) => v.holding === true || !!v.preview).length;
 }
 
 /** 상세보기 시간축 단추 순서. */
@@ -577,7 +584,7 @@ export function FundPanel({
           <>
           {tableOpen !== f.fund_id ? (
             <div className="text-xs faint" style={{ marginTop: 8 }}>
-              보유 중인 종목 — 40종 전체는 아래 "종목 표"
+              보유 중 · 진입 가능(깜빡임) 종목 — 40종 전체는 아래 "종목 표"
             </div>
           ) : null}
           <table
@@ -629,7 +636,11 @@ export function FundPanel({
                   </tr>
                 ) : (
                   ((sym: string, v: FundLeg) => (
-                <tr key={sym}>
+                <tr
+                  key={sym}
+                  className={v.preview ? "entry-soon" : undefined}
+                  title={v.preview ? previewText(v.preview) : undefined}
+                >
                   <td>{sym}</td>
                   <td className="opt" style={{ textAlign: "right" }}>{v.weight}</td>
                   <td className="opt" style={{ textAlign: "right" }}>{fmt(v.equity)}</td>
@@ -693,7 +704,9 @@ export function FundPanel({
                       ? `${v.position.side} @ ${fmtPrice(v.position.entry)}`
                       : v.holding
                         ? "보유"
-                        : "현금"}
+                        : v.preview
+                          ? previewShort(v.preview)
+                          : "현금"}
                   </td>
                 </tr>
                   ))(item.sym, item.v)
@@ -759,6 +772,9 @@ export function FundPanel({
               order={groupedOrder(groupsOf(f, ticks[f.market || "GATE"] ?? {}))}
               timeframe={memberTf}
               cardWidth={memberWidth}
+              previews={Object.fromEntries(
+                Object.entries(f.per_symbol).map(([sym, v]) => [sym, v.preview ?? null]),
+              )}
               {...(openRun ? { openRun } : {})}
             />
           ) : null}

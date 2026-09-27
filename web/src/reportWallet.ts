@@ -60,3 +60,19 @@ export function walletLayers(points: readonly WalletRow[]): WalletLayers {
   }
   return out;
 }
+
+/**
+ * 이 기간 손익 = 잔고 변화 − 넣은 돈 변화 (입금 · 출금은 손익이 아니다).
+ *
+ * 머리 줄의 "지금까지 번 돈"(잔고 − 넣은 돈 전부)은 기간을 바꿔도 같다 — 24시간을 골라도 같은 +40 이 떠서
+ * 기간 손익으로 읽혔다(사용자 2026-09-27). 기간 몫은 따로 보여 준다.
+ *
+ * @returns 점이 없으면 null.
+ */
+export function windowGain(layers: Pick<WalletLayers, "balance" | "principal">): number | null {
+  const n = layers.balance.length;
+  if (n === 0 || layers.principal.length !== n) return null;
+  const bal = (layers.balance[n - 1] ?? 0) - (layers.balance[0] ?? 0);
+  const put = (layers.principal[n - 1] ?? 0) - (layers.principal[0] ?? 0);
+  return Math.round((bal - put) * 100) / 100;
+}

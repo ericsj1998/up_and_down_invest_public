@@ -55,6 +55,7 @@ import { positionsSummary } from "./consoleSummary";
 import { connection } from "./api";
 import { BrokerMark } from "./shell/BrokerMark";
 import { MarketHours } from "./shell/MarketHours";
+import { PushToggle } from "./PushToggle";
 import {
   brokerOfName,
   capsOfName,
@@ -1328,12 +1329,14 @@ export function ConsoleTab({ openRun }: Props) {
           <span className="card-name">알림 소리</span>
           {soundOpen ? null : (
             <span className="faint">
-              체결·손절·경보 소리와 야간 음소거 설정
+              체결·손절·경보 소리 · 휴대폰·PC 알림 · 야간 음소거 설정
             </span>
           )}
         </button>
       </section>
       <div hidden={!soundOpen}>
+        {/* ⭐ 기기 알림(웹 푸시 · 2026-09-27) — 창을 닫아도 온다. 소리는 화면이 열려 있을 때만. */}
+        {soundOpen ? <PushToggle /> : null}
         {/* 🔴 **모든 거래소가 한 번은 답한 뒤에야** 이력을 넘긴다 (사용자 신고 2026-09-06 "새로고침하면 알림").
             `flatMap` 은 응답 전에도 `[]` 라 Sound 가 그것을 "심었다" 고 믿고, 곧 오는 첫 응답의 이력이 전부
             새것이 되어 울렸다. 응답 전은 `null` — Sound 의 약속("null 은 아직 안 왔다")을 지킨다. 키 없는

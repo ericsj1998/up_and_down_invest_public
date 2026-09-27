@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { walletLayers, type WalletRow } from "./reportWallet";
+import { walletLayers, windowGain, type WalletRow } from "./reportWallet";
 
 const at = (h: number) => new Date(Date.UTC(2026, 8, 20, h)).toISOString();
 const row = (h: number, balance: string, principal: string): WalletRow => ({
@@ -43,5 +43,22 @@ describe("walletLayers", () => {
   it("y 축 바닥은 가장 낮은 회색 꼭대기의 90% 를 10 단위로 내림", () => {
     expect(walletLayers([row(0, "406.8", "366.58")]).floor).toBe(320);
     expect(walletLayers([]).floor).toBe(0);
+  });
+});
+
+describe("windowGain", () => {
+  it("기간 손익 = 잔고 변화 − 넣은 돈 변화 — 입금은 손익이 아니다", () => {
+    const got = walletLayers([row(0, "310", "300"), row(1, "376", "366"), row(2, "370", "366")]);
+    expect(windowGain(got)).toBe(-6);
+  });
+
+  it("🔴 지금까지 번 돈(+40)이 있어도 기간에 움직임이 없으면 0", () => {
+    const got = walletLayers([row(0, "406.82", "366.58"), row(5, "406.82", "366.58")]);
+    expect(windowGain(got)).toBe(0);
+  });
+
+  it("잃은 기간은 음수 · 점이 없으면 null", () => {
+    expect(windowGain(walletLayers([row(0, "400", "366"), row(1, "390.5", "366")]))).toBe(-9.5);
+    expect(windowGain(walletLayers([]))).toBeNull();
   });
 });

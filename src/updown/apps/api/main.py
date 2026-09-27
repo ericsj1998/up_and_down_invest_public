@@ -63,6 +63,7 @@ from updown.apps.api.logs_admin import router as logs_admin_router
 from updown.apps.api.macro import router as macro_router
 from updown.apps.api.mcp_server import McpEndpoint, build_manager, build_server
 from updown.apps.api.middleware import trace_id_middleware
+from updown.apps.api.notify import router as notify_router
 from updown.apps.api.quotes import attach_candles
 from updown.apps.api.rebalancer import router as rebalancer_router
 from updown.apps.api.report import router as report_router
@@ -386,6 +387,15 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         from updown.apps.api.resources_admin import memory_beat_loop
 
         tasks.append(asyncio.create_task(memory_beat_loop(), name="memory-beat"))
+        # ⭐ 웹 푸시 알림 (사용자 2026-09-27) — 판 원장을 10초마다 견줘 새 일만 보낸다.
+        #    리더에서만 돈다(두 슬롯이 같이 보내면 두 번 온다). 실패해도 매매는 그대로다.
+        from updown.apps.api.notify import notify_loop
+
+        tasks.append(asyncio.create_task(notify_loop(), name="web-push"))
+        # ⭐ 진입 가능성(깜빡임 · 2026-09-27) — 펀드 화면을 누가 보고 있을 때만 2분마다 잰다.
+        from updown.apps.api.preview import preview_loop
+
+        tasks.append(asyncio.create_task(preview_loop(), name="entry-preview"))
 
     app = FastAPI(title="업 앤 다운 API", lifespan=lifespan)
 
@@ -456,6 +466,8 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     app.include_router(live_stream_router)
     app.include_router(walkforward_router)
     app.include_router(rebalancer_router)
+    # ⭐ 웹 푸시 알림 (2026-09-27) — 진입 · 청산 · 불타기 · 경보를 휴대폰 · PC 로.
+    app.include_router(notify_router)
     # 🔴 거래소 콘솔 — **원장이 아니라 거래소가 말하는 것**을 보여 주고 앱에서 정리한다.
     #    RUN 이 목록에서 사라진 뒤 포지션이 남으면 손댈 방법이 없었다 (2026-08-18).
     app.include_router(exchange_router)

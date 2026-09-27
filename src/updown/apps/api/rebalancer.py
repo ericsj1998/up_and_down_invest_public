@@ -39,6 +39,7 @@ from updown.analysis.playbook.select import default_playbook, load_playbooks
 from updown.analysis.playbook.types import BreadthCap, DrawdownBrake, Playbook
 from updown.apps.api.admin import instrument_of
 from updown.apps.api.auth import require_market_trade, require_playbook_trade
+from updown.apps.api.preview import preview_of, touch
 from updown.apps.api.walkforward import (
     LIVE_RUNNERS,
     ON_TRADE_CLOSED,
@@ -1441,6 +1442,9 @@ async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
         "realized": str(session.ledger.realized_cash - session.realized_anchor),
         "unrealized": unreal,
         "holding": held is not None,
+        # ⭐ 진입 가능성(깜빡임 · 2026-09-27) — 걸어 둔 진입 표 또는 마감 전 예비 신호.
+        #    없거나 낡으면 None.
+        "preview": preview_of(handle),
         # 🔴 **원장과 거래소가 갈리면 이 종목 손익은 미확정이다** (2026-09-01 사용자
         #    신고). 두 신호를 나눠 싣는다: `reconciled` = 포지션 갈림(고아·유령·무방비),
         #    `accounting_ok` = 실현손익 회계가 거래소와 부호까지 맞나(`pnl_sign_split`).
@@ -1896,6 +1900,7 @@ async def listing() -> dict[str, Any]:
     Returns:
         `{funds: [펀드 현황...]}`.
     """
+    touch()  # 누가 펀드 화면을 보고 있다 — 진입 가능성 계산을 깨운다(`preview.py`)
     return {"funds": [await _status(fund) for fund in FUNDS.values()]}
 
 

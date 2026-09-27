@@ -1205,6 +1205,53 @@ textarea.input {
 .heat-pos {
   font-weight: 600;
 }
+/* ── 진입 가능성 깜빡임 (사용자 2026-09-27 · "진입 가능성이 있는 종목은 테두리가 깜빡이는 느낌") ──
+   색은 호박색 — 초록(이익) · 빨강(손실)과 안 겹치는 "주의해서 볼 것" 색. 움직임 줄이기 설정이면 멈춘 테두리만. */
+:root {
+  --entry-soon: #e0a100;
+}
+@keyframes entry-soon-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(224, 161, 0, 0);
+    border-color: rgba(224, 161, 0, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(224, 161, 0, 0.55);
+    border-color: var(--entry-soon);
+  }
+}
+@keyframes entry-soon-row {
+  0%,
+  100% {
+    background: transparent;
+  }
+  50% {
+    background: rgba(224, 161, 0, 0.16);
+  }
+}
+.heat-tile.entry-soon,
+.member-card.entry-soon {
+  border: 2px solid var(--entry-soon);
+  animation: entry-soon-pulse 1.4s ease-in-out infinite;
+}
+.fund-table tr.entry-soon td {
+  animation: entry-soon-row 1.4s ease-in-out infinite;
+}
+.fund-table tr.entry-soon td:first-child {
+  box-shadow: inset 3px 0 0 var(--entry-soon);
+}
+.entry-soon-tag {
+  color: var(--entry-soon);
+  font-weight: 600;
+}
+@media (prefers-reduced-motion: reduce) {
+  .heat-tile.entry-soon,
+  .member-card.entry-soon,
+  .fund-table tr.entry-soon td {
+    animation: none;
+  }
+}
 .fund-group-row td {
   padding-top: 10px;
   font-size: 11px;
