@@ -9,8 +9,20 @@ import asyncio
 import os
 
 from updown.marketdata.gate.trade_client import LIVE_BASE_URL, GateTradeClient
+from updown.orchestration.report.funds import load_fund_snapshots
 
+# 🔴 2026-09-28 — 이 목록만 물어서 펀드 40종 중 34종(BNB · SOL …)의 대기 주문이 "0" 으로 찍혔다.
+#    이제 펀드 파일의 바스켓 · 열린 포지션 종목을 더한다(대기 주문은 종목별로 물어야 나온다).
 SYMS = ["BTC_USDT", "ETH_USDT", "XRP_USDT", "DOGE_USDT", "ADA_USDT", "NEAR_USDT"]
+
+
+def basket() -> list[str]:
+    """펀드 파일(GATE)의 바스켓 종목 — 못 읽으면 빈 목록."""
+    try:
+        return sorted({s for snap in load_fund_snapshots() for s in snap.symbols})
+    except Exception as exc:
+        print("BASKET -> 못 읽음:", str(exc)[:80])
+        return []
 
 
 async def main() -> None:
@@ -65,7 +77,10 @@ async def main() -> None:
             r.get("liq_price"),
         )
     n_open = 0
-    for s in SYMS:
+    held = [str(r.get("contract")) for r in live]
+    syms = sorted(set(SYMS) | set(basket()) | set(held))
+    print("OPEN_SCAN", len(syms), "종목")
+    for s in syms:
         try:
             opens = await c._request(
                 "GET", "/futures/usdt/orders", params={"contract": s, "status": "open"}
