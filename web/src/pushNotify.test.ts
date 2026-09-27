@@ -33,7 +33,7 @@ describe("deviceLabel", () => {
 });
 
 describe("permissionHelp", () => {
-  const android = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/153.0.0.0 Mobile Safari/537.36";
+  const android = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/153.0 Mobile Safari/537.36";
   it("안드로이드 크롬 — 창 없이 닫힘(default)도 할 일을 말한다", () => {
     const text = permissionHelp("default", android);
     expect(text).toContain("권한 창을 띄우지 않고");
