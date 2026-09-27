@@ -32,6 +32,20 @@ function turnoverText(n: number | null | undefined): string {
   return n.toLocaleString();
 }
 
+/** 다리 칩의 손익 — 금액 + 펀드 대비 %. 0 은 무채색(0 을 초록으로 칠하면 "수익 중" 으로 읽힌다). */
+function LegPnl({ pnl, pct }: { pnl: string; pct?: string | undefined }) {
+  const n = Number(pnl);
+  const color = !Number.isFinite(n) || n === 0 ? "inherit" : n > 0 ? "var(--gain)" : "var(--loss)";
+  const sign = n > 0 ? "+" : "";
+  const p = Number(pct);
+  return (
+    <b style={{ color, marginLeft: 6 }}>
+      {sign}
+      {money(pnl)} USDT{Number.isFinite(p) ? ` (${p > 0 ? "+" : ""}${p.toFixed(2)}%)` : ""}
+    </b>
+  );
+}
+
 function Tile({
   sym,
   tick,
@@ -109,9 +123,18 @@ export function FundOverview({
           </span>
         ) : null}
         {(f.legs ?? []).map((leg) => (
-          <span key={leg.playbook} className="leg-chip" title={`${leg.playbook} · 노출 ${leg.exposure}`}>
+          <span
+            key={leg.playbook}
+            className="leg-chip"
+            title={`${leg.playbook} · 노출 ${leg.exposure}${
+              leg.pnl !== undefined
+                ? ` · 실현 ${money(leg.realized)} · 미실현 ${money(leg.unrealized)} USDT · % 는 펀드 총자본 대비`
+                : ""
+            }`}
+          >
             {leg.name} {leg.symbols.length}종 · 자리 {leg.slots}
             {leg.isolated ? " · 브레이크 제외" : ""}
+            {leg.pnl !== undefined ? <LegPnl pnl={leg.pnl} pct={leg.pct} /> : null}
           </span>
         ))}
       </div>

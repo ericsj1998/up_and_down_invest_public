@@ -13,7 +13,7 @@
  * ⚠️ 화면(`FundPanel.tsx`)이 아니라 여기에 두는 이유: 묶음과 순서는 **규칙**이라 시험이 있어야 한다.
  */
 
-import type { FundPreview } from "./api";
+import type { FundLeg, FundPreview } from "./api";
 
 export type FundLegInfo = {
   playbook: string;
@@ -22,6 +22,9 @@ export type FundLegInfo = {
   slots: number;
   exposure: string;
   isolated: boolean;
+  /** 다리 손익(실현 + 미실현 · USDT)과 펀드 대비 % — 서버 `leg_pnl`. 옛 서버면 없다. */
+  pnl?: string;
+  pct?: string;
 };
 
 export type SymbolGroupView = {
@@ -39,10 +42,36 @@ export function tickOf(ticks: Record<string, Tick>, symbol: string): Tick | unde
   return ticks[symbol] ?? ticks[symbol.replace("_", "")];
 }
 
+/**
+ * 묶음 안 순서의 첫 열쇠 — **지금 상태** (사용자 2026-09-27).
+ *
+ * > *"이득 미실현 포지션, 이득 실현, 손해 미실현 포지션, 손해 실현, 현금 순으로 정렬해 달라"* ·
+ * > *"예비 신호가 난 종목은 매매법 내에서 가장 상단으로"*
+ *
+ *   0 진입 가능(깜빡임) · 1 보유 · 미실현 ≥ 0 · 2 현금 · 실현 > 0 · 3 보유 · 미실현 < 0 · 4 현금 · 실현 < 0 · 5 현금
+ *
+ * 실현은 표가 그리는 값과 같다 — 거래소와 갈린 판은 거래소 실측(`verified_realized`)이 있으면 그것.
+ * 보유 중인데 미실현을 아직 못 읽었으면 1(이득 쪽)에 둔다 — 모르는 것을 손실로 끌어내리지 않는다.
+ */
+export function positionRank(v: FundLeg | undefined): number {
+  if (!v) return 5;
+  if (v.preview && v.holding !== true) return 0;
+  if (v.holding === true) {
+    const u = Number(v.unrealized);
+    return Number.isFinite(u) && u < 0 ? 3 : 1;
+  }
+  const diverged = v.reconciled === false || v.accounting_ok === false;
+  const r = Number(diverged && v.verified_realized != null ? v.verified_realized : v.realized);
+  if (Number.isFinite(r) && r > 0) return 2;
+  if (Number.isFinite(r) && r < 0) return 4;
+  return 5;
+}
+
 export function legGroups(
   legs: readonly FundLegInfo[],
   symbols: readonly string[],
   ticks: Record<string, Tick> = {},
+  rank: (symbol: string) => number = () => 0,
 ): SymbolGroupView[] {
   const byKey = new Map<string, { cover: number[]; symbols: string[] }>();
   for (const sym of symbols) {
@@ -62,6 +91,9 @@ export function legGroups(
     label:
       key === "all" ? "종목" : key === "none" ? "다리 없음" : g.cover.map((i) => legs[i]?.name ?? "?").join(" · "),
     symbols: [...g.symbols].sort((a, b) => {
+      const ra = rank(a);
+      const rb = rank(b);
+      if (ra !== rb) return ra - rb;
       const ta = turnover(a);
       const tb = turnover(b);
       if (ta !== tb) {
@@ -115,4 +147,53 @@ export function previewShort(p: FundPreview): string {
 function trimNum(value: string): string {
   const n = Number(value);
   return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumSignificantDigits: 6 }) : "—";
+}
+
+
+/**
+ * 묶음 한 줄의 손익 — 표 줄들의 실현 + 미실현 합 · 그 줄들 몫(예산 + 손익) 합 대비 %.
+ *
+ * % 의 분모는 **그 줄들이 책임지는 돈**(몫 합)이다 — 줄마다의 % 와 같은 자.
+ */
+export function groupPnl(
+  symbols: readonly string[],
+  rows: Record<string, FundLeg | undefined>,
+): { amount: number; pct: number | null } {
+  let amount = 0;
+  let base = 0;
+  for (const sym of symbols) {
+    const v = rows[sym];
+    if (!v) continue;
+    const diverged = v.reconciled === false || v.accounting_ok === false;
+    const r = Number(diverged && v.verified_realized != null ? v.verified_realized : v.realized);
+    const u = v.holding ? Number(v.unrealized) : 0;
+    amount += (Number.isFinite(r) ? r : 0) + (Number.isFinite(u) ? u : 0);
+    const e = Number(v.equity);
+    base += Number.isFinite(e) ? e : 0;
+  }
+  return { amount, pct: base > 0 ? (amount / base) * 100 : null };
+}
+
+/** 정각 가드 구간(초) — 정각 앞뒤로 이만큼은 리밸런싱을 미룬다. */
+export const HOUR_GUARD_S = 30;
+
+/**
+ * 지금이 **매시 정각 ± 30초** 안인가 (사용자 2026-09-27).
+ *
+ * > *"매 시 정각부터 전후 30초 사이에는 안내문과 타이머(정각까지 남은 시간)를 출력해 주고, 그 시간이 끝나면
+ * > 리밸런싱 하는 걸로 해줘."*
+ *
+ * 봉 마감 진입은 정각 뒤 15 ~ 20초에 크기를 정하고 약 2.4초 뒤 체결된다 — 그 사이 예산이 바뀌면 진입이 옛 예산으로
+ * 나가고 실측 노출만 새 예산으로 적힌다(무해하지만 헷갈린다). 이 구간을 피한다.
+ *
+ * @returns 구간 밖이면 null · 안이면 `{toHour, until}` — 정각까지 남은 ms(지났으면 0) · 구간 끝(ms 시각).
+ */
+export function hourGuard(nowMs: number): { toHour: number; until: number } | null {
+  const hour = 3_600_000;
+  const guard = HOUR_GUARD_S * 1000;
+  const prev = Math.floor(nowMs / hour) * hour;
+  const next = prev + hour;
+  if (nowMs - prev < guard) return { toHour: 0, until: prev + guard };
+  if (next - nowMs <= guard) return { toHour: next - nowMs, until: next + guard };
+  return null;
 }

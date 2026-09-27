@@ -10,9 +10,11 @@ from fastapi import HTTPException
 
 from updown.analysis.playbook.select import load_playbooks
 from updown.apps.api.rebalancer import (
+    BoardPnl,
     _leg_scopes,  # pyright: ignore[reportPrivateUsage]
     _legs_for,  # pyright: ignore[reportPrivateUsage]
     bar_changes,
+    leg_pnl,
     leg_summary,
     member_frame,
     time_changes,
@@ -90,3 +92,38 @@ class TestLegSummary:
             slots=6,
         )
         assert leg_summary((leg,), [])[0]["name"] == "x_v"
+
+
+class TestLegPnl:
+    """2026-09-27 — 매매법별 손익(실현 + 미실현) · 펀드 대비 %."""
+
+    @staticmethod
+    def _leg(pid: str) -> FundLeg:
+        return FundLeg(
+            playbook=pid,
+            attribution=f"{pid}@0.1.0",
+            symbols=("BTC_USDT",),
+            leverage=Decimal(4),
+            exposure=Decimal(1),
+            timeframe="4h",
+            slots=6,
+        )
+
+    def test_sums_realized_by_leg_and_unrealized_by_held_leg(self) -> None:
+        legs = (self._leg("a"), self._leg("b"))
+        boards = [
+            BoardPnl(
+                realized={"a": Decimal("3"), "b": Decimal("-1")}, held="a", unrealized=Decimal("2")
+            ),
+            BoardPnl(
+                realized={"b": Decimal("-4"), "old": Decimal("9")}, held=None, unrealized=None
+            ),
+        ]
+        got = leg_pnl(legs, boards, Decimal(400))
+        assert got["a"] == {"realized": "3.00", "unrealized": "2.00", "pnl": "5.00", "pct": "1.25"}
+        assert got["b"]["pnl"] == "-5.00" and got["b"]["pct"] == "-1.25"
+        assert "old" not in got  # 펀드 다리가 아닌 매매법은 안 싣는다
+
+    def test_zero_balance_does_not_divide(self) -> None:
+        got = leg_pnl((self._leg("a"),), [], Decimal(0))
+        assert got["a"]["pct"] == "0.00"

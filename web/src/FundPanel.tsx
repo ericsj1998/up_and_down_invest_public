@@ -17,7 +17,10 @@ import { CARD_WIDTH, FundMembers, MEMBER_FRAME_SPEC } from "./FundMembers";
 import { FundOverview } from "./FundOverview";
 import {
   groupedOrder,
+  groupPnl,
+  hourGuard,
   legGroups,
+  positionRank,
   previewShort,
   previewText,
   type SymbolGroupView,
@@ -25,9 +28,21 @@ import {
 } from "./fundLayout";
 import { ErrorCard, SelectField } from "./ui";
 
-/** 펀드 종목 → 다리 조합 묶음(거래대금 순) — 표 · 히트맵 · 차트 카드가 같은 순서를 쓴다 (사용자 2026-09-27). */
+/**
+ * 펀드 종목 → 다리 조합 묶음 — 표 · 히트맵 · 차트 카드가 같은 순서를 쓴다 (사용자 2026-09-27).
+ *
+ * 묶음 안 순서 = 지금 상태(`positionRank` · 진입 가능 → 이득 보유 → 이득 실현 → 손해 보유 → 손해 실현 → 현금) → 거래대금.
+ */
 function groupsOf(f: FundStatus, ticks: Record<string, Tick>): SymbolGroupView[] {
-  return legGroups(f.legs ?? [], Object.keys(f.per_symbol), ticks);
+  return legGroups(f.legs ?? [], Object.keys(f.per_symbol), ticks, (sym) =>
+    positionRank(f.per_symbol[sym]),
+  );
+}
+
+/** 남은 ms → "0:23". */
+function clockText(ms: number): string {
+  const sec = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
 }
 
 /**
@@ -362,7 +377,7 @@ export function FundPanel({
     }
   };
 
-  const tick = async (id: string) => {
+  const runTick = async (id: string) => {
     setBusy(id);
     setErr("");
     try {
@@ -373,6 +388,35 @@ export function FundPanel({
     } finally {
       setBusy("");
     }
+  };
+
+  // ⭐ 정각 가드 (사용자 2026-09-27) — 매시 정각 ± 30초에 누르면 안내 · 타이머를 띄우고 구간이 끝나면 돈다.
+  //    봉 마감 진입이 그 사이에 크기를 정하고 체결된다(`fundLayout.hourGuard`).
+  const [deferred, setDeferred] = useState<{ id: string; until: number } | null>(null);
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!deferred) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [deferred]);
+  useEffect(() => {
+    if (deferred && clock >= deferred.until) {
+      const id = deferred.id;
+      setDeferred(null);
+      void runTick(id);
+    }
+    // runTick 은 매 렌더 새로 만들어진다 — 구간 끝을 넘는 순간 한 번만 부른다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clock, deferred]);
+  const tick = (id: string) => {
+    const now = Date.now();
+    const guard = hourGuard(now);
+    setClock(now);
+    if (guard) {
+      setDeferred({ id, until: guard.until });
+      return;
+    }
+    void runTick(id);
   };
 
   const drop = async (id: string) => {
@@ -632,6 +676,17 @@ export function FundPanel({
                   <tr key={`g-${item.group.key}`} className="fund-group-row">
                     <td colSpan={7}>
                       {item.group.label} · {item.group.symbols.length}종
+                      {(() => {
+                        // 묶음 손익 — 이 묶음 줄들의 실현 + 미실현 · 그 줄들 몫 합 대비 %(줄마다의 % 와 같은 자).
+                        const g = groupPnl(item.group.symbols, f.per_symbol);
+                        return (
+                          <span style={{ marginLeft: 8, color: pnlColor(String(g.amount)) }}>
+                            {g.amount > 0 ? "+" : ""}
+                            {fmt(String(g.amount))} USDT
+                            {g.pct === null ? "" : ` (${g.pct > 0 ? "+" : ""}${g.pct.toFixed(2)}%)`}
+                          </span>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ) : (
@@ -862,13 +917,35 @@ export function FundPanel({
             </div>
           ) : (
             <>
+              {deferred?.id === f.fund_id ? (
+                <div className="notice" style={{ marginTop: 6 }} role="status">
+                  ⏳ 매시 정각 앞뒤 30초는 봉 마감 진입이 크기를 정하고 체결되는 시간이라 리밸런싱을 미룹니다 —{" "}
+                  {deferred.until - clock > 30_000 ? (
+                    <>
+                      정각까지 <b>{clockText(deferred.until - 30_000 - clock)}</b> · 정각 30초 뒤 자동으로 리밸런싱
+                    </>
+                  ) : (
+                    <>
+                      리밸런싱까지 <b>{clockText(deferred.until - clock)}</b>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="btn small"
+                    style={{ marginLeft: 8 }}
+                    onClick={() => setDeferred(null)}
+                  >
+                    취소
+                  </button>
+                </div>
+              ) : null}
               <div className="row" style={{ marginTop: 6 }}>
                 <button
                   className="btn small"
                   onClick={() => tick(f.fund_id)}
-                  disabled={busy === f.fund_id}
+                  disabled={busy === f.fund_id || deferred?.id === f.fund_id}
                 >
-                  {busy === f.fund_id ? "…" : "지금 리밸런싱"}
+                  {busy === f.fund_id ? "…" : deferred?.id === f.fund_id ? "대기 중" : "지금 리밸런싱"}
                 </button>
                 <button
                   className="btn small primary"

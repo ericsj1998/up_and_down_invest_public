@@ -359,7 +359,7 @@ export function Runs({ rows, open, refresh, available }: Props) {
     //    타이머가 끝없이 다시 걸린다.
   }, [rows.map((row) => row.session_id).join(",")]);
 
-  // ⭐ 실현 + · 미실현 + · 실현 − · 미실현 − · 진입 대기 순 (규칙과 근거는 `runsOrder.ts` 에 있다).
+  // ⭐ 미실현 + · 실현 + · 미실현 − · 실현 − · 진입 대기 순 (규칙과 근거는 `runsOrder.ts` 에 있다).
   const alive = orderAlive(
     shown.filter((row) => row.running && !row.stored),
     beats,

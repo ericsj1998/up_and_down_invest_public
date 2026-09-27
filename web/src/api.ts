@@ -1830,6 +1830,11 @@ export type FundStatus = {
     slots: number;
     exposure: string;
     isolated: boolean;
+    /** 다리 손익(실현 + 미실현 · USDT) · 펀드 총자본 대비 % — 1.21.2 서버부터(2026-09-27). */
+    realized?: string;
+    unrealized?: string;
+    pnl?: string;
+    pct?: string;
   }[];
 };
 

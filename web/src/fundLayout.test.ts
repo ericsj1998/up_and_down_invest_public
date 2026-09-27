@@ -5,10 +5,14 @@
  */
 
 import { describe, expect, it } from "vitest";
+import type { FundLeg } from "./api";
 import {
   groupedOrder,
+  groupPnl,
   heatColor,
+  hourGuard,
   legGroups,
+  positionRank,
   previewShort,
   previewText,
   tickOf,
@@ -103,5 +107,59 @@ describe("previewText · previewShort", () => {
     const waiting = { ...signal, kind: "waiting" as const, side: "숏", frame: "" };
     expect(previewText(waiting)).toContain("진입 주문 대기 · 숏 @ 1.2345 · 손절 1.2");
     expect(previewShort(waiting)).toBe("진입 주문 · 숏");
+  });
+});
+
+
+describe("positionRank · 묶음 안 순서", () => {
+  const v = (x: Partial<FundLeg>): FundLeg => ({ handle: "h", ...x });
+  const preview = { kind: "signal" as const, side: "롱", leg: "a@1", frame: "1h", entry: "1", stop: "0.9" };
+
+  it("🔴 진입 가능 → 이득 보유 → 이득 실현 → 손해 보유 → 손해 실현 → 현금 (사용자 2026-09-27)", () => {
+    expect(positionRank(v({ preview }))).toBe(0);
+    expect(positionRank(v({ holding: true, unrealized: "0.06" }))).toBe(1);
+    expect(positionRank(v({ realized: "3" }))).toBe(2);
+    expect(positionRank(v({ holding: true, unrealized: "-1" }))).toBe(3);
+    expect(positionRank(v({ realized: "-2" }))).toBe(4);
+    expect(positionRank(v({ realized: "0" }))).toBe(5);
+    // 보유 중인데 미실현을 못 읽었으면 이득 쪽 — 모르는 것을 손실로 끌어내리지 않는다
+    expect(positionRank(v({ holding: true }))).toBe(1);
+    // 거래소와 갈린 판은 실측 실현으로
+    expect(positionRank(v({ realized: "5", accounting_ok: false, verified_realized: "-4" }))).toBe(4);
+  });
+
+  it("묶음 안: 순위가 거래대금보다 먼저", () => {
+    const legs: FundLegInfo[] = [
+      { playbook: "a", name: "A", symbols: ["BTC_USDT", "SOL_USDT", "XRP_USDT"], slots: 6, exposure: "1", isolated: false },
+    ];
+    const ticks = { BTC_USDT: { turnover: 900 }, SOL_USDT: { turnover: 100 }, XRP_USDT: { turnover: 500 } };
+    const rank = (s: string) => (s === "SOL_USDT" ? 1 : 5);
+    const [g] = legGroups(legs, ["BTC_USDT", "SOL_USDT", "XRP_USDT"], ticks, rank);
+    expect(g?.symbols).toEqual(["SOL_USDT", "BTC_USDT", "XRP_USDT"]);
+  });
+});
+
+describe("groupPnl", () => {
+  it("실현 + 보유 미실현 · 몫 합 대비 %", () => {
+    const rows: Record<string, FundLeg> = {
+      A: { handle: "a", equity: "100", realized: "2", holding: true, unrealized: "3" },
+      B: { handle: "b", equity: "100", realized: "-1", unrealized: "9" }, // 보유 아님 — 미실현 안 셈
+    };
+    const got = groupPnl(["A", "B"], rows);
+    expect(got.amount).toBeCloseTo(4);
+    expect(got.pct).toBeCloseTo(2);
+    expect(groupPnl([], rows).pct).toBeNull();
+  });
+});
+
+describe("hourGuard — 매시 정각 ± 30초", () => {
+  const at = (h: number, m: number, s: number) => Date.UTC(2026, 8, 27, h, m, s);
+  it("정각 30초 전부터 정각 30초 뒤까지", () => {
+    expect(hourGuard(at(9, 59, 29))).toBeNull();
+    expect(hourGuard(at(9, 59, 30))).toEqual({ toHour: 30_000, until: at(10, 0, 30) });
+    expect(hourGuard(at(10, 0, 0))).toEqual({ toHour: 0, until: at(10, 0, 30) });
+    expect(hourGuard(at(10, 0, 29))).toEqual({ toHour: 0, until: at(10, 0, 30) });
+    expect(hourGuard(at(10, 0, 30))).toBeNull();
+    expect(hourGuard(at(10, 30, 0))).toBeNull();
   });
 });

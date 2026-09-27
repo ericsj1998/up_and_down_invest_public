@@ -73,7 +73,7 @@ describe("groupOf — 묶음", () => {
 });
 
 describe("orderAlive", () => {
-  it("🔴 실현 + · 미실현 + · 실현 − · 미실현 − · 진입 대기 순이다 (사용자 2026-09-27)", () => {
+  it("🔴 미실현 + · 실현 + · 미실현 − · 실현 − · 진입 대기 순이다 (사용자 2026-09-27 · 펀드 표와 같다)", () => {
     const rows = [
       row({ session_id: "대기" }),
       row({ session_id: "미실현-", trades: 1, closed: 0 }),
@@ -82,16 +82,16 @@ describe("orderAlive", () => {
       row({ session_id: "실현+", return_pct: 2 }),
     ];
     const got = orderAlive(rows, { "미실현-": pos("-1"), "미실현+": pos("5") });
-    expect(got.map((r) => r.session_id)).toEqual(["실현+", "미실현+", "실현-", "미실현-", "대기"]);
+    expect(got.map((r) => r.session_id)).toEqual(["미실현+", "실현+", "미실현-", "실현-", "대기"]);
   });
 
-  it("실현 이익 판이 미실현 이익이 더 큰 보유 판보다 위다", () => {
+  it("이득 보유 판이 실현 이익 판보다 위다", () => {
     const rows = [
       row({ session_id: "보유", trades: 1, closed: 0 }),
       row({ session_id: "빈판", return_pct: 0.1 }),
     ];
     const got = orderAlive(rows, { 보유: pos("50") });
-    expect(got.map((r) => r.session_id)).toEqual(["빈판", "보유"]);
+    expect(got.map((r) => r.session_id)).toEqual(["보유", "빈판"]);
   });
 
   it("들고 있는 판끼리는 미실현 내림차순", () => {

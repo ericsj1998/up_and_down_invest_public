@@ -1486,6 +1486,7 @@ async def _status(fund: Fund) -> dict[str, Any]:
     # 🔴 **거래소와 갈린 종목** — 포지션 갈림(reconciled) 또는 회계 갈림(accounting_ok)
     #    어느 쪽이든. 이 목록이 비어 있지 않으면 그 세션들은 총자본·TWR 에서 **동결
     #    격리**돼 있고(허구 손익 제외 · 벽돌 2), 화면은 헤드라인에 경고를 그린다.
+    pnl = leg_pnl(fund.legs, _boards_pnl(fund, per_symbol), coord.engine.balance)
     mismatch = [
         sym
         for sym, row in per_symbol.items()
@@ -1521,7 +1522,10 @@ async def _status(fund: Fund) -> dict[str, Any]:
             }
         ),
         "per_symbol": per_symbol,
-        "legs": leg_summary(fund.legs, load_playbooks()),
+        # ⭐ 다리(매매법)별 손익 — 금액 · 펀드 대비 % (사용자 2026-09-27).
+        "legs": [
+            leg | pnl.get(leg["playbook"], {}) for leg in leg_summary(fund.legs, load_playbooks())
+        ],
     }
 
 
@@ -1554,6 +1558,90 @@ def leg_summary(legs: Sequence[FundLeg], books: Sequence[Playbook]) -> list[dict
                 "exposure": str(leg.exposure),
                 "isolated": leg.isolated,
             }
+        )
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class BoardPnl:
+    """판 하나의 다리별 재료 — `leg_pnl` 의 입력(순수 계산을 위해 원장에서 꺼내 둔 값).
+
+    Attributes:
+        realized: 매매법 id → 그 매매법 귀속 매매의 실현 금액(원장 `realized_of`).
+        held: 지금 들고 있는 매매의 매매법 id(없으면 None).
+        unrealized: 거래소 미실현(없거나 못 읽으면 None).
+    """
+
+    realized: Mapping[str, Decimal]
+    held: str | None
+    unrealized: Decimal | None
+
+
+def leg_pnl(
+    legs: Sequence[FundLeg], boards: Sequence[BoardPnl], balance: Decimal
+) -> dict[str, dict[str, str]]:
+    """다리(매매법)별 손익 — 실현 + 미실현 · 금액과 펀드 대비 % (순수 · 사용자 2026-09-27).
+
+    > *"각 매매법 별로도 옆에 손익퍼센트랑, 손익금액이 나왔으면 좋겠네."*
+
+    Args:
+        legs: 펀드 다리.
+        boards: 판마다 다리별 실현 · 보유 다리 · 미실현.
+        balance: 펀드 총자본 — % 의 분모.
+
+    Returns:
+        `{매매법 id: {realized, unrealized, pnl, pct}}`. 문자열 금액 · `pct` 는 펀드 총자본 대비(%).
+
+    Note:
+        🔴 % 의 분모는 **펀드 총자본**이다 — 다리들은 종목을 나눠 쓰고 자리도 겹쳐
+        "그 다리만의 돈" 이 없다. 펀드 대비면 다리들의 % 를 더하면 펀드 손익 % 가 된다(더해지는 자).
+        실현은 원장 전체(그 판이 생긴 뒤)다 — 표의 "실현손익" 칸은 재정렬 기준점 이후라, 재정렬한
+        판이 있으면 두 값이 다를 수 있다.
+    """
+    out: dict[str, list[Decimal]] = {leg.playbook: [Decimal(0), Decimal(0)] for leg in legs}
+    for board in boards:
+        for pid, amount in board.realized.items():
+            if pid in out:
+                out[pid][0] += amount
+        if board.held in out and board.unrealized is not None:
+            out[board.held][1] += board.unrealized
+    result: dict[str, dict[str, str]] = {}
+    for pid, (real, unreal) in out.items():
+        total = real + unreal
+        pct = total / balance * 100 if balance > 0 else Decimal(0)
+        result[pid] = {
+            "realized": str(real.quantize(Decimal("0.01"))),
+            "unrealized": str(unreal.quantize(Decimal("0.01"))),
+            "pnl": str(total.quantize(Decimal("0.01"))),
+            "pct": str(pct.quantize(Decimal("0.01"))),
+        }
+    return result
+
+
+def _boards_pnl(fund: Fund, per_symbol: Mapping[str, Mapping[str, Any]]) -> list[BoardPnl]:
+    """판마다 다리별 실현(원장 귀속 키 앞부분 = 매매법 id) · 보유 다리 · 미실현."""
+    out: list[BoardPnl] = []
+    for sym, handle in fund.handles.items():
+        live = SESSIONS.get(handle)
+        if live is None:
+            continue
+        ledger = live.session.ledger
+        keys: dict[str, set[str]] = {}
+        for record in ledger.records:
+            keys.setdefault(record.playbook.split("@")[0], set()).add(record.playbook)
+        realized = {pid: ledger.realized_of(attrs) for pid, attrs in keys.items()}
+        held = live.session.position
+        raw = per_symbol.get(sym, {}).get("unrealized")
+        try:
+            unreal = Decimal(str(raw)) if raw not in (None, "") else None
+        except ArithmeticError:
+            unreal = None
+        out.append(
+            BoardPnl(
+                realized=realized,
+                held=None if held is None else held.playbook.split("@")[0],
+                unrealized=unreal,
+            )
         )
     return out
 
