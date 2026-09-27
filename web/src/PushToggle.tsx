@@ -6,7 +6,14 @@
  */
 
 import { useEffect, useState } from "react";
-import { disablePush, enablePush, pushState, testPush, type PushState } from "./pushNotify";
+import {
+  disablePush,
+  enablePush,
+  PermissionError,
+  pushState,
+  testPush,
+  type PushState,
+} from "./pushNotify";
 
 const HINT: Record<PushState, string> = {
   unsupported: "이 브라우저는 기기 알림(웹 푸시)을 지원하지 않는다.",
@@ -33,7 +40,15 @@ export function PushToggle() {
     setMsg("");
     job()
       .then(setState)
-      .catch((exc: unknown) => setMsg(`실패 — ${String(exc)}`))
+      .catch((exc: unknown) => {
+        // 권한 창 없이 끝났다 — 무엇을 눌러야 하는지 말한다(전에는 'default' 에 아무 말도 없었다).
+        if (exc instanceof PermissionError) {
+          setState(exc.answer === "denied" ? "denied" : "off");
+          setMsg(exc.message);
+          return;
+        }
+        setMsg(`실패 — ${String(exc)}`);
+      })
       .finally(() => setBusy(false));
   };
 

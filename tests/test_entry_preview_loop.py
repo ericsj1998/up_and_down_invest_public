@@ -36,8 +36,8 @@ async def test_sweep_keeps_going_past_a_failure(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(mod, "BETWEEN_RUNS", 0.0)
     mod.PREVIEWS.clear()
     mod.PREVIEWS["gone"] = (0.0, signal)
-    done = await mod.sweep_once()
-    assert done == 2
+    done, busy, worst = await mod.sweep_once()
+    assert done == 2 and busy >= 0 and worst <= busy
     assert mod.preview_of("a") == signal
     assert mod.preview_of("b") is None and "b" not in mod.PREVIEWS
     assert mod.preview_of("c") is None
@@ -49,3 +49,11 @@ def test_stale_value_is_not_shown(monkeypatch: pytest.MonkeyPatch) -> None:
     mod.PREVIEWS["a"] = (0.0, {"kind": "signal"})
     monkeypatch.setattr(mod.time, "monotonic", lambda: mod.STALE_AFTER + 1.0)
     assert mod.preview_of("a") is None
+
+
+def test_found_now_lists_only_hits() -> None:
+    mod.PREVIEWS.clear()
+    mod.PREVIEWS["b"] = (0.0, {"kind": "signal"})
+    mod.PREVIEWS["a"] = (0.0, None)
+    mod.PREVIEWS["c"] = (0.0, {"kind": "waiting"})
+    assert mod.found_now() == ["b", "c"]

@@ -10,6 +10,17 @@
 
 import { request } from "./api";
 
+/** 권한을 못 받았다 — `message` 는 사람이 할 일, `answer` 는 브라우저의 답. */
+export class PermissionError extends Error {
+  readonly answer: NotificationPermission;
+
+  constructor(message: string, answer: NotificationPermission) {
+    super(message);
+    this.name = "PermissionError";
+    this.answer = answer;
+  }
+}
+
 export type PushState =
   | "unsupported" // 이 브라우저는 웹 푸시가 없다
   | "ios-home" // 아이폰 사파리 탭 — 홈 화면에 추가해야 한다
@@ -75,11 +86,55 @@ export async function pushState(): Promise<PushState> {
   return sub ? "on" : "off";
 }
 
-/** 알림 켜기 — 권한을 묻고 구독해 서버에 적는다. */
+/**
+ * 권한 창 없이 끝났을 때 사람이 할 일 (사용자 2026-09-27 · "핸드폰에서는 알림 허용이 안 뜬다 · PC 크롬은 떴다").
+ *
+ * 크롬은 사이트가 차단돼 있거나 "조용한 알림 요청" 이 켜져 있으면 **창을 안 띄우고** 바로 `denied` · `default` 로
+ * 답한다 — 전에는 `default` 일 때 화면이 아무 말도 안 해 "눌러도 아무 일이 없다" 로 보였다.
+ *
+ * @param answer 브라우저가 `requestPermission` 에 준 답.
+ * @param ua `navigator.userAgent`.
+ */
+export function permissionHelp(answer: NotificationPermission, ua: string): string {
+  if (answer === "granted") return "";
+  const android = /Android/.test(ua);
+  const ios = /iPhone|iPad/.test(ua);
+  const head =
+    answer === "denied"
+      ? "브라우저가 권한 창 없이 '거부' 로 답했다 — 이 사이트 알림이 막혀 있다."
+      : "브라우저가 권한 창을 띄우지 않고 닫았다(조용한 알림 요청 · 무시됨).";
+  if (android) {
+    return (
+      `${head} 크롬 주소창 왼쪽 아이콘(사이트 정보) → 권한 → 알림 → 허용. ` +
+      "안 보이면 크롬 ⋮ → 설정 → 사이트 설정 → 알림 에서 '사이트에서 알림 전송 요청 가능' 을 켜고 차단 목록에서 이 사이트를 뺀다. " +
+      "폰 설정 → 애플리케이션 → Chrome → 알림 도 켜져 있어야 한다. 그다음 '알림 켜기' 를 다시 누른다."
+    );
+  }
+  if (ios) {
+    return `${head} 설정 → 알림 → (홈 화면에 추가한 이 앱) → 알림 허용을 켠 뒤 다시 누른다.`;
+  }
+  return `${head} 주소창 왼쪽 자물쇠(사이트 정보) → 알림 → 허용 뒤 다시 누른다.`;
+}
+
+/** 권한 결과를 서버 로그에 한 줄(`notify_client_diag`) — 폰에서 무엇이 막혔는지 원격으로 본다. 실패는 무시. */
+async function reportDiag(answer: string, before: string): Promise<void> {
+  const standalone = window.matchMedia?.("(display-mode: standalone)").matches ?? false;
+  await request("/notify/diag", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ answer, before, standalone, device: deviceLabel(navigator.userAgent) }),
+  }).catch(() => undefined);
+}
+
+/** 알림 켜기 — 권한을 묻고 구독해 서버에 적는다. 권한을 못 받으면 `help` 에 할 일을 싣는다. */
 export async function enablePush(): Promise<PushState> {
   if (!supported()) return isIosTab() ? "ios-home" : "unsupported";
+  const before = Notification.permission;
   const permission = await Notification.requestPermission();
-  if (permission !== "granted") return permission === "denied" ? "denied" : "off";
+  if (permission !== "granted") {
+    void reportDiag(permission, before);
+    throw new PermissionError(permissionHelp(permission, navigator.userAgent), permission);
+  }
   const reg = await registration();
   await navigator.serviceWorker.ready;
   const { public_key } = await request<{ public_key: string }>("/notify/key");

@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { deviceLabel, sameBytes, urlBase64ToUint8Array } from "./pushNotify";
+import { deviceLabel, permissionHelp, sameBytes, urlBase64ToUint8Array } from "./pushNotify";
 
 describe("urlBase64ToUint8Array", () => {
   it("패딩 없는 base64url 을 바이트로 — '-' '_' 도 읽는다", () => {
@@ -29,5 +29,19 @@ describe("deviceLabel", () => {
     );
     expect(deviceLabel("Mozilla/5.0 (Windows NT 10.0) Chrome/128.0 Safari/537.36")).toBe("Windows · 크롬");
     expect(deviceLabel("Mozilla/5.0 (Linux; Android 14) Chrome/128.0 Mobile Safari/537.36")).toBe("안드로이드 · 크롬");
+  });
+});
+
+describe("permissionHelp", () => {
+  const android = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/153.0.0.0 Mobile Safari/537.36";
+  it("안드로이드 크롬 — 창 없이 닫힘(default)도 할 일을 말한다", () => {
+    const text = permissionHelp("default", android);
+    expect(text).toContain("권한 창을 띄우지 않고");
+    expect(text).toContain("사이트 설정 → 알림");
+    expect(text).toContain("Chrome → 알림");
+  });
+  it("거부 · 허용", () => {
+    expect(permissionHelp("denied", android)).toContain("거부");
+    expect(permissionHelp("granted", android)).toBe("");
   });
 });

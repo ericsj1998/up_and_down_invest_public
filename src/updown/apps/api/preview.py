@@ -62,45 +62,74 @@ def watched(now: float, seen_at: float | None) -> bool:
     return seen_at is not None and now - seen_at <= WATCH_WINDOW
 
 
-async def sweep_once() -> int:
+async def sweep_once() -> tuple[int, float, float]:
     """판마다 한 번 잰다.
 
     Returns:
-        잰 판 수.
+        (잰 판 수, 계산에 쓴 초 합 — 판 사이 쉼은 뺀다, 가장 오래 걸린 한 판의 초).
     """
     from updown.apps.api.walkforward import LIVE_RUNNERS
 
     runs = dict(LIVE_RUNNERS)
     done = 0
+    busy = 0.0
+    worst = 0.0
     for run_id, runner in runs.items():
+        started = time.monotonic()
         try:
             PREVIEWS[run_id] = (time.monotonic(), await runner.preview())
             done += 1
         except Exception as exc:  # 화면용 — 한 판 실패가 다른 판 · 매매를 막지 않는다
             PREVIEWS.pop(run_id, None)
             _logger.warning("preview_failed", payload={"run": run_id, "error": str(exc)[:160]})
+        took = time.monotonic() - started
+        busy += took
+        worst = max(worst, took)
         await asyncio.sleep(BETWEEN_RUNS)
     for gone in set(PREVIEWS) - set(runs):
         PREVIEWS.pop(gone, None)
-    return done
+    return done, busy, worst
 
 
 SLOW_SWEEP = 10.0
-"""한 바퀴가 이보다 오래 걸리면(초) 로그에 남긴다 — 1 GB 서버의 CPU 를 지켜본다."""
+"""한 바퀴의 **계산 시간 합**(판 사이 쉼 제외)이 이보다 크면(초) 경고 — 1 GB 서버의 CPU 를 지켜본다.
+
+1.21.0 배포 첫 바퀴에서 쉼(0.3초 x 40 = 12초)까지 세어 18초로 경고가 났다 — 실제 계산은 약 6초였다.
+"""
+
+
+def found_now() -> list[str]:
+    """지금 진입 가능성이 있는 판 id(정렬) — 바뀔 때만 로그에 남기는 데 쓴다."""
+    return sorted(run for run, (_, got) in PREVIEWS.items() if got)
 
 
 async def preview_loop() -> None:
     """누가 보고 있으면 2분마다 한 바퀴 — 화면을 연 직후엔 5초 안에 첫 바퀴."""
     last: float | None = None
+    shown: list[str] | None = None
     while True:
         now = time.monotonic()
         if watched(now, _seen_at) and (last is None or now - last >= SWEEP_EVERY):
             last = now
-            done = await sweep_once()
-            took = time.monotonic() - now
-            if took > SLOW_SWEEP:
+            done, busy, worst = await sweep_once()
+            if busy > SLOW_SWEEP:
                 _logger.warning(
                     "preview_sweep_slow",
-                    payload={"runs": done, "seconds": round(took, 1)},
+                    payload={"runs": done, "busy_s": round(busy, 1), "worst_s": round(worst, 2)},
+                )
+            found = found_now()
+            if found != shown:
+                # 깜빡임 목록이 바뀔 때만 — "화면이 제대로 깜빡이나" 를 로그로 대조한다
+                # (판 id 와 종류만).
+                shown = found
+                _logger.info(
+                    "preview_found",
+                    payload={
+                        "count": len(found),
+                        "runs": [
+                            f"{run}:{(PREVIEWS[run][1] or {}).get('kind', '')}" for run in found
+                        ][:40],
+                        "busy_s": round(busy, 1),
+                    },
                 )
         await asyncio.sleep(5.0)

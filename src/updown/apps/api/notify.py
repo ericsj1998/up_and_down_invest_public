@@ -198,8 +198,34 @@ async def unsubscribe(payload: Annotated[dict[str, Any], Body()]) -> dict[str, A
     return {"ok": True, "count": len(subs)}
 
 
+@router.post("/diag")
+async def diag(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+    """폰이 권한을 못 받았을 때 무엇이라 답했나 — 로그 한 줄(`notify_client_diag`) (2026-09-27).
+
+    사용자 "핸드폰에서는 알림 허용이 안 뜬다 · PC 크롬은 떴다" — nginx 로그로는 요청이 없다는
+    것만 보이고
+    브라우저의 답(`denied` · `default`)은 안 보인다. 값은 짧은 낱말뿐이다(개인 정보 없음).
+
+    Args:
+        payload: `{answer, before, standalone, device}`.
+
+    Returns:
+        `{ok}`.
+    """
+    _logger.info(
+        "notify_client_diag",
+        payload={
+            "answer": str(payload.get("answer", ""))[:16],
+            "before": str(payload.get("before", ""))[:16],
+            "standalone": bool(payload.get("standalone", False)),
+            "device": str(payload.get("device", ""))[:40],
+        },
+    )
+    return {"ok": True}
+
+
 @router.post("/test")
-async def test(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def trial(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
     """시험 알림 — `endpoint` 가 있으면 그 기기로만, 없으면 구독한 기기 전부로.
 
     Args:
