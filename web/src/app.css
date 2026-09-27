@@ -1164,3 +1164,56 @@ textarea.input {
 .chat-ghost-bottom { left: 8px; right: 8px; bottom: 8px; height: 340px; }
 .chat-starters { scrollbar-width: thin; }
 .chat-hello { animation: chat-pop-in 300ms ease-out; }
+
+/* ── 폰 폭(540px 미만 = Tailwind `sm` 아래 · MT 화면 구간) — 사용자 2026-09-27: "모바일에서는 너무 칸이나 배치가 많고 문자도 겹친다" ──
+   컴퓨터 화면은 그대로 두고 좁을 때만 덧붙인다. */
+@media (max-width: 539.98px) {
+  /* 펀드 종목 표: 종목 · 미실현 · 실현 · 포지션 네 칸만 — 7칸을 300px 에 넣어 "BTC_USDT" 와 "67.8" 이 겹쳤다.
+     고정 레이아웃은 첫 줄(thead) 폭을 쓰므로 거기만 다시 나눈다. */
+  .fund-table .opt {
+    display: none;
+  }
+  .fund-table thead td.col-sym {
+    width: 30% !important;
+  }
+  .fund-table thead td.col-pnl {
+    width: 25% !important;
+  }
+  .fund-table thead td.col-pos {
+    width: 20% !important;
+  }
+  .fund-table td.col-pos {
+    padding-left: 6px !important;
+  }
+  /* 전역 `td { white-space: nowrap }` 을 여기서만 푼다 — "748.95 (+86.3%)" 가 옆 칸으로 넘쳐 덮었다. */
+  .fund-table td {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    padding: 8px 4px;
+    font-size: 12px;
+  }
+
+  /* 콘솔 사실 카드: 한 줄에 둘 — 한 줄에 하나씩 쌓여 계좌 칸만 화면 세 장이었다. 넓은 카드(.wide)는 그대로 한 줄. */
+  .cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .cards > .card {
+    padding: 10px;
+  }
+  .cards .card-value {
+    font-size: 15px;
+  }
+  .cards .card-hint {
+    font-size: 11px;
+  }
+
+  /* 입력 칸: 한 줄에 하나씩 꽉 차게 — 여러 칸이 한 줄에 끼여 선택칸이 화살표만 남았다. */
+  .row > .field {
+    flex: 1 1 100%;
+  }
+  .field select,
+  .field input {
+    width: 100%;
+  }
+}

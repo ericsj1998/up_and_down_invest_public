@@ -67,7 +67,7 @@ export function Layout({
       <Launcher primary={CHAT_PANEL} others={[CALENDAR_PANEL]} />
       {leftNodes}
       <div
-        className="flex min-h-screen flex-col gap-2 p-4 transition-[margin] duration-300 ml-[var(--chat-left)] xl:ml-[calc(var(--side-w)+var(--chat-left))]"
+        className="flex min-h-screen flex-col gap-2 p-2 sm:p-4 transition-[margin] duration-300 ml-[var(--chat-left)] xl:ml-[calc(var(--side-w)+var(--chat-left))]"
         style={{ "--chat-left": `${leftPad}px`, "--side-w": `${sideW}px` } as React.CSSProperties}
       >
         {at("top")}
@@ -77,7 +77,7 @@ export function Layout({
             <Navbar who={who} onOut={onOut} onMenu={() => setDrawer(true)} />
             {/* ⚠️ min-w-0 + overflow-x-clip: 넓은 표·pre 는 자기 상자(.table-wrap) 안에서 스크롤한다 — 화면 전체가
                 가로로 밀리면 안 된다 (모바일 실측 2026-09-05: 옛 카드가 화면 밖으로 넘쳤다). */}
-            <main className="mt-4 min-w-0 overflow-x-clip">{children}</main>
+            <main className="mt-2 min-w-0 overflow-x-clip pb-20 sm:mt-4 sm:pb-0">{children}</main>
           </div>
           {at("right")}
         </div>

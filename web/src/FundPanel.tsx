@@ -508,6 +508,7 @@ export function FundPanel({
             </p>
           ) : null}
           <table
+            className="fund-table"
             style={{
               width: "100%",
               fontSize: 13,
@@ -520,32 +521,34 @@ export function FundPanel({
           >
             <thead style={{ opacity: 0.6 }}>
               <tr>
-                <td style={{ width: "13%" }}>종목</td>
-                <td style={{ width: "6%", textAlign: "right" }}>비중</td>
+                <td className="col-sym" style={{ width: "13%" }}>종목</td>
+                <td className="opt" style={{ width: "6%", textAlign: "right" }}>비중</td>
                 <td
+                  className="opt"
                   style={{ width: "14%", textAlign: "right" }}
                   title="이 종목에 배정된 예산 + 그 종목의 손익 — 원장의 몫이다. 입금하면 주문 없이도 는다"
                 >
                   몫 (예산+손익)
                 </td>
                 <td
+                  className="opt"
                   style={{ width: "12%", textAlign: "right" }}
                   title="거래소가 이 종목 포지션에 실제로 잡고 있는 증거금 — 주문이 들어간 만큼만 는다"
                 >
                   포지션 증거금
                 </td>
-                <td style={{ width: "18%", textAlign: "right" }}>미실현</td>
-                <td style={{ width: "12%", textAlign: "right" }}>실현손익</td>
-                <td style={{ width: "25%", paddingLeft: 16 }}>포지션</td>
+                <td className="col-pnl" style={{ width: "18%", textAlign: "right" }}>미실현</td>
+                <td className="col-pnl" style={{ width: "12%", textAlign: "right" }}>실현손익</td>
+                <td className="col-pos" style={{ width: "25%", paddingLeft: 16 }}>포지션</td>
               </tr>
             </thead>
             <tbody>
               {Object.entries(f.per_symbol).map(([sym, v]) => (
                 <tr key={sym}>
                   <td>{sym}</td>
-                  <td style={{ textAlign: "right" }}>{v.weight}</td>
-                  <td style={{ textAlign: "right" }}>{fmt(v.equity)}</td>
-                  <td style={{ textAlign: "right" }}>
+                  <td className="opt" style={{ textAlign: "right" }}>{v.weight}</td>
+                  <td className="opt" style={{ textAlign: "right" }}>{fmt(v.equity)}</td>
+                  <td className="opt" style={{ textAlign: "right" }}>
                     {v.holding && Number(v.margin) > 0 ? fmt(v.margin) : "—"}
                   </td>
                   <td
@@ -594,6 +597,7 @@ export function FundPanel({
                     );
                   })()}
                   <td
+                    className="col-pos"
                     style={{
                       paddingLeft: 16,
                       overflow: "hidden",

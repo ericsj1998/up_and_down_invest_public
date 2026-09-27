@@ -173,7 +173,7 @@ export function ReportDashboard() {
       ) : null}
 
       {/* 성과 카드 4장 — 금액+% · MDD 병기 */}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-4 xl:grid-cols-4">
         {/* 두 출처를 문장으로 가른다 (UX 점검) — 거래소가 말하는 실현 금액 · 원장이 계산한 손익률 합. */}
         <Stat
           icon={<BanknotesIcon className="h-6 w-6 text-white" />}
@@ -246,7 +246,7 @@ export function ReportDashboard() {
       </div>
 
       {/* 계좌 — 거래소가 말하는 사실 */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-3 xl:grid-cols-6">
         <Fact label="계좌 총액" value={usdt(n(acct?.total))} />
         <Fact label="가용" value={usdt(n(acct?.available))} />
         <Fact label="포지션 증거금" value={usdt(n(acct?.locked))} />
@@ -337,31 +337,32 @@ function Stat({
 }) {
   return (
     <Card className="border border-blue-gray-100 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+      {/* ⭐ 폰 폭(`sm` 아래)은 아이콘을 빼고 두 장씩 — 아이콘 카드 네 장이 화면 한 장을 먹었다 (사용자 2026-09-27). */}
       <CardHeader
         floated={false}
         shadow={false}
-        className={`absolute grid h-12 w-12 place-items-center rounded-xl ${color}`}
+        className={`absolute hidden h-12 w-12 place-items-center rounded-xl sm:grid ${color}`}
       >
         {icon}
       </CardHeader>
       {/* ⚠️ 아이콘이 absolute 라 제목이 길면 겹친다 — 왼쪽 여백을 아이콘 폭만큼 둔다 (실측 2026-09-05). */}
-      <CardBody className="p-4 pl-20 text-right">
+      <CardBody className="p-3 text-left sm:p-4 sm:pl-20 sm:text-right">
         <Typography
           variant="small"
-          className="font-normal text-blue-gray-600 dark:text-blue-gray-300"
+          className="text-xs font-normal text-blue-gray-600 sm:text-sm dark:text-blue-gray-300"
         >
           {title}
         </Typography>
         <Typography
           variant="h4"
           color="blue-gray"
-          className="font-mono dark:text-white"
+          className="break-words font-mono text-lg sm:text-2xl dark:text-white"
         >
           {value}
         </Typography>
       </CardBody>
       {footer ? (
-        <div className="border-t border-blue-gray-50 p-4 text-xs text-blue-gray-600 dark:border-gray-800 dark:text-blue-gray-300">
+        <div className="border-t border-blue-gray-50 p-3 text-[11px] text-blue-gray-600 sm:p-4 sm:text-xs dark:border-gray-800 dark:text-blue-gray-300">
           {footer}
         </div>
       ) : null}

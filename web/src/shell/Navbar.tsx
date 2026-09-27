@@ -4,7 +4,8 @@
  * 들이지 않은 것: 검색 칸 · 알림 데모 · 설정 톱니. 대신 우리 것이 들어간다 — 재인증 타이머(`AuthTimer`) ·
  * 누구로 로그인했나(`WhoBar`) · 밝기 전환. 제목은 `nav.ts` 표 또는 열린 판 이름에서 온다.
  */
-import { Bars3Icon, MoonIcon, SparklesIcon, SunIcon } from "@heroicons/react/24/solid";
+import { Bars3Icon, MoonIcon, SparklesIcon, SunIcon, UserCircleIcon } from "@heroicons/react/24/solid";
+import { useState } from "react";
 import { useLocation } from "react-router-dom";
 import { noRealAccount, type Who } from "../api";
 import { AuthTimer, WhoBar } from "../Gate";
@@ -31,15 +32,18 @@ export function Navbar({
   const runs = useOpenRuns();
   const [theme, toggleTheme] = useTheme();
   const [group] = useMarketGroup();
+  const [account, setAccount] = useState(false);
 
   const parts = pathname.split("/").filter(Boolean);
   const run = parts[0] === "paper" ? parts[1] : undefined;
   const title = run ? runs.label(run) : (pageTitle(pathname) ?? "없는 화면");
 
   return (
-    <header className="sticky top-4 z-40 rounded-xl border border-blue-gray-100 bg-white/80 px-4 py-3 shadow-md shadow-blue-gray-500/5 backdrop-blur-md dark:border-gray-800 dark:bg-gray-900/80">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+    // ⚠️ 폰 폭(`sm` 540px 미만)은 **불투명** — 반투명 상단바가 따라다니며 아래 글자를 비춰 겹쳐 보였다(2026-09-27).
+    //    폰 값이 기본이고 `sm:` 가 컴퓨터 값으로 덮는다 — MT 화면 구간(`lg-max` 가 객체)이라 Tailwind 가 `max-sm:` 를 안 만든다.
+    <header className="sticky top-2 z-40 rounded-xl border border-blue-gray-100 bg-white px-3 py-2 shadow-md shadow-blue-gray-500/5 sm:top-4 sm:bg-white/80 sm:px-4 sm:py-3 sm:backdrop-blur-md dark:border-gray-800 dark:bg-gray-900 sm:dark:bg-gray-900/80">
+      <div className="flex items-center justify-between gap-3 sm:flex-wrap">
+        <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
             className="grid h-9 w-9 place-items-center rounded-lg text-blue-gray-500 hover:bg-blue-gray-50 xl:hidden dark:hover:bg-gray-800"
@@ -59,11 +63,11 @@ export function Navbar({
               <SparklesIcon className="h-6 w-6" />
             </button>
           ) : null}
-          <div>
+          <div className="min-w-0">
             {/* ⭐ 첫 줄은 **어느 돈이 도는가** — 콘솔의 전제다 (UX 점검 2026-09-05). 서버(/auth/me)가 말한 값이다. */}
             <Typography
               variant="small"
-              className={`flex items-center gap-1.5 font-medium ${who?.real_money ? "text-loss" : "text-blue-gray-500 dark:text-blue-gray-300"}`}
+              className={`flex items-center gap-1.5 text-xs font-medium sm:text-sm ${who?.real_money ? "text-loss" : "text-blue-gray-500 dark:text-blue-gray-300"}`}
             >
               {/* T245 — 어느 시장을 보는지가 어디서나 보인다. 주식은 "테스트넷" 이 아니다 — 토스에 테스트넷이 없어
                   체결을 우리가 모의한다(페이퍼). 그 사실이 첫 줄에 적혀야 페이퍼 성적을 실적으로 안 읽는다. */}
@@ -87,7 +91,11 @@ export function Navbar({
                 {run ? " · 판" : ""}
               </span>
             </Typography>
-            <Typography variant="h6" color="blue-gray" className={run ? "font-mono dark:text-white" : "dark:text-white"}>
+            <Typography
+              variant="h6"
+              color="blue-gray"
+              className={`truncate sm:overflow-visible sm:whitespace-normal ${run ? "font-mono dark:text-white" : "dark:text-white"}`}
+            >
               {title}
             </Typography>
           </div>
@@ -103,12 +111,39 @@ export function Navbar({
           >
             {theme === "dark" ? <SunIcon className="h-5 w-5" /> : <MoonIcon className="h-5 w-5" />}
           </button>
+          {/* ⭐ 폰 폭 — 인증 타이머 · 계정 줄은 이 단추 아래로 접는다 (사용자 2026-09-27: "문자도 막 겹치는 상황").
+              한 줄로 펼치면 "이메일 · 관리자 · 로그아웃" 이 폰 폭을 넘어 페이지 전체가 넓어지고 축소돼 보였다. */}
+          {who?.signed_in ? (
+            <button
+              type="button"
+              className="grid h-9 w-9 place-items-center rounded-lg text-blue-gray-500 hover:bg-blue-gray-50 sm:hidden dark:hover:bg-gray-800"
+              aria-label="계정 · 인증"
+              aria-expanded={account}
+              onClick={() => setAccount((v) => !v)}
+            >
+              <UserCircleIcon className="h-6 w-6" />
+            </button>
+          ) : null}
           {/* ⭐ 은행식 인증 타이머 — 재인증 기한과 [연장] (사용자 요청 2026-09-03). */}
-          {who?.signed_in ? <AuthTimer who={who} /> : null}
-          {/* ⭐ 누구로 로그인했고 무엇을 할 수 있나 — 늘 보인다. */}
-          {who?.signed_in ? <WhoBar who={who} onOut={onOut} /> : null}
+          {who?.signed_in ? (
+            <span className="hidden sm:contents">
+              <AuthTimer who={who} />
+            </span>
+          ) : null}
+          {/* ⭐ 누구로 로그인했고 무엇을 할 수 있나 — 넓은 화면에서는 늘 보인다. */}
+          {who?.signed_in ? (
+            <span className="hidden sm:contents">
+              <WhoBar who={who} onOut={onOut} />
+            </span>
+          ) : null}
         </div>
       </div>
+      {who?.signed_in && account ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-blue-gray-50 pt-2 text-xs sm:hidden dark:border-gray-800">
+          <AuthTimer who={who} />
+          <WhoBar who={who} onOut={onOut} />
+        </div>
+      ) : null}
     </header>
   );
 }
