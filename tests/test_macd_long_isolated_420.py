@@ -121,7 +121,10 @@ class TestLongMirror:
         rules = load_rules()
         long_, short = rules[RULE_ID_V1_LONG].params, rules["private_strategy"].params
         assert long_["sides"] == 1 and short["sides"] == -1
-        assert {k: v for k, v in long_.items() if k != "sides"} == {  # K2 는 숏에만(424 · 437차)
+        # K2 는 숏에만(424 · 437차) · 자기 변동성 크기(vol_size_*)는 롱에만(464차 E-L)
+        assert {
+            k: v for k, v in long_.items() if k != "sides" and not k.startswith("vol_size_")
+        } == {
             k: v for k, v in short.items() if k not in {"sides", "momentum_big", "momentum_small"}
         }
 
