@@ -34,6 +34,7 @@ from updown.analysis.detectors.registry import SetupRegistry
 from updown.analysis.indicators import snapshot as indicator_snapshot
 from updown.analysis.indicators.adx import adx
 from updown.analysis.indicators.atr import atr as atr_series
+from updown.analysis.indicators.bands import bollinger
 from updown.analysis.indicators.ma import sma
 from updown.analysis.indicators.macd import macd
 from updown.analysis.indicators.reversal import (
@@ -1549,6 +1550,45 @@ class Session:
         marked = bar.close > high
         self._count("new_high:on" if marked else "new_high:off")
         return rule.on if marked else rule.off
+
+    def _depth_mult(self, book: Playbook, bar: Candle) -> Decimal:
+        """돌파 깊이 크기 기울이기(T307 · 468차) — 얕은 돌파 `down` 배 · 깊은 돌파 `up` 배.
+
+        Args:
+            book: 후보를 낸 매매법.
+            bar: 돌파봉.
+
+        Returns:
+            노출 배수. 선언이 없으면 1(동결 · §5.6.2).
+
+        Note:
+            깊이 = (돌파봉 종가 - BB 상단) ÷ ATR(직전 봉까지) — 탐지기(`private_strategy`)가
+            판정한 그 창(`judged`)에서 같은 식으로 다시 잰다. 모르면(창 부족) 1 배.
+            깔때기에 `depth:down · mid · up · unknown` 을 센다.
+        """
+        rule = book.depth_tilt
+        if rule is None:
+            return Decimal(1)
+        if bar.timeframe not in self.feed.timeframes:
+            self._count("depth:unknown")
+            return Decimal(1)
+        window = [c for c in self.feed.judged(bar.timeframe) if c.ts <= bar.ts]
+        depth: Decimal | None = None
+        if len(window) > max(rule.bb_period, rule.atr_period) + 1 and window[-1].ts == bar.ts:
+            closes = [c.close for c in window]
+            upper = bollinger(closes, period=rule.bb_period, multiple=rule.bb_k).upper[-1]
+            spans = atr_series(
+                [c.high for c in window], [c.low for c in window], closes, rule.atr_period
+            )
+            prior = spans[-2] if len(spans) >= 2 else None
+            if upper is not None and prior is not None and prior > 0:
+                depth = (bar.close - upper) / prior
+        mult = rule.mult(depth)
+        if depth is None:
+            self._count("depth:unknown")
+        else:
+            self._count("depth:down" if mult < 1 else ("depth:up" if mult > 1 else "depth:mid"))
+        return mult
 
     def _may_enter(self, *, idle: bool, tripped: bool) -> bool:
         """**신규 진입을 받아도 되는가** — 스위치를 한 자리에 모은다.
@@ -4034,6 +4074,8 @@ class Session:
         exposure *= tilted(setup.size_mult, chosen.playbook)
         # ⭐ 446 · 447차 — 전고점 크기 기울이기(선언이 있을 때만 · 없으면 1).
         exposure *= self._new_high_mult(chosen.playbook, bar)
+        # ⭐ T307 · 468차 — 돌파 깊이 크기 기울이기(선언이 있을 때만 · 없으면 1 · 1.5제곱 안 탄다).
+        exposure *= self._depth_mult(chosen.playbook, bar)
         # ⭐ T291 — 다리 배율이 선언돼 있으면 그 다리의 노출로 바꾼다(없으면 그대로).
         exposure = self._leg_scaled(exposure, owner)
         # ⭐ T304 — 변동성 목표 크기. 다리 노출 뒤 · 펀드 문 앞(연구 `size_fn` 과 같은 순서).

@@ -30,6 +30,7 @@ from updown.analysis.playbook.types import (
     ConflictAction,
     ConflictRule,
     ConflictSide,
+    DepthTilt,
     DrawdownBrake,
     EntryLimit,
     NewHighTilt,
@@ -406,6 +407,34 @@ def _add_on(raw: object, name: str, *, full_ride: bool = True) -> AddOn:
         raise PlaybookConfigError(f"{name}.add_on — {exc}") from exc
 
 
+def depth_tilt(raw: object, name: str) -> DepthTilt:
+    """돌파 깊이 크기 기울이기 한 줄 — `{low, high, down, up}` (T307 · 468차).
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.depth_tilt")
+    try:
+        return DepthTilt(
+            low=Decimal(str(body["low"])),
+            high=Decimal(str(body["high"])),
+            down=Decimal(str(body["down"])),
+            up=Decimal(str(body["up"])),
+            bb_period=int(body.get("bb_period", 20)),
+            bb_k=Decimal(str(body.get("bb_k", "2"))),
+            atr_period=int(body.get("atr_period", 14)),
+        )
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.depth_tilt — {exc}") from exc
+
+
 def new_high_tilt(raw: object, name: str) -> NewHighTilt:
     """전고점 크기 기울이기 한 줄 — `{days: 120, on: "1.88", off: "0.94"}` (446 · 447차).
 
@@ -663,6 +692,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         None
                         if body.get("new_high_tilt") is None
                         else new_high_tilt(body["new_high_tilt"], f"playbooks.{name}")
+                    ),
+                    depth_tilt=(
+                        None
+                        if body.get("depth_tilt") is None
+                        else depth_tilt(body["depth_tilt"], f"playbooks.{name}")
                     ),
                     entry_limit=(
                         None

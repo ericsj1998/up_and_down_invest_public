@@ -438,6 +438,60 @@ class NewHighTilt:
 
 
 @dataclass(frozen=True, slots=True)
+class DepthTilt:
+    """돌파 깊이 크기 기울이기 — 깊이 삼분위로 얕은 쪽 `down` 배 · 깊은 쪽 `up` 배 (T307 · 468차).
+
+    사용자 2026-09-28: *"d 0.2 반영해줘"* — 468차(새 기준 판 T0.0 + E-L)에서 판 전체 배율보다 나은
+    다이얼(🔵 · 무작위 대조 100분위) · 표준 자 ✅(연 +612.4 → +692.1% · 평가 MDD 35.1 → 39.0% ·
+    효율 17.74 · 95분위 MDD 51.2 → 51.4%).
+
+    Attributes:
+        low: 얕은 쪽 문턱 — 깊이 < low 면 `down` 배(연구 앞 창 1/3 분위).
+        high: 깊은 쪽 문턱 — 깊이 ≥ high 면 `up` 배(2/3 분위). 가운데는 1 배.
+        down: 얕은 돌파의 크기 배수.
+        up: 깊은 돌파의 크기 배수.
+        bb_period: 볼린저 기간(탐지기 · 연구와 같은 20).
+        bb_k: 볼린저 배수(2).
+        atr_period: ATR 기간(14 · 돌파봉 **직전** 봉까지).
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+
+    Note:
+        깊이 = (돌파봉 종가 - BB 상단) ÷ ATR(직전 봉까지) — 탐지기의 관통 문(`pen_min_atr`)과
+        같은 식. 크기만 바꾼다. `size_mult`(강한 돌파 기울기 · 1.5제곱)와 **따로** 곱한다 —
+        연구는 x0.8 · x1.2 를 그대로 곱했다. 모르면(창 부족) 1 배.
+    """
+
+    low: Decimal
+    high: Decimal
+    down: Decimal
+    up: Decimal
+    bb_period: int = 20
+    bb_k: Decimal = Decimal(2)
+    atr_period: int = 14
+
+    def __post_init__(self) -> None:
+        """값이 기울이기로서 말이 되는지."""
+        if not self.low < self.high:
+            raise ValueError(f"문턱은 low < high: {self.low} · {self.high}")
+        if self.down <= 0 or self.up <= 0:
+            raise ValueError(f"배수는 0 보다 커야 한다: down {self.down} · up {self.up}")
+        if self.bb_period < 2 or self.atr_period < 2 or self.bb_k <= 0:
+            raise ValueError("기간 · 배수가 범위 밖이다")
+
+    def mult(self, depth: Decimal | None) -> Decimal:
+        """깊이 → 크기 배수(모르면 1)."""
+        if depth is None:
+            return Decimal(1)
+        if depth < self.low:
+            return self.down
+        if depth >= self.high:
+            return self.up
+        return Decimal(1)
+
+
+@dataclass(frozen=True, slots=True)
 class EntryLimit:
     """다리의 **신규 진입 수 상한** — 펀드 전체에서 직전 `hours` 시간 안에 `count` 건까지 (452차).
 
@@ -855,6 +909,10 @@ class Playbook:
     ⛔ 선언이 None 이면 동결이다 (§5.6.2)."""
     new_high_tilt: NewHighTilt | None = None
     """전고점 크기 기울이기(446 · 447차) — 시장가 진입의 노출에 곱한다.
+
+    ⛔ None 이면 동결이다 (§5.6.2)."""
+    depth_tilt: DepthTilt | None = None
+    """돌파 깊이 크기 기울이기(T307 · 468차) — 시장가 진입의 노출에 곱한다.
 
     ⛔ None 이면 동결이다 (§5.6.2)."""
     entry_limit: EntryLimit | None = None
