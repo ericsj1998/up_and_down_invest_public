@@ -31,6 +31,7 @@ from updown.analysis.playbook.types import (
     ConflictRule,
     ConflictSide,
     DrawdownBrake,
+    EntryLimit,
     NewHighTilt,
     Playbook,
     PlaybookRegime,
@@ -275,6 +276,55 @@ def _leg_exposure(body: Mapping[str, object], name: str) -> Decimal | None:
             f"{name}.leg_exposure {made} — 0 보다 크고 leverage({lever}) 이하여야 한다"
         )
     return made
+
+
+def _entry_exposure_cap(body: Mapping[str, object], name: str) -> Decimal | None:
+    """`entry_exposure_cap` 한 줄 — 한 건 처음 노출의 상한(명목 ÷ 자리 예산 · 452차 C75).
+
+    Args:
+        body: 플레이북 선언 전체.
+        name: 오류에 붙일 자리 이름.
+
+    Returns:
+        상한. 없으면 None(동결).
+
+    Raises:
+        PlaybookConfigError: 숫자가 아니거나 0 이하인 경우.
+
+    Note:
+        거래소 배율(`leverage`)과 비교하지 않는다 — 크기 기울이기 · 변동성 목표 뒤의 실제 노출은
+        선언 배율을 넘을 수 있고(증거금은 러너가 맞춘다), 이 상한은 그 **뒤**에 거는 값이다.
+    """
+    raw = body.get("entry_exposure_cap")
+    if raw is None:
+        return None
+    try:
+        made = Decimal(str(raw))
+    except ArithmeticError as exc:
+        raise PlaybookConfigError(f"{name}.entry_exposure_cap — {exc}") from exc
+    if made <= 0:
+        raise PlaybookConfigError(f"{name}.entry_exposure_cap {made} — 0 보다 커야 한다")
+    return made
+
+
+def entry_limit(raw: object, name: str) -> EntryLimit:
+    """신규 진입 수 상한 한 줄 — `{count: 1, hours: 24}` (452차).
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_limit")
+    try:
+        return EntryLimit(count=int(body["count"]), hours=int(body["hours"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_limit — {exc}") from exc
 
 
 def _ref_band(raw: object, name: str) -> RefReturnBand:
@@ -614,6 +664,12 @@ def _load_file(target: Path) -> list[Playbook]:
                         if body.get("new_high_tilt") is None
                         else new_high_tilt(body["new_high_tilt"], f"playbooks.{name}")
                     ),
+                    entry_limit=(
+                        None
+                        if body.get("entry_limit") is None
+                        else entry_limit(body["entry_limit"], f"playbooks.{name}")
+                    ),
+                    entry_exposure_cap=_entry_exposure_cap(body, f"playbooks.{name}"),
                     entry_fund_dd_max=_fund_dd_max(body, f"playbooks.{name}"),
                     max_hold_bars=_positive_int(body, "max_hold_bars", f"playbooks.{name}"),
                     size_mult_power=_size_mult_power(body, f"playbooks.{name}"),

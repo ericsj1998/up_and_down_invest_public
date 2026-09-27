@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any, cast
 
-from updown.analysis.playbook.types import BreadthCap, DrawdownBrake, Playbook
+from updown.analysis.playbook.types import BreadthCap, DrawdownBrake, EntryLimit, Playbook
 from updown.orchestration.rebalancer.gate import LegGate, LegPorts, SlotGate
 
 
@@ -44,6 +44,8 @@ class FundLeg:
         breadth_cap: 조건부 총 명목 상한. None = 없음.
         halt_dd_at: 펀드 낙폭이 이 값 이상이면 이 다리는 새로 안 든다(T304 #1). None = 없음.
         isolated: 이 다리의 손익을 펀드 낙폭 브레이크에서 뺀다(420차 · `Coordinator.core`).
+        entry_limit: 펀드 전체에서 이 다리의 신규 진입 수 상한(452차). None = 없음.
+        entry_cap: 한 건 처음 노출 상한(명목 ÷ 자리 예산 · 452차 C75). None = 없음.
     """
 
     playbook: str
@@ -60,6 +62,8 @@ class FundLeg:
     breadth_cap: BreadthCap | None = None
     halt_dd_at: Decimal | None = None
     isolated: bool = False
+    entry_limit: EntryLimit | None = None
+    entry_cap: Decimal | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """저장용 딕셔너리 — 돌던 펀드의 다리는 선언이 바뀌어도 안 바뀐다(저장본이 이긴다)."""
@@ -90,6 +94,12 @@ class FundLeg:
             ),
             "halt_dd_at": None if self.halt_dd_at is None else str(self.halt_dd_at),
             "isolated": self.isolated,
+            "entry_limit": (
+                None
+                if self.entry_limit is None
+                else {"count": self.entry_limit.count, "hours": self.entry_limit.hours}
+            ),
+            "entry_cap": None if self.entry_cap is None else str(self.entry_cap),
         }
 
     @classmethod
@@ -106,6 +116,12 @@ class FundLeg:
         raw_brake = data.get("drawdown_brake")
         raw_breadth = data.get("breadth_cap")
         raw_halt = data.get("halt_dd_at")  # 1.17.0 앞 저장본엔 없다 — 없으면 끔(그때 돌던 그대로)
+        raw_limit = data.get("entry_limit")  # 1.23.0 앞 저장본엔 없다 — 없으면 끔
+        raw_entry_cap = data.get("entry_cap")
+        limit = None
+        if isinstance(raw_limit, Mapping):
+            body = cast("Mapping[str, Any]", raw_limit)
+            limit = EntryLimit(count=int(body["count"]), hours=int(body["hours"]))
         brake = None
         if isinstance(raw_brake, Mapping):
             body = cast("Mapping[str, Any]", raw_brake)
@@ -131,6 +147,8 @@ class FundLeg:
             breadth_cap=breadth,
             halt_dd_at=None if raw_halt in (None, "") else Decimal(str(raw_halt)),
             isolated=bool(data.get("isolated", False)),  # 1.20 앞 저장본엔 없다 — 없으면 섞음
+            entry_limit=limit,
+            entry_cap=None if raw_entry_cap in (None, "") else Decimal(str(raw_entry_cap)),
         )
 
 
@@ -195,6 +213,8 @@ def declared_legs(
                 breadth_cap=book.breadth_cap,
                 halt_dd_at=book.entry_fund_dd_max,
                 isolated=book.drawdown_isolated,
+                entry_limit=book.entry_limit,
+                entry_cap=book.entry_exposure_cap,
             )
         )
     covered = {symbol for leg in out for symbol in leg.symbols}
@@ -314,5 +334,8 @@ def leg_gate(
             breadth_min=0 if breadth is None else breadth.min,
             breadth_cap=None if breadth is None else breadth.cap,
             halt_dd_at=Decimal(0) if leg.halt_dd_at is None else leg.halt_dd_at,
+            entry_limit=0 if leg.entry_limit is None else leg.entry_limit.count,
+            entry_window_hours=24 if leg.entry_limit is None else leg.entry_limit.hours,
+            entry_cap=leg.entry_cap,
         )
     return LegGate(gates)

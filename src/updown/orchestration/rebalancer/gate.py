@@ -13,7 +13,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
@@ -74,6 +74,19 @@ class BreadthAware(Protocol):
         Returns:
             포트가 든 종목 수만큼의 합 — 종목 하나짜리 세션이면 0 또는 1.
         """
+        ...
+
+
+@runtime_checkable
+class EntryLogged(Protocol):
+    """시스템 진입 시각을 줄 수 있는 포트 (452차 · 신규 진입 수 상한의 입력).
+
+    `PositionPort` 와 따로 둔 이유는 `BreadthAware` 와 같다 — 상한을 안 쓰는 포트까지
+    강제하지 않는다.
+    """
+
+    def entries(self) -> list[datetime] | None:
+        """취소 안 된 시스템 매매의 주문 시각(`placed_at`) — 열린 것 · 닫힌 것 모두. 모르면 None."""
         ...
 
 
@@ -145,6 +158,25 @@ class SlotGate:
     ⛔ 였고, **상한만** 올리는 것이 통과했다(177~179차 · 급락 주입 파산 0.07%).
     ⚠️ `notional_cap` 보다 작으면 시장 전체 돌파에서 오히려 조인다 — 선언 파서가 막는다."""
 
+    entry_limit: int = 0
+    """직전 `entry_window_hours` 시간 안에 허용하는 **신규 진입 수**(452차 · 펀드 전체 · 0 = 없음).
+
+    🔴 왜: 같은 날 여러 알트에 동시에 난 MACD 롱은 결과가 같이 움직여(24시간 안 쌍 상관
+    +0.31) 여섯 자리가 독립 베팅 2.4 개 몫이다 — 크기는 6 배를 싣고 분산은 2.4 배만 얻는다.
+    연구 원장에서 1건으로 묶자 평가 MDD 41.7 → 36.8%(k 1 · 2 · 3 · 절반 모두 통과).
+    센 것 = 포트들의 `entries()`(원장 기록 · 취소 제외) — 별도 카운터가 없어 재시작해도 같다."""
+
+    entry_window_hours: int = 24
+    """`entry_limit` 의 창(시간)."""
+
+    entry_cap: Decimal | None = None
+    """한 건 **처음 노출**의 상한(명목 ÷ 자리 예산 · 452차 C75) — 넘으면 이 값으로 줄인다.
+
+    None = 없음.
+
+    브레이크 뒤 · 총 명목 여유 앞에 건다(연구 원장이 낙폭 줄임 뒤의 크기에 상한을 걸었다).
+    불타기(`grant_add`)엔 안 건다 — 추가는 처음 실제 노출의 비율이라 이미 같이 줄어 있다."""
+
     def blocks(self, at: datetime, exposure: Decimal = Decimal(0)) -> str | None:
         """지금 새 자리를 열면 안 되는 이유 — 없으면 None.
 
@@ -187,7 +219,33 @@ class SlotGate:
         exits = [item for port in self.ports.values() for item in port.exits()]
         if day_halted(exits, at, self.halt_after_stops):
             return Grant(Decimal(0), "day_halt")
-        return self._sized(at, exposure)
+        if self.entry_limit > 0:
+            recent = self._recent_entries(at)
+            if recent is None:
+                # 🔴 진입 시각을 못 세는 포트가 섞였다 — 상한을 지킬 수 없으면 막는다.
+                #    신규 진입은 리스크 증가 행동이고 분류가 불분명하면 기본값은 보류다(#8-1).
+                return Grant(Decimal(0), "entry_log")
+            if recent >= self.entry_limit:
+                return Grant(Decimal(0), "entry_limit")
+        return self._sized(at, exposure, cap=self.entry_cap)
+
+    def _recent_entries(self, at: datetime) -> int | None:
+        """직전 `entry_window_hours` 시간(`at` 포함 · 창 시작 제외) 안의 신규 진입 수.
+
+        Args:
+            at: 진입하려는 봉의 시각(UTC).
+
+        Returns:
+            진입 수. 진입 시각을 못 주는 포트가 하나라도 있으면 None(모름).
+        """
+        since = at - timedelta(hours=self.entry_window_hours)
+        total = 0
+        for port in self.ports.values():
+            got = port.entries() if isinstance(port, EntryLogged) else None
+            if got is None:
+                return None
+            total += sum(1 for placed in got if since < placed <= at)
+        return total
 
     def grant_add(self, at: datetime, exposure: Decimal) -> Grant:
         """열린 매매에 **더 싣는**(불타기) 크기를 묻는다 (T308 · 368 ~ 371차).
@@ -210,12 +268,13 @@ class SlotGate:
             return Grant(Decimal(0), "size")
         return self._sized(at, exposure)
 
-    def _sized(self, at: datetime, exposure: Decimal) -> Grant:
-        """펀드 낙폭 끔 → 낙폭 브레이크 → 총 명목 여유 — 진입과 불타기가 같이 쓰는 크기 판단.
+    def _sized(self, at: datetime, exposure: Decimal, cap: Decimal | None = None) -> Grant:
+        """펀드 낙폭 끔 → 브레이크 → 한 건 상한 → 총 명목 여유 — 진입 · 불타기가 같이 쓰는 크기.
 
         Args:
             at: 묻는 시각(UTC). 조건부 상한의 폭을 이 시각으로 센다.
             exposure: 요청 노출. 0 이면 "자리 · 정지만 보자" 는 `blocks(at)` 물음이다.
+            cap: 한 건 처음 노출 상한(`entry_cap` · 452차) — 신규 진입만 넘긴다(불타기는 None).
 
         Returns:
             `Grant`.
@@ -242,6 +301,10 @@ class SlotGate:
             # ⚠️ `exposure > 0` 조건이 있어야 한다 — 크기 없이(0) 묻는 `blocks(at)` 호출을
             #    브레이크로 막으면 안 된다(그 경로는 "자리·정지만 보자" 는 뜻이다).
             return Grant(Decimal(0), "brake")
+        if cap is not None and want > cap:
+            # 452차 C75 — 한 건 처음 노출 상한(브레이크 뒤 · 총 명목 여유 앞 · 연구 원장 순서).
+            want = cap
+            shrunk.append("entry_cap")
         held = sum((port.open_exposure() for port in self.ports.values()), Decimal(0))
         room = notional_room(held, self.slots, self._cap_at(at))
         if room is not None and want > room:
@@ -329,6 +392,15 @@ class LegSource(Protocol):
         ...
 
 
+@runtime_checkable
+class EntryLogSource(Protocol):
+    """다리별 진입 시각을 줄 수 있는 세션 다리 (452차) — `SessionBridge` 가 구현한다."""
+
+    def entries_of(self, leg: str) -> list[datetime]:
+        """그 다리의 취소 안 된 시스템 매매 주문 시각."""
+        ...
+
+
 @dataclass(slots=True, frozen=True)
 class LegPort:
     """세션 하나를 **다리 하나의 눈으로** 본 포트 (T291).
@@ -357,6 +429,11 @@ class LegPort:
     def open_exposure(self) -> Decimal:
         """이 다리의 보유 중 노출 합."""
         return self.source.open_exposure_of(self.leg)
+
+    def entries(self) -> list[datetime] | None:
+        """이 다리의 진입 시각 — 원본이 못 주면 None(문이 모름으로 보고 막는다)."""
+        source = self.source
+        return source.entries_of(self.leg) if isinstance(source, EntryLogSource) else None
 
     def band_breaks(self, at: datetime) -> int:
         """폭의 입력 — 다리의 종목 범위 밖이면 0."""

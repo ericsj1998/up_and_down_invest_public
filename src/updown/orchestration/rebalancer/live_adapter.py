@@ -246,6 +246,40 @@ class SessionBridge:
             Decimal(0),
         )
 
+    def entries(self) -> list[datetime]:
+        """시스템 매매의 주문 시각(`placed_at`) — 취소 제외 · 열린 것 · 닫힌 것 모두 (452차).
+
+        Returns:
+            신규 진입 수 상한(`SlotGate.entry_limit`)의 입력. 사람 매매는 뺀다(`exits` 와 같다).
+
+        Note:
+            🔴 원장 기록만 읽는다 — 별도 카운터가 없어 재시작해도 같은 답이다. 세션은 문에서
+            허가를 받은 **같은 함수 안에서** 기록을 만든다(`Session._enter`) — 같은 정시에 다음
+            종목이 물을 때 이 기록이 이미 보여 한 정시에 두 건이 새지 않는다.
+        """
+        return [
+            item.placed_at
+            for item in self.session.ledger.records
+            if item.actor is Actor.SYSTEM and item.outcome is not Outcome.CANCELLED
+        ]
+
+    def entries_of(self, leg: str) -> list[datetime]:
+        """그 다리(귀속 키)의 시스템 매매 주문 시각 — `entries` 에 귀속 거름을 더했다 (452차).
+
+        Args:
+            leg: 귀속 키.
+
+        Returns:
+            취소 안 된 시스템 매매의 `placed_at` 목록.
+        """
+        return [
+            item.placed_at
+            for item in self.session.ledger.records
+            if item.actor is Actor.SYSTEM
+            and item.outcome is not Outcome.CANCELLED
+            and item.playbook == leg
+        ]
+
     def band_breaks(self, at: datetime) -> int:
         """이 종목이 최근 몇 봉 안에 **밴드 상단 밖에서 마감**했나 — 1 또는 0 (T289 폭의 입력).
 

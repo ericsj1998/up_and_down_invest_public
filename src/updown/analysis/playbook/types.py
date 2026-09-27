@@ -438,6 +438,40 @@ class NewHighTilt:
 
 
 @dataclass(frozen=True, slots=True)
+class EntryLimit:
+    """다리의 **신규 진입 수 상한** — 펀드 전체에서 직전 `hours` 시간 안에 `count` 건까지 (452차).
+
+    사용자 2026-09-27: *"한다면 그냥 1건 진입으로"* — 452차 연구 원장에서 MACD 롱 다리를
+    24시간에 1건으로 묶자 평가 MDD 41.7 → 36.8% · 효율 13.29 → 15.28
+    (k = 1 · 2 · 3 · 절반 네 칸 고원 · 브레이크 끈 판도 +).
+    같은 날 여러 알트에 동시에 난 신호는 결과가 같이 움직여(24시간 안 쌍 상관 +0.31 · 452차 c)
+    한 번의 큰 베팅이 된다 — 신호를 고르는 규칙이 아니라 **같은 결과에 여러 번 걸지 않는**
+    규칙이다.
+
+    Attributes:
+        count: 창 안에 허용하는 신규 진입 수(1 이상).
+        hours: 창 길이(시간 · 1 ~ 720).
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+
+    Note:
+        진입만 센다 — 불타기(추가)는 새 자리가 아니라서 안 센다(연구 원장과 같다).
+        센 것은 원장의 기록(주문 낸 시각 `placed_at` · 취소 제외)이라 재시작해도 어긋나지 않는다.
+    """
+
+    count: int
+    hours: int
+
+    def __post_init__(self) -> None:
+        """값이 상한으로서 말이 되는지."""
+        if self.count < 1:
+            raise ValueError(f"진입 수 상한은 1 이상: {self.count}")
+        if not 1 <= self.hours <= 720:
+            raise ValueError(f"창은 1 ~ 720시간: {self.hours}")
+
+
+@dataclass(frozen=True, slots=True)
 class BreadthCap:
     """조건부 총 명목 상한 선언 — `min` 종목 이상이 같이 밴드를 뚫었을 때만 상한을 `cap` 으로.
 
@@ -823,6 +857,17 @@ class Playbook:
     """전고점 크기 기울이기(446 · 447차) — 시장가 진입의 노출에 곱한다.
 
     ⛔ None 이면 동결이다 (§5.6.2)."""
+    entry_limit: EntryLimit | None = None
+    """다리의 신규 진입 수 상한(452차) — 펀드 문이 센다.
+
+    펀드 다리 값이라 돌던 펀드엔 묶음 `legs_revision` 을 올려야 들어간다.
+
+    ⛔ None 이면 동결이다 (§5.6.2)."""
+    entry_exposure_cap: Decimal | None = None
+    """한 건 **처음 노출**의 상한(명목 ÷ 자리 예산 · 452차 C75) — 펀드 문이 줄인다.
+
+    자리 예산 = 펀드 총자본 ÷ 자리 수라, 자리 6 에서 4.5 = 펀드 잔고의 0.75배. 불타기는 처음 실제
+    노출의 비율이라 같이 줄어든다(연구 원장과 같다). ⛔ None 이면 동결이다 (§5.6.2)."""
     max_hold_bars: int | None = None
     """시간 청산 (410 · 411차 · 영상 1 "26봉").
 
