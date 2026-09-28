@@ -73,7 +73,7 @@ function MemberCard({
   const tone = cardTone(m);
   // ⭐ T320 — 몫이 여럿이면 몫마다 상자(진입가 · 손절 · 손익이 몫마다 다르다).
   const marks = memberMarks(m);
-  const pct = unrealizedPct(m);
+  const pct = unrealizedPct(m.unrealized, m.equity);
   const shares = m.shares && m.shares.length > 1 ? m.shares : null;
   // 🔴 **목표가 익절선이 아닐 수 있다** (사용자 지적 2026-09-21). 추세추종은 고정 익절이 없고
   //    `target` 은 진입+100R 자리표시자다 — 그것을 '목표' 로 적으면 화면이 거짓말한다.
@@ -112,7 +112,7 @@ function MemberCard({
           <span className="faint">미실현</span>{" "}
           <b className={changeTone(m.unrealized)}>
             {signed(m.unrealized)} USDT
-            {pct === null ? "" : ` (${pct > 0 ? "+" : ""}${pct.toFixed(2)}%)`}
+            {pct === null ? "" : ` (${pct > 0 ? "+" : ""}${pct.toFixed(2)}% · 몫 대비)`}
           </b>
           {" · "}
           <span className="faint">증거금</span> <b>{money(m.margin)}</b>
@@ -128,7 +128,7 @@ function MemberCard({
       {shares ? (
         <div className="text-sm" style={{ marginBottom: 2 }}>
           {shares.map((s) => {
-            const sp = unrealizedPct(s);
+            const sp = unrealizedPct(s.unrealized, m.equity);
             return (
               <div key={s.leg} className="share-line">
                 <span className="faint">└</span> <b>{s.name}</b>{" "}

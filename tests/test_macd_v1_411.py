@@ -320,6 +320,7 @@ class TestLiveDeclaration:
         assert on == {
             "private_strategy",
             "private_strategy",
+            "private_strategy",  # 515차 측정용(T318)
             "private_strategy",
             "private_strategy",
         }

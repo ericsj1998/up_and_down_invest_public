@@ -17,6 +17,16 @@ describe("planLinesOf", () => {
     expect(got.map((l) => l.title)).toEqual(["청산(트레일)", "진입"]);
   });
 
+  it("🔴 서버가 실제 청산선을 주면 손절은 '손절' · 청산선은 따로 (2026-09-29)", () => {
+    const got = planLinesOf({
+      ...PLAN,
+      full_ride: true,
+      exit_line: { label: "SMA20(1d) 마감 청산", price: "103" },
+    });
+    expect(got.map((l) => l.title)).toEqual(["손절 -5.00%", "진입", "SMA20(1d) 마감 청산 +3.00%"]);
+    expect(got.map((l) => l.token)).toEqual(["--loss", "--entry-line", "--ma-line"]);
+  });
+
   it("몫이 여럿이면 선 이름 앞에 다리 이름", () => {
     const got = planLinesOf({ ...PLAN, full_ride: true }, "일봉 채널 ");
     expect(got.map((l) => l.title)).toEqual(["일봉 채널 청산(트레일)", "일봉 채널 진입"]);

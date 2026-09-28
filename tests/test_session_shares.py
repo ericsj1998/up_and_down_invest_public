@@ -204,6 +204,16 @@ class TestTwoShares:
         s.release(leg=BREAKOUT.attribution)
         assert s.positions == (c,) and s.position is c
 
+    def test_each_share_names_its_own_exit_line(self) -> None:
+        """화면용 — 몫마다 그 다리의 이평 마감 청산선(없는 다리는 None · 2026-09-29)."""
+        ma = replace(BREAKOUT, ma_exit_below_long=5)  # 시험 판은 1H 봉이 20개 남짓
+        a, c = record(ma, "a", stop="700"), record(CHANNEL, "c", stop="600")
+        s = holding(session((ma, CHANNEL)), a, c)
+        s.step()
+        got = s.exit_line(a)
+        assert got is not None and got[0] == "SMA5(1h) 마감 청산" and got[1] > 0
+        assert s.exit_line(c) is None, "이평 청산이 없는 다리는 선을 지어내지 않는다"
+
     def test_funding_goes_to_the_named_share(self) -> None:
         """P5 — 러너가 계약 비로 나눈 펀딩 조각은 그 몫에만 붙는다(원장과 세션 둘 다)."""
         a, c = record(BREAKOUT, "a", stop="700"), record(CHANNEL, "c", stop="600")

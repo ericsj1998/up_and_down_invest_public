@@ -5566,7 +5566,7 @@ def _state(key: str, at: datetime | None = None, only: Timeframe | None = None) 
         # 🔴 "왜 아무 일도 안 일어나나" 에 화면이 답할 수 있어야 한다.
         "gate": _gate(session),
         # ⭐ T320 — `position` 은 첫 몫(기존 화면), `positions` 는 몫 전부(다리별 몫 줄).
-        "position": _record(next(iter(session.positions), None)),
+        "position": (None if not session.positions else share_row(session, session.positions[0])),
         "positions": [share_row(session, item) for item in session.positions],
         "frames": _chart(live, at, only, ttl=_chart_ttl(key, live)),
         "dashboard": {
@@ -5697,8 +5697,17 @@ def leg_label(session: Session, attribution: str) -> str:
 
 
 def share_row(session: Session, item: TradeRecord) -> dict[str, Any]:
-    """보유 몫 하나 — 매매 기록 + 다리 이름 (T320 · 화면이 몫마다 계획선 · 상자를 그린다)."""
-    return {**(_record(item) or {}), "leg": leg_label(session, item.playbook)}
+    """보유 몫 하나 — 매매 기록 + 다리 이름 + 실제 청산선 (T320 · 화면이 몫마다 선 · 상자를 그린다).
+
+    `exit_line` 은 그 다리의 이평 마감 청산선(`Session.exit_line`) — 없으면 None(MACD 등).
+    차트는 이것이 있으면 고정 손절선을 "손절" 로, 이 선을 청산선으로 따로 긋는다.
+    """
+    line = session.exit_line(item)
+    return {
+        **(_record(item) or {}),
+        "leg": leg_label(session, item.playbook),
+        "exit_line": None if line is None else {"label": line[0], "price": str(line[1])},
+    }
 
 
 def _record(item: TradeRecord | None) -> dict[str, Any] | None:

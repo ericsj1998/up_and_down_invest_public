@@ -73,4 +73,9 @@ export type Plan = {
    * 몫이 하나면 비어 있고 선 이름도 예전 그대로다.
    */
   leg?: string;
+  /**
+   * **실제 청산선** — 그 다리의 이평 마감 청산(예: `SMA20(1d) 마감 청산`)과 지금 값 (서버 `Session.exit_line`).
+   * 있으면 고정 손절선은 "손절" 로, 이 선은 청산선으로 따로 그린다. 없으면(MACD 등 · 옛 서버) 예전 그대로.
+   */
+  exit_line?: { label: string; price: string } | null;
 };

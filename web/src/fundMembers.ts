@@ -60,20 +60,24 @@ export function cardTone(m: {
 }
 
 /**
- * 미실현을 **증거금 대비 %** 로 — 금액 옆에 붙인다 (손익은 금액 + % 병기).
+ * 미실현을 **그 줄이 책임지는 돈 대비 %** 로 — 금액 옆에 붙인다 (손익은 금액 + % 병기).
  *
- * ⚠️ 분모는 **거래소가 이 포지션에 잡은 증거금**(`margin`)이다. 몫(`equity` = 예산 + 실현)이
- * 아니다 — 둘은 다른 돈이고, 섞으면 같은 손익이 카드마다 다른 % 로 보인다.
+ * 🔴 분모는 **종목 몫**(`equity` = 배정 예산 + 정산 뒤 실현)이다 (09-06 규칙 "그 줄이 책임지는 돈" ·
+ * 2026-09-29 사용자 "규칙대로 판 예산 대비로"). 예전엔 증거금 대비(배율 반영)라 같은 손익이 표(몫 대비)와
+ * 카드(증거금 대비)에서 6배 다른 % 로 보였다. 몫 줄(T320)도 같은 종목 몫으로 나눈다 — 몫 % 의 합 = 종목 %.
+ *
+ * @param unrealized 미실현(USDT) — 없거나 null 이면 null.
+ * @param base 그 줄의 몫(USDT) — 0 이하 · 못 읽으면 null.
  */
-export function unrealizedPct(m: {
-  unrealized?: string | null;
-  margin?: string | null;
-}): number | null {
-  if (m.unrealized === null || m.unrealized === undefined) return null;
-  const usdt = Number(m.unrealized);
-  const base = Number(m.margin);
-  if (!Number.isFinite(usdt) || !Number.isFinite(base) || base <= 0) return null;
-  return (usdt / base) * 100;
+export function unrealizedPct(
+  unrealized: string | null | undefined,
+  base: string | null | undefined,
+): number | null {
+  if (unrealized === null || unrealized === undefined) return null;
+  const usdt = Number(unrealized);
+  const money = Number(base);
+  if (!Number.isFinite(usdt) || !Number.isFinite(money) || money <= 0) return null;
+  return (usdt / money) * 100;
 }
 
 /**
@@ -125,13 +129,20 @@ export function memberMarks(m: FundMember): TradeMark[] {
         s.entry,
         s.stop,
         s.opened_at,
-        unrealizedPct(s),
+        unrealizedPct(s.unrealized, m.equity),
       );
       return one ? [{ ...one, leg: s.name }] : [];
     });
   }
   const pos = m.position;
   if (!pos) return [];
-  const one = box(m.handle || m.symbol, pos.side, pos.entry, pos.stop, pos.opened_at, unrealizedPct(m));
+  const one = box(
+    m.handle || m.symbol,
+    pos.side,
+    pos.entry,
+    pos.stop,
+    pos.opened_at,
+    unrealizedPct(m.unrealized, m.equity),
+  );
   return one ? [one] : [];
 }

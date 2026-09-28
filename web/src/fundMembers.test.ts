@@ -57,16 +57,17 @@ describe("cardTone — 테두리 색 (사용자 요구 2026-09-21)", () => {
   });
 });
 
-describe("unrealizedPct — 미실현을 증거금 대비 % 로", () => {
-  it("분모는 거래소가 잡은 증거금이다", () => {
-    expect(unrealizedPct({ unrealized: "8.13", margin: "62.15" })).toBeCloseTo(13.08, 2);
-    expect(unrealizedPct({ unrealized: "-3.1", margin: "62.15" })).toBeCloseTo(-4.99, 2);
+describe("unrealizedPct — 미실현을 그 줄이 책임지는 돈(종목 몫) 대비 % 로 (09-06 규칙 · 2026-09-29)", () => {
+  it("분모는 종목 몫이다 — 표 · 카드가 같은 % 를 말한다", () => {
+    expect(unrealizedPct("8.13", "406.5")).toBeCloseTo(2.0, 2);
+    expect(unrealizedPct("-3.1", "310")).toBeCloseTo(-1.0, 2);
   });
 
-  it("증거금이 없거나 0 이면 못 잰다 — 몫으로 대신 나누지 않는다", () => {
-    expect(unrealizedPct({ unrealized: "8.13" })).toBeNull();
-    expect(unrealizedPct({ unrealized: "8.13", margin: "0" })).toBeNull();
-    expect(unrealizedPct({ margin: "62.15" })).toBeNull();
+  it("몫이 없거나 0 이면 못 잰다 — 증거금으로 대신 나누지 않는다", () => {
+    expect(unrealizedPct("8.13", undefined)).toBeNull();
+    expect(unrealizedPct("8.13", "0")).toBeNull();
+    expect(unrealizedPct(undefined, "62.15")).toBeNull();
+    expect(unrealizedPct(null, "62.15")).toBeNull();
   });
 });
 
@@ -78,18 +79,19 @@ describe("memberMarks — 몫마다 상자 (T320)", () => {
     holding: true,
     unrealized: "-10",
     margin: "56",
+    equity: "500",
     bars: [{ time: 1_760_000_000, open: "1", high: "1", low: "1", close: "110", volume: "1" }],
     position: { side: "롱", entry: "100", stop: "95", target: "999", opened_at: "2026-09-01T00:00:00Z" },
   };
 
-  it("몫이 하나면 예전처럼 상자 하나 · 종목 증거금 대비 %", () => {
+  it("몫이 하나면 예전처럼 상자 하나 · 종목 몫 대비 %", () => {
     const got = memberMarks(base);
     expect(got).toHaveLength(1);
     expect(got[0]?.id).toBe("h1");
-    expect(got[0]?.pnl).toBeCloseTo((-10 / 56) * 100, 9);
+    expect(got[0]?.pnl).toBeCloseTo((-10 / 500) * 100, 9);
   });
 
-  it("몫이 여럿이면 몫마다 상자 — 자기 진입 · 손절 · 몫 증거금 대비 % · 다리 이름", () => {
+  it("몫이 여럿이면 몫마다 상자 — 자기 진입 · 손절 · 종목 몫 대비 % · 다리 이름", () => {
     const got = memberMarks({
       ...base,
       shares: [
@@ -101,7 +103,9 @@ describe("memberMarks — 몫마다 상자 (T320)", () => {
     });
     expect(got.map((t) => t.id)).toEqual(["h1:a", "h1:b"]);
     expect(got.map((t) => t.entry)).toEqual([100, 120]);
-    expect(got[0]?.pnl).toBeCloseTo(100, 9);
+    // 몫 % 의 합 = 종목 %(-10 ÷ 500) — 같은 분모
+    expect(got[0]?.pnl).toBeCloseTo(4, 9);
+    expect((got[0]?.pnl ?? 0) + (got[1]?.pnl ?? 0)).toBeCloseTo(-2, 9);
     expect(got[1]?.leg).toBe("일봉 채널");
   });
 

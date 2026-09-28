@@ -243,6 +243,9 @@ export function PaperTab({ run, home, named }: Props) {
           )
         : null;
     const shared = openRows.length > 1;
+    // ⭐ % 의 분모 = 판 예산(그 줄이 책임지는 돈 · 09-06 규칙 · 2026-09-29 사용자). 없으면 예전(증거금 대비).
+    const budget = Number(health?.run?.margin_budget ?? Number.NaN);
+    const base = Number.isFinite(budget) && budget > 0 ? budget : null;
     return (state?.log ?? [])
       .filter((row) => row.opened_at !== null)
       .map((row, index) => {
@@ -279,6 +282,7 @@ export function PaperTab({ run, home, named }: Props) {
                 row.add,
               ),
           add: addLabel(row.add),
+          base,
           reason: row.outcome,
           open,
           // ⭐ 손익 **금액**의 분모 — 없으면(백테스트·옛 행) 화면이 % 만 적는다.
@@ -308,7 +312,7 @@ export function PaperTab({ run, home, named }: Props) {
           t.openedTs > 0 &&
           t.closedTs > 0,
       );
-  }, [state?.log, state?.symbol, state?.frames, health?.exchange?.position]);
+  }, [state?.log, state?.symbol, state?.frames, health?.run?.margin_budget, health?.exchange?.position]);
 
   // 로직이 도는가 — 셋을 하나로 합쳐 답한다.
   //

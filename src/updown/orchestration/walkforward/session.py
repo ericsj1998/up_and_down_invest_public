@@ -3037,6 +3037,35 @@ class Session:
         """
         return self._book_of(record).stop_mode
 
+    def exit_line(self, record: TradeRecord) -> tuple[str, Decimal] | None:
+        """이 매매를 **실제로 닫는 이평 청산선** — 화면이 긋는다(읽기 전용 · 2026-09-29).
+
+        Args:
+            record: 보유 기록.
+
+        Returns:
+            `(이름, 지금 값)` — 롱은 `ma_exit_below_long`, 숏은 `ma_exit_above_short` 의
+            SMA(N) 를 그 다리의 판정 축 **닫힌 봉**으로 잰 값. 그런 청산이 없는 다리(MACD 등)나
+            봉이 모자라면 None.
+
+        Note:
+            판정은 `_settle` 이 한다(종가가 이 선 너머로 **마감**하면 전량). 여기는 같은 식을
+            읽기만 한다 — 화면이 "청산(트레일)" 이라 부르던 선은 고정 손절이라 실제 청산 자리가
+            안 보였다.
+        """
+        book = self._book_of(record)
+        long = record.direction is Direction.LONG
+        period = book.ma_exit_below_long if long else book.ma_exit_above_short
+        if period is None:
+            return None
+        gauge = self._frame(book.timeframe, None)
+        if gauge is None or len(gauge.rows) <= period:
+            return None
+        level = sma([row.close for row in gauge.rows], period)[-1]
+        if level is None:
+            return None
+        return f"SMA{period}({book.timeframe.value}) 마감 청산", level
+
     def guard_price(self, record: TradeRecord) -> Decimal:
         """라이브가 거래소에 걸 조건부 손절 자리.
 

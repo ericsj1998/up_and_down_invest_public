@@ -771,7 +771,7 @@ export function FundPanel({
                     몫 미실현(그 몫 증거금 대비 %) · 진입가 · 계약. 종목 줄의 미실현 = 몫 줄 합. */}
                 {v.shares && v.shares.length > 1
                   ? v.shares.map((sh) => {
-                      const sp = unrealizedPct(sh);
+                      const sp = unrealizedPct(sh.unrealized, v.equity);
                       return (
                         <tr key={`${sym}:${sh.leg}`} className="share-row text-sm">
                           <td className="faint" style={{ paddingLeft: 12 }}>

@@ -21,6 +21,10 @@ export type PlanLine = { price: number; token: string; fallback: string; title: 
  * 자리표시자라, 그리면 "29배 목표" 처럼 거짓말한다 — 숨긴다. 그리고 손절선이 곧 청산선이다(봉마다
  * SMA 로 상향 트레일) — 이름을 "청산" 으로 바꿔 실제 동작을 말한다.
  *
+ * 🔴 **서버가 실제 청산선(`exit_line`)을 주면 그것을 따로 긋는다** (2026-09-29). 돌파 롱 · 일봉 채널은 손절선이
+ * **고정**이고 실제 청산은 "그 다리 시간축 종가가 SMA 아래로 마감" 이다 — 손절선을 "청산(트레일)" 이라 부르면
+ * 거짓말이다. 그때 손절선은 "손절", 청산선은 서버가 준 이름(예: `SMA20(1d) 마감 청산`)과 지금 값이다.
+ *
  * ⭐ 진입 대비 % 와 손익비를 이름에 — 트레이딩뷰 포지션 도구처럼 선만 보고 읽힌다(사용자 2026-09-11).
  *
  * @param plan 계획.
@@ -36,13 +40,16 @@ export function planLinesOf(plan: Plan, prefix = ""): PlanLine[] {
     return ` ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
   };
   const rr = (plan as { rr?: string }).rr;
+  const exit = plan.exit_line ?? null;
+  const exitPrice = exit === null ? Number.NaN : Number(exit.price);
+  const hasExit = exit !== null && Number.isFinite(exitPrice);
   const out: PlanLine[] = [];
   for (const spec of PLAN_LINES) {
     if (ride && (spec.key === "first" || spec.key === "target")) continue;
     const raw = plan[spec.key];
     if (raw === undefined || raw === null) continue;
     const title =
-      ride && spec.key === "stop"
+      ride && spec.key === "stop" && !hasExit
         ? "청산(트레일)"
         : spec.key === "entry"
           ? spec.label
@@ -52,6 +59,14 @@ export function planLinesOf(plan: Plan, prefix = ""): PlanLine[] {
       token: spec.token,
       fallback: spec.fallback,
       title: `${prefix}${title}`,
+    });
+  }
+  if (exit !== null && hasExit) {
+    out.push({
+      price: exitPrice,
+      token: "--ma-line",
+      fallback: "#8957e5",
+      title: `${prefix}${exit.label}${pctOf(exitPrice)}`,
     });
   }
   return out;

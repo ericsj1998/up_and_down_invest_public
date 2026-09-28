@@ -147,14 +147,22 @@ export function openPct(args: {
  *
  * ⚠️ `margin` 이 없으면(백테스트·단독 판·옛 행) **% 만** 적는다. 판 예산 같은 다른 돈을
  * 끌어다 곱하면 그럴듯한 거짓 금액이 된다 — 없는 것은 안 적는다.
+ *
+ * 🔴 `base`(그 줄이 책임지는 돈 · RUN = 판 예산)가 있으면 % 를 **금액 ÷ base** 로 적고 "판 예산" 이름표를 단다
+ * (09-06 규칙 · 2026-09-29 사용자). 증거금 대비(배율 반영)는 같은 손익을 배율만큼 크게 보여 표 · 카드와 어긋났다.
  */
 export function pnlText(trade: TradeMark): string {
   if (trade.pnl === null) return "";
-  const pct = `${trade.pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)}%`;
+  const signed = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
   const margin = trade.margin;
-  if (margin === undefined || margin === null || !(margin > 0)) return pct;
+  if (margin === undefined || margin === null || !(margin > 0)) return signed(trade.pnl);
   const usdt = (margin * trade.pnl) / 100;
-  return `${usdt >= 0 ? "+" : ""}${usdt.toFixed(2)} USDT · ${pct}`;
+  const money = `${usdt >= 0 ? "+" : ""}${usdt.toFixed(2)} USDT`;
+  const base = trade.base;
+  if (base !== undefined && base !== null && base > 0) {
+    return `${money} · 판 예산 ${signed((usdt / base) * 100)}`;
+  }
+  return `${money} · ${signed(trade.pnl)}`;
 }
 
 /** 매매 하나 → 양쪽 세로 경계 (시작 = 진입 · 끝 = 결말 + 손익). */

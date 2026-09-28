@@ -149,6 +149,12 @@ describe("pnlText — 손익은 금액 + % 병기 (사용자 요구)", () => {
     expect(pnlText(mark({ pnl: 12.5, margin: 62.25 }))).toBe("+7.78 USDT · +12.50%");
   });
 
+  it("🔴 판 예산을 주면 % 는 금액 ÷ 판 예산 · 이름표를 단다 (09-06 규칙 · 2026-09-29)", () => {
+    // 같은 -4.98 USDT 가 증거금 대비로는 -8%, 판 예산(498) 대비로는 -1% — 표 · 카드와 같은 자
+    expect(pnlText(mark({ pnl: -8, margin: 62.25, base: 498 }))).toBe("-4.98 USDT · 판 예산 -1.00%");
+    expect(pnlText(mark({ pnl: -8, margin: 62.25, base: null }))).toBe("-4.98 USDT · -8.00%");
+  });
+
   it("🔴 증거금이 없으면 % 만 적는다 — 다른 돈을 끌어다 곱하지 않는다", () => {
     expect(pnlText(mark({ pnl: -8, margin: null }))).toBe("-8.00%");
     expect(pnlText(mark({ pnl: -8 }))).toBe("-8.00%");
