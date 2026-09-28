@@ -5025,10 +5025,14 @@ class LiveRunner:
                 )
                 return
             # ⭐ 걸려 있던 1차 익절을 거둔다 — 그 절반은 지금 나간다.
+            #    🔴 1차 익절은 다리 **1** 이고(`take_profit_orders`) 거래소 text 는 콜론이 `-` 다.
+            #    예전 비교(다리 0 · 콜론 그대로)는 한 번도 맞지 않았다 (T321).
             if isinstance(self._orders, OrdersAware):
-                mine = order_key(held.trade_id, OrderKind.TAKE_PROFIT.value, 0, self._run_key)
+                mine = order_key(
+                    held.trade_id, OrderKind.TAKE_PROFIT.value, 1, self._run_key
+                ).replace(":", "-")
                 for row in await self._orders.open_orders(self.instrument):
-                    if str(row.get("text", "")).lstrip("t-") == mine.lstrip("t-"):
+                    if str(row.get("text", "")).removeprefix("t-") == mine:
                         with contextlib.suppress(Exception):
                             await self._orders.cancel_order(str(row["id"]))
             done = await self._orders.submit_order(
