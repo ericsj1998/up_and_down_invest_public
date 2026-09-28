@@ -6,7 +6,7 @@
  *
  * ⚠️ 자동 4h 루프는 testnet 검증 뒤에 켠다 — 지금은 "지금 리밸런싱" 버튼으로 수동.
  */
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 import * as api from "./api";
 import type { FundLeg, FundRules, FundStatus, MarketInfo, MemberFrame } from "./api";
@@ -14,6 +14,7 @@ import { useMe } from "./Gate";
 import { bookInGroup, groupOfName, marketTradeAllowed, useMarketGroup } from "./shell/marketGroup";
 import { when } from "./shell/MarketHours";
 import { CARD_WIDTH, FundMembers, MEMBER_FRAME_SPEC } from "./FundMembers";
+import { unrealizedPct } from "./fundMembers";
 import { FundOverview } from "./FundOverview";
 import {
   groupedOrder,
@@ -691,8 +692,8 @@ export function FundPanel({
                   </tr>
                 ) : (
                   ((sym: string, v: FundLeg) => (
+                <Fragment key={sym}>
                 <tr
-                  key={sym}
                   className={v.preview ? "entry-soon" : undefined}
                   title={v.preview ? previewText(v.preview) : undefined}
                 >
@@ -756,7 +757,9 @@ export function FundPanel({
                     }}
                   >
                     {v.position
-                      ? `${v.position.side} @ ${fmtPrice(v.position.entry)}`
+                      ? v.shares && v.shares.length > 1
+                        ? `${v.position.side} · 몫 ${v.shares.length}`
+                        : `${v.position.side} @ ${fmtPrice(v.position.entry)}`
                       : v.holding
                         ? "보유"
                         : v.preview
@@ -764,6 +767,38 @@ export function FundPanel({
                           : "현금"}
                   </td>
                 </tr>
+                {/* ⭐ T320 — 한 종목을 다리 여럿이 나눠 쓰면 몫마다 한 줄(D3 ①): 다리 · 몫 증거금 ·
+                    몫 미실현(그 몫 증거금 대비 %) · 진입가 · 계약. 종목 줄의 미실현 = 몫 줄 합. */}
+                {v.shares && v.shares.length > 1
+                  ? v.shares.map((sh) => {
+                      const sp = unrealizedPct(sh);
+                      return (
+                        <tr key={`${sym}:${sh.leg}`} className="share-row text-sm">
+                          <td className="faint" style={{ paddingLeft: 12 }}>
+                            └ {sh.name}
+                          </td>
+                          <td className="opt" />
+                          <td className="opt" />
+                          <td className="opt faint" style={{ textAlign: "right" }}>
+                            {sh.margin ? fmt(sh.margin) : "—"}
+                          </td>
+                          <td
+                            style={{ textAlign: "right", color: pnlColor(sh.unrealized ?? undefined) }}
+                          >
+                            {sh.unrealized === null || sh.unrealized === undefined
+                              ? "—"
+                              : fmt(sh.unrealized) +
+                                (sp === null ? "" : ` (${sp >= 0 ? "+" : ""}${sp.toFixed(1)}%)`)}
+                          </td>
+                          <td />
+                          <td className="col-pos faint" style={{ paddingLeft: 16 }}>
+                            {`${sh.side} @ ${fmtPrice(sh.entry)} · ${sh.contracts}계약`}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  : null}
+                </Fragment>
                   ))(item.sym, item.v)
                 ),
               )}

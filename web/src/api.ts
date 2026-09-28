@@ -940,6 +940,10 @@ export type TradeAdd = {
 
 export type Trade = {
   trade_id: string;
+  /** 귀속 키(`playbook@version`) — 몫이 여럿일 때 어느 다리의 매매인지. */
+  playbook?: string;
+  /** 진입 체결 계약 수 (T320) — 거래소 미실현을 몫마다 나누는 무게. 0 · 없음 = 모른다. */
+  contracts?: number;
   outcome: string;
   direction: string;
   entry: string;
@@ -1061,8 +1065,13 @@ export type State = {
     running: string[];
     regimes: string[];
   };
-  /** 보유 중인 계획. 없으면 null — 차트가 계획선을 안 그린다. */
+  /** 보유 중인 계획. 없으면 null — 차트가 계획선을 안 그린다. 몫이 여럿이면 첫 몫이다. */
   position: Plan | null;
+  /**
+   * 보유 몫 전부 (T320) — 한 종목 포지션을 같은 방향 다리 여럿이 나눠 쓴다. 몫마다 다리 이름(`leg`)이
+   * 붙는다. 둘 이상이면 차트가 몫마다 진입 · 손절선을 그린다. 옛 서버는 안 보낸다.
+   */
+  positions?: (Plan & { trade_id?: string; playbook?: string })[];
   /**
    * 추세추종(full_ride)인가 — 참이면 고정 익절이 없다(목표선은 100R 자리표시자).
    * 차트가 목표·1차선을 숨기고 손절을 "청산" 으로 그리게 한다.
@@ -1775,6 +1784,26 @@ export type FundLeg = {
    * 닫히면 같은 탐지기가 후보를 낸다 — 펀드 문 전이라 진입이 약속된 것은 아니다).
    */
   preview?: FundPreview | null;
+  /**
+   * 한 종목 포지션을 나눠 쓰는 몫들 (T320) — **둘 이상일 때만** 온다. `position` 은 첫 몫이다.
+   * 표 · 카드가 종목 줄 아래에 몫마다 한 줄을 그린다.
+   */
+  shares?: FundShare[];
+};
+
+/** 몫 하나 — 다리 이름 · 방향 · 진입 · 손절 · 계약 · 몫 미실현(표시가로 나눈 값 · 합 = 종목 미실현). */
+export type FundShare = {
+  leg: string;
+  name: string;
+  side: string;
+  entry: string;
+  stop: string;
+  contracts: number;
+  opened_at?: string | null;
+  /** 몫 미실현(USDT) — 거래소 값을 못 읽었으면 null. */
+  unrealized?: string | null;
+  /** 몫 증거금(USDT) — 포지션 증거금을 진입 명목 비로 나눈 값. 몫 % 의 분모. */
+  margin?: string | null;
 };
 
 export type FundPreview = {

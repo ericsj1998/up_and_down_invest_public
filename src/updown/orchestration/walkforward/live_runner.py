@@ -4585,41 +4585,15 @@ class LiveRunner:
                 exchange_liq = Decimal(raw_liq) if raw_liq else None
             except Exception:
                 exchange_liq = None
-            if exchange_liq is not None and exchange_liq > 0 and held.entry > 0:
-                long = held.direction is Direction.LONG
-                stop_room = abs(held.entry - held.planned_stop) / held.entry
-                liq_room = abs(held.entry - exchange_liq) / held.entry
-                if (
-                    (exchange_liq >= held.planned_stop)
-                    if long
-                    else (exchange_liq <= held.planned_stop)
-                ):
-                    found.append(
-                        {
-                            "code": "liq_inside_stop",
-                            "level": "error",
-                            "detail": (
-                                f"거래소 청산가 {exchange_liq} 가 손절 {held.planned_stop} 보다 "
-                                f"**안쪽**이다 (청산 {liq_room * 100:.2f}% / 손절 "
-                                f"{stop_room * 100:.2f}%) — 손절이 장식이고 청산이 먼저 온다. "
-                                f"배율을 낮추거나 β 를 조여야 한다"
-                            ),
-                        }
-                    )
-                elif liq_room > 0:
-                    margin = stop_room / liq_room
-                    if margin > Decimal("0.8"):
-                        found.append(
-                            {
-                                "code": "stop_near_liquidation",
-                                "level": "warn",
-                                "detail": (
-                                    f"손절이 청산거리의 {margin * 100:.0f}% 지점이다 "
-                                    f"(청산 {liq_room * 100:.2f}% / 손절 {stop_room * 100:.2f}%) "
-                                    f"— 여유가 얇다. 갭 한 번이면 청산이 먼저다"
-                                ),
-                            }
-                        )
+            if exchange_liq is not None and exchange_liq > 0:
+                # ⭐ T320 — 청산가는 **합친 포지션 하나**의 값이다. 몫이 여럿이면 몫마다 자기 손절과
+                #    댄다 — 첫 몫 손절만 보면 더 먼 손절을 둔 몫이 청산가 바깥에 있어도 모른다.
+                if self._shared:
+                    for item in self._session.ledger.records:
+                        if item.outcome is Outcome.OPEN:
+                            found += liq_findings(item, exchange_liq, share=True)
+                else:
+                    found += liq_findings(held, exchange_liq)
         return found
 
     def _share_size_findings(self, size: int) -> list[dict[str, str]]:
@@ -7659,6 +7633,57 @@ def step_stats_of(values: Sequence[float]) -> dict[str, float | int]:
         "p50_ms": round(ordered[len(ordered) // 2], 1),
         "max_ms": round(ordered[-1], 1),
     }
+
+
+def liq_findings(
+    held: TradeRecord, exchange_liq: Decimal, *, share: bool = False
+) -> list[dict[str, str]]:
+    """거래소 청산가 대 손절 — 손절이 청산보다 안쪽인가 (감사 ⑨ · 2026-08-30 · T320 몫마다).
+
+    Args:
+        held: 보유 기록(몫 모드면 몫 하나).
+        exchange_liq: 거래소가 계산한 청산가(합친 포지션).
+        share: 몫 모드인가 — 참이면 발견 문장 앞에 몫 id 를 붙인다.
+
+    Returns:
+        `liq_inside_stop`(error) · `stop_near_liquidation`(warn) 발견. 없으면 빈 목록.
+
+    Note:
+        β 의 전제는 "손절이 청산보다 안쪽" 이다. 거래소 청산가가 손절보다 안쪽이면 손절은 장식이고
+        청산이 먼저 온다. 여유가 청산 거리의 80% 를 넘으면 갭 한 번에 뒤집힌다.
+    """
+    if held.entry <= 0 or exchange_liq <= 0:
+        return []
+    head = f"몫 {held.trade_id} — " if share else ""
+    long = held.direction is Direction.LONG
+    stop_room = abs(held.entry - held.planned_stop) / held.entry
+    liq_room = abs(held.entry - exchange_liq) / held.entry
+    if (exchange_liq >= held.planned_stop) if long else (exchange_liq <= held.planned_stop):
+        return [
+            {
+                "code": "liq_inside_stop",
+                "level": "error",
+                "detail": (
+                    f"{head}거래소 청산가 {exchange_liq} 가 손절 {held.planned_stop} 보다 "
+                    f"**안쪽**이다 (청산 {liq_room * 100:.2f}% / 손절 "
+                    f"{stop_room * 100:.2f}%) — 손절이 장식이고 청산이 먼저 온다. "
+                    f"배율을 낮추거나 β 를 조여야 한다"
+                ),
+            }
+        ]
+    if liq_room > 0 and stop_room / liq_room > Decimal("0.8"):
+        return [
+            {
+                "code": "stop_near_liquidation",
+                "level": "warn",
+                "detail": (
+                    f"{head}손절이 청산거리의 {stop_room / liq_room * 100:.0f}% 지점이다 "
+                    f"(청산 {liq_room * 100:.2f}% / 손절 {stop_room * 100:.2f}%) "
+                    f"— 여유가 얇다. 갭 한 번이면 청산이 먼저다"
+                ),
+            }
+        ]
+    return []
 
 
 def funding_weight(record: TradeRecord, at: datetime) -> int:

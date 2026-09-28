@@ -34,6 +34,11 @@ type Props = {
   trades?: TradeMark[];
   /** 선택한 매매 — 가로선·영역은 이것에만. 비면 매매가 하나일 때 그것. */
   focusId?: string | null;
+  /**
+   * **넘긴 매매 전부**에 가로선 · 영역을 그린다 (T320) — 한 종목 포지션을 다리 여럿이 나눠 쓰는
+   * 몫들. 여럿이면 선 이름 앞에 다리 이름(`leg`)을 붙인다. `focusId` 보다 먼저다.
+   */
+  focusAll?: boolean;
   settings: ChartSettings;
   height?: number;
   /** 아래에 적을 한 줄 (자료 출처 · 주의). */
@@ -60,6 +65,7 @@ export function PriceChart({
   step,
   trades,
   focusId,
+  focusAll = false,
   settings,
   height = 420,
   note,
@@ -151,6 +157,11 @@ export function PriceChart({
     if (focusId) return list.find((t) => t.id === focusId) ?? null;
     return list.length === 1 ? (list[0] ?? null) : null;
   }, [trades, focusId]);
+  // ⭐ 선 · 영역을 그릴 매매들 — 몫 여럿(T320)이면 전부, 아니면 고른 하나.
+  const focused = useMemo<TradeMark[]>(
+    () => (focusAll ? (trades ?? []) : focus === null ? [] : [focus]),
+    [focusAll, trades, focus],
+  );
 
   useEffect(() => {
     const plugin = badges.current;
@@ -173,23 +184,27 @@ export function PriceChart({
     if (drawn === null || rug === null) return;
     for (const line of levels.current) drawn.removePriceLine(line);
     levels.current = [];
-    if (focus === null) {
+    const lead = focused[0];
+    if (lead === undefined) {
       rug.set([]);
       return;
     }
     const c = palette();
-    levels.current = tradeLevels(focus, settings.marks).map((l) =>
-      drawn.createPriceLine({
-        price: l.price,
-        color: c[TONES[l.tone]],
-        lineWidth: 1,
-        lineStyle: l.dashed ? LineStyle.Dashed : LineStyle.Solid,
-        axisLabelVisible: true,
-        title: l.title,
-      }),
+    const many = focused.length > 1;
+    levels.current = focused.flatMap((t) =>
+      tradeLevels(t, settings.marks).map((l) =>
+        drawn.createPriceLine({
+          price: l.price,
+          color: c[TONES[l.tone]],
+          lineWidth: 1,
+          lineStyle: l.dashed ? LineStyle.Dashed : LineStyle.Solid,
+          axisLabelVisible: true,
+          title: many && t.leg ? `${t.leg} ${l.title}` : l.title,
+        }),
+      ),
     );
     rug.set(
-      tradeZones(focus, step, settings.marks).map((z) => ({
+      focused.flatMap((t) => tradeZones(t, step, settings.marks)).map((z) => ({
         from: z.from,
         to: z.to,
         low: z.low,
@@ -200,9 +215,9 @@ export function PriceChart({
     // 선택한 매매 주변으로 본다 — 앞뒤로 여유를 둬 진입 전 맥락이 보이게.
     const made = chart.current;
     if (autoZoom && made !== null && bars.length > 0) {
-      const span = Math.max(focus.closedTs - focus.openedTs, step * 20);
-      const from = focus.openedTs - span * 1.5;
-      const to = focus.closedTs + span * 1.0;
+      const span = Math.max(lead.closedTs - lead.openedTs, step * 20);
+      const from = lead.openedTs - span * 1.5;
+      const to = lead.closedTs + span * 1.0;
       const first = bars[0]?.time ?? from;
       const last = bars[bars.length - 1]?.time ?? to;
       made.timeScale().setVisibleRange({
@@ -210,7 +225,7 @@ export function PriceChart({
         to: Math.min(last, to) as Time,
       });
     }
-  }, [focus, step, settings.marks, bars, ready, autoZoom]);
+  }, [focused, step, settings.marks, bars, ready, autoZoom]);
 
   const shown = legend(overlaySeries);
   return (

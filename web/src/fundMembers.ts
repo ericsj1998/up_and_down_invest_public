@@ -4,6 +4,7 @@
 
 import type { FundMember } from "./api";
 import type { Ohlc } from "./chart/indicators";
+import type { TradeMark } from "./chart/trades";
 
 /** 서버 봉(문자열 가격) → 차트 봉. 숫자가 아닌 줄은 버린다. */
 export function toOhlc(bars: FundMember["bars"]): Ohlc[] {
@@ -64,9 +65,73 @@ export function cardTone(m: {
  * ⚠️ 분모는 **거래소가 이 포지션에 잡은 증거금**(`margin`)이다. 몫(`equity` = 예산 + 실현)이
  * 아니다 — 둘은 다른 돈이고, 섞으면 같은 손익이 카드마다 다른 % 로 보인다.
  */
-export function unrealizedPct(m: { unrealized?: string; margin?: string }): number | null {
+export function unrealizedPct(m: {
+  unrealized?: string | null;
+  margin?: string | null;
+}): number | null {
+  if (m.unrealized === null || m.unrealized === undefined) return null;
   const usdt = Number(m.unrealized);
   const base = Number(m.margin);
   if (!Number.isFinite(usdt) || !Number.isFinite(base) || base <= 0) return null;
   return (usdt / base) * 100;
+}
+
+/**
+ * 열린 포지션 → 차트 상자들. 몫이 여럿이면(T320) **몫마다 하나** — 진입가 · 손절 · 손익이 몫마다 다르다.
+ *
+ * ⚠️ 진입 시각이나 지금가가 없으면 **안 그린다** — 상자의 한쪽 끝을 지어내지 않는다.
+ * 그때는 가로선도 안 나오는데, 없는 자리에 선을 긋는 것보다 낫다.
+ *
+ * @param m 펀드 종목 한 줄.
+ * @returns 상자들 — 없으면 빈 목록.
+ */
+export function memberMarks(m: FundMember): TradeMark[] {
+  const last = Number(m.last);
+  if (!Number.isFinite(last)) return [];
+  // 마지막 마감 봉까지 — 마감 봉만 그리는 카드라 "지금" 은 마지막 봉이다.
+  const end = (openedTs: number) =>
+    m.bars.length > 0 ? (m.bars[m.bars.length - 1]?.time ?? openedTs) : openedTs;
+  const box = (
+    id: string,
+    side: string,
+    entryRaw: string,
+    stopRaw: string,
+    opened: string | null | undefined,
+    pnl: number | null,
+  ): TradeMark | null => {
+    const entry = Number(entryRaw);
+    const stop = Number(stopRaw);
+    const openedTs = opened ? Math.floor(Date.parse(opened) / 1000) : 0;
+    if (![entry, stop].every(Number.isFinite) || !(openedTs > 0)) return null;
+    return {
+      id,
+      symbol: m.symbol,
+      side: side === "숏" ? -1 : 1,
+      entry,
+      exit: last,
+      stop,
+      openedTs,
+      closedTs: end(openedTs),
+      pnl,
+      reason: "보유중",
+      open: true,
+    };
+  };
+  if (m.shares && m.shares.length > 1) {
+    return m.shares.flatMap((s) => {
+      const one = box(
+        `${m.handle || m.symbol}:${s.leg}`,
+        s.side,
+        s.entry,
+        s.stop,
+        s.opened_at,
+        unrealizedPct(s),
+      );
+      return one ? [{ ...one, leg: s.name }] : [];
+    });
+  }
+  const pos = m.position;
+  if (!pos) return [];
+  const one = box(m.handle || m.symbol, pos.side, pos.entry, pos.stop, pos.opened_at, unrealizedPct(m));
+  return one ? [one] : [];
 }

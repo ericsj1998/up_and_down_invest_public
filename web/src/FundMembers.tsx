@@ -18,8 +18,14 @@ import { useEffect, useState } from "react";
 import { fundMembers, type FundMember, type FundPreview, type MemberFrame } from "./api";
 import { DEFAULT_SETTINGS } from "./chart/indicators";
 import { PriceChart } from "./chart/PriceChart";
-import type { TradeMark } from "./chart/trades";
-import { cardTone, changeText, changeTone, toOhlc, unrealizedPct } from "./fundMembers";
+import {
+  cardTone,
+  changeText,
+  changeTone,
+  memberMarks,
+  toOhlc,
+  unrealizedPct,
+} from "./fundMembers";
 import { previewShort, previewText } from "./fundLayout";
 import { ErrorCard } from "./ui";
 
@@ -49,37 +55,6 @@ function signed(v?: string | null): string {
   return `${n > 0 ? "+" : ""}${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
 
-/**
- * 열린 포지션 → 차트 상자 하나.
- *
- * ⚠️ 진입 시각이나 지금가가 없으면 **안 그린다** — 상자의 한쪽 끝을 지어내지 않는다.
- * 그때는 가로선도 안 나오는데, 없는 자리에 선을 긋는 것보다 낫다.
- */
-function markOf(m: FundMember): TradeMark | null {
-  const pos = m.position;
-  const last = Number(m.last);
-  if (!pos || !pos.opened_at || !Number.isFinite(last)) return null;
-  const entry = Number(pos.entry);
-  const stop = Number(pos.stop);
-  const openedTs = Math.floor(Date.parse(pos.opened_at) / 1000);
-  if (![entry, stop].every(Number.isFinite) || !(openedTs > 0)) return null;
-  const pct = unrealizedPct(m);
-  return {
-    id: m.handle || m.symbol,
-    symbol: m.symbol,
-    side: pos.side === "숏" ? -1 : 1,
-    entry,
-    exit: last,
-    stop,
-    openedTs,
-    // 마지막 마감 봉까지 — 마감 봉만 그리는 카드라 "지금" 은 마지막 봉이다.
-    closedTs: m.bars.length > 0 ? (m.bars[m.bars.length - 1]?.time ?? openedTs) : openedTs,
-    pnl: pct,
-    reason: "보유중",
-    open: true,
-  };
-}
-
 function MemberCard({
   m,
   step,
@@ -96,8 +71,10 @@ function MemberCard({
 }) {
   const bars = toOhlc(m.bars);
   const tone = cardTone(m);
-  const mark = markOf(m);
+  // ⭐ T320 — 몫이 여럿이면 몫마다 상자(진입가 · 손절 · 손익이 몫마다 다르다).
+  const marks = memberMarks(m);
   const pct = unrealizedPct(m);
+  const shares = m.shares && m.shares.length > 1 ? m.shares : null;
   // 🔴 **목표가 익절선이 아닐 수 있다** (사용자 지적 2026-09-21). 추세추종은 고정 익절이 없고
   //    `target` 은 진입+100R 자리표시자다 — 그것을 '목표' 로 적으면 화면이 거짓말한다.
   const showTarget = m.position !== undefined && m.position.full_ride !== true;
@@ -123,8 +100,14 @@ function MemberCard({
           전에는 몫·손절·목표와 한 줄에 섞여 작은 회색 글씨였다. */}
       {m.holding && m.position ? (
         <div style={{ margin: "4px 0 2px" }}>
-          <b>{m.position.side}</b> <span className="faint">진입</span>{" "}
-          <b>{money(m.position.entry)}</b>
+          <b>{m.position.side}</b>{" "}
+          {shares ? (
+            <span className="faint">몫 {shares.length}</span>
+          ) : (
+            <>
+              <span className="faint">진입</span> <b>{money(m.position.entry)}</b>
+            </>
+          )}
           {" · "}
           <span className="faint">미실현</span>{" "}
           <b className={changeTone(m.unrealized)}>
@@ -141,10 +124,36 @@ function MemberCard({
         </div>
       )}
 
+      {/* ⭐ T320 — 한 종목을 다리 여럿이 나눠 쓰면 몫마다 한 줄(D3 ①): 다리 · 진입 · 미실현 · 손절. */}
+      {shares ? (
+        <div className="text-sm" style={{ marginBottom: 2 }}>
+          {shares.map((s) => {
+            const sp = unrealizedPct(s);
+            return (
+              <div key={s.leg} className="share-line">
+                <span className="faint">└</span> <b>{s.name}</b>{" "}
+                <span className="faint">진입</span> {money(s.entry)}
+                {" · "}
+                <span className={changeTone(s.unrealized)}>
+                  {s.unrealized === null || s.unrealized === undefined
+                    ? "—"
+                    : `${signed(s.unrealized)} USDT`}
+                  {sp === null ? "" : ` (${sp > 0 ? "+" : ""}${sp.toFixed(2)}%)`}
+                </span>
+                <span className="faint">
+                  {" · 손절 "}
+                  {money(s.stop)} · {s.contracts}계약
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
       {/* 부가 정보 — 손절선 · 몫 · 갈림 경고. 작은 글씨로 내린다. */}
       <div className="text-sm faint" style={{ marginBottom: 6 }}>
         몫 {money(m.equity)}
-        {m.holding && m.position ? (
+        {m.holding && m.position && !shares ? (
           <>
             {" · 손절 "}
             {money(m.position.stop)}
@@ -163,7 +172,9 @@ function MemberCard({
           height={height}
           // ⭐ 진입가 · 손절가 가로선 + 상자 (사용자 요구 2026-09-21).
           //    ⚠️ 개요를 보는 카드라 **확대는 끈다** — 짧은 매매로 당기면 목적이 사라진다.
-          {...(mark ? { trades: [mark], focusId: mark.id } : {})}
+          {...(marks.length > 0
+            ? { trades: marks, ...(marks.length > 1 ? { focusAll: true } : { focusId: marks[0]?.id ?? null }) }
+            : {})}
           autoZoom={false}
         />
       ) : (

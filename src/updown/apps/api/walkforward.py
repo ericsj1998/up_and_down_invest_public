@@ -5567,7 +5567,7 @@ def _state(key: str, at: datetime | None = None, only: Timeframe | None = None) 
         "gate": _gate(session),
         # ⭐ T320 — `position` 은 첫 몫(기존 화면), `positions` 는 몫 전부(다리별 몫 줄).
         "position": _record(next(iter(session.positions), None)),
-        "positions": [_record(item) for item in session.positions],
+        "positions": [share_row(session, item) for item in session.positions],
         "frames": _chart(live, at, only, ttl=_chart_ttl(key, live)),
         "dashboard": {
             "trades": len(book.records),
@@ -5679,6 +5679,28 @@ def _gate(session: Session) -> dict[str, Any]:
     }
 
 
+def leg_label(session: Session, attribution: str) -> str:
+    """귀속 키(`playbook@version`) → 다리 짧은 이름(`short_label` → `label` → 매매법 id · T320).
+
+    Args:
+        session: 그 판의 세션 — 실린 매매법에서 찾는다.
+        attribution: 매매 기록의 귀속 키.
+
+    Returns:
+        화면에 적을 이름.
+    """
+    pid = attribution.split("@")[0]
+    book = next((b for b in session.playbooks if b.attribution == attribution), None)
+    if book is None:
+        return pid
+    return book.short_label or book.label or pid
+
+
+def share_row(session: Session, item: TradeRecord) -> dict[str, Any]:
+    """보유 몫 하나 — 매매 기록 + 다리 이름 (T320 · 화면이 몫마다 계획선 · 상자를 그린다)."""
+    return {**(_record(item) or {}), "leg": leg_label(session, item.playbook)}
+
+
 def _record(item: TradeRecord | None) -> dict[str, Any] | None:
     """매매 기록 하나를 화면용으로 (T13 ⑧ 항목 그대로)."""
     if item is None:
@@ -5726,6 +5748,8 @@ def _record(item: TradeRecord | None) -> dict[str, Any] | None:
         # ⚠️ NULL 일 수 있다 — 백테스트·단독 판·옛 행은 이 값을 안 적었다. 그때는 화면이
         #    금액을 안 쓰고 % 만 쓴다 (`margin_used` 참고).
         "margin_used": None if item.margin_used is None else str(item.margin_used),
+        # ⭐ T320 — 진입 체결 계약 수(몫). 화면이 거래소 미실현을 몫마다 나누는 무게다. 0 = 모른다.
+        "contracts": item.contracts,
         # 🔴 **아직 열린 매매의 손익을 화면이 잴 수 있게** (사용자 지적 2026-09-21: 차트 딱지가
         #    '보유중' 만 적고 손익이 없다).
         #

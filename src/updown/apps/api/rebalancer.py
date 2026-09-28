@@ -48,6 +48,7 @@ from updown.apps.api.walkforward import (
     _close_live_position,
     _drop_one,
     _live_start,
+    leg_label,
 )
 from updown.common.cache import TtlCache
 from updown.common.domain.capabilities import capabilities_of
@@ -1542,17 +1543,78 @@ async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
             "full_ride": session.playbook.full_ride,
         }
     if len(shares) > 1:
-        row["shares"] = [
+        # ⭐ T320 — 몫마다 한 줄. 카드 · 표가 종목 줄 아래에 그린다(D3 ①).
+        row["shares"] = share_rows(
+            shares,
+            unreal,
+            margin,
+            _MARKS.get(handle),
+            {item.playbook: leg_label(session, item.playbook) for item in shares},
+        )
+    return row
+
+
+def share_rows(
+    shares: Sequence[TradeRecord],
+    unreal: str,
+    margin: str,
+    marks: tuple[Decimal, Decimal] | None,
+    names: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """한 종목을 나눠 쓰는 몫들의 화면 줄 (T320 · 순수).
+
+    Args:
+        shares: 열린 몫들(둘 이상).
+        unreal: 거래소 미실현(포지션 전체 · 문자열).
+        margin: 거래소 증거금(포지션 전체 · 문자열).
+        marks: (표시가 · 계약 승수) — `split_unrealized` 가 쓴다. 없으면 계약 비로 나눈다.
+        names: 귀속 키 → 다리 짧은 이름.
+
+    Returns:
+        몫마다 `{leg, name, side, entry, stop, contracts, opened_at, unrealized, margin}`.
+        미실현 · 증거금을 못 나누면(거래소 값을 못 읽음) None.
+
+    Note:
+        증거금은 **진입 명목 비**로 나눈다 — 격리 증거금은 진입 명목에 비례해 잡힌다. 화면은
+        몫 미실현 ÷ 몫 증거금 으로 % 를 적는다(종목 줄과 같은 자).
+    """
+    try:
+        total: Decimal | None = Decimal(str(unreal))
+    except ArithmeticError:
+        total = None
+    try:
+        held: Decimal | None = Decimal(str(margin))
+    except ArithmeticError:
+        held = None
+    split = split_unrealized(shares, total, marks) if total is not None else {}
+    cost = {
+        item.trade_id: Decimal(item.contracts) * item.entry
+        + Decimal(item.add_contracts) * (item.add_fill or item.entry)
+        for item in shares
+    }
+    cost_sum = sum(cost.values(), Decimal(0))
+    step = Decimal("0.0001")
+    out: list[dict[str, Any]] = []
+    for item in shares:
+        pid = item.playbook.split("@")[0]
+        out.append(
             {
-                "leg": item.playbook.split("@")[0],
+                "leg": pid,
+                "name": names.get(item.playbook, pid),
+                "side": "롱" if item.direction.sign > 0 else "숏",
                 "entry": str(item.entry),
                 "stop": str(item.planned_stop),
                 "contracts": item.contracts + item.add_contracts,
                 "opened_at": None if item.opened_at is None else item.opened_at.isoformat(),
+                "unrealized": str(split[pid].quantize(step)) if pid in split else None,
+                "margin": (
+                    str((held * cost[item.trade_id] / cost_sum).quantize(step))
+                    if held is not None and cost_sum > 0
+                    else None
+                ),
             }
-            for item in shares
-        ]
-    return row
+        )
+    return out
 
 
 async def _status(fund: Fund) -> dict[str, Any]:

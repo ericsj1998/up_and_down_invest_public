@@ -1259,6 +1259,16 @@ textarea.input {
   color: var(--warm-gray);
   background: rgba(96, 125, 139, 0.06);
 }
+/* T320 — 한 종목을 다리 여럿이 나눠 쓰는 몫 줄: 종목 줄 바로 아래 · 작게 · 위 선 없이 종목 줄에 붙인다. */
+.fund-table tr.share-row td {
+  padding-top: 0;
+  padding-bottom: 2px;
+  border-top: none;
+  font-size: 11px;
+}
+.member-card .share-line {
+  line-height: 1.5;
+}
 
 /* ── 폰 폭(540px 미만 = Tailwind `sm` 아래 · MT 화면 구간) — 사용자 2026-09-27: "모바일에서는 너무 칸이나 배치가 많고 문자도 겹친다" ──
    컴퓨터 화면은 그대로 두고 좁을 때만 덧붙인다. */

@@ -25,10 +25,10 @@ from test_share_runner import (  # pyright: ignore[reportMissingImports]
     now_of,
     share,
 )
-from updown.apps.api.rebalancer import mark_and_multiplier, split_unrealized
+from updown.apps.api.rebalancer import mark_and_multiplier, share_rows, split_unrealized
 from updown.common.domain.instrument import Instrument
 from updown.orchestration.walkforward.ledger import Ledger, Outcome, TradeRecord
-from updown.orchestration.walkforward.live_runner import funding_weight
+from updown.orchestration.walkforward.live_runner import funding_weight, liq_findings
 
 
 def at(hour: int) -> datetime:
@@ -237,3 +237,55 @@ class TestUnrealizedIsSplitPerShare:
             Decimal("0.1"),
         )
         assert mark_and_multiplier({"mark_price": "0", "value": "55", "size": "5"}) is None
+
+
+class TestShareRowsForTheScreen:
+    """화면 몫 줄 — 종목 줄 아래 다리마다 한 줄(D3 ①)."""
+
+    def shares(self) -> list[TradeRecord]:
+        a = dc_replace(
+            share("a", stop="95", contracts=2, playbook="breakout@0.1.0"), entry=Decimal(100)
+        )
+        b = dc_replace(
+            share("b", stop="90", contracts=3, playbook="channel@0.1.0"), entry=Decimal(120)
+        )
+        return [a, b]
+
+    def test_each_share_gets_its_name_money_and_margin(self) -> None:
+        rows = share_rows(
+            self.shares(),
+            "-10",
+            "56",
+            (Decimal(110), Decimal(1)),
+            {"breakout@0.1.0": "돌파 롱", "channel@0.1.0": "일봉 채널"},
+        )
+        assert [r["name"] for r in rows] == ["돌파 롱", "일봉 채널"]
+        assert [r["unrealized"] for r in rows] == ["20.0000", "-30.0000"]
+        # 증거금은 진입 명목 비 200 : 360
+        assert [r["margin"] for r in rows] == ["20.0000", "36.0000"]
+        assert [r["contracts"] for r in rows] == [2, 3]
+
+    def test_unreadable_exchange_values_are_left_empty(self) -> None:
+        rows = share_rows(self.shares(), "", "", None, {})
+        assert [r["unrealized"] for r in rows] == [None, None]
+        assert [r["margin"] for r in rows] == [None, None]
+        assert [r["name"] for r in rows] == ["breakout", "channel"], "이름이 없으면 매매법 id"
+
+
+class TestLiquidationIsCheckedPerShare:
+    """감사 ⑨ — 청산가는 합친 포지션 하나의 값 · 몫마다 자기 손절과 댄다."""
+
+    def test_a_far_stop_behind_the_liquidation_is_caught(self) -> None:
+        near = dc_replace(share("a", stop="95", contracts=2, playbook="p@0"), entry=Decimal(100))
+        far = dc_replace(share("b", stop="80", contracts=3, playbook="q@0"), entry=Decimal(100))
+        assert liq_findings(near, Decimal(85), share=True) == []
+        found = liq_findings(far, Decimal(85), share=True)
+        assert [f["code"] for f in found] == ["liq_inside_stop"]
+        assert found[0]["detail"].startswith("몫 b — ")
+
+    def test_one_position_reads_like_before(self) -> None:
+        held = dc_replace(share("a", stop="80", contracts=2, playbook="p@0"), entry=Decimal(100))
+        found = liq_findings(held, Decimal(85))
+        assert found[0]["detail"].startswith("거래소 청산가 85 가 손절 80 보다")
+        thin = dc_replace(held, planned_stop=Decimal("87.5"))
+        assert [f["code"] for f in liq_findings(thin, Decimal(85))] == ["stop_near_liquidation"]

@@ -51,6 +51,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { Candle, Frame, Plan } from "./chartTypes";
+import { planLinesOf } from "./chart/planLines";
 import {
   type Gate,
   gateText,
@@ -249,6 +250,11 @@ class BandsPrimitive implements ISeriesPrimitive<Time> {
 type Props = {
   frame: Frame;
   plan?: Plan | null;
+  /**
+   * **몫마다 계획선** (T320) — 한 종목 포지션을 같은 방향 다리 여럿이 나눠 쓸 때. 둘 이상이면 `plan`
+   * 대신 이것을 그리고, 선 이름 앞에 다리 이름(`leg`)을 붙인다. 없거나 하나면 `plan` 그대로다.
+   */
+  plans?: Plan[];
   flashAt?: string | null;
   /** 판정이 돈 마지막 봉 — 차트가 **로직이 살아 있는지**를 보여 준다. */
   judgedAt?: string | null;
@@ -332,16 +338,10 @@ function focusFrom(
   return found === undefined ? [] : tagsOf(found);
 }
 
-const PLAN_LINES = [
-  { key: "stop", label: "손절", token: "--loss", fallback: "#b4423a" },
-  { key: "entry", label: "진입", token: "--entry-line", fallback: "#b8860b" },
-  { key: "first", label: "1차", token: "--gain", fallback: "#0f7b6c" },
-  { key: "target", label: "목표", token: "--gain", fallback: "#0f7b6c" },
-] as const;
-
 export function Chart({
   frame,
   plan,
+  plans,
   flashAt,
   judgedAt,
   // entryFrame · active 는 옛 "대기 띠" 가 읽던 값 — 타입에는 남기고(호출처 호환) 여기서는 안 읽는다 (T224).
@@ -907,41 +907,24 @@ export function Chart({
     if (drawn === null) return;
     for (const line of planLines.current) drawn.removePriceLine(line);
     planLines.current = [];
-    if (!plan) return;
-    // 🔴 **추세추종(full_ride)은 고정 익절이 없다** (사용자 지적 2026-08-24). 목표·1차선은
-    //    진입+100R 자리표시자라, 그리면 "29배 목표" 처럼 거짓말한다 — 숨긴다. 그리고 손절선이
-    //    곧 청산선이다(봉마다 SMA 로 상향 트레일) — 라벨을 "청산" 으로 바꿔 실제 동작을 말한다.
-    const ride = plan.full_ride === true;
-    // ⭐ 진입 대비 % 와 손익비를 라벨에 — 트레이딩뷰 포지션 도구처럼 선만 보고 읽힌다(사용자 2026-09-11).
-    const entryPrice = Number(plan.entry);
-    const pctOf = (price: number): string => {
-      if (!Number.isFinite(entryPrice) || entryPrice === 0) return "";
-      const pct = ((price - entryPrice) / entryPrice) * 100;
-      return ` ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
-    };
-    const rr = (plan as { rr?: string }).rr;
-    for (const spec of PLAN_LINES) {
-      if (ride && (spec.key === "first" || spec.key === "target")) continue;
-      const raw = plan[spec.key];
-      if (raw === undefined || raw === null) continue;
-      const title =
-        ride && spec.key === "stop"
-          ? "청산(트레일)"
-          : spec.key === "entry"
-            ? spec.label
-            : `${spec.label}${pctOf(Number(raw))}${spec.key === "target" && rr ? ` · 손익비 ${rr}` : ""}`;
-      planLines.current.push(
-        drawn.createPriceLine({
-          price: Number(raw),
-          color: tone(spec.token, spec.fallback),
-          lineWidth: 1,
-          lineStyle: LineStyle.Solid,
-          axisLabelVisible: true,
-          title,
-        }),
-      );
+    // ⭐ T320 — 몫이 여럿이면 몫마다 그리고 선 이름 앞에 다리를 붙인다(같은 종목 두 진입선이 누구 것인지).
+    const shown = plans && plans.length > 1 ? plans : plan ? [plan] : [];
+    const many = shown.length > 1;
+    for (const one of shown) {
+      for (const line of planLinesOf(one, many && one.leg ? `${one.leg} ` : "")) {
+        planLines.current.push(
+          drawn.createPriceLine({
+            price: line.price,
+            color: tone(line.token, line.fallback),
+            lineWidth: 1,
+            lineStyle: LineStyle.Solid,
+            axisLabelVisible: true,
+            title: line.title,
+          }),
+        );
+      }
     }
-  }, [plan]);
+  }, [plan, plans]);
 
   // ── 트레일 청산선(SMA) 데이터 + 현재가 갭 ──────────────────────────
   // 🔴 서버가 세션의 그 `sma()` 로 계산해 봉별 점으로 보낸다 (규칙 #9 · 클라 재구현 금지).

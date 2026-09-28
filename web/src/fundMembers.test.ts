@@ -3,7 +3,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { cardTone, changeText, changeTone, toOhlc, unrealizedPct } from "./fundMembers";
+import type { FundMember } from "./api";
+import { cardTone, changeText, changeTone, memberMarks, toOhlc, unrealizedPct } from "./fundMembers";
 
 describe("toOhlc", () => {
   it("문자열 가격을 숫자 봉으로 · 깨진 줄은 버린다", () => {
@@ -66,5 +67,54 @@ describe("unrealizedPct — 미실현을 증거금 대비 % 로", () => {
     expect(unrealizedPct({ unrealized: "8.13" })).toBeNull();
     expect(unrealizedPct({ unrealized: "8.13", margin: "0" })).toBeNull();
     expect(unrealizedPct({ margin: "62.15" })).toBeNull();
+  });
+});
+
+describe("memberMarks — 몫마다 상자 (T320)", () => {
+  const base: FundMember = {
+    handle: "h1",
+    symbol: "BTC_USDT",
+    last: "110",
+    holding: true,
+    unrealized: "-10",
+    margin: "56",
+    bars: [{ time: 1_760_000_000, open: "1", high: "1", low: "1", close: "110", volume: "1" }],
+    position: { side: "롱", entry: "100", stop: "95", target: "999", opened_at: "2026-09-01T00:00:00Z" },
+  };
+
+  it("몫이 하나면 예전처럼 상자 하나 · 종목 증거금 대비 %", () => {
+    const got = memberMarks(base);
+    expect(got).toHaveLength(1);
+    expect(got[0]?.id).toBe("h1");
+    expect(got[0]?.pnl).toBeCloseTo((-10 / 56) * 100, 9);
+  });
+
+  it("몫이 여럿이면 몫마다 상자 — 자기 진입 · 손절 · 몫 증거금 대비 % · 다리 이름", () => {
+    const got = memberMarks({
+      ...base,
+      shares: [
+        { leg: "a", name: "돌파 롱", side: "롱", entry: "100", stop: "95", contracts: 2,
+          opened_at: "2026-09-01T00:00:00Z", unrealized: "20", margin: "20" },
+        { leg: "b", name: "일봉 채널", side: "롱", entry: "120", stop: "90", contracts: 3,
+          opened_at: "2026-09-02T00:00:00Z", unrealized: "-30", margin: "36" },
+      ],
+    });
+    expect(got.map((t) => t.id)).toEqual(["h1:a", "h1:b"]);
+    expect(got.map((t) => t.entry)).toEqual([100, 120]);
+    expect(got[0]?.pnl).toBeCloseTo(100, 9);
+    expect(got[1]?.leg).toBe("일봉 채널");
+  });
+
+  it("몫 미실현을 못 나눴으면 % 는 비운다 — 지어내지 않는다", () => {
+    const got = memberMarks({
+      ...base,
+      shares: [
+        { leg: "a", name: "A", side: "롱", entry: "100", stop: "95", contracts: 2,
+          opened_at: "2026-09-01T00:00:00Z", unrealized: null, margin: "20" },
+        { leg: "b", name: "B", side: "롱", entry: "120", stop: "90", contracts: 3,
+          opened_at: "2026-09-02T00:00:00Z", unrealized: null, margin: "36" },
+      ],
+    });
+    expect(got.map((t) => t.pnl)).toEqual([null, null]);
   });
 });

@@ -15,6 +15,7 @@ import { Chart, type MarkTone } from "./Chart";
 import type { TradeMark } from "./chart/trades";
 import { openPct } from "./chart/tradeBoxes";
 import { addLabel, closedPct } from "./tradeAdd";
+import { splitPosition } from "./shares";
 import { IndicatorPanel } from "./chart/IndicatorPanel";
 import { readStance } from "./adx";
 import { useForming } from "./useForming";
@@ -157,6 +158,11 @@ export function PaperTab({ run, home, named }: Props) {
   //    그리면 화면이 "29배 대박 대기" 처럼 거짓말한다. 플래그를 계획선에 실어 차트가 가른다.
   const planLines =
     planBase === null ? null : { ...planBase, full_ride: state?.full_ride ?? false };
+  // ⭐ T320 — 한 종목 포지션을 다리 여럿이 나눠 쓰면(몫 둘 이상) 몫마다 진입 · 청산선을 다리 이름과 함께.
+  const sharePlans =
+    (state?.positions?.length ?? 0) > 1
+      ? (state?.positions ?? []).map((one) => ({ ...one, full_ride: state?.full_ride ?? false }))
+      : undefined;
 
   // 🔴 **매매가 일어난 순간을 차트에 넘긴다** (사용자 요구 2026-08-18: *"진입한
   //    시점이랑, 1차 익절 시점, 익절 시점, 손절 시점 등 세로선도 안보이네"*).
@@ -218,6 +224,25 @@ export function PaperTab({ run, home, named }: Props) {
       Number.isFinite(liveUsdt) && Number.isFinite(liveMargin) && liveMargin > 0
         ? (liveUsdt / liveMargin) * 100
         : null;
+    // 🔴 T320 — 열린 매매가 둘 이상이면 한 포지션을 몫으로 나눠 쓰는 중이다. 거래소 숫자(포지션 전체)를
+    //    그대로 달면 두 상자가 같은 % 를 말한다 — 몫마다 자기 평단으로 나눈다(`shares.ts`).
+    //    못 나누면(계약 수 모름 · 거래소 값 없음) 원장과 같은 식(`openPct`)으로 떨어진다.
+    const openRows = (state?.log ?? []).filter((row) => row.exit === null && row.opened_at !== null);
+    const split =
+      openRows.length > 1
+        ? splitPosition(
+            openRows.map((row) => ({
+              id: row.trade_id,
+              side: row.direction === "숏" ? (-1 as const) : (1 as const),
+              entry: Number(row.entry),
+              contracts: row.contracts ?? 0,
+              addContracts: row.add?.contracts ?? 0,
+              addFill: row.add?.fill ? Number(row.add.fill) : null,
+            })),
+            held,
+          )
+        : null;
+    const shared = openRows.length > 1;
     return (state?.log ?? [])
       .filter((row) => row.opened_at !== null)
       .map((row, index) => {
@@ -239,7 +264,7 @@ export function PaperTab({ run, home, named }: Props) {
           // 🔴 거래소 포지션이 없으면(페이퍼·데모·재생·조회 실패) **원장과 같은 식**으로 떨어진다 —
           //    그러지 않으면 그런 판에서는 딱지가 '보유중' 만 적고 손익이 빈다.
           pnl: open
-            ? (livePct ??
+            ? ((shared ? (split?.get(row.trade_id)?.pct ?? null) : livePct) ??
               openPct({
                 entry: Number(row.entry),
                 now: exit ?? Number.NaN,
@@ -260,7 +285,12 @@ export function PaperTab({ run, home, named }: Props) {
           //    열린 매매는 거래소가 실제로 잡은 증거금이 먼저고(진짜 돈), 없으면 원장이 적은
           //    사이징 기준으로 떨어진다.
           margin: open
-            ? Number.isFinite(liveMargin) && liveMargin > 0
+            ? shared
+              ? (split?.get(row.trade_id)?.margin ??
+                (row.margin_used === null || row.margin_used === undefined
+                  ? null
+                  : Number(row.margin_used)))
+              : Number.isFinite(liveMargin) && liveMargin > 0
               ? liveMargin
               : row.margin_used === null || row.margin_used === undefined
                 ? null
@@ -949,6 +979,7 @@ export function PaperTab({ run, home, named }: Props) {
             follow={live_on}
             frame={first}
             plan={planLines}
+            {...(sharePlans ? { plans: sharePlans } : {})}
             flashAt={flash}
             entryFrame={judgeFrame}
             judgedAt={state.cursor}
