@@ -197,6 +197,13 @@ class TestTwoShares:
         with pytest.raises(RuntimeError):
             s._open = None  # pyright: ignore[reportPrivateUsage]
 
+    def test_release_one_leg_keeps_the_other(self) -> None:
+        """거래소가 한 몫만 먼저 닫았다(몫 손절 발동) — 그 몫만 놓는다 (P4 대조)."""
+        a, c = record(BREAKOUT, "a", stop="700"), record(CHANNEL, "c", stop="600")
+        s = holding(session((BREAKOUT, CHANNEL)), a, c)
+        s.release(leg=BREAKOUT.attribution)
+        assert s.positions == (c,) and s.position is c
+
     def test_the_cursor_reads_and_writes_one_share(self) -> None:
         a, c = record(BREAKOUT, "a", stop="700"), record(CHANNEL, "c", stop="600")
         s = holding(session((BREAKOUT, CHANNEL)), a, c)
@@ -331,8 +338,8 @@ class TestEntries:
         assert [item.playbook for item in s.positions] == [brk.attribution]
 
 
-def test_the_live_runner_refuses_shared_legs_until_p3() -> None:
-    """🔴 러너 주문은 아직 포지션 전체를 겨눈다 — 한 몫 손절이 다른 몫까지 닫는다(T320 P3 전)."""
+def test_the_live_runner_refuses_shared_legs_until_p5() -> None:
+    """🔴 펀딩 · 수수료 나누기와 화면이 아직 몫을 모른다 — 몫 모드는 P5 전까지 막는다(T320)."""
     from typing import Any, cast
 
     from updown.orchestration.walkforward.live_runner import LiveRunner

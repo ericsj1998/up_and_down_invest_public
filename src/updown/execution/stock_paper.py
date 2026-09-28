@@ -883,7 +883,13 @@ class StockPaperAdapter:
     # ------------------------------------------------------------------
 
     async def stops_for(
-        self, instrument: Instrument, trigger: Decimal, *, long: bool
+        self,
+        instrument: Instrument,
+        trigger: Decimal,
+        *,
+        long: bool,
+        size: int | None = None,
+        key: str | None = None,
     ) -> str | None:
         """손절이 **그 가격으로** 걸려 있게 만든다 — 없으면 걸고, 다르면 다시 건다.
 
@@ -891,10 +897,17 @@ class StockPaperAdapter:
             instrument: 종목.
             trigger: 원장이 정한 손절가.
             long: 보유가 롱인가.
+            size: 몫 손절 계약 수(T320) — 주식 판은 몫을 안 쓴다.
+            key: 몫 손절 멱등키(T320) — 주식 판은 몫을 안 쓴다.
 
         Returns:
             새로 건 조건부 id. 이미 맞게 걸려 있었으면 None.
+
+        Raises:
+            NotImplementedError: 몫 손절을 요청받은 경우.
         """
+        if size is not None or key is not None:
+            raise NotImplementedError("주식 페이퍼 어댑터는 몫 손절(T320)을 모른다")
         book = await self._book(instrument.market)
         await self._settle(book, instrument)
         held = book.positions.get(instrument.symbol)

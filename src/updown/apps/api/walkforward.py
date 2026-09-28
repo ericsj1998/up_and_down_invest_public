@@ -2864,12 +2864,13 @@ async def reconcile_once() -> list[Finding]:
             RECON.partial[key] = RECON.partial.get(key, 0) + n
         RECON.watermark[market] = mark
         # 원장이 보유 중이라고 말하는 종목들 (이 거래소의 판만)
+        # ⭐ T320 — `positions`(몫 전부)로 읽는다. `position` 은 몫이 여럿이면 멈춘다.
         on_book = {
             runner.instrument.symbol
             for handle, runner in LIVE_RUNNERS.items()
             if runner.instrument.market.value == market
             and (live := SESSIONS.get(handle)) is not None
-            and live.session.position is not None
+            and live.session.positions
         }
         # 진입 지정가를 걸고 기다리는 종목들 — 거래소에만 보이면 고아가 아니라 반영 대기다
         pending = {

@@ -43,6 +43,7 @@ from updown.marketdata.gate.trade_client import (
     STOP_REFRESH_BEFORE_S,
     GateApiError,
     GateTradeClient,
+    gate_text,
     price_text,
 )
 from updown.marketdata.shared_read import forget as forget_shared
@@ -260,7 +261,13 @@ class GatePaperAdapter:
         return await self._trade.order_book(to_contract(instrument), limit=limit)
 
     async def stops_for(
-        self, instrument: Instrument, trigger: Decimal, *, long: bool
+        self,
+        instrument: Instrument,
+        trigger: Decimal,
+        *,
+        long: bool,
+        size: int | None = None,
+        key: str | None = None,
     ) -> str | None:
         """브로커측 손절이 **그 가격으로** 걸려 있게 만든다 (없으면 걸고, 다르면 다시 건다).
 
@@ -268,6 +275,9 @@ class GatePaperAdapter:
             instrument: 대상 종목.
             trigger: 원장이 정한 손절가.
             long: 보유가 롱인가.
+            size: 몫 손절의 계약 수(T320). 주면 `key` 도 줘야 한다 — **그 몫의 조건부만**
+                보고 고친다.
+            key: 몫 손절의 멱등키(몫을 찾는 열쇠).
 
         Returns:
             새로 건 조건부 주문 id. 이미 맞게 걸려 있었으면 None.
@@ -286,9 +296,20 @@ class GatePaperAdapter:
 
             ⛔ 손절을 **내리는** 방향은 여기서 막지 않는다 — 방향 검증은 원장·RiskManager
             몫이고(절대 규칙 #3), 집행이 값을 판단하면 SSoT 가 둘이 된다.
+
+            ⭐ **몫 손절(T320)** — `size` · `key` 를 주면 text 가 그 키인 조건부만 비교하고
+            갈아 끼운다. 다른 몫의 손절은 **절대 건드리지 않는다**(전량 경로는 가격이 다른 것을
+            전부 취소한다 — 몫 둘에서 그러면 다른 몫이 무방비가 된다). 크기가 다르면(불타기 ·
+            반익) 갈아 끼운다.
         """
         contract = to_contract(instrument)
         existing = await self._trade.list_stops(contract)
+        if size is not None or key is not None:
+            if size is None or not key:
+                raise ValueError("몫 손절은 크기와 키를 같이 준다 (T320)")
+            return await self._share_stop(
+                contract, existing, trigger, long=long, size=size, key=key
+            )
         # ⚠️ **같은 모양으로 비교한다.** 한쪽만 꼬리 0 이 붙어 있으면 매번 다르다고
         #    판단해 걸어 둔 손절을 취소하고 다시 건다 — 그 사이가 무방비다.
         wanted = price_text(trigger)
@@ -316,6 +337,69 @@ class GatePaperAdapter:
         #    하나가 발동하면 나머지는 빈 포지션에 reduce_only 라 무해하고, 30초 점검이
         #    잉여분을 거둔다. 무방비보다 이중이 낫다.
         made = None if keep else await self._trade.place_stop(contract, trigger, long=long)
+        for fid_text in stale:
+            await self._trade.cancel_stop(fid_text)
+        return made
+
+    async def _share_stop(
+        self,
+        contract: str,
+        existing: list[dict[str, Any]],
+        trigger: Decimal,
+        *,
+        long: bool,
+        size: int,
+        key: str,
+    ) -> str | None:
+        """몫 하나의 조건부 손절 — text 가 `key` 인 것만 보고 고친다 (T320 P3).
+
+        Args:
+            contract: 계약.
+            existing: 걸려 있는 조건부들.
+            trigger: 손절가.
+            long: 보유가 롱인가.
+            size: 몫 계약 수.
+            key: 몫 멱등키.
+
+        Returns:
+            새로 건 조건부 id. 이미 맞게 걸려 있으면 None.
+
+        Note:
+            등록을 먼저 · 취소를 나중에(전량 경로와 같은 까닭 — 무방비보다 이중이 낫다).
+        """
+        mine_text = gate_text(key)
+        wanted_price = price_text(trigger)
+        wanted_size = -size if long else size
+        keep = False
+        stale: list[str] = []
+        for item in existing:
+            got_initial: object = item.get("initial")
+            initial = cast("dict[str, Any]", got_initial) if isinstance(got_initial, dict) else {}
+            if str(initial.get("text", "")) != mine_text:
+                continue  # 🔴 다른 몫(또는 전량) 손절 — 안 건드린다
+            got: object = item.get("trigger")
+            priced: object = (
+                cast("dict[str, Any]", got).get("price") if isinstance(got, dict) else None
+            )
+            same = (
+                priced is not None
+                and str(priced) == wanted_price
+                and int(str(initial.get("size", 0))) == wanted_size
+                and not _stop_expiring_soon(item)
+            )
+            if same:
+                keep = True
+                continue
+            fid: object = item.get("id")
+            if fid is not None:
+                stale.append(str(fid))
+        if keep and not stale:
+            return None
+        made = (
+            None
+            if keep
+            else await self._trade.place_stop(contract, trigger, long=long, size=size, text=key)
+        )
         for fid_text in stale:
             await self._trade.cancel_stop(fid_text)
         return made

@@ -85,6 +85,7 @@ from updown.orchestration.walkforward.order_mapping import (
     fit_to_margin,
     limit_entry_order,
     order_key,
+    order_root,
     resize_order,
     rounding_drift_pct,
     run_tag,
@@ -846,9 +847,10 @@ class LiveRunner:
             세션은 영원히 시드만 보며 "새 봉이 없다"고 판단한다 — 예외 없이 아무 일도
             일어나지 않는 종류의 사고다.
 
-            🔴 **몫 나눠 쓰기는 아직 실계좌로 못 돈다** (T320). 세션은 한 종목에 몫 여럿을
-            들 수 있지만, 이 러너의 손절 · 익절 · 청산 주문은 아직 **거래소 포지션 전체**를
-            겨눈다 — 한 몫의 손절이 다른 몫까지 닫는다. P3 가 몫 단위 주문을 갖출 때까지 막는다.
+            🔴 **몫 나눠 쓰기는 아직 실계좌로 못 돈다** (T320). 몫 단위 주문(P3)과 대조 · 재시작 ·
+            감사(P4)는 갖췄지만, 펀딩 · 수수료를 몫에 나누는 일과 화면(P5 — API 여러 곳이
+            `session.position` 을 읽는다)이 남았다. P5 가 끝나면 이 문은 `share_mode_faults` 만
+            남긴다.
         """
         if session.feed is not feed:
             raise ValueError(
@@ -859,7 +861,8 @@ class LiveRunner:
         if shared:
             raise ValueError(
                 f"몫 나눠 쓰기(share_same_side)를 선언한 매매법 {shared} 이 실렸다 — 러너가 "
-                "몫 단위 주문(T320 P3)을 갖추기 전에는 실계좌 · 테스트넷으로 돌리지 않는다"
+                "펀딩 · 수수료 나누기와 화면(T320 P5)을 갖추기 전에는 실계좌 · 테스트넷으로 "
+                "돌리지 않는다"
             )
         self._session = session
         self._feed = feed
@@ -949,6 +952,14 @@ class LiveRunner:
         ⭐ 0 이 아닌 것 자체는 정상이다 — 두 루프가 같은 함수를 쓰는 설계의 결과다.
         급증하면 **걸음이 너무 오래 걸린다**는 뜻이므로 그때 봐야 한다.
         """
+        self._share_stop_ids: dict[str, str] = {}
+        """몫 모드(T320 P3)에서 몫(매매 id)마다 걸린 조건부 손절 id — 발동 기록을 몫에 잇는 열쇠."""
+        self._share_misses: dict[str, int] = {}
+        """몫 모드에서 몫마다 **연속** 손절 실패 수 — 멀쩡한 몫의 성공이 다른 몫의 실패를 지우지
+        않게 따로 센다 (`stop_misses` 는 그중 최댓값을 보인다)."""
+        self._share_mismatch = ""
+        """몫 모드 대조(T320 P4)가 **어느 몫이 나갔는지 못 가른** 사정 — 비면 갈림 없음. 감사가
+        `share_mismatch` 로 올리고, 그 판은 새 진입을 안 받는다(D2 · 추정하지 않는다)."""
         self._stop_id: str = ""
         """지금 걸려 있는 **조건부 주문 id** (사용자 신고 2026-08-20).
 
@@ -1621,7 +1632,7 @@ class LiveRunner:
         if self._funding_seen == mark:
             return
         self._funding_seen = mark
-        held = self._session.position
+        held = self._first_held()
         await self._note_calibration(
             kind="funding",
             amount=Decimal(str(rate)),
@@ -1899,6 +1910,24 @@ class LiveRunner:
                 },
             )
             return False
+        armed = [row for row in stops if row.get("trigger_price")]
+        if self._shared and len(armed) > 1:
+            # 🔴 T320 — 조건부 손절이 여럿 = 몫이 여럿이다. 한 기록으로 합쳐 이어받으면 몫마다
+            #    다른 손절 · 크기를 잃는다(첫 손절이 전량의 계획이 된다). 원장이 되살리지 못한
+            #    몫은 사람이 본다 — 거래소의 몫 손절은 그대로 지킨다.
+            self._adopt_refused = (
+                f"거래소 보유 {size}계약 · 조건부 손절 {len(armed)}건(몫 여럿) — 한 기록으로 합쳐 "
+                "이어받지 않는다. 몫 손절은 거래소에 남아 지킨다. 원장 복구는 사람이 한다"
+            )
+            self._log.error(
+                "live_adopt_refused",
+                payload={
+                    "size": str(size),
+                    "stops": len(armed),
+                    "reason": "몫 여럿을 한 기록으로 합치지 않는다 (T320)",
+                },
+            )
+            return False
 
         # 🔴 **남의 판 포지션을 주워 오지 않는다** (다중 RUN ③). Gate 무기한은 종목당
         #    포지션이 하나라, 두 판이 같은 종목을 돌면 거래소는 그것이 누구 것인지
@@ -1962,6 +1991,10 @@ class LiveRunner:
                 keeper.attribution, self._session.ledger.leverage
             ),
         )
+        if self._shared:
+            # ⭐ T320 — 몫 하나로 이어받는다: 그 몫의 계약 수 = 거래소 전량(몫 손절이 그
+            #    크기로 걸린다).
+            record = dc_replace(record, contracts=int(abs(size)))
         self._fired("adopt", f"거래소 포지션 {size} 계약을 원장으로 되읽었다")
         self._session.ledger.add(record)
         self._session.adopt(record)
@@ -2162,6 +2195,8 @@ class LiveRunner:
             ⚠️ 이것은 **판정이 아니다.** 진입 판단은 여전히 봉 마감에서만 돈다 —
             그 둘을 섞으면 라이브와 백테스트가 다른 규칙으로 돌게 된다 (절대 규칙 #5).
         """
+        if self._shared:
+            return await self._reconcile_shares()
         held = next(
             (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),
             None,
@@ -2212,6 +2247,169 @@ class LiveRunner:
             },
         )
         return True
+
+    async def _reconcile_shares(self) -> bool:
+        """몫 모드(T320 P4)의 `reconcile` — 거래소가 **먼저 닫은 몫**만 원장에서 닫는다.
+
+        Returns:
+            하나라도 닫았으면 True.
+
+        Note:
+            🔴 몫 손절은 그 크기만 닫으므로 포지션이 0 이 아니라 **줄어든다**. 줄어든 것이
+            어느 몫인지는 그 몫의 조건부 손절(text = 몫 키)이 거래소에서 **사라졌는가**로
+            가린다 — 걸려 있는 손절은 아직 발동하지 않았다. 사라진 몫들의 계약 합이 줄어든
+            양과 **정확히 같을 때만** 닫는다.
+
+            ⛔ 다르면(부분 체결 · 사람 개입 · 만료된 손절) 추정하지 않는다(D2) — `share_mismatch` 를
+            남겨 감사가 알리고 새 진입을 막는다. 손절이 남은 몫은 계속 지켜진다.
+
+            ⚠️ 체결 직후 포지션 조회는 늦게 따라온다(P0) — 줄었는데 사라진 손절이 없거나, 손절은
+            사라졌는데 아직 안 줄었으면 이번엔 아무것도 안 한다(다음 점검이 다시 본다).
+
+            포지션이 0 이면 전부 나갔다 — 손절이 남았어도 지킬 것이 없으니 닫는다(강제청산이면 전부
+            `LIQUIDATED`). 청산가는 그 몫의 체결에서만 읽는다(`_share_closing_fill`) — 못 찾으면
+            그 몫은 닫지 않는다(규칙 #4 · #8).
+        """
+        shares = [item for item in self._session.ledger.records if item.outcome is Outcome.OPEN]
+        if not shares or not isinstance(self._orders, PositionAware):
+            return False
+        try:
+            size = abs(held_size(await self._orders.position_snapshot(self.instrument)))
+        except Exception as exc:
+            self._log.warning("live_reconcile_unreadable", payload={"error": str(exc)[:140]})
+            return False
+        owed = sum(self._share_contracts(item) for item in shares)
+        if size == owed and size > 0:
+            self._share_mismatch = ""
+            return False
+        if size > owed:
+            return False  # 주인 없는 계약 — 감사(`share_size_mismatch`)가 연속으로 보면 막는다
+        if size == 0:
+            gone = shares
+        else:
+            if not isinstance(self._orders, StopAware):
+                return False
+            try:
+                stops = await self._orders.open_stops(self.instrument)
+            except Exception as exc:
+                self._log.warning("live_reconcile_unreadable", payload={"error": str(exc)[:140]})
+                return False
+            alive = {str(row.get("text", "")).removeprefix("t-") for row in stops}
+            gone = [
+                item for item in shares if self._share_stop_key(item).replace(":", "-") not in alive
+            ]
+            if not gone:
+                return False  # 조회 지연 — 손절은 다 걸려 있다
+            dropped = owed - size
+            if sum(self._share_contracts(item) for item in gone) != dropped:
+                self._share_mismatch = (
+                    f"거래소 {size} · 몫 합 {owed} · 손절이 사라진 몫 "
+                    f"{', '.join(item.trade_id for item in gone)} — 어느 몫이 나갔는지 못 가른다"
+                )
+                self._log.error(
+                    "live_share_reconcile_ambiguous",
+                    payload={
+                        "on_exchange": size,
+                        "owed": owed,
+                        "gone": [item.trade_id for item in gone],
+                        "note": "추정하지 않는다(D2) — 새 진입을 막고 사람에게 넘긴다",
+                    },
+                )
+                return False
+        self._share_mismatch = ""
+        liquidated = size == 0 and await self._was_liquidated()
+        closed_any = False
+        for held in gone:
+            fill = await self._share_closing_fill(held, sole=len(gone) == 1 and len(shares) == 1)
+            if fill is None:
+                self._log.error(
+                    "live_reconcile_no_fill",
+                    payload={
+                        "trade_id": held.trade_id,
+                        "share": True,
+                        "note": "거래소가 그 몫을 닫았는데 체결가를 못 찾았다 — "
+                        "감사가 사람에게 넘긴다",
+                    },
+                )
+                continue
+            long_side = held.direction is Direction.LONG
+            gained = (fill > held.entry) if long_side else (fill < held.entry)
+            outcome = (
+                Outcome.LIQUIDATED
+                if liquidated and not gained
+                else Outcome.TAKE_PROFIT
+                if gained
+                else Outcome.STOP_LOSS
+            )
+            done = held.closed(at=datetime.now(UTC), price=fill, outcome=outcome)
+            self._fired("reconcile", f"거래소가 몫을 먼저 닫았다 — {outcome.value} @ {fill}")
+            self._session.ledger.replace(done)
+            self._session.release(leg=held.playbook)
+            self._share_stop_ids.pop(held.trade_id, None)
+            await self._align_fee(done.trade_id)
+            closed_any = True
+            self._log.info(
+                "live_reconciled",
+                payload={
+                    "trade_id": held.trade_id,
+                    "entry": str(held.entry),
+                    "exit": str(fill),
+                    "outcome": done.outcome.value,
+                    "share": True,
+                    "contracts": self._share_contracts(held),
+                    "note": "거래소가 그 몫을 먼저 닫았다 — 다른 몫은 그대로",
+                },
+            )
+        if closed_any:
+            await self._book_adds()
+        return closed_any
+
+    async def _share_closing_fill(self, held: TradeRecord, *, sole: bool) -> Decimal | None:
+        """그 **몫**을 닫은 체결가 — 몫 모드(T320 P4)의 `_closing_fill`.
+
+        Args:
+            held: 거래소가 닫은 몫.
+            sole: 열린 몫이 이것 하나뿐이었나 — 그때만 가장 최근 체결로 물러선다(예전 길).
+
+        Returns:
+            체결가. 못 찾으면 None.
+
+        Note:
+            🔴 한 포지션에 몫이 여럿이면 "가장 최근 체결" 은 남의 몫 체결일 수 있다. 그래서 이 몫의
+            것임을 **이름으로** 확인한 행만 쓴다 — 이름에 매매 id(우리가 보낸 청산 · text 가 남은
+            조건부), 또는 `ao-{조건부 id}` 인데 그 id 가 이 몫의 손절(기억 · 저장소
+            `stop_owners`)일 때.
+        """
+        if not hasattr(self._orders, "recent_orders"):
+            return None
+        try:
+            rows = cast(
+                "list[dict[str, str]]",
+                await self._orders.recent_orders(self.instrument),  # type: ignore[attr-defined]
+            )
+        except Exception as exc:
+            self._log.warning(
+                "live_closing_fill_lookup_failed",
+                payload={"trade": held.trade_id, "error": str(exc)[:120]},
+            )
+            return None
+        filled = [row for row in rows if row.get("fill_price")]
+        fired = [str(row.get("text", ""))[3:] for row in filled]
+        fired = [item for item in fired if item]
+        owners = {stop_id: trade for trade, stop_id in self._share_stop_ids.items() if stop_id}
+        if self._store is not None:
+            with contextlib.suppress(Exception):
+                owners.update(await self._store.stop_owners(fired))
+        for row in filled:
+            text = str(row.get("text", ""))
+            if held.trade_id in text or (
+                text.startswith("ao-") and owners.get(text[3:]) == held.trade_id
+            ):
+                with contextlib.suppress(Exception):
+                    return Decimal(str(row["fill_price"]))
+        if sole:
+            return await self._closing_fill(held.trade_id)
+        return None
 
     async def _was_liquidated(self) -> bool:
         """방금 사라진 포지션이 **강제청산**이었나 (T14-2).
@@ -2985,7 +3183,7 @@ class LiveRunner:
             if not self._session.absorb_fills(datetime.now(UTC)):
                 await self._persist_pending()
                 return
-            opened = self._session.position
+            opened = self._first_held()
             self._log.info(
                 "live_fill_absorbed",
                 payload={
@@ -3009,6 +3207,10 @@ class LiveRunner:
             ⛔ 세션의 모형 정산(`model_funding`)은 라이브에서 꺼져 있다 — 켜 두면 두 번 낸다.
             조회 실패는 경고만 — 펀딩 표기는 리스크 감소 행동이 아니다 (§1.2.1).
         """
+        if self._shared:
+            # ⛔ T320 P5 전 — 한 번의 펀딩 정산을 몫들에 나누는 규칙(계약 비)이 아직 없다. 한 몫에
+            #    몰아 붙이면 그 몫 손익이 틀린다 — 몫 모드는 P5 전까지 가드가 막는다.
+            return
         held = self._session.position
         book = getattr(self._orders, "account_book", None)
         if held is None or book is None:
@@ -3161,6 +3363,10 @@ class LiveRunner:
             (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),
             None,
         )
+        # ⭐ T320 몫 모드 — 판정 전에 열려 있던 몫 전부(몫마다 세션발 청산을 옮긴다).
+        shares_before = [
+            item for item in self._session.ledger.records if item.outcome is Outcome.OPEN
+        ]
         started = time.perf_counter()
         shot = self._session.step()
         took_ms = (time.perf_counter() - started) * MS_PER_S
@@ -3191,7 +3397,7 @@ class LiveRunner:
         # 🔴 **원장이 반익했으면 거래소에서도 던다** (사고 ③-b).
         await self._apply_half()
         # 🔴 **원장이 신호로 전량 닫았으면 거래소에서도 닫는다** (0.7.0 · ADX 약화 청산).
-        await self._apply_exit(before)
+        await self._apply_exit(before, shares=shares_before)
         # 🔴 **못 건 익절을 다시 건다.** 안 하면 포지션은 열려 있는데 목표에 닿아도
         #    아무 일이 안 일어난다.
         await self._retry_ladders()
@@ -3578,7 +3784,7 @@ class LiveRunner:
                 "entry": str(waiting.entry),
                 "stop": str(waiting.planned_stop),
             }
-        if session.position is not None:
+        if self._first_held() is not None:
             return None
         held = set(self._feed.timeframes)
         forming: dict[Timeframe, Candle] = {}
@@ -3854,7 +4060,7 @@ class LiveRunner:
         #    거짓 경보가 그대로 난다. 기준은 시간이 아니라 **기회**다 — `_guard_stop` 이
         #    이 매매에 대해 한 번이라도 돌았나. 그 루프는 걸음마다 도므로 억누르는 창은
         #    한 걸음뿐이고, 진짜 무방비는 다음 걸음에 그대로 뜬다.
-        if held is not None and isinstance(self._orders, StopAware):
+        if held is not None and not self._shared and isinstance(self._orders, StopAware):
             try:
                 stops = await self._orders.open_stops(self.instrument)
                 if not stops and self._armed_for == held.trade_id:
@@ -3863,6 +4069,32 @@ class LiveRunner:
                             "code": "stop_missing",
                             "level": "error",
                             "detail": "포지션이 있는데 조건부 손절이 0건이다 — 무방비다",
+                        }
+                    )
+            except Exception as exc:
+                found.append({"code": "stop_unreadable", "level": "warn", "detail": str(exc)[:120]})
+        elif held is not None and isinstance(self._orders, StopAware):
+            # ⭐ T320 — 몫마다 자기 손절(text = 몫 키)이 있는가. 한 몫의 손절이 걸려 있다고
+            #    다른 몫이 지켜지는 것이 아니다. 걸 기회를 한 번 가진 몫만 센다
+            #    (`_share_misses` 에 이름이 있다).
+            try:
+                stops = await self._orders.open_stops(self.instrument)
+                alive = {str(row.get("text", "")).removeprefix("t-") for row in stops}
+                bare = [
+                    item.trade_id
+                    for item in self._session.ledger.records
+                    if item.outcome is Outcome.OPEN
+                    and item.trade_id in self._share_misses
+                    and self._share_stop_key(item).replace(":", "-") not in alive
+                ]
+                if bare:
+                    found.append(
+                        {
+                            "code": "stop_missing",
+                            "level": "error",
+                            "detail": (
+                                f"몫 {', '.join(bare)} 의 조건부 손절이 없다 — 그 몫이 무방비다"
+                            ),
                         }
                     )
             except Exception as exc:
@@ -4105,6 +4337,8 @@ class LiveRunner:
                             ),
                         }
                     )
+                if self._shared and on_book and on_exchange:
+                    found += self._share_size_findings(abs(held_size(position)))
 
         # ⑨ 🔴 **거래소가 말하는 청산가 vs 우리 손절** (2026-08-30 · β 배선의 짝).
         #
@@ -4167,6 +4401,40 @@ class LiveRunner:
                                 ),
                             }
                         )
+        return found
+
+    def _share_size_findings(self, size: int) -> list[dict[str, str]]:
+        """몫 모드(T320 P4) 감사 — 거래소 계약 수와 **몫 합**이 같은가.
+
+        Args:
+            size: 거래소 보유 계약 수(절댓값).
+
+        Returns:
+            발견들. 대조가 못 가른 갈림(`share_mismatch`)은 바로, 합의 차이(`share_size_mismatch`)는
+            두 번 연속일 때 올린다 — 체결 직후 조회가 늦게 따라오는 한 번은 갈림이 아니다(P0).
+
+        Note:
+            ⭐ 두 번 연속이면 `_share_mismatch` 를 채워 새 진입을 막는다(D2) — 주인 모를 계약은
+            어느 몫 손절도 안 지킨다. 대조가 합이 맞는 것을 보면 푼다.
+        """
+        found: list[dict[str, str]] = []
+        if self._share_mismatch:
+            found.append(
+                {"code": "share_mismatch", "level": "error", "detail": self._share_mismatch}
+            )
+        shares = [item for item in self._session.ledger.records if item.outcome is Outcome.OPEN]
+        owed = sum(self._share_contracts(item) for item in shares)
+        unknown = [item.trade_id for item in shares if self._share_contracts(item) <= 0]
+        self._share_size_streak = (
+            getattr(self, "_share_size_streak", 0) + 1 if size != owed or unknown else 0
+        )
+        if self._share_size_streak >= 2:
+            detail = f"거래소 {size} 계약 · 몫 합 {owed} 계약" + (
+                f" · 계약 수 모르는 몫 {', '.join(unknown)}" if unknown else ""
+            )
+            found.append({"code": "share_size_mismatch", "level": "error", "detail": detail})
+            if not self._share_mismatch:
+                self._share_mismatch = f"{detail} — 새 진입을 막았다. 사람이 정리한다"
         return found
 
     def _commit_pnl(self, found: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -4508,7 +4776,11 @@ class LiveRunner:
             record.closed(at=record.placed_at, price=record.entry, outcome=Outcome.CANCELLED)
         )
         # 세션의 "보유 중" 표시도 놓는다 — 안 놓으면 자리가 영원히 잡혀 다음 신호를 못 받는다.
-        self._session.release()
+        # ⭐ T320 몫 모드는 **그 몫만** 놓는다 — 통째로 놓으면 다른 다리 몫까지 세션이 잊는다.
+        if self._shared:
+            self._session.release(leg=record.playbook)
+        else:
+            self._session.release()
 
     async def _protect(self, record: TradeRecord) -> None:
         """**지정가 사다리로 이미 산** 매매에 손절·익절만 건다 (2026-08-20 ⓐ).
@@ -4526,6 +4798,9 @@ class LiveRunner:
             (절대 규칙 #8).
         """
         if not isinstance(self._orders, PositionAware):
+            return
+        if self._shared:
+            await self._protect_share(record)
             return
         snapshot = await self._orders.position_snapshot(self.instrument)
         filled = abs(int(Decimal(str(snapshot.get("size", "0"))))) if snapshot else 0
@@ -4566,6 +4841,42 @@ class LiveRunner:
                 "entry": str(record.entry),
                 "note": "지정가로 샀다 — 시장가 진입을 내지 않고 보호만 건다",
             },
+        )
+        await self._warn_if_stacked(record, filled)
+        await self._arm(record, filled)
+
+    async def _protect_share(self, record: TradeRecord) -> None:
+        """몫 모드(T320 P3)의 `_protect` — 거래소 전량이 아니라 **그 몫의 계약 수**로 지킨다.
+
+        Args:
+            record: 몫 기록(재시작으로 되살아났거나 이미 산 몫).
+
+        Note:
+            🔴 한 포지션을 여러 몫이 나눠 쓰므로 거래소 크기는 몫 합이다 — 그 값으로 걸면 한 몫의
+            손절이 전부를 닫는다. 몫의 계약 수는 원장(`contracts` · 반익 · 불타기)이 든다.
+            ⛔ 모르면(0) 추정하지 않는다 — 손절 점검이 그 몫을 무방비로 세어 새 진입을 막고,
+            사람이 본다.
+        """
+        filled = self._share_contracts(record)
+        self.placed[record.trade_id] = {
+            "status": "limit_filled",
+            "order_id": "",
+            "contracts": str(filled),
+        }
+        if filled <= 0:
+            self.failures += 1
+            self.last_error = f"몫 {record.trade_id} 의 계약 수를 모른다 — 손절을 못 건다"[:200]
+            self._log.error(
+                "live_share_contracts_unknown",
+                payload={
+                    "trade_id": record.trade_id,
+                    "note": "몫 모드 — 거래소 전량으로 대신 걸지 않는다(다른 몫까지 닫는다)",
+                },
+            )
+            return
+        self._log.info(
+            "live_share_protecting",
+            payload={"trade_id": record.trade_id, "contracts": filled, "entry": str(record.entry)},
         )
         await self._warn_if_stacked(record, filled)
         await self._arm(record, filled)
@@ -5014,6 +5325,24 @@ class LiveRunner:
         """
         if self.observe_only:
             return
+        if self._shared:
+            # ⛔ 몫 다리는 반익이 없다(`share_mode_faults` 가 막는다). 그래도 원장이 적었으면
+            #    갈린 것이다 — 몫 크기의 반을 추정해 덜지 않고 사람에게 말한다.
+            for item in self._session.ledger.records:
+                if (
+                    item.outcome is Outcome.OPEN
+                    and item.half_by is HalfBy.SIGNAL
+                    and item.trade_id not in self._halved
+                ):
+                    self._halved.add(item.trade_id)
+                    self.failures += 1
+                    self.last_error = (
+                        f"몫 모드에 신호 반익이 적혔다 — 거래소는 그대로다 ({item.trade_id})"[:200]
+                    )
+                    self._log.error(
+                        "live_share_half_unsupported", payload={"trade_id": item.trade_id}
+                    )
+            return
         held = next(
             (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),
             None,
@@ -5204,11 +5533,27 @@ class LiveRunner:
         """
         if self.observe_only:
             return
+        if self._shared:
+            # ⭐ T320 — 몫마다 따로 싣는다(불타기 계약은 그 몫에 붙고, 손절 점검이 몫 손절
+            #    크기를 키운다).
+            for item in [r for r in self._session.ledger.records if r.outcome is Outcome.OPEN]:
+                await self._apply_add_one(item)
+            return
         held = next(
             (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),
             None,
         )
-        if held is None or held.add_at is None or held.add_exposure <= 0:
+        if held is None:
+            return
+        await self._apply_add_one(held)
+
+    async def _apply_add_one(self, held: TradeRecord) -> None:
+        """보유 기록 하나의 불타기 — `_apply_add` 의 본체 (T308 ⑤ · T320 몫 모드는 몫마다 부른다).
+
+        Args:
+            held: 보유 기록.
+        """
+        if held.add_at is None or held.add_exposure <= 0:
             return
         if held.add_contracts > 0 or held.add_held is not None:
             return
@@ -5244,6 +5589,17 @@ class LiveRunner:
         if size == 0 or (size > 0) != (held.direction is Direction.LONG):
             self._drop_add(held, "no_position")
             return
+        if self._shared:
+            # 🔴 T320 — 거래소가 몫 합보다 적게 들었으면 어느 몫이 이미 나갔다(손절 발동 ·
+            #    못 본 청산). 누구 것인지 모르는 채 싣지 않는다 — 리스크 증가 행동이다(#8-1).
+            owed = sum(
+                self._share_contracts(item)
+                for item in self._session.ledger.records
+                if item.outcome is Outcome.OPEN
+            )
+            if abs(size) < owed:
+                self._drop_add(held, "share_short", detail=f"거래소 {abs(size)} · 몫 합 {owed}")
+                return
         multiplier = Decimal(str(spec["quanto_multiplier"]))
         size_min = int(spec.get("order_size_min", 1))
         size_max = int(spec.get("order_size_max", 0)) or None
@@ -5472,6 +5828,10 @@ class LiveRunner:
         """
         if self.observe_only or not self._session.playbook.relever:
             return
+        if self._shared:
+            # ⛔ 몫 모드는 재레버를 안 한다(`share_mode_faults` 가 막는다) — 목표가 몫마다
+            #    따로 없다.
+            return
         if not self.fund_ready:
             # 🔴 T293 — 펀드를 기다리는 동안은 예산이 **장부값**(총자본 ÷ 종목 수)이다. 그 값으로
             #    되맞추면 멀쩡한 포지션을 몫의 1/3 로 **팔아 내린다.** 틀린 분모로 낸 줄임은
@@ -5659,11 +6019,14 @@ class LiveRunner:
                 payload={"trade_id": held.trade_id, "error": str(exc)[:160]},
             )
 
-    async def _apply_exit(self, before: TradeRecord | None) -> None:
+    async def _apply_exit(
+        self, before: TradeRecord | None, *, shares: Sequence[TradeRecord] = ()
+    ) -> None:
         """원장이 **신호로 전량 닫았으면** 거래소 포지션도 닫는다 (0.7.0 · ADX 약화 청산).
 
         Args:
             before: 이 걸음의 판정 **전에** 열려 있던 기록. 없었으면 None.
+            shares: 판정 전에 열려 있던 기록 전부 — 몫 모드(T320 P3)는 몫마다 옮긴다.
 
         Note:
             🔴 **세션 전량 청산에는 미러가 없었다.** 반익은 `_apply_half` 가 옮기는데
@@ -5679,7 +6042,13 @@ class LiveRunner:
               감사(`ledger_mismatch`)가 갈린 상태를 사람에게 알린다 (절대 규칙 #8-1:
               청산은 리스크 감소 행동이므로 로그 실패가 집행을 막지 않는다).
         """
-        if self.observe_only or before is None:
+        if self.observe_only:
+            return
+        if self._shared:
+            for item in shares:
+                await self._apply_exit_share(item)
+            return
+        if before is None:
             return
         now = next(
             (item for item in self._session.ledger.records if item.trade_id == before.trade_id),
@@ -5782,6 +6151,144 @@ class LiveRunner:
                 now.trade_id, role="신호청산", status="rejected", error=str(exc)[:180]
             )
 
+    async def _apply_exit_share(self, before: TradeRecord) -> None:
+        """몫 모드(T320 P3)의 세션발 청산 — **그 몫만** 닫는다.
+
+        Args:
+            before: 이 걸음의 판정 전에 열려 있던 몫.
+
+        Note:
+            🔴 순서가 요점이다:
+
+            1. 거래소 포지션을 읽는다 — 다른 열린 몫이 든 만큼은 내 것이 아니다. 남는 것이 없으면 이
+               몫은 이미 나갔다(몫 손절 발동) — 닫지 않고 남은 주문만 거둔다.
+            2. 이 몫의 손절 · 주문을 **먼저** 거둔다 — 닫은 뒤 남은 몫 손절이 발동하면 다른 몫의
+               계약을 닫는다. 못 거둔 것을 확인하면 닫지 않는다(몫 손절이 계속 지킨다).
+            3. 남은 내 몫만큼 reduce-only 시장가. 실패하면 거둔 손절을 **다시 건다**.
+
+            ⛔ 메이커 청산 · 전량 청산 · 전량 거두기(sweep)는 안 쓴다 — 다른 몫이 같은 포지션에
+            있다.
+            ⛔ touch 손절은 여기 안 온다 — 거래소 몫 손절이 먼저 나간다(대조는 P4 reconcile).
+        """
+        records = self._session.ledger.records
+        now = next((item for item in records if item.trade_id == before.trade_id), None)
+        if now is None or now.outcome is Outcome.OPEN:
+            return
+        mode_of = getattr(self._session, "stop_mode_of", None)
+        mode = "touch" if mode_of is None else str(mode_of(before))
+        stop_by_close = mode == "close" and now.outcome in (
+            Outcome.STOP_LOSS,
+            Outcome.HALF_BREAKEVEN,
+        )
+        timed = now.outcome is Outcome.TIME_EXIT
+        took = now.outcome is Outcome.TAKE_PROFIT
+        if now.outcome is not Outcome.SIGNAL_EXIT and not (timed or took or stop_by_close):
+            return
+        if not isinstance(self._orders, PositionAware):
+            return
+        role = (
+            "손절(마감판정)"
+            if stop_by_close
+            else "시간청산"
+            if timed
+            else "목표청산"
+            if took
+            else "신호청산"
+        )
+        mine = self._share_contracts(now)
+        others = sum(
+            self._share_contracts(item)
+            for item in records
+            if item.outcome is Outcome.OPEN and item.trade_id != now.trade_id
+        )
+        if mine <= 0:
+            self.failures += 1
+            self.last_error = f"몫 {now.trade_id} 계약 수를 몰라 청산을 못 옮겼다"[:200]
+            self._log.error("live_share_exit_unknown", payload={"trade_id": now.trade_id})
+            return
+        try:
+            held = abs(held_size(await self._orders.position_snapshot(self.instrument)))
+        except Exception as exc:
+            self.failures += 1
+            self.last_error = f"몫 청산 전 포지션을 못 읽었다: {exc}"[:200]
+            self._log.error(
+                "live_share_exit_unreadable",
+                payload={
+                    "trade_id": now.trade_id,
+                    "error": str(exc)[:160],
+                    "note": "안 닫았다 — 몫 손절이 계속 지킨다",
+                },
+            )
+            return
+        size = min(mine, held - others)
+        if size <= 0:
+            self._log.warning(
+                "live_share_exit_gone",
+                payload={
+                    "trade_id": now.trade_id,
+                    "on_exchange": held,
+                    "others": others,
+                    "mine": mine,
+                    "note": "이 몫은 거래소에서 이미 나갔다(몫 손절 발동) — 남은 주문만 거둔다",
+                },
+            )
+            await self._withdraw_share_orders(now)
+            return
+        if not await self._withdraw_share_orders(now):
+            self.failures += 1
+            self.last_error = f"몫 {now.trade_id} 손절을 못 거둬 청산을 미뤘다"[:200]
+            self._log.error(
+                "live_share_exit_stop_stuck",
+                payload={
+                    "trade_id": now.trade_id,
+                    "note": "남은 몫 손절이 다른 몫을 닫을 수 있어 안 닫았다 — "
+                    "감사가 갈린 상태를 알린다",
+                },
+            )
+            return
+        try:
+            done = await self._orders.submit_order(
+                close_order(now, self.instrument, size, run=self._run_key, revision=0)
+            )
+        except Exception as exc:
+            self.failures += 1
+            self.last_error = f"몫 청산 실패: {exc}"[:200]
+            self._log.error(
+                "live_signal_exit_failed",
+                payload={"trade_id": now.trade_id, "error": str(exc)[:200], "share": True},
+            )
+            await self._note_order(now.trade_id, role=role, status="rejected", error=str(exc)[:180])
+            # 🔴 거둔 몫 손절을 되돌려 건다 — 닫지도 못하고 손절도 없으면 그 몫은 무방비다.
+            again = await self._arm_stop(now)
+            if again is not None:
+                self._log.error(
+                    "live_share_exit_rearm_failed",
+                    payload={"trade_id": now.trade_id, "error": str(again)[:160]},
+                )
+            return
+        self.orders += 1
+        await self._note_order(
+            now.trade_id,
+            role=role,
+            status=done.status.value,
+            order_id=str(done.broker_order_id or ""),
+            contracts=str(size),
+        )
+        self._fired(
+            "stop_exit" if stop_by_close else "signal_exit",
+            f"{role} — 몫 {size} 계약 (다른 몫 {others} 계약은 그대로)",
+        )
+        if size < mine:
+            self._log.warning(
+                "live_share_exit_short",
+                payload={
+                    "trade_id": now.trade_id,
+                    "closed": size,
+                    "mine": mine,
+                    "note": "거래소에 몫보다 적게 남아 있었다 — 남은 만큼만 닫았다",
+                },
+            )
+
     async def _guard_stop(self, *, escalate: bool = True) -> None:
         """포지션이 있으면 브로커측 손절이 걸려 있는지 확인하고, 없으면 건다.
 
@@ -5837,12 +6344,41 @@ class LiveRunner:
         async with self._arming:
             await self._guard_stop_once(escalate=escalate)
 
-    async def _guard_stop_once(self, *, escalate: bool) -> None:
-        """`_guard_stop` 의 본체 — **`_guard_stop` 만 부른다** (겹침 방어가 거기 있다)."""
+    async def _guard_stop_once(self, *, escalate: bool, share: TradeRecord | None = None) -> None:
+        """`_guard_stop` 의 본체 — **`_guard_stop` 만 부른다** (겹침 방어가 거기 있다).
+
+        Args:
+            escalate: 실패를 걸음 수로 셀지(점검 루프는 안 센다).
+            share: 몫 모드(T320 P3)에서 이번에 지킬 몫. None 이면 — 몫 모드는 열린 몫마다 이 함수를
+                다시 부르고, 아니면 예전처럼 첫 보유 기록을 지킨다.
+        """
         if self.observe_only:
             # ⛔ 관찰 전용이다 — 걸 포지션이 없으므로 손절도 없다.
             return
-        held = next(
+        if share is None and self._shared:
+            # ⭐ T320 — 몫마다 자기 크기 · 자기 키의 조건부 손절(다른 몫 손절은 안 건드린다).
+            # 🔴 연속 실패와 "지켜진다" 는 몫마다 따로 본다 — 마지막 몫의 성공이 앞 몫의
+            #    실패를 덮으면 무방비 몫이 있는데 새 진입이 열리고, 그 몫은 영영 던질 문턱에
+            #    못 간다.
+            shares = [r for r in self._session.ledger.records if r.outcome is Outcome.OPEN]
+            if not shares:
+                # 예전 길과 같다 — 보유가 없으면 `guarded` 를 안 건드린다.
+                return
+            guarded = True
+            for item in shares:
+                self.stop_misses = self._share_misses.get(item.trade_id, 0)
+                self._session.guarded = True
+                await self._guard_stop_once(escalate=escalate, share=item)
+                self._share_misses[item.trade_id] = self.stop_misses
+                guarded = guarded and self._session.guarded
+            live = {r.trade_id for r in shares}
+            self._share_misses = {k: v for k, v in self._share_misses.items() if k in live}
+            self.stop_misses = max(self._share_misses.values(), default=0)
+            # 🔴 D2 — 어느 몫 것인지 모르는 계약이 있으면(`_share_mismatch`) 그 계약을 지키는 손절도
+            #    없다. 새 진입을 막는다(사람이 정리하면 대조가 풀고, 다음 점검이 다시 연다).
+            self._session.guarded = guarded and not self._share_mismatch
+            return
+        held = share or next(
             (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),
             None,
         )
@@ -5952,6 +6488,117 @@ class LiveRunner:
                 order_id=self._stop_id,
             )
 
+    def _first_held(self) -> TradeRecord | None:
+        """보유 기록 하나 — 몫 모드면 가장 먼저 든 몫 (T320).
+
+        Returns:
+            보유 기록. 없으면 None.
+
+        Note:
+            교정 기록 · 로그 · 미리보기처럼 **대표 하나면 되는** 곳만 쓴다. `session.position` 은
+            몫이 여럿이면 멈춘다(어느 것인지 모른다) — 몫마다 다뤄야 하는 곳은 몫을 돈다.
+        """
+        if self._shared:
+            return next(iter(self._session.positions), None)
+        return self._session.position
+
+    @property
+    def _shared(self) -> bool:
+        """**몫 모드**인가 — 몫 나눠 쓰기(`share_same_side`)를 선언한 다리가 실렸다 (T320 P3).
+
+        Note:
+            몫 모드가 아니면(지금 도는 모든 판) 손절 · 청산 코드 경로가 한 글자도 안 바뀐다.
+        """
+        books = getattr(self._session, "playbooks", ()) or ()
+        return any(getattr(book, "share_same_side", False) for book in books)
+
+    @staticmethod
+    def _share_contracts(held: TradeRecord) -> int:
+        """이 몫이 **지금 든** 계약 수 = 진입 계약 - 반익으로 판 절반 + 불타기 (T320 P3).
+
+        Args:
+            held: 몫 기록.
+
+        Returns:
+            계약 수. 반익은 1차 익절(`floor(계약 x 0.5)`)이든 신호 반익(`계약 // 2`)이든 같은 수다.
+        """
+        base = held.contracts - (held.contracts // 2 if held.half_at is not None else 0)
+        return max(0, base) + held.add_contracts
+
+    def _share_stop_key(self, held: TradeRecord) -> str:
+        """몫 손절의 멱등키 — 몫을 찾는 열쇠 (T320 P3)."""
+        return order_key(held.trade_id, OrderKind.STOP_LOSS.value, 0, self._run_key)
+
+    async def _withdraw_share_orders(self, held: TradeRecord) -> bool:
+        """이 몫의 걸린 주문(익절 · 손절)만 거둔다 — 다른 몫 것은 안 건드린다 (T320 P3).
+
+        Args:
+            held: 몫 기록.
+
+        Returns:
+            이 몫의 조건부 손절이 거래소에 **더 없음을 확인했나**. 조건부 목록을 못 읽으면 거짓.
+
+        Note:
+            🔴 손절은 기억한 id 와 **text(몫 키)** 둘 다로 찾는다 — 재시작하면 id 기억이 비고, 남은
+            몫 손절은 나중에 발동해 **다른 몫의 계약을 닫는다**.
+
+            ⛔ 실패해도 던지지 않는다 — 나가는 길을 막지 않는다(규칙 #8-1). 확인 결과만 돌려준다.
+        """
+        root = order_root(held.trade_id, self._run_key).replace(":", "-")
+        if isinstance(self._orders, OrdersAware):
+            with contextlib.suppress(Exception):
+                for row in await self._orders.open_orders(self.instrument):
+                    if str(row.get("text", "")).removeprefix("t-").startswith(f"{root}-"):
+                        with contextlib.suppress(Exception):
+                            await self._orders.cancel_order(str(row["id"]))
+        want = self._share_stop_key(held).replace(":", "-")
+        ids = {self._share_stop_ids.pop(held.trade_id, "")} - {""}
+        stops = self._orders if isinstance(self._orders, StopAware) else None
+        if stops is not None:
+            with contextlib.suppress(Exception):
+                ids |= {
+                    str(row.get("id", ""))
+                    for row in await stops.open_stops(self.instrument)
+                    if str(row.get("text", "")).removeprefix("t-") == want
+                }
+        cancel = getattr(self._orders, "cancel_stop", None)
+        if cancel is not None:
+            for stop_id in ids:
+                with contextlib.suppress(Exception):
+                    await cancel(stop_id)
+        if stops is None:
+            return True
+        try:
+            left = await stops.open_stops(self.instrument)
+        except Exception:
+            return False
+        return not any(str(row.get("text", "")).removeprefix("t-") == want for row in left)
+
+    async def _find_share_stop_id(self, held: TradeRecord) -> str:
+        """거래소에 걸린 **이 몫의 조건부 손절 id** — text(몫 키)로 찾는다 (T320 P4).
+
+        Args:
+            held: 몫 기록.
+
+        Returns:
+            조건부 id. 못 읽거나 없으면 빈 문자열.
+        """
+        if not isinstance(self._orders, StopAware):
+            return ""
+        want = self._share_stop_key(held).replace(":", "-")
+        try:
+            rows = await self._orders.open_stops(self.instrument)
+        except Exception:
+            return ""
+        return next(
+            (
+                str(row.get("id", ""))
+                for row in rows
+                if str(row.get("text", "")).removeprefix("t-") == want
+            ),
+            "",
+        )
+
     def _guard_price(self, held: TradeRecord) -> Decimal:
         """거래소에 걸 조건부 손절 자리 — `Session.guard_price` (T233 ②).
 
@@ -6004,6 +6651,15 @@ class LiveRunner:
         # ⭐ T233 ② — touch 는 손절선, close 는 보호 손절 (`_guard_price`).
         guard = self._guard_price(held)
         wanted = _on_tick(guard, tick, long=long)
+        share: dict[str, Any] = {}
+        if self._shared:
+            # ⭐ T320 몫 손절 — 그 몫의 크기 · 그 몫의 키로만 건다. 크기를 모르면 전량으로 대신 걸지
+            #    않는다(다른 몫까지 닫는다) — 실패로 다뤄 새 진입을 막고, 다음 걸음이 다시 본다.
+            size = self._share_contracts(held)
+            if size <= 0:
+                return RuntimeError(f"몫 {held.trade_id} 의 계약 수를 모른다 — 몫 손절을 못 건다")
+            share = {"size": size, "key": self._share_stop_key(held)}
+            self._stop_id = self._share_stop_ids.get(held.trade_id, "")
         try:
             # 🔴 **조건부 주문 id 를 붙잡는다** (사용자 신고 2026-08-20). 이것이 발동하면
             #    Gate 가 `ao-{id}` 라는 이름으로 주문을 만드는데, 그 이름에는 우리 매매
@@ -6015,10 +6671,16 @@ class LiveRunner:
             made = cast(
                 "str | None",
                 await self._orders.stops_for(  # type: ignore[attr-defined]
-                    self.instrument, wanted, long=long
+                    self.instrument, wanted, long=long, **share
                 ),
             )
             self._stop_id = made or self._stop_id
+            if share:
+                if not self._stop_id:
+                    # ⭐ 재시작 — 이미 맞게 걸린 몫 손절의 id 를 기억이 모른다. 발동 체결
+                    #    (`ao-{id}`)을 몫에 잇는 열쇠라 거래소 목록에서 text 로 되찾는다.
+                    self._stop_id = await self._find_share_stop_id(held)
+                self._share_stop_ids[held.trade_id] = self._stop_id
         except Exception as first:
             if not any(label in str(first) for label in TRIGGER_REJECTED):
                 return first
@@ -6027,10 +6689,12 @@ class LiveRunner:
                 again_id = cast(
                     "str | None",
                     await self._orders.stops_for(  # type: ignore[attr-defined]
-                        self.instrument, loose, long=long
+                        self.instrument, loose, long=long, **share
                     ),
                 )
                 self._stop_id = again_id or self._stop_id
+                if share:
+                    self._share_stop_ids[held.trade_id] = self._stop_id
             except Exception as again:
                 if any(label in str(again) for label in TRIGGER_REJECTED):
                     # ⭐ 한 눈금 물러나도 같은 소리를 한다 = **가격이 이미 멀리 지났다.**
@@ -6072,6 +6736,9 @@ class LiveRunner:
             "live_runner_panic_close",
             payload={"trade_id": held.trade_id, "why": why, "note": "시장가 전량 청산을 보낸다"},
         )
+        if self._shared:
+            await self._panic_close_share(held, why)
+            return
         try:
             # 🔴 **거래소 실제 포지션 크기를 읽어 그만큼 닫는다** (§2 · 2026-09-01).
             #    예전에는 `sizing_base` 로 계약 수를 **재계산**했다 — 재레버·부분체결로
@@ -6119,6 +6786,56 @@ class LiveRunner:
                     "error": str(exc)[:200],
                     "note": "포지션이 무방비로 남았다 — 사람이 거래소에서 닫아야 한다",
                 },
+            )
+
+    async def _panic_close_share(self, held: TradeRecord, why: str) -> None:
+        """몫 모드(T320 P3)의 최후 수단 — **그 몫만** 시장가로 던진다.
+
+        Args:
+            held: 던질 몫.
+            why: 왜 던지는가.
+
+        Note:
+            🔴 거래소 포지션 전체를 던지면 손절이 멀쩡한 다른 몫까지 닫힌다. 그 몫의 익절 · 손절을
+            먼저 거두고(남으면 줄어든 포지션에 reduce-only 합이 넘친다), 그 몫의 계약만
+            reduce-only 로
+            닫는다. 크기를 모르면(0) 던지지 않고 사람에게 넘긴다 — 추정해 던지면 남의 몫을 닫는다.
+        """
+        contracts = self._share_contracts(held)
+        if contracts <= 0:
+            self.last_error = f"🔴 몫 {held.trade_id} 계약 수를 몰라 못 던졌다 — 사람이 닫는다"[
+                :200
+            ]
+            self._log.error(
+                "live_runner_panic_share_unknown",
+                payload={"trade_id": held.trade_id, "why": why},
+            )
+            return
+        try:
+            await self._withdraw_share_orders(held)
+            done = await self._orders.submit_order(
+                close_order(held, self.instrument, contracts, revision=0)
+            )
+            self.orders += 1
+            self.stop_misses = 0
+            self.last_error = f"손절 불가로 몫을 시장가 청산했다 ({why})"[:200]
+            self._log.error(
+                "live_runner_panic_closed",
+                payload={
+                    "trade_id": held.trade_id,
+                    "status": done.status.value,
+                    "why": why,
+                    "contracts": contracts,
+                    "share": True,
+                },
+            )
+        except Exception as exc:
+            self.last_error = f"🔴 몫 손절도 청산도 실패 — 거래소 콘솔에서 손으로 닫는다: {exc}"[
+                :200
+            ]
+            self._log.error(
+                "live_runner_panic_close_failed",
+                payload={"trade_id": held.trade_id, "error": str(exc)[:200], "share": True},
             )
 
     async def _contract_spec(self) -> dict[str, str]:
@@ -6583,6 +7300,11 @@ class LiveRunner:
         """
         await self._guard_stop()
 
+        if self._shared:
+            # ⭐ T320 몫 모드는 지정가 익절을 안 건다. 몫 다리는 전부 반익 없는 추세 타기(먼 목표)라
+            #    걸 것이 없고(`share_mode_faults`), 목표 청산은 세션이 판정해 그 몫 크기만 시장가로
+            #    닫는다(`_apply_exit_share`). 몫 크기를 모르는 지정가가 채워지면 다른 몫을 줄인다.
+            return
         if filled <= 1:
             self._log.warning(
                 "live_runner_too_small_to_ladder",
@@ -6712,6 +7434,40 @@ def step_stats_of(values: Sequence[float]) -> dict[str, float | int]:
         "p50_ms": round(ordered[len(ordered) // 2], 1),
         "max_ms": round(ordered[-1], 1),
     }
+
+
+def share_mode_faults(session: Session) -> list[str]:
+    """몫 모드(T320 P3) 러너가 **못 옮기는** 선언 — 하나라도 있으면 그 판을 몫 모드로 돌리지 않는다.
+
+    Args:
+        session: 몫 나눠 쓰기(`share_same_side`) 다리가 실린 세션.
+
+    Returns:
+        막는 사유들(빈 목록이면 돌려도 된다).
+
+    Note:
+        몫 모드 러너는 시장가 진입 · 몫 손절(크기 · 키) · 세션발 청산의 몫 크기 시장가 · 몫 불타기만
+        옮긴다. 아래는 **거래소 포지션 전체**를 겨누는 길이라 몫과 섞이면 다른 몫을 줄이거나 닫는다:
+
+        - 지정가 진입(`limit_entry`) — 우편함 체결이 몫 계약 수를 안 남긴다.
+        - 메이커 청산(`maker_exit_bars`) — 체결 확인이 포지션 0 을 본다.
+        - 재레버(`relever`) — 목표 계약이 전량 기준이다.
+        - 반익(`full_ride` 아님) — 반익 주문이 전량의 반을 덜어낸다.
+
+        ⭐ 지금 몫 다리(돌파 롱 · 일봉 채널)는 전부 해당이 없다 — 막는 것은 나중에 실릴 다리다.
+    """
+    faults: list[str] = []
+    if getattr(session, "limit_entry", False):
+        faults.append("지정가 진입(limit_entry)")
+    for book in session.playbooks:
+        name = book.attribution
+        if book.maker_exit_bars > 0:
+            faults.append(f"{name}: 메이커 청산(maker_exit_bars)")
+        if book.relever:
+            faults.append(f"{name}: 재레버(relever)")
+        if not book.full_ride:
+            faults.append(f"{name}: 반익(full_ride 아님)")
+    return faults
 
 
 def open_seconds(calendar: MarketCalendar | None, market: Market, now: datetime) -> float | None:

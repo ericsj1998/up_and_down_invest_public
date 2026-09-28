@@ -819,6 +819,8 @@ class GateTradeClient:
         long: bool,
         price_type: int = 0,
         expiration: int = STOP_EXPIRATION_S,
+        size: int | None = None,
+        text: str | None = None,
     ) -> str:
         """브로커에 **조건부 손절**을 건다 — 서버가 죽어도 발동한다.
 
@@ -829,11 +831,14 @@ class GateTradeClient:
             price_type: 0 최종가 · 1 마크가 · 2 인덱스가.
             expiration: 유효 기간(초). 기본 `STOP_EXPIRATION_S`(30일) — 근거는 상수
                 docstring 에 있다.
+            size: 몫 손절의 계약 수(T320). None 이면 전량(`auto_size`) — 지금까지와 같다.
+            text: 우리 멱등키(몫 손절을 몫으로 찾는 열쇠 · `gate_text` 로 바꿔 보낸다).
 
         Returns:
             조건부 주문 id.
 
         Raises:
+            ValueError: 몫 손절 크기가 1 미만인 경우.
             GateAuthError: 401.
             GateApiError: 그 외.
 
@@ -859,15 +864,31 @@ class GateTradeClient:
               조건부가 조용히 사라진다 — 러너가 매 걸음 다시 거는 것은 유지하되(값 갱신),
               서버가 죽어 있는 동안의 방어선이 하루에서 한 달로 늘었다.
         """
-        payload: dict[str, Any] = {
-            "initial": {
+        initial: dict[str, Any] = {
+            "contract": contract,
+            "size": 0,
+            "price": "0",
+            "tif": "ioc",
+            "reduce_only": True,
+            "auto_size": "close_long" if long else "close_short",
+        }
+        if size is not None:
+            # ⭐ T320 몫 손절 — 한 포지션을 여러 다리가 나눠 쓰면 **그 몫만큼만** 닫는다
+            #    (자동 크기 없이). P0 탐침(테스트넷): 크기 준 reduce-only 조건부 둘이 한 포지션에
+            #    받아지고 익절 합에 안 든다.
+            if size <= 0:
+                raise ValueError(f"몫 손절 크기는 1 이상: {size}")
+            initial = {
                 "contract": contract,
-                "size": 0,
+                "size": -size if long else size,
                 "price": "0",
                 "tif": "ioc",
                 "reduce_only": True,
-                "auto_size": "close_long" if long else "close_short",
-            },
+            }
+        if text:
+            initial["text"] = gate_text(text)
+        payload: dict[str, Any] = {
+            "initial": initial,
             "trigger": {
                 "strategy_type": 0,
                 "price_type": price_type,

@@ -447,7 +447,13 @@ class BinancePaperAdapter:
         return [self._order_row(row, step, *extra) for row in rows[:40]]
 
     async def stops_for(
-        self, instrument: Instrument, trigger: Decimal, *, long: bool
+        self,
+        instrument: Instrument,
+        trigger: Decimal,
+        *,
+        long: bool,
+        size: int | None = None,
+        key: str | None = None,
     ) -> str | None:
         """브로커측 손절이 **그 가격으로** 걸려 있게 만든다 (없으면 걸고, 다르면 갈아 끼운다).
 
@@ -455,15 +461,23 @@ class BinancePaperAdapter:
             instrument: 종목.
             trigger: 원하는 손절 트리거가. 호가 단위로 내림해서 비교·등록한다.
             long: 롱 포지션인가 — 트리거 방향(아래/위)을 정한다.
+            size: 몫 손절 계약 수(T320) — 이 어댑터는 아직 모른다.
+            key: 몫 손절 멱등키(T320) — 이 어댑터는 아직 모른다.
 
         Returns:
             새로 등록한 조건부 주문 id. 이미 같은 가격으로 걸려 있어 손댈 것이 없으면 None.
+
+        Raises:
+            NotImplementedError: 몫 손절을 요청받은 경우 — 전량으로 조용히 걸면 다른 몫이
+                무방비가 된다.
 
         Note:
             거래소에 묻는다 — "걸었다" 를 기억하지 않는다 (Gate 와 같은 원칙). 가격 비교는
             같은 모양(price_text)으로 한다 — 꼬리 0 차이로 매번 갈아 끼우면 그 사이가
             무방비다.
         """
+        if size is not None or key is not None:
+            raise NotImplementedError("바이낸스 어댑터는 몫 손절(T320)을 아직 모른다")
         symbol = to_symbol(instrument)
         ticked = await self._tick(instrument, trigger)
         wanted = price_text(ticked if ticked is not None else trigger)

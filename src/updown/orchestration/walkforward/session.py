@@ -1193,8 +1193,12 @@ class Session:
             raise RuntimeError("이미 보유 중이다 — 이어받을 수 없다")
         self._open = record
 
-    def release(self) -> None:
+    def release(self, leg: str | None = None) -> None:
         """보유 중 표시를 **놓는다** — 거래소가 이미 닫은 것을 확인했을 때.
+
+        Args:
+            leg: 몫 하나만 놓을 때 그 다리(귀속) 키 (T320 · 몫이 여럿이면 필수). None 이면 예전처럼
+                보유 표시를 통째로 놓는다.
 
         Note:
             🔴 사용자 지적 2026-08-18: *"실제 주문은 이미 손절 난 상태야. (…) 현재
@@ -1206,6 +1210,10 @@ class Session:
             닫고, 세션은 *"더 이상 보유 중이 아니다"* 만 받아들인다 — 세션이 값을
             지어내면 손절·익절의 SSoT 가 둘이 된다 (절대 규칙 #4).
         """
+        if leg is not None:
+            with self._on_leg(leg):
+                self._open = None
+            return
         self._open = None
 
     def forget_frame(self, frame: Timeframe) -> None:

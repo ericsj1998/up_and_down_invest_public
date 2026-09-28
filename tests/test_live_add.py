@@ -145,6 +145,8 @@ class _Runner:
     """불타기 메서드가 만지는 것만 가진 러너 — 메서드는 진짜다."""
 
     _apply_add = LiveRunner._apply_add  # pyright: ignore[reportPrivateUsage]
+    _apply_add_one = LiveRunner._apply_add_one  # pyright: ignore[reportPrivateUsage]
+    _shared = LiveRunner._shared  # pyright: ignore[reportPrivateUsage]
     _recover_add = LiveRunner._recover_add  # pyright: ignore[reportPrivateUsage]
     _record_add = LiveRunner._record_add  # pyright: ignore[reportPrivateUsage]
     _drop_add = LiveRunner._drop_add  # pyright: ignore[reportPrivateUsage]
