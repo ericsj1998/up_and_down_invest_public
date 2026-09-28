@@ -176,6 +176,12 @@ class WalkforwardTrade(Base):
     총 명목 상한(`open_exposure`) **전용**이다 — 손익률은 `leverage`(의도)를 그대로 쓴다.
     NULL = 모형(백테스트·페이퍼) · 옛 행 · 체결 수량을 못 읽은 경우.
     """
+    contracts: Mapped[int | None] = mapped_column(sa.Integer)
+    """이 매매(몫)의 진입 체결 계약 수 (T320 P1 · 0133).
+
+    같은 방향 다리 여럿이 한 포지션을 나눠 쓸 때 어느 몫이 몇 계약인지.
+    NULL = 옛 행 · 모형 · 못 읽음(0 으로 되읽는다).
+    """
     margin_used: Mapped[Decimal | None] = mapped_column(sa.Numeric(38, 18))
     """매매에 실제로 건 증거금 USDT — 펀드 멤버 (T285 · 0130).
 

@@ -375,6 +375,16 @@ class TradeRecord:
         158차 실측: 순 오차는 진입당 0.05~1% 로 **수익에는 영향이 없다**(네 창 부호 불일치 ·
         모든 CI 가 0 을 지남). 고치는 사유는 성과가 아니라 **장부 정확성**이다.
     """
+    contracts: int = 0
+    """이 매매(몫)의 **진입 체결 계약 수** — 라이브가 체결 뒤 붙인다 (T320 P1 · 0133).
+
+    Gate 무기한은 종목당 포지션이 하나라, 같은 방향 다리 여럿이 한 포지션을 나눠 쓰려면(T320)
+    **어느 몫이 몇 계약인지** 장부가 알아야 한다 — 거래소는 합계만 알려 준다. 불타기 몫은
+    `add_contracts` 가 따로 센다.
+
+    ⚠️ 진입 때 한 번 적고 바꾸지 않는다(반익 · 재레버로 줄어든 뒤 지금 든 수는 이 값에서 센다).
+    0 = 모형(백테스트 · 페이퍼) · 옛 기록 · 체결 수량을 못 읽은 경우.
+    """
     fee_actual: Decimal | None = None
     """거래소가 실제로 뗀 수수료 (USDT · 양수 · 왕복 합) — 라이브가 청산 이력에서 붙인다 (T236).
 
@@ -738,6 +748,7 @@ class TradeRecord:
             funding_keys=self.funding_keys,
             realized_adjust=self.realized_adjust,
             filled_leverage=self.filled_leverage,
+            contracts=self.contracts,
             fee_actual=self.fee_actual,
         )
 

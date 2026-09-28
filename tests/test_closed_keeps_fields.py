@@ -48,6 +48,7 @@ def busy_record() -> TradeRecord:
         funding_pct=Decimal("0.003"),
         realized_adjust=Decimal(5),
         filled_leverage=Decimal("3.9"),
+        contracts=7,
         fee_actual=Decimal("0.4"),
         margin_used=Decimal(60),
         funding_keys=("k1",),

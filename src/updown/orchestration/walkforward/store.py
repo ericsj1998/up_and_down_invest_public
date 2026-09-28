@@ -786,6 +786,7 @@ class RunStore:
                 "realized_adjust": item.realized_adjust,
                 "fee_actual": item.fee_actual,
                 "filled_leverage": item.filled_leverage,  # T288 · 0131 — 상한 회계용 실측 노출
+                "contracts": item.contracts,  # T320 P1 · 0133 — 몫의 진입 체결 계약 수
                 "margin_used": item.margin_used,  # T285 · 0130 — 펀드 멤버의 실제 증거금
                 "add_json": add_to_json(item),  # T308 ⑥ · 0132 — 불타기 판정 · 체결 · 손익
                 "leverage": item.leverage,
@@ -1331,6 +1332,7 @@ def _to_record(row: WalkforwardTrade) -> TradeRecord:
         realized_adjust=row.realized_adjust if row.realized_adjust is not None else Decimal(0),
         fee_actual=row.fee_actual,
         filled_leverage=row.filled_leverage,
+        contracts=row.contracts or 0,
         margin_used=row.margin_used,
         planned_stop=row.planned_stop,
         planned_first=row.planned_first,

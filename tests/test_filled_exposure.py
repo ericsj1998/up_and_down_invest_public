@@ -254,6 +254,28 @@ class TestTheRunnerWritesTheRightNumber:
         assert got.filled_leverage is None
 
 
+class TestShareContracts:
+    """T320 P1 — 몫의 진입 체결 계약 수. 한 포지션을 여러 다리가 나눠 쓰면 거래소는 합계만 준다."""
+
+    @staticmethod
+    def _call(result: OrderResult, *, base: Decimal = SLOT) -> TradeRecord:
+        return TestTheRunnerWritesTheRightNumber._call(  # pyright: ignore[reportPrivateUsage]
+            [_open("t1", Decimal(4), None)], result, base=base
+        )
+
+    def test_it_records_the_filled_contracts(self) -> None:
+        assert self._call(_filled(Decimal(3), SOL_PER)).contracts == 3
+
+    def test_contracts_are_kept_even_when_exposure_is_unknown(self) -> None:
+        """노출을 못 세도(자리 예산 0) 체결 수량은 사실이다 — 몫 장부가 그것을 센다."""
+        got = self._call(_filled(Decimal(2), SOL_PER), base=Decimal(0))
+        assert got.contracts == 2 and got.filled_leverage is None
+
+    def test_nothing_filled_keeps_zero(self) -> None:
+        """⛔ 체결이 0 이면 지어내지 않는다 (규칙 #8)."""
+        assert self._call(_filled(Decimal(0), SOL_PER)).contracts == 0
+
+
 class TestIntentIsUntouched:
     """⛔ `leverage` 는 손익률용이다 — 결정론 코어가 그것을 쓴다 (규칙 #5)."""
 

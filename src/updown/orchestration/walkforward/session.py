@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -79,7 +80,7 @@ from updown.orchestration.walkforward.ledger import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Generator, Mapping, Sequence
 
     from updown.common.domain.candle import Candle
     from updown.common.domain.reports import Indicators
@@ -834,7 +835,14 @@ class Session:
     """
     journal_path: Path | None = None
     journal_meta: dict[str, Any] = field(default_factory=dict[str, Any])
-    _open: TradeRecord | None = None
+    _held: dict[str, TradeRecord] = field(default_factory=dict[str, TradeRecord])
+    """보유 중인 **몫** — 다리(귀속) → 기록 (T320).
+
+    같은 방향 `share_same_side` 다리끼리만 둘 이상이 된다. 그 밖에는 늘 0 또는 1개이고,
+    `_open` 속성이 예전 한 칸과 한 글자도 다르지 않게 읽고 쓴다.
+    """
+    _cursor: str | None = None
+    """몫이 여럿일 때 `_open` 이 가리키는 다리 — `_on_leg` 로만 바꾼다 (T320)."""
     _tick_fell_back: bool = False
     """판정 창이 비어 관측 창으로 대체한 적이 있나 — 로그를 한 번만 남기려는 표식.
 
@@ -1034,8 +1042,131 @@ class Session:
 
     @property
     def position(self) -> TradeRecord | None:
-        """보유 중인 포지션. 없으면 None."""
+        """보유 중인 포지션. 없으면 None.
+
+        Raises:
+            RuntimeError: 몫이 여럿인 경우 — 어느 것인지 모른다(`positions` 를 읽는다 · T320).
+        """
         return self._open
+
+    @property
+    def positions(self) -> tuple[TradeRecord, ...]:
+        """보유 중인 몫 전부 — 진입 시각 순 (T320). 몫이 하나면 `position` 과 같다."""
+        return tuple(sorted(self._held.values(), key=lambda item: item.opened_at or item.placed_at))
+
+    @property
+    def _open(self) -> TradeRecord | None:
+        """지금 다루는 보유 기록 — 예전 한 칸 `_open` 과 같은 뜻 (T320).
+
+        Raises:
+            RuntimeError: 몫이 여럿인데 커서가 없는 경우.
+
+        Note:
+            🔴 몫이 0 · 1개면 예전과 한 글자도 다르지 않다. 여럿이면 `_on_leg` 로 커서를 둔
+            곳에서만 읽는다 — 어느 몫인지 모르는 채 고르면 다른 다리의 손절 · 청산을 건드린다
+            (규칙 #8 · 조용히 고르지 않는다).
+        """
+        if self._cursor is not None:
+            return self._held.get(self._cursor)
+        if len(self._held) > 1:
+            raise RuntimeError(
+                "몫이 여럿인데 어느 다리인지 모른다 — 커서(_on_leg) 없이 보유 기록을 읽었다 (T320)"
+            )
+        return next(iter(self._held.values()), None)
+
+    @_open.setter
+    def _open(self, record: TradeRecord | None) -> None:
+        """보유 기록을 쓴다 — 커서가 없으면 예전 한 칸처럼 **통째로 바꾼다** (T320).
+
+        Args:
+            record: 새 보유 기록. None 이면 놓는다.
+
+        Raises:
+            RuntimeError: 몫이 여럿인데 커서가 없거나, 커서와 다른 다리의 기록을 쓰려는 경우.
+        """
+        if self._cursor is None:
+            if len(self._held) > 1:
+                raise RuntimeError(
+                    "몫이 여럿인데 어느 다리인지 모른다 — 커서 없이 보유 기록을 썼다 (T320)"
+                )
+            self._held = {} if record is None else {record.playbook: record}
+            return
+        if record is None:
+            self._held.pop(self._cursor, None)
+            return
+        if record.playbook != self._cursor:
+            raise RuntimeError(
+                f"커서 다리({self._cursor})와 다른 다리({record.playbook})의 기록을 쓴다 (T320)"
+            )
+        self._held[self._cursor] = record
+
+    @contextmanager
+    def _on_leg(self, leg: str) -> Generator[None]:
+        """`_open` 이 이 다리의 몫을 가리키게 한다 — 몫이 여럿일 때 (T320).
+
+        Args:
+            leg: 다리(귀속) 키.
+
+        Yields:
+            없음. 빠져나가면 커서를 되돌린다.
+        """
+        before = self._cursor
+        self._cursor = leg
+        try:
+            yield
+        finally:
+            self._cursor = before
+
+    def _may_share(self, book: Playbook, direction: Direction) -> bool:
+        """이 다리가 **지금 든 몫들과 한 포지션을 나눠 쓸 수 있나** (T320).
+
+        Args:
+            book: 진입하려는 다리의 매매법.
+            direction: 진입 방향.
+
+        Returns:
+            몫이 없으면 참. 있으면 — 이 다리 몫이 아직 없고, 이 다리와 든 다리 **모두**
+            `share_same_side` 이고, 방향이 모두 같을 때만 참.
+
+        Note:
+            ⛔ 반대 방향은 막는다 — Gate 한 방향 모드에서 롱과 숏은 상쇄된다. 같은 다리 두 번은
+            불타기 규칙의 몫이지 여기가 아니다.
+        """
+        if not self._held:
+            return True
+        if book.attribution in self._held or not book.share_same_side:
+            return False
+        return all(
+            item.direction is direction and self._book_of(item).share_same_side
+            for item in self._held.values()
+        )
+
+    def _share_room(self) -> bool:
+        """보유 중인데 **같은 방향 몫을 더할 다리가 남아 있나** (T320 · 진입 문의 `idle`).
+
+        Returns:
+            든 몫이 있고 · 걸어 둔 표가 없고 · 든 다리가 모두 `share_same_side` 이고 · 아직 몫이
+            없는 `share_same_side` 다리가 있을 때 참. 방향은 후보마다 `_may_share` 가 본다.
+        """
+        if not self._held or self._waiting is not None:
+            return False
+        if not all(self._book_of(item).share_same_side for item in self._held.values()):
+            return False
+        return any(
+            book.share_same_side and book.attribution not in self._held for book in self.playbooks
+        )
+
+    def _hold(self, record: TradeRecord) -> None:
+        """새 보유 기록을 둔다 — 다른 다리 몫이 있으면 **더하고**, 없으면 예전처럼 쓴다 (T320).
+
+        Args:
+            record: 막 연 기록.
+        """
+        if len(self._held) > 1 or (self._held and record.playbook not in self._held):
+            with self._on_leg(record.playbook):
+                self._open = record
+            return
+        self._open = record
 
     def adopt(self, record: TradeRecord) -> None:
         """거래소에 이미 열려 있던 포지션을 **보유 중으로 받아들인다**.
@@ -1058,7 +1189,7 @@ class Session:
             ⚠️ `_settle` 이 이 기록을 정상 매매와 **똑같이** 다룬다. 그래서 반익도
             본절 상향도 다시 돈다 — 그것이 이어받는 이유다.
         """
-        if self._open is not None:
+        if self._held:  # T320 — 몫이 하나라도 있으면(여럿이어도) 이어받지 않는다
             raise RuntimeError("이미 보유 중이다 — 이어받을 수 없다")
         self._open = record
 
@@ -1104,6 +1235,15 @@ class Session:
 
             ⚠️ 원장에서 이미 닫힌 기록으로는 맞추지 않는다 — 보유를 놓는 것은 `release` 가 맡는다.
         """
+        if len(self._held) > 1:  # T320 — 몫마다
+            for leg in list(self._held):
+                with self._on_leg(leg):
+                    self._sync_one()
+            return
+        self._sync_one()
+
+    def _sync_one(self) -> None:
+        """`_sync_open` 의 한 몫 — 커서가 가리키는(또는 하나뿐인) 보유 기록을 원장 판으로."""
         held = self._open
         if held is None:
             return
@@ -1422,8 +1562,10 @@ class Session:
             닫힌 봉만). 4h 마감을 물으면 그 순간 1h 도 같이 닫히므로 둘 다 붙인다.
         """
         # 지금 새로 들어갈 수 없는 판(보유 · 걸어 둔 표 · 중지 · 브레이커 · 펀드 문 대기)은
-        # 묻지 않는다.
-        idle = self._open is None and self._waiting is None
+        # 묻지 않는다. ⭐ T320 — 같은 방향 몫을 더할 다리가 남아 있으면 묻는다.
+        idle = (
+            len(self._held) <= 1 and self._open is None and self._waiting is None
+        ) or self._share_room()
         if not self._may_enter(idle=idle, tripped=self.breaker_tripped_at is not None):
             return ()
         spot_only = not self.short_allowed
@@ -1659,7 +1801,11 @@ class Session:
         closed = self._settle(shot)
         # ⚠️ **부른 것이 있으면 또 부르지 않는다.** 안 막으면 걸음마다 새 표를 걸어
         #    같은 자리에 호가가 쌓인다.
-        idle = self._open is None and self._waiting is None
+        # ⭐ T320 — 보유 중이어도 같은 방향 몫을 더할 다리(`share_same_side`)가 남았으면 연다.
+        #    어느 다리가 들 수 있는지는 `_enter` 가 후보마다 `_may_share` 로 가른다.
+        idle = (
+            len(self._held) <= 1 and self._open is None and self._waiting is None
+        ) or self._share_room()
         # ⚠️ `guarded` 는 **집행이 지금 지킬 수 있나**다 — 브로커측 손절을 못 건 상태에서
         #    또 사면 무방비 포지션이 하나 더 는다 (2026-08-20).
         # ⚠️ `liquid` 는 **나갈 호가가 있나**다. 둘은 서로 다른 사건이라 한 스위치로
@@ -1912,6 +2058,10 @@ class Session:
         if not self.fund_ready:
             self._count("blocked:awaiting_fund")
             return None
+        if any(item.playbook != closed.playbook for item in self._held.values()):
+            # T320 — 다른 다리 몫이 남아 있다. 뒤집으면 한 방향 포지션에 반대 방향이 든다.
+            self._count("blocked:share_opposite")
+            return None
         rows = list(self.feed.judged(self.playbook.timeframe))
         pivot = rows[-1] if rows else bar
         series = atr_series([c.high for c in rows], [c.low for c in rows], [c.close for c in rows])
@@ -2054,7 +2204,17 @@ class Session:
         Note:
             🔴 **손절을 먼저** 본다. 한 봉에서 둘 다 닿을 수 있고 봉 안의 순서는 알 수
             없다 — 낙관적으로 익절을 먼저 세면 성과가 조용히 부풀려진다.
+
+            ⭐ T320 — 몫이 여럿이면 진입 시각 순으로 다리마다 커서를 두고 **이 판정을 몫마다**
+            돈다(각 몫은 자기 매매법의 청산 규칙을 쓴다). 몫이 0 · 1개면 예전과 한 글자도
+            다르지 않다.
         """
+        if len(self._held) > 1 and self._cursor is None:
+            closed: list[TradeRecord] = []
+            for share in self.positions:
+                with self._on_leg(share.playbook):
+                    closed.extend(self._settle(shot))
+            return tuple(closed)
         held = self._open
         if held is None:
             return ()
@@ -3479,7 +3639,7 @@ class Session:
             그 주문이 실제로 걸려 있다. 다음 걸음의 `_collect` 가 평소처럼 채움·수명·계획 유효를
             본다 — 즉 되살린 뒤의 운명은 재시작이 없었을 때와 같다.
         """
-        if self._waiting is not None or self._open is not None or not tickets:
+        if self._waiting is not None or self._held or not tickets:
             return False
         self._waiting = record
         self._tickets = tuple(tickets)
@@ -3512,8 +3672,7 @@ class Session:
         if bar is None:
             return
         previous, self._funding_tick = self._funding_tick, bar.ts
-        held = self._open
-        if not self.model_funding or held is None or previous is None:
+        if not self.model_funding or not self._held or previous is None:
             return
         boundaries = settlement_boundaries(previous, bar.ts)
         if not boundaries:
@@ -3526,6 +3685,23 @@ class Session:
                 .funding_pct_per_8h
             )
         if rate is None or rate == 0:
+            return
+        if len(self._held) > 1:  # T320 — 몫마다 물린다(진입 시각이 다르다)
+            for leg in list(self._held):
+                with self._on_leg(leg):
+                    self._charge_held(boundaries, rate)
+            return
+        self._charge_held(boundaries, rate)
+
+    def _charge_held(self, boundaries: Sequence[datetime], rate: Decimal) -> None:
+        """`_charge_model_funding` 의 한 몫 — 진입 뒤 넘은 정산만 센다.
+
+        Args:
+            boundaries: 이번 봉이 넘은 정산 시각들.
+            rate: 8시간 요율.
+        """
+        held = self._open
+        if held is None:
             return
         opened = held.opened_at or held.placed_at
         crossed = sum(1 for boundary in boundaries if boundary > opened)
@@ -3760,7 +3936,7 @@ class Session:
         self._waiting_until = None
         self._close_probe(waiting, filled=True)
         self.ledger.add(waiting)
-        self._open = waiting
+        self._hold(waiting)  # T320 — 다른 다리 몫이 있으면 더한다
         self._count(f"entered:{waiting.playbook}")
         self.journal()
 
@@ -3859,8 +4035,10 @@ class Session:
             그대로 들고 있으므로 지어낼 것이 없다 — 진입가·체결 시각만 사실로 바꾼다.
         """
         waiting = self._last_expired
-        if waiting is None or waiting.trade_id != trade_id or self._open is not None:
+        if waiting is None or waiting.trade_id != trade_id:
             return None
+        if self._held and not self._may_share(self._book_of(waiting), waiting.direction):
+            return None  # 보유 중 — 같은 방향 몫으로 더할 수 없으면 되살리지 않는다 (T320)
         bar = self._tick()
         at = bar.ts if bar is not None else self.cursor
         record = replace(
@@ -3871,7 +4049,7 @@ class Session:
             outcome=Outcome.OPEN,
         )
         self.ledger.add(record)
-        self._open = record
+        self._hold(record)
         self._last_expired = None
         self._count(f"entered:{record.playbook}")
         self.journal()
@@ -3907,6 +4085,18 @@ class Session:
             shorts = [item for item in open_to_entry if item.setup.stop_loss > item.setup.avg_entry]
             self.short_blocked += len(shorts)
             open_to_entry = [item for item in open_to_entry if item not in shorts]
+        if self._held:
+            # ⭐ T320 — 보유 중이면 **같은 방향 몫을 더할 수 있는 다리**의 후보만 남는다.
+            open_to_entry = [
+                item
+                for item in open_to_entry
+                if self._may_share(
+                    item.playbook,
+                    Direction.SHORT
+                    if item.setup.stop_loss > item.setup.avg_entry
+                    else Direction.LONG,
+                )
+            ]
         if not open_to_entry:
             return None
         bar = self._tick()
@@ -4132,7 +4322,7 @@ class Session:
             self._count("stop_too_tight")
             return
         self.ledger.add(record)
-        self._open = record
+        self._hold(record)  # T320 — 다른 다리 몫이 있으면 더한다(`_may_share` 를 지난 후보)
         self._count(f"entered:{record.playbook}")
         return record
 
@@ -4176,7 +4366,7 @@ class Session:
             `decision/risk/manual.confirm` 이 하고 여기는 **받은 값을 원장에 적는다**.
             확정을 두 곳에 두면 두 곳이 갈린다 (절대 규칙 #4).
         """
-        if self._open is not None:
+        if self._held:
             raise RuntimeError("이미 보유 중이다 — 한 번에 한 포지션이다")
         cost = load_cost_table(DEFAULT_CONFIG_PATH).for_market(self.instrument.market)
         record = TradeRecord(

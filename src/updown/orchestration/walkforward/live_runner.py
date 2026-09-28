@@ -838,17 +838,28 @@ class LiveRunner:
                 비면 예전처럼 급전의 축을 그대로 둔다.
 
         Raises:
-            ValueError: `session.feed` 가 `feed` 와 다른 객체인 경우.
+            ValueError: `session.feed` 가 `feed` 와 다른 객체인 경우 · 몫 나눠 쓰기
+                (`share_same_side`)를 선언한 매매법이 실린 경우(T320 P3 전).
 
         Note:
             🔴 **같은 객체인지 확인한다.** 다르면 러너가 밀어 넣은 봉을 세션이 못 보고,
             세션은 영원히 시드만 보며 "새 봉이 없다"고 판단한다 — 예외 없이 아무 일도
             일어나지 않는 종류의 사고다.
+
+            🔴 **몫 나눠 쓰기는 아직 실계좌로 못 돈다** (T320). 세션은 한 종목에 몫 여럿을
+            들 수 있지만, 이 러너의 손절 · 익절 · 청산 주문은 아직 **거래소 포지션 전체**를
+            겨눈다 — 한 몫의 손절이 다른 몫까지 닫는다. P3 가 몫 단위 주문을 갖출 때까지 막는다.
         """
         if session.feed is not feed:
             raise ValueError(
                 "session.feed 와 러너의 feed 가 다른 객체다 — 러너가 밀어 넣은 봉을 "
                 "세션이 못 본다. 예외가 안 나고 아무 일도 안 일어난다"
+            )
+        shared = [book.attribution for book in session.playbooks if book.share_same_side]
+        if shared:
+            raise ValueError(
+                f"몫 나눠 쓰기(share_same_side)를 선언한 매매법 {shared} 이 실렸다 — 러너가 "
+                "몫 단위 주문(T320 P3)을 갖추기 전에는 실계좌 · 테스트넷으로 돌리지 않는다"
             )
         self._session = session
         self._feed = feed
@@ -6214,6 +6225,14 @@ class LiveRunner:
         base = self._session.ledger.sizing_base
         price = entry.average_price if entry.average_price else record.entry
         qty = entry.filled_quantity
+        live = next(
+            (item for item in self._session.ledger.records if item.trade_id == record.trade_id),
+            None,
+        )
+        if live is not None and qty > 0:
+            # ⭐ 몫의 계약 수(T320 P1) — 노출을 못 세도 체결 수량은 사실이라 먼저 적는다.
+            live = dc_replace(live, contracts=int(qty))
+            self._session.ledger.replace(live)
         if base <= 0 or qty <= 0 or price <= 0 or multiplier <= 0:
             self._log.warning(
                 "live_filled_exposure_unknown",
@@ -6225,11 +6244,9 @@ class LiveRunner:
                     "note": "실측 노출을 못 만든다 — 의도한 leverage 로 상한을 센다 (규칙 #8)",
                 },
             )
+            if live is not None and qty > 0:
+                await self._persist()  # 계약 수는 적었다
             return
-        live = next(
-            (item for item in self._session.ledger.records if item.trade_id == record.trade_id),
-            None,
-        )
         if live is None:
             return
         filled = qty * price * multiplier / base
