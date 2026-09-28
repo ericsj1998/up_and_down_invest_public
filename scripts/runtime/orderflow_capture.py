@@ -4,7 +4,7 @@
 남은 정보원은 봉 밖 실시간 자료인데 거래소가 과거분을 주지 않아 백테스트를 할 수 없다.
 그래서 지금부터 90일을 모은다 — docs/planning/tasks/T283_orderflow_capture.md.
 
-무엇을 (1분마다 · 종목 12개):
+무엇을 (1분마다 · 종목은 환경 변수 · 서버 기본 = 펀드 바스켓 Gate 40 + 업비트 27):
     book    호가 상위 20단계 — 최우선 호가 · 상위 5/20단 잔량 합 · 불균형 (bid - ask) / (bid + ask)
     trades  직전 60초 체결 — 매수/매도 수량·건수 (Gate: size 부호 · 업비트: ask_bid)
     stats   (Gate · 5분마다) 미결제약정 · 롱/숏 비율 · 청산량 — /futures/usdt/contract_stats
