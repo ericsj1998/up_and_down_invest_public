@@ -4,7 +4,7 @@
 #     bash scripts/ops/remote.sh scripts/ops/probe_shared_position.sh
 #
 # 🔴 사용자 허가 뒤에만 돌린다(T320 D1 · 서버 쓰기). 라이브 키는 안 읽는다(`GATE_TESTNET_*` 만) · 테스트넷이 아니면 멈춘다.
-# 🔴 데모 판이 안 쓰는 종목(기본 ARB_USDT)에서만 · 시작 때 그 종목 포지션 · 미결 · 조건부가 0 이 아니면 멈춘다.
+# 🔴 데모 판이 안 쓰는 종목(기본 SUI_USDT — 테스트넷에 ARB 가 없다)에서만 · 시작 때 그 종목 포지션 · 미결 · 조건부가 0 이 아니면 멈춘다.
 # 🔴 끝나면(도중 실패해도) 이 탐침이 낸 주문 · 조건부를 거두고 포지션을 0 으로 닫는다.
 #
 # 잴 것:
@@ -13,7 +13,7 @@
 #   ③ 몫 A 만 나가기(A 익절 둘 · A 손절 취소 → reduce-only 시장가 -2)에 B 의 주문이 안 건드려지나
 #   ④ 이미 참인 크기 준 조건부(-1)가 발동하면 **그 크기만** 줄어드나
 set -u
-SYMBOL="${1:-ARB_USDT}"
+SYMBOL="${1:-SUI_USDT}"
 DEMO=$(docker ps --format '{{.Names}}' | grep -E 'api_demo' | head -1)
 [ -n "$DEMO" ] || { echo "api_demo 컨테이너가 없다 — 멈춘다"; exit 1; }
 echo "컨테이너 $DEMO · 종목 $SYMBOL"
@@ -23,14 +23,14 @@ import json
 import os
 from decimal import ROUND_DOWN, Decimal
 
-from updown.marketdata.gate.trade_client import SETTLE, GateApiError, GateTradeClient, price_text
+from updown.marketdata.gate.trade_client import SETTLE, STOP_EXPIRATION_S, GateApiError, GateTradeClient, price_text
 
 SYMBOL = os.environ["PROBE_SYMBOL"]
 TAG = "p0"
 
 
 def show(step: str, **kv: object) -> None:
-    print(json.dumps({"step": step, **{k: str(v) for k, v in kv.items()}}, ensure_ascii=False))
+    print("P0 " + json.dumps({"step": step, **{k: str(v) for k, v in kv.items()}}, ensure_ascii=False))
 
 
 async def main() -> None:
@@ -50,11 +50,23 @@ async def main() -> None:
     if isinstance(acct, dict) and acct.get("in_dual_mode"):
         show("멈춤", why="양방향 모드 계정 — 한 방향 모드를 재는 탐침이다")
         return
-    pos = await c.get_position(SYMBOL)
-    size0 = int(str(pos.get("size", 0) or 0))
+    async def pos_size() -> int:
+        """포지션 계약 수 — 테스트넷은 포지션이 없으면 POSITION_NOT_FOUND 를 준다(= 0)."""
+        try:
+            return int(str((await c.get_position(SYMBOL)).get("size", 0) or 0))
+        except GateApiError as exc:
+            if "POSITION_NOT_FOUND" in str(exc):
+                return 0
+            raise
+
+    size0 = await pos_size()
     orders0 = await c.list_orders(SYMBOL)
     stops0 = await c.list_stops(SYMBOL)
     show("시작", position=size0, open_orders=len(orders0), stops=len(stops0), tick=tick)
+    if os.environ.get("PROBE_READONLY"):
+        show("읽기만", orders=[(x.get("text"), x.get("size")) for x in orders0],
+             stops=[(x.get("initial", {}).get("text"), x.get("initial", {}).get("size")) for x in stops0])
+        return
     if size0 != 0 or orders0 or stops0:
         show("멈춤", why="이 종목에 이미 포지션 · 주문이 있다 — 데모 판이 쓰는 종목일 수 있다")
         return
@@ -85,7 +97,7 @@ async def main() -> None:
             "initial": {"contract": SYMBOL, "size": size, "price": "0", "tif": "ioc",
                         "reduce_only": True, "text": f"t-{TAG}-{name}"},
             "trigger": {"strategy_type": 0, "price_type": 0, "price": price_text(trigger),
-                        "rule": rule, "expiration": 3600},
+                        "rule": rule, "expiration": STOP_EXPIRATION_S},
         }
         try:
             got = await req("POST", f"/futures/{SETTLE}/price_orders", body=body)
@@ -98,10 +110,9 @@ async def main() -> None:
             return ""
 
     async def state(step: str) -> int:
-        p = await c.get_position(SYMBOL)
+        size = await pos_size()
         o = await c.list_orders(SYMBOL)
         s = await c.list_stops(SYMBOL)
-        size = int(str(p.get("size", 0) or 0))
         show(step, position=size, open_orders=[(x.get("text"), x.get("size")) for x in o],
              stops=[(x.get("initial", {}).get("text"), x.get("initial", {}).get("size")) for x in s])
         return size
@@ -143,7 +154,7 @@ async def main() -> None:
                     await c.cancel_order(oid)
                 except GateApiError:
                     pass
-        left = int(str((await c.get_position(SYMBOL)).get("size", 0) or 0))
+        left = await pos_size()
         if left:
             await order("정리", -left, reduce=True)
         await state("끝 — 포지션 0 · 주문 0 이어야")
