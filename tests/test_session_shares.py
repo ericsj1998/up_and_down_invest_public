@@ -204,6 +204,19 @@ class TestTwoShares:
         s.release(leg=BREAKOUT.attribution)
         assert s.positions == (c,) and s.position is c
 
+    def test_funding_goes_to_the_named_share(self) -> None:
+        """P5 — 러너가 계약 비로 나눈 펀딩 조각은 그 몫에만 붙는다(원장과 세션 둘 다)."""
+        a, c = record(BREAKOUT, "a", stop="700"), record(CHANNEL, "c", stop="600")
+        s = holding(session((BREAKOUT, CHANNEL)), a, c)
+        s.apply_funding(
+            paid=Decimal(2), pct=Decimal("0.001"), keys=("k1",), leg=CHANNEL.attribution
+        )
+        held = {item.trade_id: item for item in s.positions}
+        assert held["c"].funding_paid == Decimal(2) and held["c"].funding_keys == ("k1",)
+        assert held["a"].funding_paid == Decimal(0)
+        booked = {item.trade_id: item for item in s.ledger.records}
+        assert booked["c"].funding_paid == Decimal(2)
+
     def test_the_cursor_reads_and_writes_one_share(self) -> None:
         a, c = record(BREAKOUT, "a", stop="700"), record(CHANNEL, "c", stop="600")
         s = holding(session((BREAKOUT, CHANNEL)), a, c)
@@ -338,13 +351,25 @@ class TestEntries:
         assert [item.playbook for item in s.positions] == [brk.attribution]
 
 
-def test_the_live_runner_refuses_shared_legs_until_p5() -> None:
-    """🔴 펀딩 · 수수료 나누기와 화면이 아직 몫을 모른다 — 몫 모드는 P5 전까지 막는다(T320)."""
+def test_the_live_runner_takes_clean_shared_legs() -> None:
+    """⭐ 몫 다리가 몫 모드가 옮기는 선언만 들면 러너가 받는다 (T320 P5 뒤)."""
     from typing import Any, cast
 
     from updown.orchestration.walkforward.live_runner import LiveRunner
 
     s = session((BREAKOUT, CHANNEL))
     none = cast("Any", None)
-    with pytest.raises(ValueError, match="share_same_side"):
+    runner = LiveRunner(s, cast("Any", s.feed), none, none, none)
+    assert runner._shared  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_live_runner_refuses_whole_position_paths_with_shares() -> None:
+    """🔴 재레버 · 반익 같은 전량 길이 몫 판에 실리면 만들 때 멈춘다(`share_mode_faults`)."""
+    from typing import Any, cast
+
+    from updown.orchestration.walkforward.live_runner import LiveRunner
+
+    s = session((replace(BREAKOUT, relever=True), CHANNEL))
+    none = cast("Any", None)
+    with pytest.raises(ValueError, match="재레버"):
         LiveRunner(s, cast("Any", s.feed), none, none, none)

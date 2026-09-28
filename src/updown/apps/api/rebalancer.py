@@ -83,6 +83,7 @@ from updown.orchestration.rebalancer.legs import (
     refresh_legs,
 )
 from updown.orchestration.rebalancer.wiring import wire_legs
+from updown.orchestration.walkforward.ledger import TradeRecord
 from updown.portfolio.performance import CashFlow, TwrLedger
 
 router = APIRouter(prefix="/rebalancer", tags=["rebalancer"])
@@ -1365,6 +1366,67 @@ _UNREAL_CACHE = TtlCache[tuple[str, str]]("fund.unreal", _UNREAL_TTL)
 6핸들 = 분당 225 였다. 20s 면 90. 미실현손익은 표시값이라 20초 지연은 문제가 아니다."""
 
 
+_MARKS: dict[str, tuple[Decimal, Decimal] | None] = {}
+"""판 → (표시가 · 계약 승수) — `_exchange_facts` 가 같은 조회에서 채운다(몫별 미실현 · T320)."""
+
+
+def mark_and_multiplier(snap: Mapping[str, object]) -> tuple[Decimal, Decimal] | None:
+    """포지션 조회에서 (표시가 · 계약 승수) — 승수 = 명목 ÷ (계약 x 표시가).
+
+    Args:
+        snap: 거래소 포지션 조회(`mark_price` · `value` · `size`).
+
+    Returns:
+        둘 다 읽히면 그 값, 아니면 None.
+    """
+    try:
+        mark = Decimal(str(snap.get("mark_price") or "0"))
+        value = abs(Decimal(str(snap.get("value") or "0")))
+        size = abs(Decimal(str(snap.get("size") or "0")))
+    except ArithmeticError:
+        return None
+    if mark <= 0 or value <= 0 or size <= 0:
+        return None
+    return mark, value / (size * mark)
+
+
+def split_unrealized(
+    shares: Sequence[TradeRecord], total: Decimal, marks: tuple[Decimal, Decimal] | None
+) -> dict[str, Decimal]:
+    """한 포지션의 미실현을 **몫(다리)마다** 나눈다 — 몫 계약 x (표시가 - 몫 평단) (T320 P5 · D3).
+
+    Args:
+        shares: 그 종목의 열린 몫들.
+        total: 거래소 미실현(포지션 전체).
+        marks: (표시가 · 계약 승수). 없으면 계약 비로 나눈다(근사 — 평단 차이를 못 본다).
+
+    Returns:
+        매매법 id → 미실현. 합은 `total` 과 같다(표시가로 잰 몫들의 차이를 계약 비로 맞춘다).
+    """
+    held = {item.trade_id: Decimal(item.contracts + item.add_contracts) for item in shares}
+    count = sum(held.values())
+    out: dict[str, Decimal] = {}
+    if count <= 0:
+        return out
+    raw: dict[str, Decimal] = {}
+    for item in shares:
+        pid = item.playbook.split("@")[0]
+        if marks is None:
+            raw[pid] = raw.get(pid, Decimal(0)) + total * held[item.trade_id] / count
+            continue
+        mark, multiplier = marks
+        cost = Decimal(item.contracts) * item.entry + Decimal(item.add_contracts) * (
+            item.add_fill or item.entry
+        )
+        gain = (held[item.trade_id] * mark - cost) * multiplier * item.direction.sign
+        raw[pid] = raw.get(pid, Decimal(0)) + gain
+    gap = total - sum(raw.values())
+    for item in shares:
+        pid = item.playbook.split("@")[0]
+        out[pid] = out.get(pid, raw[pid]) + gap * held[item.trade_id] / count
+    return out
+
+
 async def _exchange_facts(handle: str) -> tuple[str, str]:
     """세션의 (미실현 손익, 포지션 증거금) — 거래소 포지션에서 읽는다 (짧은 캐시).
 
@@ -1391,6 +1453,7 @@ async def _exchange_facts(handle: str) -> tuple[str, str]:
             snap: dict[str, str] = await orders.position_snapshot(runner.instrument)
             unreal = str(snap.get("unrealised_pnl", "0") or "0")
             margin = str(snap.get("margin", "0") or "0")
+            _MARKS[handle] = mark_and_multiplier(snap)
         except Exception:  # 조회 실패는 표시값일 뿐 — 마지막 값 유지
             pass
     return _UNREAL_CACHE.put(handle, (unreal, margin))
@@ -1428,7 +1491,9 @@ async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
     if live is None:
         return {"handle": handle, "weight": weight, "missing": True}
     session = live.session
-    held = session.position
+    # ⭐ T320 — 몫이 여럿이면 `position` 이 멈춘다. 카드는 첫 몫, `shares` 는 몫 전부.
+    shares = session.positions
+    held = next(iter(shares), None)
     unreal, margin = await _exchange_facts(handle)
     row: dict[str, Any] = {
         "handle": handle,
@@ -1476,6 +1541,17 @@ async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
             #    그 판단이 안 실려 있었다. 플래그를 같이 실어 화면이 가린다.
             "full_ride": session.playbook.full_ride,
         }
+    if len(shares) > 1:
+        row["shares"] = [
+            {
+                "leg": item.playbook.split("@")[0],
+                "entry": str(item.entry),
+                "stop": str(item.planned_stop),
+                "contracts": item.contracts + item.add_contracts,
+                "opened_at": None if item.opened_at is None else item.opened_at.isoformat(),
+            }
+            for item in shares
+        ]
     return row
 
 
@@ -1575,6 +1651,10 @@ class BoardPnl:
     realized: Mapping[str, Decimal]
     held: str | None
     unrealized: Decimal | None
+    held_split: Mapping[str, Decimal] | None = None
+    """몫이 여럿일 때 매매법 id → 그 몫의 미실현(`split_unrealized` · T320).
+
+    있으면 `held` 대신 쓴다."""
 
 
 def leg_pnl(
@@ -1603,7 +1683,11 @@ def leg_pnl(
         for pid, amount in board.realized.items():
             if pid in out:
                 out[pid][0] += amount
-        if board.held in out and board.unrealized is not None:
+        if board.held_split is not None:
+            for pid, amount in board.held_split.items():
+                if pid in out:
+                    out[pid][1] += amount
+        elif board.held in out and board.unrealized is not None:
             out[board.held][1] += board.unrealized
     result: dict[str, dict[str, str]] = {}
     for pid, (real, unreal) in out.items():
@@ -1630,7 +1714,8 @@ def _boards_pnl(fund: Fund, per_symbol: Mapping[str, Mapping[str, Any]]) -> list
         for record in ledger.records:
             keys.setdefault(record.playbook.split("@")[0], set()).add(record.playbook)
         realized = {pid: ledger.realized_of(attrs) for pid, attrs in keys.items()}
-        held = live.session.position
+        shares = live.session.positions
+        held = next(iter(shares), None)
         raw = per_symbol.get(sym, {}).get("unrealized")
         try:
             unreal = Decimal(str(raw)) if raw not in (None, "") else None
@@ -1641,6 +1726,11 @@ def _boards_pnl(fund: Fund, per_symbol: Mapping[str, Mapping[str, Any]]) -> list
                 realized=realized,
                 held=None if held is None else held.playbook.split("@")[0],
                 unrealized=unreal,
+                held_split=(
+                    split_unrealized(shares, unreal, _MARKS.get(handle))
+                    if len(shares) > 1 and unreal is not None
+                    else None
+                ),
             )
         )
     return out

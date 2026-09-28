@@ -3740,6 +3740,7 @@ class Session:
         pct: Decimal,
         keys: tuple[str, ...] = (),
         reset: bool = False,
+        leg: str | None = None,
     ) -> None:
         """열린 매매에 펀딩을 더한다 — 라이브(정산 기록)와 모형(경계) 둘 다 이 입구를 쓴다 (T226).
 
@@ -3748,7 +3749,12 @@ class Session:
             pct: 명목 대비 비율 (양수 = 비용).
             keys: 이번에 붙인 정산 열쇠들 — 매매에 남아 재시작 뒤 같은 정산을 거른다 (0114).
             reset: 누적을 버리고 이번 값으로 시작한다 — 열쇠 없이 부푼 옛 기록을 바로잡을 때만.
+            leg: 몫 하나에만 붙일 때 그 다리(귀속) 키 (T320 · 몫이 여럿이면 필수).
         """
+        if leg is not None:
+            with self._on_leg(leg):
+                self.apply_funding(paid=paid, pct=pct, keys=keys, reset=reset)
+            return
         self._sync_open()
         held = self._open
         if held is None:

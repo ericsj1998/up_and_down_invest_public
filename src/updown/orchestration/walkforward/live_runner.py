@@ -840,30 +840,31 @@ class LiveRunner:
 
         Raises:
             ValueError: `session.feed` 가 `feed` 와 다른 객체인 경우 · 몫 나눠 쓰기
-                (`share_same_side`)를 선언한 매매법이 실린 경우(T320 P3 전).
+                (`share_same_side`) 판에 몫 모드가 못 옮기는 선언이 있는 경우(`share_mode_faults`).
 
         Note:
             🔴 **같은 객체인지 확인한다.** 다르면 러너가 밀어 넣은 봉을 세션이 못 보고,
             세션은 영원히 시드만 보며 "새 봉이 없다"고 판단한다 — 예외 없이 아무 일도
             일어나지 않는 종류의 사고다.
 
-            🔴 **몫 나눠 쓰기는 아직 실계좌로 못 돈다** (T320). 몫 단위 주문(P3)과 대조 · 재시작 ·
-            감사(P4)는 갖췄지만, 펀딩 · 수수료를 몫에 나누는 일과 화면(P5 — API 여러 곳이
-            `session.position` 을 읽는다)이 남았다. P5 가 끝나면 이 문은 `share_mode_faults` 만
-            남긴다.
+            🔴 **몫 모드는 거래소 포지션 전체를 겨누는 길과 섞이면 안 된다** (T320). 몫 단위 주문
+            (P3) · 대조 · 재시작 · 감사(P4) · 펀딩 · 수수료 · 화면(P5)은 몫을 안다. 지정가 진입 ·
+            메이커 청산 · 재레버 · 반익은 모른다 — 그런 선언이 실린 판은 여기서 멈춘다.
+            ⚠️ 몫 모드를 켜는 스위치는 매매법 선언(`share_same_side`)이다 — 실계좌 다리 선언은
+            세션 · 펀드 재현과 사용자 결정 뒤에 따로 한다.
         """
         if session.feed is not feed:
             raise ValueError(
                 "session.feed 와 러너의 feed 가 다른 객체다 — 러너가 밀어 넣은 봉을 "
                 "세션이 못 본다. 예외가 안 나고 아무 일도 안 일어난다"
             )
-        shared = [book.attribution for book in session.playbooks if book.share_same_side]
-        if shared:
-            raise ValueError(
-                f"몫 나눠 쓰기(share_same_side)를 선언한 매매법 {shared} 이 실렸다 — 러너가 "
-                "펀딩 · 수수료 나누기와 화면(T320 P5)을 갖추기 전에는 실계좌 · 테스트넷으로 "
-                "돌리지 않는다"
-            )
+        if any(book.share_same_side for book in session.playbooks):
+            faults = share_mode_faults(session)
+            if faults:
+                raise ValueError(
+                    "몫 나눠 쓰기(share_same_side) 판에 몫 모드가 못 옮기는 선언이 있다 — "
+                    f"{', '.join(faults)}"
+                )
         self._session = session
         self._feed = feed
         self._decision: frozenset[Timeframe] = frozenset(decision_frames)
@@ -2516,6 +2517,9 @@ class LiveRunner:
             ⛔ 못 찾으면 안 바꾼다(모형값 유지 · 규칙 #4·#8). 한 번 맞추면 `fee_actual` 이 남아
             다시 안 한다.
         """
+        if self._shared:
+            await self._align_fee_shares(trade_id)
+            return
         record = next(
             (item for item in self._session.ledger.records if item.trade_id == trade_id), None
         )
@@ -2586,6 +2590,108 @@ class LiveRunner:
                 "note": "모형 비용 → 거래소 실제 수수료 비율 (원장 실현 = 거래소 실현 · T236)",
             },
         )
+        await self._persist()
+
+    async def _align_fee_shares(self, trade_id: str) -> None:
+        """몫 모드(T320 P5)의 `_align_fee` — 청산 행 하나의 수수료를 **그 생애의 몫들에** 나눈다.
+
+        Args:
+            trade_id: 닫힌 몫의 매매 id.
+
+        Note:
+            🔴 Gate 청산 행은 포지션 하나의 생애(처음 연 때 ~ 0 이 된 때)에 한 줄이고, 분할 청산은
+            그 한 줄로 합쳐진다(`position_closes` Note). 몫이 여럿이면 그 줄의 `pnl_fee` 는 생애 안
+            모든 몫의 진입 · 청산 수수료 합이다 — 한 몫에 다 붙이면 그 몫이 남의 수수료를 낸다.
+
+            ⇒ 몫마다 **거래 명목**(진입 + 불타기 + 청산 계약 x 가격)에 비례해 나눈다(수수료는 거래
+              명목에 비례한다). 비율(`cost_pct`)의 분모는 예전과 같은 잣대인 그 몫의 진입 명목
+              (불타기 포함)이다.
+
+            ⛔ 생애가 아직 안 끝났거나(행 없음 · 포지션이 남았다) · 생애 안 몫이 원장에서 아직
+            열려 있거나 · 계약 수를 모르는 몫이 있으면 안 바꾼다(모형값 유지 · 다음 감사 주기에
+            다시 본다).
+        """
+        record = next(
+            (item for item in self._session.ledger.records if item.trade_id == trade_id), None
+        )
+        if record is None or record.closed_at is None or record.opened_at is None:
+            return
+        if record.fee_actual is not None or not hasattr(self._orders, "position_closes"):
+            return
+        try:
+            rows = cast(
+                "list[dict[str, object]]",
+                await self._orders.position_closes(self.instrument),  # type: ignore[attr-defined]
+            )
+            spec = await self._contract_spec()
+            multiplier = Decimal(str(spec["quanto_multiplier"]))
+        except Exception as exc:
+            self._log.warning(
+                "live_fee_align_unreadable", payload={"trade_id": trade_id, "error": str(exc)[:140]}
+            )
+            return
+        opened = record.opened_at.timestamp()
+        shut = record.closed_at.timestamp()
+        life: tuple[float, float, Decimal] | None = None
+        for row in rows:
+            try:
+                first = float(str(row.get("first_open_time") or "nan"))
+                end = float(str(row.get("time") or "nan"))
+                fee = abs(Decimal(str(row.get("pnl_fee"))))
+            except (ValueError, ArithmeticError):
+                continue
+            if first - 60 <= opened <= end and shut <= end + 900:
+                life = (first, end, fee)
+                break
+        if life is None:
+            self._log.info(
+                "live_fee_align_skipped",
+                payload={"trade_id": trade_id, "why": "생애가 아직 안 끝났다(청산 행 없음)"},
+            )
+            return
+        first, end, fee = life
+        members = [
+            item
+            for item in self._session.ledger.records
+            if item.opened_at is not None
+            and first - 60 <= item.opened_at.timestamp() <= end
+            and (item.closed_at is None or item.closed_at.timestamp() <= end + 900)
+            and item.outcome is not Outcome.CANCELLED
+        ]
+        if any(item.closed_at is None for item in members):
+            self._log.warning(
+                "live_fee_align_skipped",
+                payload={"trade_id": trade_id, "why": "생애가 끝났는데 원장에 열린 몫이 있다"},
+            )
+            return
+        traded = {item.trade_id: share_traded_notional(item, multiplier) for item in members}
+        total = sum(traded.values())
+        if total <= 0 or any(value <= 0 for value in traded.values()):
+            self._log.warning(
+                "live_fee_align_skipped",
+                payload={"trade_id": trade_id, "why": "계약 수를 모르는 몫이 있어 못 나눈다"},
+            )
+            return
+        for item in members:
+            if item.fee_actual is not None:
+                continue
+            part = fee * traded[item.trade_id] / total
+            basis = (
+                Decimal(item.contracts) * item.entry
+                + Decimal(item.add_contracts) * (item.add_fill or item.entry)
+            ) * multiplier
+            ratio = part / basis if basis > 0 else item.cost_pct
+            self._session.ledger.replace(dc_replace(item, cost_pct=ratio, fee_actual=part))
+            self._log.info(
+                "live_fee_aligned",
+                payload={
+                    "trade_id": item.trade_id,
+                    "fee": str(part),
+                    "life_fee": str(fee),
+                    "cost_pct_actual": str(ratio),
+                    "note": "몫 모드 — 생애 수수료를 거래 명목 비로 나눴다 (T320)",
+                },
+            )
         await self._persist()
 
     async def _correct_exit_to_fill(self, trade_id: str) -> None:
@@ -3208,8 +3314,7 @@ class LiveRunner:
             조회 실패는 경고만 — 펀딩 표기는 리스크 감소 행동이 아니다 (§1.2.1).
         """
         if self._shared:
-            # ⛔ T320 P5 전 — 한 번의 펀딩 정산을 몫들에 나누는 규칙(계약 비)이 아직 없다. 한 몫에
-            #    몰아 붙이면 그 몫 손익이 틀린다 — 몫 모드는 P5 전까지 가드가 막는다.
+            await self._sync_funding_shares()
             return
         held = self._session.position
         book = getattr(self._orders, "account_book", None)
@@ -3273,6 +3378,120 @@ class LiveRunner:
             },
         )
         await self._persist()
+
+    async def _sync_funding_shares(self) -> None:
+        """몫 모드(T320 P5)의 `_sync_funding` — 정산 한 줄을 **그때 든 몫들에 계약 비로** 나눈다.
+
+        Note:
+            펀딩은 포지션 명목에 비례하고 몫들은 한 포지션(같은 표시가)을 나눠 쓰므로, 정산 시각에
+            열려 있던 몫의 계약 수 비가 곧 명목 비다. 비율(`pct` = 정산액 ÷ 명목)은 몫마다 같다.
+
+            ⭐ 정산 뒤에 닫힌 몫도 제 몫을 받는다(원장 기록에 직접) — 남은 몫에 몰아 주면 그 몫
+            손익이 틀린다. 창은 **지금 열린 몫 중 가장 먼저 연 시각** 뒤다(그 앞은 예전 길과 같이
+            안 본다). 불타기 계약은 불타기 뒤 정산부터 센다.
+
+            ⛔ 그 시각에 든 몫이 없거나 계약 수를 모르면 안 붙인다(로그) — 추정하지 않는다.
+        """
+        records = self._session.ledger.records
+        shares = [item for item in records if item.outcome is Outcome.OPEN]
+        book = getattr(self._orders, "account_book", None)
+        if not shares or book is None:
+            return
+        now = time.monotonic()
+        if now - self._last_funding_at < FUNDING_SYNC_INTERVAL:
+            return
+        self._last_funding_at = now
+        try:
+            rows = cast("list[dict[str, str]]", await book(limit=100))
+        except Exception as exc:
+            self._log.warning("live_funding_unreadable", payload={"error": str(exc)[:140]})
+            return
+        if not self._funding_rows_seen:
+            self._funding_rows_seen = {key for item in records for key in item.funding_keys}
+        start = min(item.opened_at or item.placed_at for item in shares)
+        fresh, self._funding_rows_seen = attribute_funding(
+            rows,
+            symbol=self.instrument.symbol,
+            opened_at=start,
+            closed_at=None,
+            seen=self._funding_rows_seen,
+        )
+        if not fresh:
+            return
+        notional = Decimal(0)
+        if isinstance(self._orders, PositionAware):
+            try:
+                snap = await self._orders.position_snapshot(self.instrument)
+                notional = abs(Decimal(str(snap.get("value") or "0")))
+                if notional == 0:
+                    size = abs(Decimal(str(snap.get("size") or "0")))
+                    price = Decimal(str(snap.get("mark_price") or snap.get("entry_price") or "0"))
+                    notional = size * price
+            except Exception:
+                notional = Decimal(0)
+        for row in fresh:
+            weights = {
+                item.trade_id: funding_weight(item, row.at)
+                for item in records
+                if item.opened_at is not None
+                and item.opened_at < row.at
+                and (item.closed_at is None or row.at <= item.closed_at)
+            }
+            total = sum(weights.values())
+            if total <= 0:
+                self._log.warning(
+                    "live_share_funding_unowned",
+                    payload={
+                        "key": row.key,
+                        "change": str(row.change),
+                        "note": "그때 든 몫이 없다",
+                    },
+                )
+                continue
+            paid = -row.change
+            pct = paid / notional if notional > 0 else Decimal(0)
+            for trade_id, weight in weights.items():
+                if weight <= 0:
+                    continue
+                part = paid * weight / total
+                self._charge_share_funding(trade_id, part, pct, row.key)
+            self._log.info(
+                "live_funding_synced",
+                payload={
+                    "symbol": self.instrument.symbol,
+                    "key": row.key,
+                    "paid": str(paid),
+                    "shares": {tid: w for tid, w in weights.items() if w > 0},
+                    "note": "몫 모드 — 정산을 그때 든 몫들에 계약 비로 나눴다",
+                },
+            )
+        await self._persist()
+
+    def _charge_share_funding(self, trade_id: str, part: Decimal, pct: Decimal, key: str) -> None:
+        """펀딩 한 조각을 몫 하나에 붙인다 — 열린 몫은 세션으로, 닫힌 몫은 원장 기록에 바로.
+
+        Args:
+            trade_id: 몫 매매 id.
+            part: 이 몫이 낸 USDT(양수 = 냈다).
+            pct: 명목 대비 비율(몫마다 같다).
+            key: 정산 열쇠 — 재시작 뒤 같은 정산을 거른다.
+        """
+        record = next(
+            (item for item in self._session.ledger.records if item.trade_id == trade_id), None
+        )
+        if record is None:
+            return
+        if record.outcome is Outcome.OPEN:
+            self._session.apply_funding(paid=part, pct=pct, keys=(key,), leg=record.playbook)
+            return
+        self._session.ledger.replace(
+            dc_replace(
+                record,
+                funding_paid=record.funding_paid + part,
+                funding_pct=record.funding_pct + pct,
+                funding_keys=tuple(dict.fromkeys((*record.funding_keys, key))),
+            )
+        )
 
     async def _walk_once(self) -> None:
         """걸음 한 번의 본체 — **`_one_step` 만 부른다** (겹침 방어가 거기 있다)."""
@@ -4489,6 +4708,12 @@ class LiveRunner:
         ):
             return self._pnl_findings  # 스로틀 — 무거운 거래소 조회(allOrders·income)를 아낀다
         book = self._session.ledger
+        if self._shared and any(item.outcome is Outcome.OPEN for item in book.records):
+            # ⭐ T320 몫 모드 — 거래소 청산 행은 포지션이 0 이 될 때 한 줄이다(생애 단위). 몫이 남은
+            #    동안 원장은 닫힌 몫의 실현을 세고 거래소는 아직 안 세므로 둘을 대면 거짓 갈림이다.
+            #    **원장이 비었을 때만** 잰다 — 그때 두 쪽이 같은 생애들을 담는다. 그 사이엔 마지막
+            #    결과를 둔다(`accounting_ok` 가 흔들리지 않게).
+            return self._pnl_findings or []
         ours = [item for item in book.closed if item.gain_pct is not None]
         if not ours:
             return self._commit_pnl(found)
@@ -7434,6 +7659,44 @@ def step_stats_of(values: Sequence[float]) -> dict[str, float | int]:
         "p50_ms": round(ordered[len(ordered) // 2], 1),
         "max_ms": round(ordered[-1], 1),
     }
+
+
+def funding_weight(record: TradeRecord, at: datetime) -> int:
+    """정산 시각에 이 몫이 든 계약 수 — 펀딩을 몫에 나누는 무게 (T320 P5).
+
+    Args:
+        record: 몫 기록.
+        at: 정산 시각.
+
+    Returns:
+        진입 계약 - 반익 절반(반익이 그 전이면) + 불타기(불타기가 그 전이면). 모르면 0.
+    """
+    if record.contracts <= 0:
+        return 0
+    base = record.contracts
+    if record.half_at is not None and record.half_at < at:
+        base -= record.contracts // 2
+    add = record.add_contracts if record.add_at is not None and record.add_at < at else 0
+    return max(0, base) + add
+
+
+def share_traded_notional(record: TradeRecord, multiplier: Decimal) -> Decimal:
+    """몫이 거래한 명목 — 진입 + 불타기 + 청산 (T320 P5 · 생애 수수료를 나누는 무게).
+
+    Args:
+        record: 닫힌 몫 기록.
+        multiplier: 계약 승수.
+
+    Returns:
+        USDT 명목. 계약 수나 청산가를 모르면 0.
+    """
+    if record.contracts <= 0 or record.exit_price is None:
+        return Decimal(0)
+    held = Decimal(record.contracts) + Decimal(record.add_contracts)
+    bought = Decimal(record.contracts) * record.entry + Decimal(record.add_contracts) * (
+        record.add_fill or record.entry
+    )
+    return (bought + held * record.exit_price) * multiplier
 
 
 def share_mode_faults(session: Session) -> list[str]:

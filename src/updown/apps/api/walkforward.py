@@ -1851,7 +1851,8 @@ async def set_leverage(key: str, payload: Annotated[dict[str, Any], Body()]) -> 
         raise HTTPException(
             400, f"레버리지는 {LEVERAGE_MIN}~{LEVERAGE_MAX} 사이여야 한다 (받은 값 {wanted})"
         )
-    held = live.session.position
+    # ⭐ T320 — 몫이 하나라도 있으면 보유 중이다(`position` 은 몫이 여럿이면 멈춘다).
+    held = next(iter(live.session.positions), None)
     if held is not None:
         raise HTTPException(
             409,
@@ -4271,7 +4272,8 @@ async def sessions() -> dict[str, Any]:
     #    check_funding 이 보는데 방향 노출은 아무도 안 봤다. 막지 않는다 — 보인다.
     exposure: dict[str, int] = {}
     for live in SESSIONS.values():
-        held = live.session.position
+        # ⭐ T320 — 한 종목의 몫들은 같은 방향 한 포지션이다 — 종목 하나로 센다.
+        held = next(iter(live.session.positions), None)
         if held is not None:
             exposure[held.direction.value] = exposure.get(held.direction.value, 0) + 1
     # 🔴 **건강할 때도 보여야 한다** (2026-08-30). 대조는 갈린 것이 있을 때만 배너로
@@ -5443,13 +5445,14 @@ def _live_only(view: FrameView, session: Session) -> FrameView:
             return -1
         return bisect_right(stamps, moment) - 1
 
-    live = session.position
+    # ⭐ T320 — 몫이 여럿이면 전부 지금 살아 있는 주문이다.
+    live_ids = {item.trade_id for item in session.positions}
     orders = [*session.ledger.records]
-    if live is not None and all(item.trade_id != live.trade_id for item in orders):
-        orders.append(live)
+    known = {item.trade_id for item in orders}
+    orders += [item for item in session.positions if item.trade_id not in known]
     marks: list[dict[str, Any]] = []
     for item in orders:
-        current = live is not None and item.trade_id == live.trade_id
+        current = item.trade_id in live_ids
         marks.append(
             {
                 "kind": "filled",
@@ -5469,7 +5472,7 @@ def _live_only(view: FrameView, session: Session) -> FrameView:
         )
     if marks:
         note = f"주문 {len(marks)}건"
-        if live is not None:
+        for live in session.positions:
             note += f" · 지금 {live.outcome.value} 진입 {live.entry:,.0f}"
         layers.append(Layer(ORDER_FLAG, tuple(marks), note=note))
     return FrameView(
@@ -5562,7 +5565,9 @@ def _state(key: str, at: datetime | None = None, only: Timeframe | None = None) 
         # 🔴 대기 주문을 따로 낸다 — 화면이 "지금 뭘 기다리는지" 를 그린다.
         # 🔴 "왜 아무 일도 안 일어나나" 에 화면이 답할 수 있어야 한다.
         "gate": _gate(session),
-        "position": _record(session.position),
+        # ⭐ T320 — `position` 은 첫 몫(기존 화면), `positions` 는 몫 전부(다리별 몫 줄).
+        "position": _record(next(iter(session.positions), None)),
+        "positions": [_record(item) for item in session.positions],
         "frames": _chart(live, at, only, ttl=_chart_ttl(key, live)),
         "dashboard": {
             "trades": len(book.records),
