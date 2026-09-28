@@ -70,7 +70,7 @@ rsync -az -e "ssh -i $KEY -o BatchMode=yes" scripts/deploy/ "$HOST:$REMOTE_DIR/s
 rsync -az -e "ssh -i $KEY -o BatchMode=yes" Makefile "$HOST:$REMOTE_DIR/"
 
 echo "=== 3) 이미지 전송"
-docker save "$IMG/app:$TAG" "$IMG/web:$TAG" | gzip -1 | $SSH "gunzip | docker load" | tail -2
+docker save "$IMG/app:$TAG" "$IMG/web:$TAG" | gzip -1 | $SSH "nice -n 19 gunzip | nice -n 19 docker load" | tail -2
 
 echo "=== 4) IMAGE_TAG 갱신 · 블루그린"
 $SSH "cd $REMOTE_DIR && sed -i \"s/^IMAGE_TAG=.*/IMAGE_TAG=$TAG/\" .env.live && ENV=live IMAGE_TAG=$TAG bash scripts/deploy/bluegreen.sh" 2>&1 | grep -vE "variable is not set|^#[0-9]+ "
@@ -84,5 +84,9 @@ echo "✅ $TAG 배포 완료"
 
 # 🔴 T310 R1(2026-09-26) — 옛 이미지를 남기면 배포마다 약 730 MB 씩 디스크가 찬다(89% 까지 갔다).
 #    버전 태그 최신 2개(방금 판 + 되돌림용 하나)와 컨테이너가 쓰는 이미지만 남긴다 · 강제 삭제 없음.
-echo "=== 7) 옛 이미지 정리 (최신 2개 · 쓰는 중인 것은 남김)"
-$SSH "cd $REMOTE_DIR && KEEP=2 bash scripts/deploy/prune_images.sh" || echo "⚠️ 이미지 정리 실패 — 배포는 끝났다 · 손으로: bash scripts/ops/remote.sh scripts/deploy/prune_images.sh"
+echo "=== 7) 옛 이미지 정리 (PRUNE=1 일 때만 · 최신 2개 · 쓰는 중인 것은 남김)"
+if [ "${PRUNE:-0}" = "1" ]; then
+  $SSH "cd $REMOTE_DIR && KEEP=2 bash scripts/deploy/prune_images.sh" || echo "⚠️ 이미지 정리 실패 — 배포는 끝났다 · 손으로: bash scripts/ops/remote.sh scripts/deploy/prune_images.sh"
+else
+  echo "건너뜀 — PRUNE=1 이면 지금 · 아니면 조용한 시각에: bash scripts/ops/remote.sh scripts/deploy/prune_images.sh"
+fi

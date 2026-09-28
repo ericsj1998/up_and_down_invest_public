@@ -26,9 +26,9 @@ import {
  *
  * 2026-09-05: 2.5초 → 10초. 1 GB 서버에서 RUN 상세 화면 하나가 3분에 요청 330건(1.5~2.5초 간격)을
  * 만들었다. 4시간 봉 전략의 판을 사람이 보는 데 1.5초 갱신은 필요 없다 — 봉 형성은 useForming 이 따로 본다. */
-const LIST_MS = 10_000;
+const LIST_MS = 20_000;
 /** 상태·건강 갱신 간격 — 사람이 보는 화면이라 목록보다 조금 더 자주. */
-const DETAIL_MS = 5_000;
+const DETAIL_MS = 15_000;
 
 export type LiveView = {
   rows: Summary[];
@@ -64,7 +64,8 @@ export function useLive(live: boolean, frame?: string, pick?: string | null): Li
   const detailing = useRef(false);
 
   const pullList = useCallback(() => {
-    if (listing.current) return;
+    // 🔴 CPU 예산(2026-09-30): 안 보이는 탭이 40판 목록을 계속 당기면 서버가 그만큼 일한다.
+    if (listing.current || document.hidden) return;
     listing.current = true;
     fetchSessions()
       .then((body) => {
@@ -105,7 +106,7 @@ export function useLive(live: boolean, frame?: string, pick?: string | null): Li
       return;
     }
     const pull = () => {
-      if (detailing.current) return;
+      if (detailing.current || document.hidden) return;
       detailing.current = true;
       Promise.allSettled([fetchState(key, frame), fetchHealth(key)])
         .then(([one, two]) => {

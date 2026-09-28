@@ -52,7 +52,7 @@ rsync -az -e "ssh -i $KEY -o BatchMode=yes" scripts/deploy/ "$HOST:$REMOTE_DIR/s
 rsync -az -e "ssh -i $KEY -o BatchMode=yes" Makefile "$HOST:$REMOTE_DIR/"
 
 echo "=== 3) 이미지 전송"
-docker save "$IMG/app:$TAG" "$IMG/web:$TAG" | gzip -1 | $SSH "gunzip | docker load" | tail -2
+docker save "$IMG/app:$TAG" "$IMG/web:$TAG" | gzip -1 | $SSH "nice -n 19 gunzip | nice -n 19 docker load" | tail -2
 
 echo "=== 4c) 거래소 0 확인 (포지션 · 대기 주문 · 손절)"
 PROBE=$(bash scripts/ops/remote.sh scripts/ops/probe_gate.py 2>&1 | grep -E '^(POSITIONS|OPEN_ORDERS|STOP_ORDERS) ' || true)
@@ -80,5 +80,9 @@ echo "=== 6) 밖에서 확인"
 curl -s -o /dev/null -w "https health: %{http_code}\n" --max-time 20 "https://${PUBLIC_DOMAIN:?}/api/health"
 echo "✅ $TAG 배포 완료(stop-first)"
 
-echo "=== 7) 옛 이미지 정리"
-$SSH "cd $REMOTE_DIR && KEEP=2 bash scripts/deploy/prune_images.sh" || echo "⚠️ 이미지 정리 실패 — 배포는 끝났다"
+echo "=== 7) 옛 이미지 정리 (PRUNE=1 일 때만 — 배포 직후 CPU 를 아낀다 · 평소엔 조용한 시각에 prune_images.sh)"
+if [ "${PRUNE:-0}" = "1" ]; then
+  $SSH "cd $REMOTE_DIR && KEEP=2 bash scripts/deploy/prune_images.sh" || echo "⚠️ 이미지 정리 실패 — 배포는 끝났다"
+else
+  echo "건너뜀 — PRUNE=1 이면 지금 · 아니면 조용한 시각에: bash scripts/ops/remote.sh scripts/deploy/prune_images.sh"
+fi

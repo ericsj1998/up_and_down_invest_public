@@ -28,6 +28,7 @@
 import asyncio
 import contextlib
 import json
+import os
 import time
 import uuid
 from collections import deque
@@ -248,6 +249,14 @@ BINANCE 한도를 넘었다(실측 141%, `pnl_audit` 스로틀 뒤에도 피크 
 ⚠️ 대가: 거래소-우선 청산·무방비 탐지 지연이 30→60초. 그러나 **손절 재장착은 매 걸음
 별도로 돌고**(진입축), 브로커측 조건부 손절이 그 사이 포지션을 지킨다 — 이 배경 점검은
 백스톱이지 1차 방어가 아니다. 60초 백스톱은 안전 여유 안이다.
+"""
+
+PROBE_IDLE_TICK = float(os.environ.get("LIVE_PROBE_IDLE_S", "300"))
+"""포지션 · 대기 표 · 몫이 **없는** 판의 점검 주기(초 · 기본 300 · env `LIVE_PROBE_IDLE_S`).
+
+🔴 2026-09-30 CPU 예산: 40판이 60초마다 포지션 · 주문 · 조건부 · 봉을 REST 로 물어 시간당 2만 번을
+넘겼다 — 1 GB 버스트 서버의 크레딧을 평시에 갉아먹는 첫째 원인. 빈 판은 따라잡을 사실(체결 · 손절 ·
+펀딩)이 없으므로 길게 잔다. 포지션이나 걸린 표가 생기면 다음 잠부터 `PROBE_TICK` 으로 돌아온다.
 """
 FUNDING_SYNC_INTERVAL = 300.0
 """거래소 자금 원장에서 펀딩 정산을 읽어 열린 매매에 붙이는 주기 (T226). 정산은 8시간마다다."""
@@ -3036,6 +3045,21 @@ class LiveRunner:
                 payload={"symbol": self.instrument.symbol, "note": "호가가 돌아왔다"},
             )
 
+    def _probe_busy(self) -> bool:
+        """지금 자주 점검해야 하나 — 열린 매매 · 걸린 표 · 감사 이상 중 하나라도 있으면.
+
+        Note:
+            빈 판의 점검을 늦추는 것이지 끄는 것이 아니다(`PROBE_IDLE_TICK`). 감사가 이상을
+            남겼으면(고아 포지션 · 무방비) 원장이 비어 있어도 자주 돈다 — 유령 포지션을 늦게
+            알면 안 된다.
+        """
+        session = self._session
+        if any(item.outcome is Outcome.OPEN for item in session.ledger.records):
+            return True
+        if session.waiting_trade is not None or session.positions:
+            return True
+        return bool(self.findings)
+
     async def _keep_probing(self) -> None:
         """**점검을 스스로 돈다** — 사람이 누를 때까지 기다리지 않는다.
 
@@ -3051,7 +3075,7 @@ class LiveRunner:
             보려고 봉보다 자주 물을 이유가 없다.
         """
         while True:
-            await asyncio.sleep(PROBE_TICK)
+            await asyncio.sleep(PROBE_TICK if self._probe_busy() else PROBE_IDLE_TICK)
             try:
                 self.last_probe = await self.probe()
                 # 🔴 **거래소가 먼저 채웠는지도 여기서 따라잡는다** (2026-09-06 사고 —

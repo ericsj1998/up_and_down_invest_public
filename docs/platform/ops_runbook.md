@@ -47,6 +47,17 @@ bash scripts/deploy/ship.sh                 # main 에서만 · 태그 = v<버�
    줄었으면 로그의 `live_pending_dropped`/`leftover_zombie_entry_swept` 를 본다.
 3. 장중 큰 움직임이 아닐 때. 이미지 전송(600 MB gunzip)이 1 GB 서버 CPU 를 잠깐 다 쓴다.
 
+🔴 **CPU 예산 (2026-09-30 · 2 vCPU 버스트 · 3 vCPU 는 $84 라 못 올린다).** 크레딧이 바닥나면 스틸 40%+ · 리더 상실
+(2026-09-29 사고). 평시 큰 몫은 **40판 x 60초 거래소 점검**이었고 배포 직후는 **gunzip · docker load · 40판 되살리기 ·
+데모 API 되살리기 · 이미지 정리**가 한꺼번에 왔다. 1.26.1 부터:
+- 러너 — 열린 매매 · 걸린 표 · 감사 이상이 **없는** 판은 점검을 `LIVE_PROBE_IDLE_S`(기본 300초)로 잔다. 있는 판은 60초 그대로.
+- 되살리기 폭 `LIVE_MAX_RUNNING`(기본 6 · **서버 `.env.live` 에 3 을 권한다** — 사람이 넣는다).
+- 배포 — `gunzip | docker load` 는 `nice -n 19` · 데모 API 는 실계좌 healthy **뒤 `DEMO_DELAY_S`(기본 900초) 지나서** 뒤에서 뜬다
+  (`/tmp/updown_demo_delayed.log`) · 옛 이미지 정리는 `PRUNE=1 bash scripts/deploy/ship.sh` 일 때만(평소엔 조용한 시각에
+  `bash scripts/ops/remote.sh scripts/deploy/prune_images.sh`).
+- 화면 — 목록 20초 · 상세 15초 · 콘솔 20초 · **탭이 안 보이면 안 당긴다**. 화면을 오래 켜 둘 때는 탭을 뒤로 보낸다.
+- 재는 법: `bash scripts/ops/remote.sh scripts/ops/probe_cpu_budget.sh`(컨테이너별 CPU · 스틸 · nginx 요청 빈도).
+
 되돌리기: `IMAGE_TAG=<이전 태그> ENV=live bash scripts/deploy/bluegreen.sh` (서버에서 · 이미지는 남아 있다).
 
 ⭐ **Docker Desktop 이 꺼져 있으면 `make up`·`make rebuild` 가 먼저 켠다** (`scripts/ops/docker_ensure.sh` · 2026-09-14). WSL 에서

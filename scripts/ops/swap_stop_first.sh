@@ -66,11 +66,21 @@ done
 echo "   상태 $(docker inspect -f '{{.State.Health.Status}}' "${PROJECT}-$NEW-1") · $(date -u +%H:%M:%S)"
 docker logs --since 20m "${PROJECT}-$NEW-1" 2>&1 | grep -oE '"event_type": "(api_started|trader_promoted|live_run_resumed|funds_restored|fund_gate_attached|fund_members_released|live_underfunded|orphan[a-z_]*)"' | sort | uniq -c
 
-echo "=== 5) 데모 API (블루그린 4b 와 같다)"
+echo "=== 5) 데모 API (블루그린 4b 와 같다) — DEMO_DELAY_S(기본 900) 초 뒤 뒤에서 (실계좌 40판 되살리기와 안 겹치게 · 1 GB 버스트 크레딧 · 2026-09-30)"
+DEMO_DELAY_S="${DEMO_DELAY_S:-900}"
 SERVICES="$($C config --services 2>/dev/null || true)"
 if grep -qx api_demo <<<"$SERVICES" && [ -f .env.demo ]; then
-  $C up --no-deps --exit-code-from migrate_demo migrate_demo 2>&1 | grep -iE "error|traceback|exited with code" | tail -3
-  $C up -d --no-deps --wait api_demo && echo "   api_demo 갱신" || echo "⚠️ api_demo 가 healthy 로 안 올라왔다 — 실계좌 영향 없음"
+  demo_up() {
+    $C up --no-deps --exit-code-from migrate_demo migrate_demo 2>&1 | grep -iE "error|traceback|exited with code" | tail -3
+    $C up -d --no-deps --wait api_demo && echo "   api_demo 갱신" || echo "⚠️ api_demo 가 healthy 로 안 올라왔다 — 실계좌 영향 없음"
+  }
+  if [ "$DEMO_DELAY_S" -gt 0 ]; then
+    export -f demo_up; export C
+    setsid nohup bash -c "sleep $DEMO_DELAY_S; demo_up" > /tmp/updown_demo_delayed.log 2>&1 < /dev/null &
+    echo "   api_demo 는 ${DEMO_DELAY_S}초 뒤 · 로그 /tmp/updown_demo_delayed.log · $(date -u +%H:%M:%S)"
+  else
+    demo_up
+  fi
 fi
 
 echo "=== 6) engine · web (블루그린 5 와 같다)"
