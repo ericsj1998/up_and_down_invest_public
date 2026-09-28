@@ -402,6 +402,39 @@ class AddOn:
 
 
 @dataclass(frozen=True, slots=True)
+class QuietAdd:
+    """조용한 반등에 더 싣기 선언 — 진입 다음 봉이 **거래량 없이** 거꾸로 가면 (T318 · 494차).
+
+    진입봉 다음 판정 축(`timeframe`) 봉이 닫힐 때 매매가 열려 있고 · 그 종가가 진입가의
+    **불리한 쪽**(숏이면 위 · 롱이면 아래)이고 · 그 봉 거래량 ÷ 진입봉 거래량 < `vol_ratio` 이면
+    그 종가에 처음 명목의 `frac` 배를 더 산다. 한 매매에 한 번 — 불타기(`add_on`)와 같은 칸을
+    쓴다(먼저 오는 쪽 하나).
+
+    Attributes:
+        vol_ratio: 거래량 비 문턱(연구 앞 창 중앙 · 사후 값을 상수로 박는다).
+        frac: 추가 크기 — 처음 명목 대비.
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+
+    Note:
+        494차: 반등이 거래량 없이 오면 되돌림 매수가 약하다 — 숏이 이어진다. 연구는 MACD 숏에서만
+        ✅(롱 조용한 눌림 ⛔ · 497차). 판정만 세션이 하고 크기 · 증거금은 펀드 문 · 러너가
+        정한다(T308 와 같다).
+    """
+
+    vol_ratio: Decimal
+    frac: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 더 싣기로서 말이 되는지."""
+        if self.vol_ratio <= 0:
+            raise ValueError(f"거래량 비 문턱은 0 보다 커야 한다: {self.vol_ratio}")
+        if not Decimal(0) < self.frac <= Decimal(1):
+            raise ValueError(f"추가 크기는 0 초과 1 이하: {self.frac}")
+
+
+@dataclass(frozen=True, slots=True)
 class NewHighTilt:
     """전고점 크기 기울이기 선언 — 직전 `days` 일 최고가 위 돌파면 `on` 배 · 아니면 `off` 배.
 
@@ -946,6 +979,12 @@ class Playbook:
     """
     add_on: AddOn | None = None
     """불타기(T308) — 확인된 강한 돌파에 한 번 더. 세션은 판정만 기록한다.
+
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2)."""
+    quiet_add: QuietAdd | None = None
+    """조용한 반등에 더 싣기(T318 · 494차) — 진입 다음 봉이 거래량 없이 거꾸로 가면.
+
+    불타기와 한 칸을 쓴다.
 
     ⛔ 선언이 None 이면 동결이다 (§5.6.2)."""
     new_high_tilt: NewHighTilt | None = None

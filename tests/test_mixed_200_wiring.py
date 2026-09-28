@@ -148,7 +148,9 @@ class TestDeclaration:
             assert book.entry_vol_target is None and book.entry_ref_sma_down is None, name
             assert book.entry_fund_dd_max is None, name
         on = {item.playbook_id for item in books.values() if item.entry_vol_target is not None}
-        assert on == {LONG, TRI, MACD, "private_strategy"}  # 420차 넷째 다리도 같은 배수
+        # 420차 넷째 다리 · 513차 N4f 다섯째 다리(일봉 채널)도 같은 배수 —
+        # 연구 size_fn 이 옆 다리 줄 전부에 같은 자
+        assert on == {LONG, TRI, MACD, "private_strategy", "private_strategy"}
 
     def test_legs_survive_a_save_and_restore(self) -> None:
         for leg in mixed_legs():

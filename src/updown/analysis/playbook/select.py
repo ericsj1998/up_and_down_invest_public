@@ -37,6 +37,7 @@ from updown.analysis.playbook.types import (
     PeerOpenCap,
     Playbook,
     PlaybookRegime,
+    QuietAdd,
     RefReturnBand,
     RefSmaDown,
     RefSurgeCap,
@@ -428,6 +429,34 @@ def _add_on(raw: object, name: str, *, full_ride: bool = True) -> AddOn:
         raise PlaybookConfigError(f"{name}.add_on — {exc}") from exc
 
 
+def quiet_add(raw: object, name: str, *, full_ride: bool = True) -> QuietAdd:
+    """조용한 반등에 더 싣기 한 줄 — `{vol_ratio: "0.82…", frac: "0.5"}` (T318 · 494차).
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+        full_ride: 같은 매매법이 반익 없이 끝까지 가는가.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖이거나 · 반익이 있는 매매법인 경우.
+
+    Note:
+        불타기(`add_on`)와 같은 칸(한 매매 한 번)을 쓰므로 같은 이유로 반익 없는 매매법에만 켠다.
+    """
+    if not full_ride:
+        raise PlaybookConfigError(
+            f"{name}.quiet_add — 더 싣기는 반익 없는(full_ride) 매매법에만 켠다"
+        )
+    body = _mapping(raw, f"{name}.quiet_add")
+    try:
+        return QuietAdd(
+            vol_ratio=Decimal(str(body["vol_ratio"])),
+            frac=Decimal(str(body["frac"])),
+        )
+    except (ArithmeticError, KeyError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.quiet_add — {exc}") from exc
+
+
 def depth_tilt(raw: object, name: str) -> DepthTilt:
     """돌파 깊이 크기 기울이기 한 줄 — `{low, high, down, up}` (T307 · 468차).
 
@@ -705,6 +734,15 @@ def _load_file(target: Path) -> list[Playbook]:
                         if body.get("add_on") is None
                         else _add_on(
                             body["add_on"],
+                            f"playbooks.{name}",
+                            full_ride=bool(body.get("full_ride", False)),
+                        )
+                    ),
+                    quiet_add=(
+                        None
+                        if body.get("quiet_add") is None
+                        else quiet_add(
+                            body["quiet_add"],
                             f"playbooks.{name}",
                             full_ride=bool(body.get("full_ride", False)),
                         )

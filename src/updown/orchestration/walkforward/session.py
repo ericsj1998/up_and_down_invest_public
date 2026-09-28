@@ -2585,7 +2585,7 @@ class Session:
             # ⭐ **불타기 판정** (T308) — 이 봉에서 나가지 않는 매매만 본다(롱 · 숏 거울 · 376차).
             #    기록만 한다:
             #    추가 주문 · 증거금은 러너 몫이고 크기는 펀드 문(`_gate_add`)이 답한다.
-            if not flipped and book.add_on is not None:
+            if not flipped and (book.add_on is not None or book.quiet_add is not None):
                 self._maybe_add(book, bar.ts)
                 held = self._open if self._open is not None else held
             # 🔴 **추세가 반대로 선언되기 전까지 보유** (T32 후보 D · `hold_while_trend`).
@@ -2782,10 +2782,10 @@ class Session:
             ⚠️ 여기서는 **판정만** 한다. 얼마나 살지(처음 실제 명목 x 비율 · 반올림 · 명목 상한 ·
             증거금 · 브레이크)는 펀드 원장과 실계좌 러너가 정한다 — 세션은 자리를 모른다.
         """
-        held, rule = self._open, book.add_on
+        held, rule, quiet = self._open, book.add_on, book.quiet_add
         if (
             held is None
-            or rule is None
+            or (rule is None and quiet is None)
             or held.opened_at is None
             or held.add_at is not None
             or held.add_broken
@@ -2796,19 +2796,51 @@ class Session:
             return
         seen = self._add_seen.get(held.trade_id)
         fresh: list[Candle] = []
+        entry_bar: Candle | None = None
         # 🔴 **체결 뒤에 닫힌** 봉만 본다. `opened_at` 은 체결 봉의 **시작**이고 체결은 그 봉
         #    종가다 — 돌파봉 종가에 들어갔으면 돌파봉은 진입 뒤가 아니다. 실계좌 체결가가 돌파봉
         #    종가보다 조금 높으면 돌파봉을 세는 순간 "진입가 아래 마감"으로 기회를 잃는다(371차).
         filled = held.opened_at + interval(self.price_frame or self.step_frame)
         span = interval(book.timeframe)
         for row in reversed(gauge.rows):
-            if row.ts + span <= filled or (seen is not None and row.ts <= seen):
+            if row.ts + span <= filled:
+                entry_bar = row  # 체결 뒤 첫 봉 바로 앞 = 진입봉(T318 거래량 비의 분모)
+                break
+            if seen is not None and row.ts <= seen:
                 break
             fresh.append(row)
         if not fresh:
             return
         self._add_seen[held.trade_id] = fresh[0].ts
         long = held.direction is Direction.LONG
+        if quiet is not None and seen is None and entry_bar is not None:
+            # ⭐ T318 — 진입 다음 **첫** 판정 봉만 본다(494차 `first_bar`). 불리한 쪽 마감 ·
+            #    거래량이 진입봉보다 문턱 비율 아래로 식었으면 그 종가에 더 싣는다. 아니면
+            #    불타기 판정으로 간다.
+            first = fresh[-1]
+            adverse = (first.close < held.entry) if long else (first.close > held.entry)
+            if (
+                adverse
+                and entry_bar.volume > 0
+                and first.volume / entry_bar.volume < quiet.vol_ratio
+            ):
+                base = held.filled_leverage if held.filled_leverage is not None else held.leverage
+                given = self._gate_add(now, base * quiet.frac, held.playbook)
+                held = replace(
+                    held,
+                    add_at=first.ts + span,
+                    add_price=first.close,
+                    add_frac=quiet.frac,
+                    add_exposure=given.size,
+                    add_held=given.blocked,
+                )
+                self._count(f"quiet_add:{book.playbook_id}")
+                self._open = held
+                self.ledger.replace(held)
+                self.journal()
+                return
+        if rule is None:
+            return
         level = held.entry * (Decimal(1) + rule.confirm_pct * held.direction.sign)
         for row in reversed(fresh):
             if (row.close < held.entry) if long else (row.close > held.entry):
