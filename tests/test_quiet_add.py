@@ -138,7 +138,8 @@ class TestDeclaration:
         """연구 원장 문턱 그대로(앞 창 중앙 · `t318_threshold.py`) · 선언 버전 그대로."""
         books = {item.playbook_id: item for item in load_playbooks()}
         on = {name for name, book in books.items() if book.quiet_add is not None}
-        assert on == {"private_strategy"}
+        assert on == {"private_strategy", "private_strategy"}  # 515차 세션 재현용 측정 판
+        assert books["private_strategy"].quiet_add == QUIET
         assert books["private_strategy"].quiet_add == QUIET
         assert books["private_strategy"].version == "0.1.0"
 
