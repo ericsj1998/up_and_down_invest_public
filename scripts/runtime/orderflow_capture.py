@@ -7,9 +7,18 @@
 무엇을 (1분마다 · 종목은 환경 변수 · 서버 기본 = 펀드 바스켓 Gate 40 + 업비트 27):
     book    호가 상위 20단계 — 최우선 호가 · 상위 5/20단 잔량 합 · 불균형 (bid - ask) / (bid + ask)
     trades  직전 60초 체결 — 매수/매도 수량·건수 (Gate: size 부호 · 업비트: ask_bid)
+            Gate 는 1.25.2 부터 체결가 범위도 — 시장가 매수 최고 · 평균가 ·
+            시장가 매도 최저 · 평균가
     stats   (Gate · 5분마다) 미결제약정 · 롱/숏 비율 · 청산량 — /futures/usdt/contract_stats
+    levels  (Gate · 1.25.2 ~) 호가 20단 **층별** 가격 · 수량 — 같은 호가 응답을 한 번 더
+            적는다(호출 추가 없음). 왜: 합계(bid20 · ask20)로는 특정 가격대의 벽이
+            **먹혔는지 · 취소됐는지** 안 보인다 — 사용자 기법 ① 매도 대량벽 소진 ·
+            ④ 허매수 붕괴를 재려면 층별이 있어야 한다(491 · 492차 · 2026-09-28 "가로 하자").
 
 어디에: logs/orderflow/<market>/<symbol>/<YYYY-MM-DD>.jsonl (한 줄 = 한 관측 · UTC 분 단위)
+        층별은 logs/orderflow/GATE_L2/<symbol>/<YYYY-MM-DD>.jsonl — 날이 지나면 .jsonl.gz 로
+        눌러 둔다(90일 약 0.6GB).
+        `ORDERFLOW_L2=0` 이면 층별을 끈다(디스크 · 메모리가 모자랄 때).
         heartbeat 는 logs/orderflow/heartbeat.json.
 
 절대 규칙 #0(어댑터 직접 생성 금지)은 주문 경로의 규칙이다. 이 스크립트는 공개 시세만 httpx 로
@@ -22,8 +31,10 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
+import shutil
 import sys
 import time
 from datetime import UTC, datetime
@@ -46,6 +57,8 @@ UPBIT_MARKETS = tuple(
     s.strip() for s in (os.environ.get("ORDERFLOW_UPBIT") or _UPBIT_DEFAULT).split(",") if s.strip()
 )
 STATS_EVERY = 5  # 분
+L2 = os.environ.get("ORDERFLOW_L2", "1") != "0"
+L2_MARKET = "GATE_L2"
 
 
 def _minute(ts: datetime) -> str:
@@ -58,6 +71,36 @@ def _write(market: str, symbol: str, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def _compact_l2(today: str) -> int:
+    """층별 호가의 지난 날 파일을 gzip 으로 눌러 둔다 — 오늘 파일은 쓰는 중이라 안 건드린다.
+
+    Returns:
+        눌러 둔 파일 수.
+    """
+    done = 0
+    for path in (OUT / L2_MARKET).glob("*/*.jsonl"):
+        if path.stem >= today:
+            continue
+        gz = path.with_suffix(".jsonl.gz")
+        with path.open("rb") as src, gzip.open(gz, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        path.unlink()
+        done += 1
+    return done
+
+
+def _trade_range(prices: list[tuple[float, float]]) -> dict[str, float | None]:
+    """(가격, 수량) 목록 → 최고 · 최저 · 수량 가중 평균가."""
+    if not prices:
+        return {"hi": None, "lo": None, "vwap": None}
+    q = sum(s for _, s in prices)
+    return {
+        "hi": max(p for p, _ in prices),
+        "lo": min(p for p, _ in prices),
+        "vwap": sum(p * s for p, s in prices) / q if q else None,
+    }
 
 
 def _book_summary(
@@ -101,6 +144,17 @@ class Capture:
         bids = [(float(x["p"]), float(x["s"])) for x in d.get("bids", [])]
         asks = [(float(x["p"]), float(x["s"])) for x in d.get("asks", [])]
         _write("GATE", contract, {"ts": _minute(ts), "kind": "book", **_book_summary(bids, asks)})
+        if L2:
+            # 층별 — 가격 · 수량을 거래소 문자열 그대로(반올림으로 층이 합쳐지지 않게) · 최우선부터
+            _write(
+                L2_MARKET,
+                contract,
+                {
+                    "ts": _minute(ts),
+                    "b": [[x["p"], x["s"]] for x in d.get("bids", [])[:20]],
+                    "a": [[x["p"], x["s"]] for x in d.get("asks", [])[:20]],
+                },
+            )
 
     def gate_trades(self, contract: str, ts: datetime) -> None:
         r = self.c.get(f"{GATE}/futures/usdt/trades", params={"contract": contract, "limit": 500})
@@ -110,6 +164,8 @@ class Capture:
         last = self.last_trade_id.get(contract, 0)
         buy_q = sell_q = 0.0
         buy_n = sell_n = 0
+        buys: list[tuple[float, float]] = []
+        sells: list[tuple[float, float]] = []
         max_id = last
         for t in rows:
             tid = int(t.get("id", 0))
@@ -117,14 +173,18 @@ class Capture:
                 continue
             max_id = max(max_id, tid)
             size = float(t.get("size", 0))
+            price = float(t.get("price", 0))
             if size > 0:
                 buy_q += size
                 buy_n += 1
+                buys.append((price, size))
             else:
                 sell_q += -size
                 sell_n += 1
+                sells.append((price, -size))
         self.last_trade_id[contract] = max_id
         tot = buy_q + sell_q
+        b, s = _trade_range(buys), _trade_range(sells)
         _write(
             "GATE",
             contract,
@@ -136,6 +196,11 @@ class Capture:
                 "buy_n": buy_n,
                 "sell_n": sell_n,
                 "buy_ratio": round(buy_q / tot, 4) if tot else None,
+                # 체결가 범위(1.25.2 ~) — 벽 가격까지 체결이 닿았나(먹힘) · 안 닿고 사라졌나(취소)
+                "buy_hi": b["hi"],
+                "buy_vwap": b["vwap"],
+                "sell_lo": s["lo"],
+                "sell_vwap": s["vwap"],
             },
         )
 
@@ -254,6 +319,11 @@ def main() -> int:
         while True:
             ts = datetime.now(UTC)
             res = cap.cycle(ts, with_stats=(cycles % STATS_EVERY == 0))
+            if L2 and (cycles % 60 == 0 or args.once):
+                try:
+                    _compact_l2(ts.date().isoformat())
+                except OSError as exc:  # 누르기 실패는 수집을 멈추지 않는다 — 다음 시간에 다시
+                    print(f"{_minute(ts)} 층별 누르기 실패: {type(exc).__name__}", file=sys.stderr)
             cycles += 1
             (OUT / "heartbeat.json").write_text(
                 json.dumps(

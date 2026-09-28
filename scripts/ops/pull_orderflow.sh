@@ -16,11 +16,12 @@ mkdir -p "$OUT"
 # 🔴 GATE 만 가져오다가 업비트 쪽을 통째로 빠뜨린 적이 있다 (2026-09-21).
 # 사전 등록 판정 기준이 "Gate·업비트 **두 출처가 같은 방향**" 이므로 한쪽만 받으면 판정이 성립하지 않는다.
 MARKETS="${MARKETS:-GATE UPBIT}"
+# 층별 호가(1.25.2 ~ · 날이 지나면 .jsonl.gz)는 크므로 기본에서 뺀다 — 필요할 때 `MARKETS=GATE_L2 bash scripts/ops/pull_orderflow.sh`.
 "${SSH[@]}" "docker exec updown_live-orderflow-1 tar czf - -C logs/orderflow $MARKETS" > "$OUT/_pull.tgz"
 tar xzf "$OUT/_pull.tgz" -C "$OUT" && rm -f "$OUT/_pull.tgz"
 for m in $MARKETS; do
   [ -d "$OUT/$m" ] || { echo "$m: 없음"; continue; }
-  echo "$m: $(find "$OUT/$m" -name '*.jsonl' | wc -l) 파일 · $(du -sh "$OUT/$m" | cut -f1)"
+  echo "$m: $(find "$OUT/$m" -name '*.jsonl*' | wc -l) 파일 · $(du -sh "$OUT/$m" | cut -f1)"
   for d in "$OUT/$m"/*/; do
     s=$(basename "$d"); echo "  $s: $(ls "$d" | head -1) ~ $(ls "$d" | tail -1)"
   done
