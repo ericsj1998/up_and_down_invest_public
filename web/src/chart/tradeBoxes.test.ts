@@ -88,6 +88,11 @@ describe("edgesOf — 세로 경계 둘 (점 대신)", () => {
     expect(got[1]!.label).toBe("보유중 +12.00%");
   });
 
+  it("T320 — 열린 몫은 끝 딱지 머리에 다리 이름 · 닫힌 매매엔 안 붙인다", () => {
+    expect(edgesOf(mark({ open: true, pnl: 12, leg: "일봉 채널" }), STEP)[1]!.label).toBe("일봉 채널 보유중 +12.00%");
+    expect(edgesOf(mark({ pnl: 12, leg: "일봉 채널" }), STEP)[1]!.label).not.toContain("일봉 채널");
+  });
+
   it("숏은 진입 딱지가 '숏 진입' 이다", () => {
     expect(edgesOf(mark({ side: -1 }), STEP)[0]!.label).toBe("숏 진입");
   });

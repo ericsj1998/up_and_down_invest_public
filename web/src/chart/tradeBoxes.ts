@@ -171,6 +171,8 @@ export function edgesOf(trade: TradeMark, step: number): TradeEdge[] {
   const to = Math.max(snap(trade.closedTs, step) + step, from + step);
   const done = verdictOfTrade(trade.pnl, trade.open === true);
   const money = pnlText(trade);
+  // T320 — 열린 몫 여럿은 끝이 같은 자리(지금)라 딱지가 줄지어 선다. 어느 다리 것인지 머리에 적는다.
+  const who = trade.open === true && trade.leg ? `${trade.leg} ` : "";
   return [
     {
       id: trade.id,
@@ -185,6 +187,7 @@ export function edgesOf(trade: TradeMark, step: number): TradeEdge[] {
       // ⭐ 결말만으로는 "얼마나" 를 못 읽는다 — 손절도 -0.6% 와 -12% 는 다른 사건이다.
       // ⭐ 불타기(T308)가 있으면 한 줄 덧붙인다 — 금액에 추가분이 들어 있는 이유가 보이게.
       label:
+        who +
         (money === "" ? done.label : `${done.label} ${money}`) +
         (trade.add ? ` · ${trade.add}` : ""),
       tone: done.tone === "gain" ? "gain" : done.tone === "loss" ? "loss" : "flat",
@@ -460,6 +463,9 @@ export class TradeBoxPrimitive implements ISeriesPrimitive<Time> {
     context.save();
     context.font = `${fontPx}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
     context.textBaseline = "top";
+    // 딱지끼리 겹치면 한 줄씩 내린다 — 열린 몫 여럿은 끝이 같은 자리(지금)라 정확히 포개졌고(T320),
+    // 붙은 매매의 끝 · 시작 딱지도 서로 먹었다("익절 +60보유중 …").
+    const placed: { x0: number; x1: number; y: number }[] = [];
     for (const edge of this.edges) {
       const at = this.x(edge.at, cssWidth);
       if (at === null) continue;
@@ -479,7 +485,11 @@ export class TradeBoxPrimitive implements ISeriesPrimitive<Time> {
       const width = context.measureText(edge.label).width;
       const pad = 4 * hx;
       const textX = edge.side === "open" ? x + pad : x - width - pad;
-      const textY = 6 * vy;
+      const x0 = textX - pad / 2;
+      const x1 = textX + width + pad / 2;
+      let textY = 6 * vy;
+      while (placed.some((r) => r.y === textY && x0 < r.x1 && x1 > r.x0)) textY += fontPx + pad * 1.5;
+      placed.push({ x0, x1, y: textY });
       context.globalAlpha = lit ? 1 : 0.8;
       context.fillStyle = washed(this.colors.paper, 0.82);
       context.fillRect(textX - pad / 2, textY - pad / 2, width + pad, fontPx + pad);

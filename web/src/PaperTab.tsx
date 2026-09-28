@@ -12,7 +12,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { dropSession, probe as runProbe, type Probe } from "./api";
 import { Live } from "./Live";
 import { Chart, type MarkTone } from "./Chart";
-import type { TradeMark } from "./chart/trades";
+import { fmtPrice, type TradeMark } from "./chart/trades";
 import { openPct } from "./chart/tradeBoxes";
 import { addLabel, closedPct } from "./tradeAdd";
 import { splitPosition } from "./shares";
@@ -77,6 +77,17 @@ type Props = {
    */
   named?: (run: string, name: string) => void;
 };
+
+/**
+ * 가격 — 크기에 맞춘 자릿수(차트 `fmtPrice` 와 같은 규칙). 못 읽으면 `—`.
+ *
+ * ⚠️ 전에는 소수 한 자리로 고정이라 ADA(0.24) 진입 · 청산이 `0.2` · `0.3` 으로 보였다 (2026-09-29).
+ */
+function px(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const v = Number(value);
+  return Number.isFinite(v) ? fmtPrice(v) : "—";
+}
 
 export function PaperTab({ run, home, named }: Props) {
   const [frame, setFrame] = useState("15m");
@@ -283,6 +294,10 @@ export function PaperTab({ run, home, named }: Props) {
               ),
           add: addLabel(row.add),
           base,
+          // T320 — 열린 몫 여럿이면 상자 끝 딱지 머리에 다리 이름(끝이 같은 자리라 줄지어 선다).
+          ...(open && shared
+            ? { leg: state?.positions?.find((one) => one.trade_id === row.trade_id)?.leg }
+            : {}),
           reason: row.outcome,
           open,
           // ⭐ 손익 **금액**의 분모 — 없으면(백테스트·옛 행) 화면이 % 만 적는다.
@@ -312,7 +327,14 @@ export function PaperTab({ run, home, named }: Props) {
           t.openedTs > 0 &&
           t.closedTs > 0,
       );
-  }, [state?.log, state?.symbol, state?.frames, health?.run?.margin_budget, health?.exchange?.position]);
+  }, [
+    state?.log,
+    state?.symbol,
+    state?.frames,
+    state?.positions,
+    health?.run?.margin_budget,
+    health?.exchange?.position,
+  ]);
 
   // 로직이 도는가 — 셋을 하나로 합쳐 답한다.
   //
@@ -563,7 +585,7 @@ export function PaperTab({ run, home, named }: Props) {
             value={open ? `${num(position["unrealised_pnl"], 4)} USDT` : "—"}
             tone={open ? (pnl >= 0 ? "gain" : "loss") : undefined}
             hint={
-              open ? `청산가 ${num(position["liq_price"], 1)}` : "포지션 없음"
+              open ? `청산가 ${px(position["liq_price"])}` : "포지션 없음"
             }
           />
           <Card
@@ -571,7 +593,7 @@ export function PaperTab({ run, home, named }: Props) {
             value={open ? `${position["size"]} 계약` : "없음"}
             hint={
               open
-                ? `평단 ${num(position["entry_price"], 1)} · ${position["leverage"]}x`
+                ? `평단 ${px(position["entry_price"])}${position["leverage"] ? ` · ${position["leverage"]}x` : ""}`
                 : "신호가 나면 열린다"
             }
           />
@@ -1028,7 +1050,16 @@ export function PaperTab({ run, home, named }: Props) {
             <tbody>
               {state.log.map((trade) => {
                 const sent = health?.placed?.[trade.trade_id];
-                const gain = trade.gain_pct;
+                // T320 — 열린 몫이 여럿이면 어느 다리 것인지(몫 두 줄이 같은 모양이라 못 가른다).
+                const leg =
+                  (state.positions?.length ?? 0) > 1
+                    ? state.positions?.find((one) => one.trade_id === trade.trade_id)?.leg
+                    : undefined;
+                // 열린 매매는 상자와 같은 값(거래소 미실현 · 몫이면 몫마다 · 증거금 대비) — 전에는 "—" 였다.
+                const held = trade.exit === null;
+                const gain = held
+                  ? (pastTrades.find((one) => one.id === trade.trade_id)?.pnl ?? null)
+                  : trade.gain_pct;
                 const rows = trade.evidence ?? [];
                 const shown = why === trade.trade_id;
                 const picked = focusTrade === trade.trade_id;
@@ -1046,19 +1077,21 @@ export function PaperTab({ run, home, named }: Props) {
                       </td>
                       <td>
                         {trade.outcome}
+                        {leg ? <span className="faint"> · {leg}</span> : null}
                         {trade.half_by ? (
                           <span className="faint"> · {trade.half_by}</span>
                         ) : null}
                       </td>
                       <td>{trade.direction}</td>
-                      <td className="num">{num(trade.entry, 1)}</td>
-                      <td className="num">{num(trade.exit, 1)}</td>
+                      <td className="num">{px(trade.entry)}</td>
+                      <td className="num">{px(trade.exit)}</td>
                       <td
                         className={`num ${
                           gain === null ? "" : gain >= 0 ? "gain" : "loss"
                         }`}
                       >
                         {pct(gain)}
+                        {held && gain !== null ? <span className="faint"> 미실현</span> : null}
                       </td>
                       <td className="num">{num(trade.planned_rr)}</td>
                       {/* 🔴 **거래소가 이 매매를 아는가.** 원장이 보유중인데 여기가
