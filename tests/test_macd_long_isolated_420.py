@@ -121,11 +121,15 @@ class TestLongMirror:
         rules = load_rules()
         long_, short = rules[RULE_ID_V1_LONG].params, rules["private_strategy"].params
         assert long_["sides"] == 1 and short["sides"] == -1
-        # K2 는 숏에만(424 · 437차) · 자기 변동성 크기(vol_size_*)는 롱에만(464차 E-L)
+        # K2 는 숏에만(424 · 437차) · 자기 변동성 크기(vol_size_*)는 롱에만(464차 E-L) ·
+        # SMA 거리 기울기(sma_dist_*)는 숏에만(475차 T316)
         assert {
             k: v for k, v in long_.items() if k != "sides" and not k.startswith("vol_size_")
         } == {
-            k: v for k, v in short.items() if k not in {"sides", "momentum_big", "momentum_small"}
+            k: v
+            for k, v in short.items()
+            if k not in {"sides", "momentum_big", "momentum_small"}
+            and not k.startswith("sma_dist_")
         }
 
 
