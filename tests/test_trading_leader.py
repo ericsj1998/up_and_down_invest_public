@@ -130,3 +130,50 @@ async def test_lock_lost_stops_trading() -> None:
     assert not leader.is_leader
     assert counts["stop"] == 1
     await leader.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_lost_lock_promoter_runs_even_if_stop_hangs() -> None:
+    """🔴 T323 — 정지가 오래 걸려도 승격 루프는 먼저 돈다 · 승격은 정지 뒤에만 (2026-09-29)."""
+    lock = FakeLock(free=False)
+    leader, counts = _leader_with(lock)
+    gate = asyncio.Event()
+
+    async def slow_stop() -> None:
+        counts["stop"] += 1
+        await gate.wait()
+
+    leader._stop = slow_stop  # type: ignore[attr-defined]
+    leader._stop_timeout_s = 5.0  # type: ignore[attr-defined]
+    leader._is_leader = True  # type: ignore[attr-defined]
+    lost = asyncio.create_task(leader._on_lost("TTL 만료"))  # type: ignore[attr-defined]
+    await asyncio.sleep(0.05)
+    assert not leader.is_leader
+    assert leader._promoter is not None and not leader._promoter.done()  # type: ignore[attr-defined]
+    lock.free = True  # 락이 비었다 — 그러나 정지가 안 끝났으니 아직 시작하면 안 된다
+    await asyncio.sleep(0.05)
+    assert counts["start"] == 0
+    gate.set()  # 정지 끝
+    await asyncio.wait_for(lost, 1.0)
+    await asyncio.sleep(0.05)
+    assert counts["start"] == 1
+    assert leader.is_leader
+
+
+@pytest.mark.asyncio
+async def test_lost_lock_stop_timeout_still_promotes() -> None:
+    """🔴 T323 — 정지가 시한을 넘기면 포기하고 승격한다(리더가 영영 비는 것보다 낫다)."""
+    lock = FakeLock(free=True)
+    leader, counts = _leader_with(lock)
+
+    async def hanging_stop() -> None:
+        counts["stop"] += 1
+        await asyncio.Event().wait()
+
+    leader._stop = hanging_stop  # type: ignore[attr-defined]
+    leader._stop_timeout_s = 0.05  # type: ignore[attr-defined]
+    leader._is_leader = True  # type: ignore[attr-defined]
+    await asyncio.wait_for(leader._on_lost("Redis 갱신 실패"), 1.0)  # type: ignore[attr-defined]
+    await asyncio.sleep(0.1)
+    assert counts["start"] == 1
+    assert leader.is_leader

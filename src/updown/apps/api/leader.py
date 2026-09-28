@@ -44,6 +44,12 @@ TRADER_LOCK_KEY = "updown:api:trader"
 #: 팔로워가 승격을 재시도하는 간격(초).
 PROMOTE_RETRY_S = 5.0
 
+#: 리더 상실 뒤 거래 정지에 주는 시한(초). 🔴 2026-09-29: CPU 스틸 속에서 40판 정지가 거래소
+#:   타임아웃에 걸려 끝나지 않았고, 그때까지 승격 재시도가 시작되지 않아 리더가 30분 넘게
+#:   비었다(포지션 0 이라 무해했으나 실계좌가 멈춤).
+#:   시한이 지나면 정지를 포기하고 승격 쪽으로 간다 — 재시작(`_start`)이 판을 다시 붙인다.
+STOP_TIMEOUT_S = 600.0
+
 
 class TradingLeader:
     """거래 시작/중지를 락으로 게이트하는 조정자."""
@@ -73,6 +79,8 @@ class TradingLeader:
         self._stop = stop
         self._promote_retry_s = promote_retry_s
         self._promoter: asyncio.Task[None] | None = None
+        self._stopping: asyncio.Task[None] | None = None
+        self._stop_timeout_s = STOP_TIMEOUT_S
         self._is_leader = False
         self._holds_lock = False
 
@@ -145,6 +153,12 @@ class TradingLeader:
                         "trader_promoted",
                         payload={"note": "이전 리더가 놓았다 — 이제 거래를 시작한다"},
                     )
+                    # T323 — 앞선 정지가 아직 돌고 있으면 끝(또는 시한)까지 기다린 뒤 시작한다.
+                    #   정지와 시작이 겹치면 같은 판이 두 번 붙는다.
+                    stopping = getattr(self, "_stopping", None)
+                    if stopping is not None and not stopping.done():
+                        with contextlib.suppress(Exception):
+                            await stopping
                     await self._promote(held=True)
                     return
             except Exception:
@@ -166,10 +180,31 @@ class TradingLeader:
         )
         self._is_leader = False
         self._holds_lock = False
-        with contextlib.suppress(Exception):
-            await self._stop()
+        # 🔴 T323 — **승격 루프를 먼저** 만든다. 정지(`_stop`)가 스틸 · 거래소 타임아웃으로 오래
+        #    걸려도 재시도는 돌아야 한다(2026-09-29: 정지가 안 끝나 리더가 30분 넘게 비었다).
+        #    승격은 정지가
+        #    끝난(또는 시한이 지난) 뒤에만 시작한다(`_await_promotion`).
+        self._stopping = asyncio.create_task(self._stop_with_timeout(), name="trader-stop")
         if self._promoter is None or self._promoter.done():
             self._promoter = asyncio.create_task(self._await_promotion(), name="trader-promote")
+        with contextlib.suppress(Exception):
+            await self._stopping
+
+    async def _stop_with_timeout(self) -> None:
+        """거래 정지 — 시한(`STOP_TIMEOUT_S`)이 지나면 포기한다(조용한 실패 금지 · 로그)."""
+        limit = getattr(self, "_stop_timeout_s", STOP_TIMEOUT_S)
+        try:
+            await asyncio.wait_for(self._stop(), timeout=limit)
+        except TimeoutError:
+            _logger.error(
+                "trader_stop_timeout",
+                payload={
+                    "timeout_s": limit,
+                    "note": "🔴 정지가 시한 안에 안 끝났다 — 승격 쪽으로 간다(시작이 판을 붙임)",
+                },
+            )
+        except Exception as exc:  # 정지 실패도 승격을 막지 않는다
+            _logger.error("trader_stop_failed", payload={"error": str(exc)[:160]})
 
     async def shutdown(self) -> None:
         """종료 — 승격 루프·하트비트를 멈추고 락을 놓고 거래를 정리한다."""
