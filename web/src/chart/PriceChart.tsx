@@ -24,7 +24,7 @@ import {
 import { buildEnabled, type ChartSettings, type Ohlc } from "./indicators";
 import { applyOverlays, computeOverlays, legend, type OverlayHandle } from "./overlays";
 import { onThemeChange, palette, wash } from "./theme";
-import { tradeLevels, tradeMarkers, tradeZones, type TradeMark } from "./trades";
+import { mergeLevels, tradeLevels, tradeMarkers, tradeZones, type TradeMark } from "./trades";
 import { ZonesPrimitive } from "./ZonesPrimitive";
 
 type Props = {
@@ -36,7 +36,7 @@ type Props = {
   focusId?: string | null;
   /**
    * **넘긴 매매 전부**에 가로선 · 영역을 그린다 (T320) — 한 종목 포지션을 다리 여럿이 나눠 쓰는
-   * 몫들. 여럿이면 선 이름 앞에 다리 이름(`leg`)을 붙인다. `focusId` 보다 먼저다.
+   * 몫들. 여럿이면 선 · 마커 이름을 다리 이름(`leg`)으로 적는다. `focusId` 보다 먼저다.
    */
   focusAll?: boolean;
   settings: ChartSettings;
@@ -162,12 +162,13 @@ export function PriceChart({
     () => (focusAll ? (trades ?? []) : focus === null ? [] : [focus]),
     [focusAll, trades, focus],
   );
+  const named = focused.length > 1;
 
   useEffect(() => {
     const plugin = badges.current;
     if (plugin === null) return;
     const c = palette();
-    const rows: SeriesMarker<Time>[] = tradeMarkers(trades ?? [], step, settings.marks, focus?.id ?? null).map((m) => ({
+    const rows: SeriesMarker<Time>[] = tradeMarkers(trades ?? [], step, settings.marks, focus?.id ?? null, named).map((m) => ({
       time: m.time as Time,
       position: m.position,
       shape: m.shape,
@@ -176,7 +177,7 @@ export function PriceChart({
       size: m.size,
     }));
     plugin.setMarkers(rows);
-  }, [trades, step, settings.marks, focus, ready]);
+  }, [trades, step, settings.marks, focus, named, ready]);
 
   useEffect(() => {
     const drawn = series.current;
@@ -190,18 +191,15 @@ export function PriceChart({
       return;
     }
     const c = palette();
-    const many = focused.length > 1;
-    levels.current = focused.flatMap((t) =>
-      tradeLevels(t, settings.marks).map((l) =>
-        drawn.createPriceLine({
-          price: l.price,
-          color: c[TONES[l.tone]],
-          lineWidth: 1,
-          lineStyle: l.dashed ? LineStyle.Dashed : LineStyle.Solid,
-          axisLabelVisible: true,
-          title: many && t.leg ? `${t.leg} ${l.title}` : l.title,
-        }),
-      ),
+    levels.current = mergeLevels(focused.flatMap((t) => tradeLevels(t, settings.marks, named))).map((l) =>
+      drawn.createPriceLine({
+        price: l.price,
+        color: c[TONES[l.tone]],
+        lineWidth: 1,
+        lineStyle: l.dashed ? LineStyle.Dashed : LineStyle.Solid,
+        axisLabelVisible: true,
+        title: l.title,
+      }),
     );
     rug.set(
       focused.flatMap((t) => tradeZones(t, step, settings.marks)).map((z) => ({
@@ -225,7 +223,7 @@ export function PriceChart({
         to: Math.min(last, to) as Time,
       });
     }
-  }, [focused, step, settings.marks, bars, ready, autoZoom]);
+  }, [focused, named, step, settings.marks, bars, ready, autoZoom]);
 
   const shown = legend(overlaySeries);
   return (

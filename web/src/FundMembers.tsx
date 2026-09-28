@@ -99,7 +99,7 @@ function MemberCard({
       {/* ⭐ **먼저 보여야 하는 것** — 포지션 · 손익 · 손익금액 · 증거금 (사용자 요구 2026-09-21).
           전에는 몫·손절·목표와 한 줄에 섞여 작은 회색 글씨였다. */}
       {m.holding && m.position ? (
-        <div style={{ margin: "4px 0 2px" }}>
+        <div className="member-pos" style={{ margin: "4px 0 2px" }}>
           <b>{m.position.side}</b>{" "}
           {shares ? (
             <span className="faint">몫 {shares.length}</span>

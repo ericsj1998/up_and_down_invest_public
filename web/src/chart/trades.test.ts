@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "./indicators/settings";
-import { favorable, snap, toTradeMark, tradeLevels, tradeMarkers, tradeZones, type TradeMark } from "./trades";
+import {
+  favorable,
+  mergeLevels,
+  snap,
+  toTradeMark,
+  tradeLevels,
+  tradeMarkers,
+  tradeZones,
+  type TradeMark,
+} from "./trades";
 
 const long: TradeMark = {
   id: "a",
@@ -73,6 +82,31 @@ describe("tradeLevels / tradeZones", () => {
     expect(z).toHaveLength(2);
     expect(z[1]).toMatchObject({ low: 0.0476, high: 0.0519, tone: "loss", alpha: 0.32 });
     expect((z[0]?.to ?? 0) - (z[0]?.from ?? 0)).toBe(14_400);
+  });
+});
+
+describe("몫 여럿 (T320)", () => {
+  const a: TradeMark = { ...long, id: "s1", leg: "돌파 롱", exit: 110, pnl: 5, reason: "보유중", open: true };
+  const b: TradeMark = { ...long, id: "s2", leg: "일봉 채널", entry: 104, stop: 94, exit: 110, pnl: -2, reason: "보유중", open: true };
+  it("이름표는 다리 이름 — 방향 낱말을 겹쳐 적지 않는다", () => {
+    const got = tradeLevels(a, marks, true).map((l) => l.title);
+    expect(got[0]).toBe("돌파 롱 손절 90.00");
+    expect(got[1]).toBe("돌파 롱 진입 100.00");
+    expect(got.join(" ")).not.toContain("롱 롱");
+    const m = tradeMarkers([a, b], 14_400, marks, null, true).map((x) => x.text);
+    expect(m).toContain("일봉 채널 진입 104.00");
+    expect(m.join(" ")).not.toContain("롱 롱");
+  });
+  it("이름이 없거나 named 가 아니면 예전 그대로", () => {
+    expect(tradeLevels(a, marks)[1]?.title).toBe("롱 진입 100.00");
+    expect(tradeLevels(long, marks, true)[1]?.title).toBe("롱 진입 100.00");
+  });
+  it("지금가 선은 한 번 · 색이 엇갈리면 중립", () => {
+    const got = mergeLevels([...tradeLevels(a, marks, true), ...tradeLevels(b, marks, true)]);
+    const now = got.filter((l) => l.title.startsWith("보유중"));
+    expect(now).toHaveLength(1);
+    expect(now[0]?.tone).toBe("entry");
+    expect(got).toHaveLength(5);
   });
 });
 

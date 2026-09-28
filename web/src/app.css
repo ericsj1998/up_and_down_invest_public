@@ -1269,6 +1269,11 @@ textarea.input {
 .member-card .share-line {
   line-height: 1.5;
 }
+/* 줄바꿈은 띄어쓰기에서만 — "몫 대비" 가 "몫 대 / 비" 로 끊겼다 (T320 · 2026-09-29). */
+.member-card .member-pos,
+.member-card .share-line {
+  word-break: keep-all;
+}
 
 /* ── 폰 폭(540px 미만 = Tailwind `sm` 아래 · MT 화면 구간) — 사용자 2026-09-27: "모바일에서는 너무 칸이나 배치가 많고 문자도 겹친다" ──
    컴퓨터 화면은 그대로 두고 좁을 때만 덧붙인다. */

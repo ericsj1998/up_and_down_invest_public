@@ -99,6 +99,16 @@ export interface Marker {
 }
 
 /**
+ * 이름표 머리 — `named` 이고 다리 이름이 있으면 그것(`돌파 롱 진입`), 아니면 방향(`롱 진입`).
+ *
+ * 몫 여럿(T320)을 한 판에 그릴 때 쓴다 — 다리 이름에 방향이 이미 들어 있어(`돌파 롱`) 앞에 붙이면
+ * `돌파 롱 롱 진입` 이 된다. 방향은 화살표가 말한다.
+ */
+function head(t: TradeMark, named: boolean): string {
+  return named && t.leg ? t.leg : sideLabel(t.side);
+}
+
+/**
  * 마커 — 진입은 화살표(롱 ↑ 아래 · 숏 ↓ 위), 청산은 원(손익 색). 선택한 매매는 크게.
  * 같은 봉에 여럿이면 라이브러리가 겹쳐 그린다 — 글자는 선택한 것에만 남겨 덜 지저분하게.
  */
@@ -107,6 +117,7 @@ export function tradeMarkers(
   step: number,
   marks: MarkSettings,
   focusId: string | null,
+  named = false,
 ): Marker[] {
   const out: Marker[] = [];
   const many = trades.length > 40;
@@ -119,7 +130,7 @@ export function tradeMarkers(
         position: t.side === 1 ? "belowBar" : "aboveBar",
         shape: t.side === 1 ? "arrowUp" : "arrowDown",
         tone: "entry",
-        text: labels ? `${sideLabel(t.side)} 진입 ${fmtPrice(t.entry)}` : "",
+        text: labels ? `${head(t, named)} 진입 ${fmtPrice(t.entry)}` : "",
         size: focused ? 2 : 1,
       });
     }
@@ -146,15 +157,33 @@ export interface Level {
   dashed: boolean;
 }
 
-/** 선택한 매매의 가로선 — 손절 · 진입 · 청산. */
-export function tradeLevels(t: TradeMark, marks: MarkSettings): Level[] {
+/** 선택한 매매의 가로선 — 손절 · 진입 · 청산. `named` 면 손절 · 진입 앞에 다리 이름(몫 여럿 · T320). */
+export function tradeLevels(t: TradeMark, marks: MarkSettings, named = false): Level[] {
   if (!marks.lines) return [];
+  const who = named && t.leg ? `${t.leg} ` : "";
   const out: Level[] = [
-    { price: t.stop, title: `손절 ${fmtPrice(t.stop)}`, tone: "loss", dashed: true },
-    { price: t.entry, title: `${sideLabel(t.side)} 진입 ${fmtPrice(t.entry)}`, tone: "entry", dashed: false },
+    { price: t.stop, title: `${who}손절 ${fmtPrice(t.stop)}`, tone: "loss", dashed: true },
+    { price: t.entry, title: `${head(t, named)} 진입 ${fmtPrice(t.entry)}`, tone: "entry", dashed: false },
     { price: t.exit, title: `${reasonLabel(t.reason)} ${fmtPrice(t.exit)}`, tone: (t.pnl ?? 0) >= 0 ? "gain" : "loss", dashed: false },
   ];
   return out;
+}
+
+/**
+ * 같은 값 · 같은 이름의 가로선을 하나로 (T320 · 몫 여럿).
+ *
+ * 보유 중인 몫들은 "지금가" 선을 똑같이 갖는다 — 그대로 그리면 축 딱지가 겹쳐 쌓인다. 색이
+ * 엇갈리면(한 몫은 이익 · 한 몫은 손실) 어느 쪽 색도 아니므로 중립(`entry`)으로 칠한다.
+ */
+export function mergeLevels(levels: readonly Level[]): Level[] {
+  const seen = new Map<string, Level>();
+  for (const l of levels) {
+    const key = `${l.price}:${l.title}`;
+    const had = seen.get(key);
+    if (had === undefined) seen.set(key, { ...l });
+    else if (had.tone !== l.tone) had.tone = "entry";
+  }
+  return [...seen.values()];
 }
 
 export interface Zone {
