@@ -23,6 +23,7 @@ from updown.decision.portfolio_rules import (
     day_halted,
     drawdown_scale,
     notional_room,
+    peer_crowded,
     slot_free,
 )
 
@@ -177,6 +178,14 @@ class SlotGate:
     브레이크 뒤 · 총 명목 여유 앞에 건다(연구 원장이 낙폭 줄임 뒤의 크기에 상한을 걸었다).
     불타기(`grant_add`)엔 안 건다 — 추가는 처음 실제 노출의 비율이라 이미 같이 줄어 있다."""
 
+    peer_ports: Mapping[str, PositionPort] | None = None
+    """**짝 다리의 눈으로 본** 펀드 포트들 (512차 N4) — `peer_open_max` 가 센다. None = 없음."""
+
+    peer_open_max: int = 0
+    """짝 다리 보유가 이 값 **이상**이면 이 다리는 새로 안 든다(512차 N4 · 0 = 없음).
+
+    원장의 기록만 센다(`open_count`) — 별도 카운터가 없어 재시작해도 같다."""
+
     def blocks(self, at: datetime, exposure: Decimal = Decimal(0)) -> str | None:
         """지금 새 자리를 열면 안 되는 이유 — 없으면 None.
 
@@ -187,6 +196,7 @@ class SlotGate:
         Returns:
             `"slots"`(자리 없음) · `"notional"`(총 명목 상한) · `"day_halt"`(그날 정지) ·
             `"fund_dd"`(펀드 낙폭 동안 이 다리 끔 · 크기를 넘긴 물음에서만) ·
+            `"peer_open"`(짝 다리가 몰려 있음 · 512차 N4) ·
             None(열어도 됨).
 
         Note:
@@ -227,6 +237,10 @@ class SlotGate:
                 return Grant(Decimal(0), "entry_log")
             if recent >= self.entry_limit:
                 return Grant(Decimal(0), "entry_limit")
+        if self.peer_ports is not None and self.peer_open_max > 0:
+            peer_open = sum(port.open_count() for port in self.peer_ports.values())
+            if peer_crowded(peer_open, self.peer_open_max):
+                return Grant(Decimal(0), "peer_open")
         return self._sized(at, exposure, cap=self.entry_cap)
 
     def _recent_entries(self, at: datetime) -> int | None:

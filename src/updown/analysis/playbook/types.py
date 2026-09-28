@@ -526,6 +526,34 @@ class EntryLimit:
 
 
 @dataclass(frozen=True, slots=True)
+class PeerOpenCap:
+    """**다른 다리가 몰려 있으면** 이 다리는 새로 안 든다 — 짝 다리 보유가 `count` 이상 (512차 N4).
+
+    511 · 512차: 일봉 채널 새 다리(DCH)의 신호 건당은 그 순간 열린 1H 돌파 롱이 0 · 1 · 2개면
+    +11 · +10 · +16% 인데 4 · 5 · 6개면 -4 · -0.3 · -1.8% — 알트가 이미 한꺼번에 오른 뒤의 늦은
+    돌파이고, 같은 방향 노출을 쌓아 급락 때 브레이크를 민다(509차). 4개 이상이면 건너뛰는 칸(N4)이
+    이웃 2 · 3개와 함께 기준 대비 ✅ · 새 연구 기준 판 N4f.
+
+    Attributes:
+        leg: 짝 다리의 매매법 id(같은 묶음의 구성원) — 다리를 만들 때 귀속 키로 바꾼다.
+        count: 짝 다리 보유가 이 값 **이상**이면 막는다(1 이상).
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+    """
+
+    leg: str
+    count: int
+
+    def __post_init__(self) -> None:
+        """값이 문턱으로서 말이 되는지."""
+        if not self.leg:
+            raise ValueError("짝 다리 id 가 비었다")
+        if self.count < 1:
+            raise ValueError(f"짝 다리 보유 문턱은 1 이상: {self.count}")
+
+
+@dataclass(frozen=True, slots=True)
 class BreadthCap:
     """조건부 총 명목 상한 선언 — `min` 종목 이상이 같이 밴드를 뚫었을 때만 상한을 `cap` 으로.
 
@@ -930,6 +958,12 @@ class Playbook:
     ⛔ None 이면 동결이다 (§5.6.2)."""
     entry_limit: EntryLimit | None = None
     """다리의 신규 진입 수 상한(452차) — 펀드 문이 센다.
+
+    펀드 다리 값이라 돌던 펀드엔 묶음 `legs_revision` 을 올려야 들어간다.
+
+    ⛔ None 이면 동결이다 (§5.6.2)."""
+    entry_peer_open_max: PeerOpenCap | None = None
+    """짝 다리 보유가 문턱 이상이면 이 다리는 새로 안 든다(512차 N4) — 펀드 문이 센다.
 
     펀드 다리 값이라 돌던 펀드엔 묶음 `legs_revision` 을 올려야 들어간다.
 

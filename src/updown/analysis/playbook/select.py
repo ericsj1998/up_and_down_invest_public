@@ -34,6 +34,7 @@ from updown.analysis.playbook.types import (
     DrawdownBrake,
     EntryLimit,
     NewHighTilt,
+    PeerOpenCap,
     Playbook,
     PlaybookRegime,
     RefReturnBand,
@@ -326,6 +327,26 @@ def entry_limit(raw: object, name: str) -> EntryLimit:
         return EntryLimit(count=int(body["count"]), hours=int(body["hours"]))
     except (KeyError, TypeError, ValueError) as exc:
         raise PlaybookConfigError(f"{name}.entry_limit — {exc}") from exc
+
+
+def peer_open_cap(raw: object, name: str) -> PeerOpenCap:
+    """짝 다리 보유 문턱 한 줄 — `{leg: private_strategy, count: 4}` (512차 N4).
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_peer_open_max")
+    try:
+        return PeerOpenCap(leg=str(body["leg"]), count=int(body["count"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_peer_open_max — {exc}") from exc
 
 
 def _ref_band(raw: object, name: str) -> RefReturnBand:
@@ -702,6 +723,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         None
                         if body.get("entry_limit") is None
                         else entry_limit(body["entry_limit"], f"playbooks.{name}")
+                    ),
+                    entry_peer_open_max=(
+                        None
+                        if body.get("entry_peer_open_max") is None
+                        else peer_open_cap(body["entry_peer_open_max"], f"playbooks.{name}")
                     ),
                     entry_exposure_cap=_entry_exposure_cap(body, f"playbooks.{name}"),
                     entry_fund_dd_max=_fund_dd_max(body, f"playbooks.{name}"),

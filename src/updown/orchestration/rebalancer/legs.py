@@ -46,6 +46,8 @@ class FundLeg:
         isolated: 이 다리의 손익을 펀드 낙폭 브레이크에서 뺀다(420차 · `Coordinator.core`).
         entry_limit: 펀드 전체에서 이 다리의 신규 진입 수 상한(452차). None = 없음.
         entry_cap: 한 건 처음 노출 상한(명목 ÷ 자리 예산 · 452차 C75). None = 없음.
+        peer_open_max: (짝 다리 귀속 키, 문턱) — 짝 다리 보유가 문턱 이상이면 새로 안 든다
+            (512차 N4). None = 없음.
     """
 
     playbook: str
@@ -64,6 +66,7 @@ class FundLeg:
     isolated: bool = False
     entry_limit: EntryLimit | None = None
     entry_cap: Decimal | None = None
+    peer_open_max: tuple[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """저장용 딕셔너리 — 돌던 펀드의 다리는 선언이 바뀌어도 안 바뀐다(저장본이 이긴다)."""
@@ -100,6 +103,11 @@ class FundLeg:
                 else {"count": self.entry_limit.count, "hours": self.entry_limit.hours}
             ),
             "entry_cap": None if self.entry_cap is None else str(self.entry_cap),
+            "peer_open_max": (
+                None
+                if self.peer_open_max is None
+                else {"leg": self.peer_open_max[0], "count": self.peer_open_max[1]}
+            ),
         }
 
     @classmethod
@@ -118,6 +126,11 @@ class FundLeg:
         raw_halt = data.get("halt_dd_at")  # 1.17.0 앞 저장본엔 없다 — 없으면 끔(그때 돌던 그대로)
         raw_limit = data.get("entry_limit")  # 1.23.0 앞 저장본엔 없다 — 없으면 끔
         raw_entry_cap = data.get("entry_cap")
+        raw_peer = data.get("peer_open_max")  # T320 앞 저장본엔 없다 — 없으면 끔
+        peer = None
+        if isinstance(raw_peer, Mapping):
+            body = cast("Mapping[str, Any]", raw_peer)
+            peer = (str(body["leg"]), int(body["count"]))
         limit = None
         if isinstance(raw_limit, Mapping):
             body = cast("Mapping[str, Any]", raw_limit)
@@ -149,6 +162,7 @@ class FundLeg:
             isolated=bool(data.get("isolated", False)),  # 1.20 앞 저장본엔 없다 — 없으면 섞음
             entry_limit=limit,
             entry_cap=None if raw_entry_cap in (None, "") else Decimal(str(raw_entry_cap)),
+            peer_open_max=peer,
         )
 
 
@@ -197,6 +211,15 @@ def declared_legs(
         mine = tuple(symbol for symbol in members if symbol in set(scope))
         if not mine:
             raise LegError(f"{name} — 펀드 종목 중에 이 다리의 종목이 하나도 없다")
+        peer: tuple[str, int] | None = None
+        if book.entry_peer_open_max is not None:
+            cap = book.entry_peer_open_max
+            peer_book = by_id.get(cap.leg)
+            if peer_book is None or cap.leg not in wrapper.bundle or cap.leg == name:
+                raise LegError(
+                    f"{name}.entry_peer_open_max.leg {cap.leg!r} — 같은 묶음의 다른 구성원이 아니다"
+                )
+            peer = (peer_book.attribution, cap.count)
         out.append(
             FundLeg(
                 playbook=book.playbook_id,
@@ -215,6 +238,7 @@ def declared_legs(
                 isolated=book.drawdown_isolated,
                 entry_limit=book.entry_limit,
                 entry_cap=book.entry_exposure_cap,
+                peer_open_max=peer,
             )
         )
     covered = {symbol for leg in out for symbol in leg.symbols}
@@ -317,10 +341,19 @@ def leg_gate(
         줄여서 진입의 허용 하한은 단일 문과 같은 규칙(다리 배율 ÷ 4)이다.
     """
     gates: dict[str, SlotGate] = {}
+    by_attr = {leg.attribution: leg for leg in legs}
     for leg in legs:
         brake = leg.drawdown_brake
         breadth = leg.breadth_cap
         watch = brake is not None or leg.halt_dd_at is not None
+        peer_ports: LegPorts | None = None
+        peer_max = 0
+        if leg.peer_open_max is not None:
+            peer_attr, peer_max = leg.peer_open_max
+            peer_leg = by_attr.get(peer_attr)
+            # 짝 다리가 저장본에 없으면(묶음을 바꿔 되살림) 모르는 채 세지 않는다 — 빈 범위로 센다.
+            scope: frozenset[str] = frozenset() if peer_leg is None else frozenset(peer_leg.symbols)
+            peer_ports = LegPorts(ports, peer_attr, scope)
         gates[leg.attribution] = SlotGate(
             ports=LegPorts(ports, leg.attribution, frozenset(leg.symbols)),
             slots=leg.slots,
@@ -337,5 +370,7 @@ def leg_gate(
             entry_limit=0 if leg.entry_limit is None else leg.entry_limit.count,
             entry_window_hours=24 if leg.entry_limit is None else leg.entry_limit.hours,
             entry_cap=leg.entry_cap,
+            peer_ports=peer_ports,
+            peer_open_max=peer_max,
         )
     return LegGate(gates)

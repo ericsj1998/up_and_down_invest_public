@@ -57,6 +57,24 @@ def slot_free(open_count: int, slots: int) -> bool:
     return slots <= 0 or open_count < slots
 
 
+def peer_crowded(peer_open: int, limit: int) -> bool:
+    """짝 다리가 이미 몰려 있나 — 그러면 이 다리는 새로 안 든다 (512차 N4).
+
+    Args:
+        peer_open: 펀드 전체에서 지금 열린 짝 다리 포지션 수.
+        limit: 문턱. 0 이하면 규칙 없음.
+
+    Returns:
+        문턱 이상이면 True(막는다).
+
+    Note:
+        511 · 512차: 1H 돌파 롱이 4개 이상 열려 있을 때 난 일봉 채널 돌파는 건당 음수(알트가 이미
+        한꺼번에 오른 뒤의 늦은 돌파) — 그 자리를 건너뛰면 같은 방향 노출이 쌓여 급락 때 브레이크를
+        미는 일도 준다.
+    """
+    return limit > 0 and peer_open >= limit
+
+
 def day_halted(exits: Iterable[tuple[datetime, bool]], at: datetime, after_stops: int) -> bool:
     """같은 날(UTC) 손절이 `after_stops` 번 **연속**이면 그날은 새로 안 산다 (§24).
 
