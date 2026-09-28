@@ -44,6 +44,8 @@ class PlaybookRegime(StrEnum):
         RANGE: 횡보 **그리고 유효한 박스가 있다**.
         UPTREND: 상승.
         DOWNTREND: 하락.
+        ANY: **어느 국면이든** — 국면을 안 쓰는 다리(MACD · 돌파 · 일봉 채널)용
+            (2026-09-29 · 515차 §304-1).
 
     Note:
         🔴 **`RANGE` 는 추세 하나로 정해지지 않는다** (playbooks.md 확정 7).
@@ -58,6 +60,7 @@ class PlaybookRegime(StrEnum):
     RANGE = "RANGE"
     UPTREND = "UPTREND"
     DOWNTREND = "DOWNTREND"
+    ANY = "ANY"
 
     def matches(self, trend: TrendDirection | None, *, has_box: bool) -> bool:
         """지금 시장이 이 국면인가.
@@ -74,6 +77,13 @@ class PlaybookRegime(StrEnum):
             다르고, 섞으면 워밍업 구간이 전부 횡보로 잡혀 박스권 매매가 근거 없이
             돈다 (절대 규칙 #8).
         """
+        # ⭐ ANY — 추세를 몰라도(워밍업) 돈다. 연구 원장에는 국면 층이 없어 이것이 연구와 같은
+        #    동작이다. `[RANGE, UPTREND, DOWNTREND]` 는 "모든 국면" 이 아니었다 — 횡보인데 박스가
+        #    없는 봉은 어느 국면도 아니어서 탐지기가 불리지도 않았다(515차 §304-1 · MACD 숏 379건
+        #    중 3건 · 사용자 "1번으로").
+        #    탐지기가 제 워밍업(일봉 MACD 26일 등)을 스스로 지키므로 여기서 더 막지 않는다.
+        if self is PlaybookRegime.ANY:
+            return True
         if trend is None:
             return False
         if self is PlaybookRegime.RANGE:
