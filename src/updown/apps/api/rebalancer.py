@@ -822,6 +822,7 @@ async def restore_funds() -> int:
             _logger.warning("fund_restore_failed: %s %s", path.name, exc)
     if restored:
         _logger.info("funds_restored: %d", restored)
+        _schedule_supersede()  # T332 — 대체 선언이 있으면 마감 밖 창에서 자동 전환
     if PENDING_FUNDS:
         # 🔴 error 다 — 이 상태로 돌면 그 펀드의 판들이 **예산 없이** 매매한다.
         #    원장이 저마다 계좌 전액을 자기 것으로 세므로 주문이 서로를 밀어낸다.
@@ -2616,7 +2617,21 @@ async def _change_playbook(
     require_market_trade(request, Market(fund.market))  # T242
     if new_pb == fund.playbook:
         return await _status(fund)
+    await _switch_playbook(fund, new_pb, payload)
+    return await _status(fund)
 
+
+async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) -> None:
+    """펀드의 매매법을 갈아 끼운다 — 화면(`_change_playbook`)과 자동 대체(T332)가 같이 쓰는 몸통.
+
+    Args:
+        fund: 펀드.
+        new_pb: 새 매매법 id (선언에 있어야 한다 — 부르는 쪽이 확인했다).
+        payload: `{members?}` — 바스켓을 넓힐 때만 읽는다(T304).
+
+    Raises:
+        HTTPException: 400 — 다리 선언이 안 맞거나 세션 전환 실패.
+    """
     # 🔴 **계좌 층도 새 매매법의 것으로 바꾼다** (T286 · 2026-09-19). 전에는 진입·청산만 갈아
     #    끼우고 자리·상한·줄여서 진입·낙폭 브레이크는 **옛 매매법의 값이 그대로 남았다**.
     #    그러면 a6 로 바꾼 펀드가 a6 의 진입을 하면서 계좌 층이 없는 A0 (MDD 45%)로 돌고,
@@ -2730,7 +2745,128 @@ async def _change_playbook(
     fund.legs_revision = _declared_legs_revision(new_pb) if new_legs else 0
     _reattach_gate(fund)  # 갈아 끼운 세션에도
     await _tick(fund)
-    return await _status(fund)
+
+
+def superseding_playbook(current: str, books: Sequence[Playbook]) -> str | None:
+    """`current` 를 대체하는 매매법 id — 선언의 `superseded_by` 를 따라간다 (순수 · T332).
+
+    Args:
+        current: 펀드가 지금 도는 매매법 id.
+        books: 선언 전부.
+
+    Returns:
+        끝까지 따라간 대체 id. 대체 선언이 없거나 그 id 가 선언에 없으면 None(그대로 돈다).
+        고리(a → b → a)는 5단에서 끊고 None.
+    """
+    by = {item.playbook_id: item for item in books}
+    seen: set[str] = set()
+    here = current
+    for _ in range(5):
+        item = by.get(here)
+        nxt = None if item is None else item.superseded_by
+        if not nxt or nxt not in by or nxt in seen or nxt == here:
+            break
+        seen.add(here)
+        here = nxt
+    return None if here == current else here
+
+
+SUPERSEDE_BASE_S = 600
+"""리더 기동 뒤 자동 전환까지 기다리는 최소 초 — 되살리기 · 블루그린 옛 슬롯 종료가 끝난 뒤
+(1 GB 서버)."""
+SUPERSEDE_LEAD_S = 300
+SUPERSEDE_TAIL_S = 900
+"""전환(약 2.5분 · 40판 재기동)이 정시 마감에 걸치지 않게 — 매시 05분 ~ 45분 창에서만 시작한다
+(1.27.0 교체가 10:00Z 마감과 겹쳐 그 봉을 아무도 판정하지 않았다 · `deploy-not-at-bar-close`)."""
+
+
+def supersede_delay_s(now: datetime) -> float:
+    """자동 전환 시작까지 기다릴 초 (순수 · T332).
+
+    Args:
+        now: 지금(UTC).
+
+    Returns:
+        `SUPERSEDE_BASE_S` 뒤. 그 시각이 정시 마감 앞뒤(`LEAD` · `TAIL`) 안이면 다음 창(정시 + LEAD)
+        까지 더.
+    """
+    at = now + timedelta(seconds=SUPERSEDE_BASE_S)
+    into = at.minute * 60 + at.second
+    extra = 0
+    if into < SUPERSEDE_LEAD_S:
+        extra = SUPERSEDE_LEAD_S - into
+    elif into > 3600 - SUPERSEDE_TAIL_S:
+        extra = 3600 - into + SUPERSEDE_LEAD_S
+    return float(SUPERSEDE_BASE_S + extra)
+
+
+_supersede_task: asyncio.Task[None] | None = None
+
+
+def _schedule_supersede() -> None:
+    """되살린 펀드 중 대체 선언이 있는 것을 뒤에 전환한다 — 한 번에 하나만 걸어 둔다."""
+    global _supersede_task
+    if not any(superseding_playbook(fund.playbook, load_playbooks()) for fund in FUNDS.values()):
+        return
+    if _supersede_task is not None and not _supersede_task.done():
+        return
+    _supersede_task = asyncio.create_task(_supersede_later(), name="fund-supersede")
+
+
+async def _supersede_later() -> None:
+    wait = supersede_delay_s(datetime.now(UTC))
+    _logger.info("fund_supersede_scheduled: %.0fs", wait)
+    await asyncio.sleep(wait)
+    await _supersede_funds()
+
+
+async def _supersede_funds() -> int:
+    """`superseded_by` 가 선언된 매매법으로 도는 펀드를 그 대체 매매법으로 바꾼다 (T332).
+
+    Returns:
+        바꾼 펀드 수.
+
+    Note:
+        화면 전환(`PUT /playbook`)과 같은 몸통(`_switch_playbook`) — 열린 포지션은 새 세션이
+        이어받는다. ⛔ 실패하면 그 펀드는 옛 매매법으로 계속 돈다(신규 진입을 늘리는 행동이라
+        보류가 기본 · 규칙 #8-1) — 오류 로그를 남기고 다음 되살리기(재기동)가 다시 시도한다.
+    """
+    done = 0
+    for fund in list(FUNDS.values()):
+        target = superseding_playbook(fund.playbook, load_playbooks())
+        if target is None:
+            continue
+        before = fund.playbook
+        _events.info(
+            "fund_playbook_superseding",
+            payload={"fund_id": fund.fund_id, "from": before, "to": target},
+        )
+        try:
+            await _switch_playbook(fund, target, {})
+        except Exception as exc:
+            _events.error(
+                "fund_playbook_supersede_failed",
+                payload={
+                    "fund_id": fund.fund_id,
+                    "from": before,
+                    "to": target,
+                    "error": str(getattr(exc, "detail", exc))[:300],
+                    "note": "옛 매매법으로 계속 돈다 — 다음 재기동이 다시 시도한다",
+                },
+            )
+            continue
+        done += 1
+        _events.info(
+            "fund_playbook_superseded",
+            payload={
+                "fund_id": fund.fund_id,
+                "from": before,
+                "to": target,
+                "members": len(fund.handles),
+                "legs": [leg.attribution for leg in fund.legs],
+            },
+        )
+    return done
 
 
 @router.post("/{fund_id}/resync")

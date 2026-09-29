@@ -44,7 +44,8 @@ def test_the_switch_and_the_basket_edit_are_shielded() -> None:
 
 
 def test_the_switch_protects_the_runs_it_replaces() -> None:
-    source = inspect.getsource(rebalancer._change_playbook)  # pyright: ignore[reportPrivateUsage]
+    # T332 — 몸통은 `_switch_playbook`(화면 · 자동 대체 공용)으로 옮겼다.
+    source = inspect.getsource(rebalancer._switch_playbook)  # pyright: ignore[reportPrivateUsage]
     assert source.index("REPLACING.update(") < source.index("await _drop_one(old)")
     assert "finally:" in source and "REPLACING.difference_update(" in source
 

@@ -804,6 +804,9 @@ def _load_file(target: Path) -> list[Playbook]:
                     share_same_side=bool(body.get("share_same_side", False)),
                     drawdown_isolated=bool(body.get("drawdown_isolated", False)),
                     legs_revision=_positive_int(body, "legs_revision", f"playbooks.{name}"),
+                    superseded_by=(
+                        None if body.get("superseded_by") is None else str(body["superseded_by"])
+                    ),
                     leg_exposure=_leg_exposure(body, f"playbooks.{name}"),
                     risk_pct=(
                         None if body.get("risk_pct") is None else Decimal(str(body["risk_pct"]))
