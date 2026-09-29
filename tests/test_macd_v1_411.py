@@ -323,6 +323,8 @@ class TestLiveDeclaration:
             "private_strategy",  # 515차 측정용(T318)
             "private_strategy",
             "private_strategy",
+            "private_strategy",  # T329 급락 되돌림 롱 — 12봉 시간 청산(재현용)
+            "private_strategy",  # T329 — 실계좌 다리(혼합 2.3.0 · listed false)
         }
 
 

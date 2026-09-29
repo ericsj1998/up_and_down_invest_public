@@ -12,6 +12,8 @@
   (T304 #2 · 연구 R2).
 - `vol` (`entry_vol_target.days` d): UTC 일봉 로그수익 d 개의 모집단 표준편차 x √365 ·
   최근 3 일 치 (T304 변동성 목표).
+- `vol_pct` (`entry_ref_vol_pct` bars · rank): 4H 로그수익 `bars` 개의 모집단 표준편차를 직전
+  `rank` 개 값 안에서 평균 순위 백분위로 (T329 급락 되돌림 롱 · 연구 573 `BTC변동성백분위`).
 """
 
 from __future__ import annotations
@@ -46,6 +48,8 @@ class RefNeeds:
         sma_bars: `entry_ref_sma_down.bars`.
         sma_lag: `entry_ref_sma_down.lag`.
         vol_days: `entry_vol_target.days`.
+        vol_pct_bars: `entry_ref_vol_pct.bars`(120 · 4H 로그수익 개수).
+        vol_pct_rank: `entry_ref_vol_pct.rank`(500 · 백분위를 재는 창).
     """
 
     ma_n: int | None = None
@@ -54,6 +58,8 @@ class RefNeeds:
     sma_bars: int | None = None
     sma_lag: int | None = None
     vol_days: int | None = None
+    vol_pct_bars: int | None = None
+    vol_pct_rank: int | None = None
 
     @property
     def empty(self) -> bool:
@@ -64,6 +70,7 @@ class RefNeeds:
             and self.surge_days is None
             and self.sma_bars is None
             and self.vol_days is None
+            and self.vol_pct_bars is None
         )
 
     @property
@@ -75,6 +82,7 @@ class RefNeeds:
             6 * ((self.surge_days or 0) + 2),
             0 if self.sma_bars is None else self.sma_bars + (self.sma_lag or 0) + 1,
             6 * ((self.vol_days or 0) + 5),
+            0 if self.vol_pct_bars is None else self.vol_pct_bars + (self.vol_pct_rank or 0) + 1,
         )
 
 
@@ -97,6 +105,7 @@ def needs_of(playbooks: Iterable[Playbook]) -> RefNeeds:
     surge = next((b.entry_ref_surge_cap for b in books if b.entry_ref_surge_cap is not None), None)
     slope = next((b.entry_ref_sma_down for b in books if b.entry_ref_sma_down is not None), None)
     vol = next((b.entry_vol_target for b in books if b.entry_vol_target is not None), None)
+    vpct = next((b.entry_ref_vol_pct for b in books if b.entry_ref_vol_pct is not None), None)
     return RefNeeds(
         ma_n=ma_n,
         band_n=None if band is None else band.bars,
@@ -104,6 +113,8 @@ def needs_of(playbooks: Iterable[Playbook]) -> RefNeeds:
         sma_bars=None if slope is None else slope.bars,
         sma_lag=None if slope is None else slope.lag,
         vol_days=None if vol is None else vol.days,
+        vol_pct_bars=None if vpct is None else vpct.bars,
+        vol_pct_rank=None if vpct is None else vpct.rank,
     )
 
 
@@ -117,6 +128,7 @@ class RefRegime:
         surge: 급등 수익률.
         sma_down: SMA 하락 중인가.
         vol: `(일봉이 끝난 시각, 연율 변동성)` 최근 3 일 치.
+        vol_pct: 4H 실현변동성 백분위(0 ~ 1) — T329.
     """
 
     above: bool | None
@@ -124,6 +136,7 @@ class RefRegime:
     surge: Decimal | None
     sma_down: bool | None
     vol: tuple[tuple[datetime, Decimal], ...]
+    vol_pct: Decimal | None = None
 
 
 def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
@@ -173,7 +186,40 @@ def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
         sma_down = now_ < then_
     if needs.vol_days is not None:
         vol = btc_daily_vol(closed, needs.vol_days)
-    return RefRegime(above=above, ret=ret, surge=surge, sma_down=sma_down, vol=vol)
+    vol_pct: Decimal | None = None
+    if needs.vol_pct_bars is not None:
+        vol_pct = btc_vol_pct(closed, needs.vol_pct_bars, needs.vol_pct_rank or 500)
+    return RefRegime(above=above, ret=ret, surge=surge, sma_down=sma_down, vol=vol, vol_pct=vol_pct)
+
+
+def btc_vol_pct(bars: Sequence[Candle], n: int, rank: int) -> Decimal:
+    """마감된 기준(BTC) 4H 봉에서 **실현변동성 백분위**를 낸다 (T329 · 연구 573 `BTC변동성백분위`).
+
+    Args:
+        bars: 마감된 4H 봉(오름차순).
+        n: 로그수익 개수(120) — 변동성 하나에 종가 `n + 1` 개.
+        rank: 백분위 창(500) — 최근 `rank` 개 변동성 안에서 마지막 값의 평균 순위 ÷ rank.
+
+    Returns:
+        백분위(0 ~ 1).
+
+    Raises:
+        ValueError: 봉이 `n + rank` 개보다 적거나 종가가 0 이하인 경우.
+
+    Note:
+        연구 `lr.rolling(120).std(ddof=0)` → `.rolling(500).rank(pct=True)` 와 같은 값
+        (pandas 평균 순위 · 동점은 평균 · 자기 포함). float 로 계산해 Decimal 로 넘긴다.
+    """
+    closes = [float(c.close) for c in bars]
+    if len(closes) < n + rank or any(x <= 0 for x in closes):
+        raise ValueError(f"기준 4H 봉 부족·이상: {len(closes)} < {n + rank}")
+    rets = [math.log(after / before) for before, after in itertools.pairwise(closes)]
+    vols = [statistics.pstdev(rets[k - n : k]) for k in range(len(rets) - rank + 1, len(rets) + 1)]
+    last = vols[-1]
+    below = sum(1 for v in vols if v < last)
+    ties = sum(1 for v in vols if v == last)
+    avg_rank = below + (ties + 1) / 2
+    return Decimal(str(avg_rank / rank))
 
 
 def btc_daily_vol(

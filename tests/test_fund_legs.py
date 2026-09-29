@@ -125,7 +125,9 @@ class TestTheDeclarationUnfoldsIntoTwoLegs:
     def test_only_this_bundle_splits_its_legs(self) -> None:
         on = {item.playbook_id for item in load_playbooks() if item.split_legs}
         # 513차 N4f(2026-09-29) — 혼합 2.2.0(일봉 채널 다리)도 다리로 나뉜다.
+        # T329(2026-09-30) — 혼합 2.3.0(급락 되돌림 다리 · listed false)도.
         assert on == {
+            "private_strategy",
             "private_strategy",
             "private_strategy",
             "private_strategy",

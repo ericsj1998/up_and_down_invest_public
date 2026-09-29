@@ -329,6 +329,49 @@ class RefSmaDown:
 
 
 @dataclass(frozen=True, slots=True)
+class RefVolPct:
+    """기준 종목(BTC) 4H 실현변동성 백분위가 `low` **이상**일 때만 새로 든다 (T329 급락 되돌림).
+
+    Attributes:
+        bars: 실현변동성 = 마감된 4H 로그수익 이 개(120)의 모집단 표준편차.
+        rank: 그 변동성을 직전 이 개(500)의 값 안에서 백분위로(평균 순위 ÷ rank ·
+            자기 포함).
+        low: 백분위 하한(0.816). **이상**이어야 든다.
+
+    Raises:
+        ValueError: 봉 수가 2 미만이거나 하한이 0 ~ 1 밖인 경우.
+
+    Note:
+        573 · 574 · 577차: "24봉 수익 하위 20% x BTC 변동성 백분위 상위 20%" 의 둘째 조건.
+        문턱 0.816 = 탐색 창(2022-03 ~ 2023-12 · 18종 봉)의 80분위 — 성과를 보고 만지지 않는다.
+        연구(`t296_wave362.extras`)의 `실현변동성120.rolling(500).rank(pct=True)` 와 같은 식이다.
+        값은 러너가 주입한다(`Session.ref_vol_pct`) · 모르면 보류한다(규칙 #8-1).
+    """
+
+    bars: int
+    rank: int
+    low: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 문으로서 말이 되는지."""
+        if self.bars < 2 or self.rank < 2:
+            raise ValueError(f"봉 수는 2 이상이다: {self.bars} · {self.rank}")
+        if not Decimal(0) <= self.low <= Decimal(1):
+            raise ValueError(f"백분위 하한은 0 ~ 1 이다: {self.low}")
+
+    def holds(self, value: Decimal) -> bool:
+        """백분위가 하한 **이상**인가(= 들어가도 되나).
+
+        Args:
+            value: 기준 종목 변동성 백분위(0 ~ 1).
+
+        Returns:
+            하한 이상이면 참.
+        """
+        return value >= self.low
+
+
+@dataclass(frozen=True, slots=True)
 class VolTarget:
     """변동성 목표 크기 — 진입 노출 x clip(`scale` ÷ BTC `days` 일 변동성, `low`, `high`).
 
@@ -985,6 +1028,12 @@ class Playbook:
     """기준 종목(BTC) 4H SMA 가 내려가는 중일 때만 새로 든다 (T304 #2 · MACD 3중 숏 다리).
 
     값은 러너가 주입한다(`Session.ref_sma_down`). 🔴 **None(모름)이면 진입을 보류한다**(규칙 #8-1).
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_ref_vol_pct: RefVolPct | None = None
+    """기준 종목(BTC) 4H 실현변동성 백분위가 하한 이상일 때만 새로 든다 (T329 · 급락 되돌림 롱).
+
+    값은 러너가 주입한다(`Session.ref_vol_pct`). 🔴 **None(모름)이면 진입을 보류한다**(규칙 #8-1).
     ⛔ 선언이 None 이면 동결이다 (§5.6.2).
     """
     add_on: AddOn | None = None

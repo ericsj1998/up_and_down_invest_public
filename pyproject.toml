@@ -46,6 +46,7 @@ sample_ma_cross = "updown.analysis.detectors.sample_ma_cross:register"
 # 거래량 돌파 추종 (T279 축 AB · 2026-09-15) — 세션 엔진 재현용.
 # 닫힌 삼각수렴 이탈 추종 (T290 · 2026-09-20) — 4H 하방 이탈 숏 · 세션 엔진 재현용.
 # 일봉 채널 돌파 롱 (T319 새 다리 DCH · T320 P7 · 2026-09-28) — 채널 v2.1 · 세션 엔진 재현용.
+# 급락 되돌림 롱 (T329 · 바텀업 방향 센서스 574 ~ 577차 · 2026-09-30) — 4H · 세션 재현용.
 
 [dependency-groups]
 dev = [

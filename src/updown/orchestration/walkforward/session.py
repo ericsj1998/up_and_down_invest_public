@@ -494,6 +494,14 @@ class Session:
     """
     ref_sma_held: int = 0
     """SMA 하락 문(`entry_ref_sma_down`)이 보류시킨 진입 수 — 관측용 (§1-0s)."""
+    ref_vol_pct: Decimal | None = None
+    """기준 종목(BTC) 4H 실현변동성 백분위(0 ~ 1) — 러너가 주입한다 (T329 급락 되돌림 롱).
+
+    봉 수 · 창은 선언(`entry_ref_vol_pct`)이 정한다.
+    🔴 None = 모름 → 이 문을 선언한 매매법은 **진입을 보류**한다(규칙 #8-1).
+    """
+    ref_vol_pct_held: int = 0
+    """변동성 백분위 문(`entry_ref_vol_pct`)이 보류시킨 진입 수 — 관측용 (§1-0s)."""
     ref_vol: tuple[tuple[datetime, Decimal], ...] = ()
     """기준 종목(BTC) 연율 변동성 — `(그 UTC 일봉이 끝난 시각, 변동성)` 오름차순.
 
@@ -1524,8 +1532,8 @@ class Session:
             direction: 계획 기하가 말한 방향.
 
         Returns:
-            `ref_gate` · `ref_band` · `ref_surge` · `ref_sma` · `funding` 중 처음 걸린 것.
-            없으면 None.
+            `ref_gate` · `ref_band` · `ref_surge` · `ref_sma` · `ref_volpct` · `funding` 중 처음
+            걸린 것. 없으면 None.
 
         Note:
             `_enter` 가 이 순서 그대로 읽고 센다 · 적는다. 마감 전 예비 신호(`preview`)도 같은
@@ -1542,6 +1550,9 @@ class Session:
             return "ref_surge"
         if book.entry_ref_sma_down is not None and self.ref_sma_down is not True:
             return "ref_sma"
+        vpct = book.entry_ref_vol_pct
+        if vpct is not None and (self.ref_vol_pct is None or not vpct.holds(self.ref_vol_pct)):
+            return "ref_volpct"
         if funding_blocks(direction, self.recent_funding, book.funding_cap):
             return "funding"
         return None
@@ -4272,6 +4283,22 @@ class Session:
                 payload={
                     "ref_sma_down": self.ref_sma_down,
                     "note": "기준(BTC) 4H SMA 가 내려가는 중이 아니다 — 새로 안 든다 (T304 #2)",
+                },
+            )
+            return None
+        vpct = chosen.playbook.entry_ref_vol_pct
+        if hold == "ref_volpct" and vpct is not None:
+            # T329 — 급락 되돌림 롱은 BTC 변동성이 높은 국면(백분위 ≥ 0.816)에서만 든다
+            #    (573 · 574 · 577차).
+            # 🔴 모르면(None) 보류한다 — 신규 진입은 리스크 증가 행동이다(절대 규칙 #8-1).
+            self.ref_vol_pct_held += 1
+            self._count("ref_volpct")
+            _logger.info(
+                "session_entry_ref_volpct_held",
+                payload={
+                    "ref_vol_pct": None if self.ref_vol_pct is None else str(self.ref_vol_pct),
+                    "gate": [vpct.bars, vpct.rank, str(vpct.low)],
+                    "note": "기준(BTC) 변동성 백분위가 하한 아래다 — 이 봉엔 새로 안 든다 (T329)",
                 },
             )
             return None

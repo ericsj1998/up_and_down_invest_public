@@ -41,6 +41,7 @@ from updown.analysis.playbook.types import (
     RefReturnBand,
     RefSmaDown,
     RefSurgeCap,
+    RefVolPct,
     VolTarget,
 )
 from updown.common.domain.evidence import Family, Grade
@@ -401,6 +402,23 @@ def _ref_sma_down(raw: object, name: str) -> RefSmaDown:
         raise PlaybookConfigError(f"{name}.entry_ref_sma_down — {exc}") from exc
 
 
+def _ref_vol_pct(raw: object, name: str) -> RefVolPct:
+    """기준 종목 변동성 백분위 문 한 줄 — `{bars: 120, rank: 500, low: "0.816"}` (T329).
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_ref_vol_pct")
+    try:
+        return RefVolPct(
+            bars=int(str(body["bars"])),
+            rank=int(str(body["rank"])),
+            low=Decimal(str(body["low"])),
+        )
+    except (ArithmeticError, KeyError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_ref_vol_pct — {exc}") from exc
+
+
 def _add_on(raw: object, name: str, *, full_ride: bool = True) -> AddOn:
     """불타기 한 줄 — `{confirm_pct: "0.105", frac: "0.5"}` (T308).
 
@@ -723,6 +741,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         None
                         if body.get("entry_ref_sma_down") is None
                         else _ref_sma_down(body["entry_ref_sma_down"], f"playbooks.{name}")
+                    ),
+                    entry_ref_vol_pct=(
+                        None
+                        if body.get("entry_ref_vol_pct") is None
+                        else _ref_vol_pct(body["entry_ref_vol_pct"], f"playbooks.{name}")
                     ),
                     entry_vol_target=(
                         None
