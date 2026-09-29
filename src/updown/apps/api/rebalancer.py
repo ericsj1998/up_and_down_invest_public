@@ -84,7 +84,7 @@ from updown.orchestration.rebalancer.legs import (
     refresh_legs,
 )
 from updown.orchestration.rebalancer.wiring import wire_legs
-from updown.orchestration.walkforward.ledger import TradeRecord
+from updown.orchestration.walkforward.ledger import Outcome, TradeRecord
 from updown.portfolio.performance import CashFlow, TwrLedger
 
 router = APIRouter(prefix="/rebalancer", tags=["rebalancer"])
@@ -1127,6 +1127,7 @@ async def _spawn_session(
     *,
     market: str = "GATE",
     adopt_from: str | None = None,
+    inherit: Sequence[TradeRecord] = (),
     capital: Decimal | None = None,
     booked: Decimal | None = None,
 ) -> tuple[str, SessionBridge]:
@@ -1142,6 +1143,9 @@ async def _spawn_session(
             표식(run_key)을 물려받아 거래소에 **열린 채 남은 포지션을 이어받는다**(`adopt`).
             그때는 증거금이 이미 포지션에 들어가 있으므로 `reviving=True` 로 잔액 검사를
             건너뛴다 — 안 그러면 "쓸 돈 없음" 으로 시작이 거부된다.
+        inherit: 앞 세션의 **열린 원장 기록** 사본(T333). 있으면 새 세션이 거래소에서 되읽지 않고
+            이 기록을 그대로 잇는다 — 매매 id · 진입 시각 · 계약이 보존돼 손절 겹침 · 이중 진입 ·
+            차트 상자 소실이 없다(2026-09-30 사고 셋). 빈 튜플이면 예전처럼 `adopt`.
         capital: 이 세션이 **받은 몫**(원장 걷기 시작점 `seed_cash` · T285). 없으면 예산과 같다.
             자리 배분에서는 예산(총자본 ÷ 자리)과 몫(총자본 ÷ 종목 수)이 다르다.
         booked: 판 저장소에 **계좌 예산으로 적을 값** (T291). None 이면 `share`(지금까지의 동작).
@@ -1168,7 +1172,7 @@ async def _spawn_session(
     #    띄운 뒤에야 붙는데(`_attach_gate`), 러너는 `_live_start` 안에서 바로 돌기 시작한다 —
     #    18종을 띄우는 동안 먼저 뜬 판이 문 없이 걷는 창이 생성 때도 똑같이 있다.
     payload["fund_member"] = "fund"
-    result = await _live_start(payload, reviving=bool(adopt_from))
+    result = await _live_start(payload, reviving=bool(adopt_from), inherit=inherit)
     handle = str(result["session_id"])
     session = SESSIONS[handle].session
     session.ledger.wallet_start = Decimal(0)
@@ -2703,6 +2707,10 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
     try:
         for member in basket.members:
             old = fund.handles.get(member.symbol)
+            # ⭐ T333 — 거두기 **전에** 앞 세션의 열린 기록을 챙긴다. 새 세션이 이것을 물려받아
+            #    거래소 되읽기(입양)를 안 한다 — 매매 id · 진입 시각 · 계약이 그대로라 손절 겹침 ·
+            #    이중 진입 · 차트 상자 소실(2026-09-30 사고 셋)이 없다.
+            inherited = open_records_of(old)
             if old:  # 러너만 거둔다 — 거래소 포지션·주문은 그대로 (무중단)
                 await _drop_one(old)
             # 자리 배분이면 `총자본 ÷ 자리`(합이 총자본을 넘는 것이 의도) · 아니면 비중대로.
@@ -2723,6 +2731,7 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
                 member_book,
                 market=fund.market,
                 adopt_from=old,
+                inherit=inherited,
                 capital=capital,
                 booked=min(share, capital) if new_legs else None,
             )
@@ -2745,6 +2754,25 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
     fund.legs_revision = _declared_legs_revision(new_pb) if new_legs else 0
     _reattach_gate(fund)  # 갈아 끼운 세션에도
     await _tick(fund)
+
+
+def open_records_of(handle: str | None) -> tuple[TradeRecord, ...]:
+    """살아 있는 세션의 **열린** 원장 기록 사본 — 매매법 전환이 새 세션에 물려준다 (T333).
+
+    Args:
+        handle: 앞 세션의 판 id. None 이거나 세션이 없으면 빈 튜플(새로 시작 · 거래소 되읽기).
+
+    Returns:
+        열린 기록들(사본). 닫힌 기록은 옛 판에 남긴다 — 성과 귀속을 두 판에 세지 않는다.
+    """
+    if not handle:
+        return ()
+    live = SESSIONS.get(handle)
+    if live is None:
+        return ()
+    return tuple(
+        replace(item) for item in live.session.ledger.records if item.outcome is Outcome.OPEN
+    )
 
 
 def superseding_playbook(current: str, books: Sequence[Playbook]) -> str | None:

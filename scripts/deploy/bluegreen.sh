@@ -108,7 +108,12 @@ echo "=== 4b) 데모 API (T221 · #19) ==="
 #    grep 이 먼저 끝나면 compose 가 SIGPIPE 로 비영 종료해 조건이 거짓이 된다 — 데모가 "이 환경엔 없다" 로 건너뛰어
 #    옛 이미지(v1.15.1)에 남았다(1.15.1 땐 경합에서 이겼을 뿐).
 SERVICES="$($C config --services 2>/dev/null || true)"
-if grep -qx api_demo <<<"$SERVICES"; then
+# 🔴 2026-09-30 사용자 "앞으로 데모 API 는 계속 꺼두자" — 서버에 `.demo_off` 표식 파일이 있으면 데모를 올리지 않는다
+#    (1 GB · 기준선 10% 서버에서 데모가 크레딧을 갉아 세 번 스틸 사고). 표식은 `scripts/ops/demo_off.sh` 가 만든다.
+if [ -f "$(dirname "$ENV_FILE")/.demo_off" ]; then
+  echo "   api_demo: .demo_off 표식 — 올리지 않는다 (되돌리기: 표식 삭제 뒤 compose up api_demo)"
+  docker stop -t 20 "${PROJECT}-api_demo-1" >/dev/null 2>&1 || true
+elif grep -qx api_demo <<<"$SERVICES"; then
   if [ -f "$(dirname "$ENV_FILE")/.env.demo" ]; then
     if $C up --no-deps --exit-code-from migrate_demo migrate_demo 2>&1 | grep -iE "error|traceback|exited with code" | tail -3; then :; fi
     if $C up -d --no-deps --wait api_demo; then

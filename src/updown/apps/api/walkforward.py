@@ -818,12 +818,19 @@ def _awaited_fund(
 
 
 async def _live_start(
-    payload: dict[str, Any], *, reviving: bool = False, request: Request | None = None
+    payload: dict[str, Any],
+    *,
+    reviving: bool = False,
+    request: Request | None = None,
+    inherit: Sequence[TradeRecord] = (),
 ) -> dict[str, Any]:
     """**라이브 페이퍼 세션**을 띄운다 — Gate testnet 페이크머니 (T13).
 
     Args:
         payload: `{playbook, symbol, market, cash, leverage, skim}`.
+        inherit: 매매법 전환(T333)에서 앞 세션의 **열린 원장 기록** — 거래소에서 되읽지 않고
+            이 기록을 그대로 잇는다(매매 id · 진입 시각 · 계약 · 몫 · 불타기 상태 보존). 러너는
+            이 기록을 "이미 열려 있던 것"(`_revived_open`)으로 보고 진입을 다시 보내지 않는다.
             `symbol` 기본값은 `BTC_USDT`, `market` 은 `GATE` 다.
         reviving: **이미 있던 판을 되살리는 중**인가 (2026-08-19 사고 ⑤). 참이면
             증거금 검사를 건너뛴다 — 그 판의 돈은 이미 자기 포지션에 들어가 있어서
@@ -1474,6 +1481,25 @@ async def _live_start(
                 "held": held[0].trade_id if held else "",
                 "opened_at": opened.opened_at.isoformat(),
                 "note": "옛 판을 이어받았다 — 판정 횟수와 시드 구간은 새로 센다",
+            },
+        )
+    elif inherit:
+        # ⭐ T333 — 매매법 전환: 앞 세션의 열린 기록을 **그대로** 잇는다(2026-09-30 사고 뒤).
+        #    전에는 새 세션이 거래소 포지션을 `adopt` 로 되읽어 ① 매매 id 가 새로 생기고(손절 겹침)
+        #    ② 체결 기록이 없어 `_place` 가 진입을 또 보냈고(XRP 32 → 83계약) ③ 진입 시각이 전환
+        #    시각이 되어 차트 상자가 사라졌다. 기록을 물려받으면 셋 다 없다 — 러너가 태어날 때
+        #    이 기록이 원장에 있어 `_revived_open` 에 들어간다(되살리기와 같은 길).
+        taken = [replace(item) for item in inherit if item.outcome is Outcome.OPEN]
+        session.ledger.records.extend(taken)
+        if taken:
+            session.adopt(taken[0])
+        _logger.info(
+            "live_run_inherited",
+            payload={
+                "session_id": handle,
+                "from_run": str(payload.get("run_key") or ""),
+                "open": [item.trade_id for item in taken],
+                "note": "매매법 전환 — 앞 세션의 열린 기록을 물려받았다(거래소 되읽기 아님 · T333)",
             },
         )
     session.journal_path = JOURNAL_ROOT / f"{handle}.json"
