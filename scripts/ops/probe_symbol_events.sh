@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# 한 종목의 최근 사건 이름 · 매매법 · 가격 칸(시각순) — 진입이 어느 다리였나를 본다(주소 없음).
-#
-#   SYM=SOL_USDT bash scripts/ops/remote.sh scripts/ops/probe_symbol_events.sh
-API=$(docker ps --format "{{.Names}}" | grep -E "^updown_live-api(_b)?-1$" | head -1)
-SYM="${SYM:-SOL_USDT}"
-SINCE="${SINCE:-40m}"
-docker logs --timestamps --since "$SINCE" "$API" 2>&1 | grep "$SYM" \
-  | grep -vE 'outbound_request|live_audit_found|live_forming' \
-  | sed -E 's/^([0-9T:-]{19})[^ ]* /\1 /' \
-  | grep -oE '^[0-9T:-]{19}|"event(_type)?": "[a-z_]+"|"(playbook|owner|attribution)": "[^"]+"|"(entry|stop|leverage|contracts|size_mult|exposure|side|direction)": "?[^",}]+"?' \
-  | awk '/^20[0-9][0-9]-/{if(line)print line; line=$0; next}{line=line" "$0}END{print line}' \
-  | grep -E 'event' | tail -25
+# 한 종목의 최근 사건(진입 · 손절 장착 · 대조 · 펀드)을 실계좌 API 로그에서 읽는다 (읽기 전용 · 2026-09-30).
+#   SYMBOL=CRV_USDT bash scripts/ops/remote.sh scripts/ops/probe_symbol_events.sh
+SYM="${SYMBOL:-CRV_USDT}"
+API=$(docker ps --format '{{.Names}}' | grep -E '^updown_live-api(_b)?-1$' | head -1)
+docker logs --tail 60000 "$API" 2>&1 | grep "\"$SYM\"" | grep -oE '"ts": "[^"]+"|"event_type": "[^"]+"|"playbook": "[^"]+"|"contracts": [0-9.]+|"stop": "[^"]+"|"price": "[^"]+"' | paste -d' ' - - - 2>/dev/null | tail -30
+echo "== 사건 종류 수"
+docker logs --tail 60000 "$API" 2>&1 | grep "\"$SYM\"" | grep -oE '"event_type": "[^"]+"' | sort | uniq -c | sort -rn | head -15
