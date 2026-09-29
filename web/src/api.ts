@@ -1207,6 +1207,21 @@ export function health(key: string): Promise<Health> {
   return request(`/walkforward/live/${key}`);
 }
 
+/** 카드 전부의 건강 한 벌 — 서버가 10초 기억한다 (T334). 실패한 카드는 `{error}` 로 온다. */
+export type HealthAll = {
+  cards: Record<string, Health | { error: string }>;
+  at: string;
+};
+
+/**
+ * RUN 카드 40장을 **한 요청**으로 (T334 · 2026-09-30).
+ *
+ * 🔴 카드마다 `/live/<판>` 을 10초마다 물으면 요청 240/분 — 1 GB 서버가 그 몫으로 크레딧을 잃었다.
+ */
+export function healthAll(): Promise<HealthAll> {
+  return request(`/walkforward/live-all`);
+}
+
 /**
  * 금고 전역 설정 (T21 ⑦).
  *

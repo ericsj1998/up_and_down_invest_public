@@ -22,7 +22,7 @@ import {
 } from "./shell/marketGroup";
 import {
   dropSession,
-  health as fetchHealth,
+  healthAll as fetchHealthAll,
   playbooks,
   setAuto,
   startLive,
@@ -335,19 +335,30 @@ export function Runs({ rows, open, refresh, available }: Props) {
     let alive = true;
     const pull = () => {
       const running = rows.filter((row) => row.running && !row.stored);
-      Promise.allSettled(
-        running.map((row) => fetchHealth(row.session_id)),
-      ).then((found) => {
-        if (!alive) return;
-        const next: Record<string, Health | null> = {};
-        running.forEach((row, index) => {
-          const one = found[index];
-          // ⚠️ 404 는 정상이다 — 러너가 막 사라진 순간일 수 있다. 그때는 null 이고,
-          //    화면은 "모른다" 라고 말한다 (0 이나 정상으로 치지 않는다).
-          next[row.session_id] = one?.status === "fulfilled" ? one.value : null;
+      if (!running.length) return;
+      // ⭐ T334 — 카드 40장을 **한 요청**으로. 판마다 물으면 10초에 40번 = 240/분이었다.
+      fetchHealthAll()
+        .then((all) => {
+          if (!alive) return;
+          const next: Record<string, Health | null> = {};
+          running.forEach((row) => {
+            const one = all.cards[row.session_id];
+            // ⚠️ 없거나 `{error}` 면 null — 러너가 막 사라진 순간일 수 있다. 화면은 "모른다"
+            //    라고 말한다 (0 이나 정상으로 치지 않는다).
+            next[row.session_id] =
+              one && !("error" in one) ? (one as Health) : null;
+          });
+          setBeats(next);
+        })
+        .catch(() => {
+          if (!alive) return;
+          // 한 벌 요청이 실패하면 전부 "모른다" — 옛 값을 남기면 죽은 판이 살아 보인다.
+          const next: Record<string, Health | null> = {};
+          running.forEach((row) => {
+            next[row.session_id] = null;
+          });
+          setBeats(next);
         });
-        setBeats(next);
-      });
     };
     pull();
     const timer = setInterval(pull, 10_000);

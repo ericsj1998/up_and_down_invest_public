@@ -100,13 +100,14 @@ describe("previewText · previewShort", () => {
     expect(text).toContain("마감 전 예비 신호 · 롱 · 1h 봉 · 돌파 롱");
     expect(text).toContain("약속은 아니다");
     expect(previewText(signal)).toContain("private_strategy");
-    expect(previewShort(signal)).toBe("예비 신호 · 롱");
+    // 2026-09-30 사용자 "예비 신호에도 다리 이름" — 다리 id 가 붙는다.
+    expect(previewShort(signal)).toBe("예비 신호 · 롱 · private_strategy");
   });
 
   it("걸어 둔 진입 주문은 가격 · 손절을 싣는다", () => {
     const waiting = { ...signal, kind: "waiting" as const, side: "숏", frame: "" };
     expect(previewText(waiting)).toContain("진입 주문 대기 · 숏 @ 1.2345 · 손절 1.2");
-    expect(previewShort(waiting)).toBe("진입 주문 · 숏");
+    expect(previewShort(waiting)).toBe("진입 주문 · 숏 · private_strategy");
   });
 });
 

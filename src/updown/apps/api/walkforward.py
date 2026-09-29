@@ -60,6 +60,7 @@ from updown.apps.api.auth import (
 )
 from updown.apps.api.exchange_snapshot import venue_snapshot
 from updown.apps.api.stock_order import StockOrderRejectedError, hours_of, stock_order_terms
+from updown.common.cache import TtlCache
 from updown.common.config import load_settings as load_app_settings
 from updown.common.costs import (
     DEFAULT_CONFIG_PATH,
@@ -1641,9 +1642,8 @@ async def _live_start(
     return body
 
 
-@router.get("/live/{key}")
-async def live_health(key: str) -> dict[str, Any]:
-    """라이브 세션의 **건강 상태** — 화면이 이상을 알아볼 수 있게.
+async def _health_of(key: str) -> dict[str, Any]:
+    """라이브 세션의 **건강 상태** — 화면이 이상을 알아볼 수 있게 (`/live/{key}` · `/live-all`).
 
     Args:
         key: 세션 id.
@@ -1795,6 +1795,48 @@ async def live_health(key: str) -> dict[str, Any]:
         "running": live.running,
         "cursor": live.session.cursor.isoformat(),
     }
+
+
+@router.get("/live/{key}")
+async def live_health(key: str) -> dict[str, Any]:
+    """RUN 카드 하나의 건강 — 본문은 `_health_of`. 카드 40장은 `/live-all` 한 번으로 (T334)."""
+    return await _health_of(key)
+
+
+HEALTH_ALL_TTL_S = 10.0
+"""카드 40장 한 벌의 기억 시간(초) — 화면 폴링(10초)과 같다. 보는 사람이 여럿이어도 한 벌이다."""
+
+_HEALTH_ALL = TtlCache[dict[str, Any]]("walkforward.health_all", HEALTH_ALL_TTL_S)
+
+
+async def health_all_fresh() -> dict[str, Any]:
+    """도는 라이브 판 전부의 건강 한 벌 — 한 판이 실패해도 나머지는 낸다.
+
+    Returns:
+        `{cards: {판 id: 건강 또는 {error}}, at}`.
+    """
+    keys = list(LIVE_RUNNERS)
+    got = await asyncio.gather(*(_health_of(key) for key in keys), return_exceptions=True)
+    cards: dict[str, Any] = {}
+    for key, one in zip(keys, got, strict=True):
+        if isinstance(one, BaseException):
+            # ⚠️ 404(막 사라진 판) · 조회 실패 — 그 카드만 "모른다"(화면이 0 · 정상으로 안 친다).
+            cards[key] = {"error": str(getattr(one, "detail", one))[:160]}
+        else:
+            cards[key] = one
+    return {"cards": cards, "at": datetime.now(UTC).isoformat()}
+
+
+@router.get("/live-all")
+async def live_health_all() -> dict[str, Any]:
+    """RUN 카드 **전부**를 한 요청으로 — 10초 한 벌 (T334 · 2026-09-30).
+
+    Note:
+        🔴 화면(`Runs.tsx`)이 10초마다 카드 40장을 각각 물어 요청 240/분이 됐고, 요청마다 권한 ·
+        직렬화 · 거래소 한 벌 조회가 돌았다(1 GB 서버 크레딧 고갈의 한 몫 · T331). 한 벌을 10초
+        기억하면 보는 사람이 몇이든 서버 일은 10초에 한 번이다. 매매 경로와 무관(표시 전용).
+    """
+    return await _HEALTH_ALL.get_or_fetch("all", health_all_fresh)
 
 
 @router.post("/live/{key}/auto")

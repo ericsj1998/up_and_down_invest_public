@@ -61,7 +61,8 @@ export function Escape({
   useEffect(() => {
     pull();
     // ⚠️ 호가가 움직이면 권장 자리도 움직인다 — 낡은 값을 누르면 거래소가 거절한다.
-    const timer = setInterval(pull, 15_000);
+    // T334 — 15초 → 60초. 사람이 보는 정보라 1분이면 된다(1 GB 서버 · 화면 폴링이 크레딧을 갉음).
+    const timer = setInterval(pull, 60_000);
     return () => clearInterval(timer);
   }, [pull]);
 

@@ -19,6 +19,7 @@ import { splitPosition } from "./shares";
 import { IndicatorPanel } from "./chart/IndicatorPanel";
 import { readStance } from "./adx";
 import { useForming } from "./useForming";
+import { pick, useStream } from "./useStream";
 import { useLive } from "./useLive";
 import {
   Card,
@@ -136,7 +137,16 @@ export function PaperTab({ run, home, named }: Props) {
     if (symbol) named?.(run, symbol);
   }, [named, run, symbol]);
   // ⭐ 진행 중 봉 — 보고 있는 축으로, `/state` 보다 빠르게 따로 당긴다.
-  const forming = useForming(current?.session_id, frame);
+  // ⭐ T334(2026-09-30) — **거래소가 미는 봉(SSE)이 먼저**, 폴링은 스트림이 끊겼을 때만.
+  //    1초 폴링은 요청마다 서버가 거래소 REST 를 다시 물었다(차트 연 동안 분당 60번). 스트림이
+  //    살아 있으면 폴링을 멈춘다(`useForming(undefined)`) — 꼬리는 체결마다 오므로 더 부드럽다.
+  const streamed = useStream(
+    current?.live && current.symbol ? current.symbol : "",
+    current?.market ?? "GATE",
+    frame,
+  );
+  const polled = useForming(streamed.live ? undefined : current?.session_id, frame);
+  const forming = pick(streamed, polled);
   const board = state?.dashboard;
   const account = health?.exchange;
   const position = account?.position ?? {};
