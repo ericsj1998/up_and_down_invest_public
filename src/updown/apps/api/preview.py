@@ -10,8 +10,11 @@
 - **누가 보고 있을 때만 돈다.** 펀드 현황(`/rebalancer`)을 부르면 `touch()` 가 시각을
   적고, 10분 넘게
   아무도 안 보면 한 바퀴도 안 돈다 — 1 GB 서버에서 보는 사람 없는 계산을 하지 않는다.
-- 한 바퀴 = 판마다 한 번 · 판 사이 0.3초 쉼 · 바퀴 사이 2분. 거래 리더에서만 돈다(판이 거기 있다).
+- 한 바퀴 = 판마다 한 번 · 판 사이 0.3초 쉼 · 바퀴 사이 5분. 거래 리더에서만 돈다(판이 거기 있다).
   한 바퀴가 10초를 넘으면 경고 한 줄(`preview_sweep_slow`).
+- **마감이 가까운 축만 잰다**(T331 · `LiveRunner.preview` 의 `near_close`) — 1H 판은 매시 45분 뒤,
+  4H · 1D 판은 마감 30분 전부터. 그 밖의 시간엔 판마다 조회 0 · 탐지 0 이라 한 바퀴가 거의 공짜다.
+  2분 x 40판 x 전 시간 훑기가 평시 CPU 약 10%p 였다(2026-09-30 크레딧 고갈).
 - 실패는 그 판만 비우고 로그 한 줄 — 매매를 막지 않는다.
 """
 
@@ -25,8 +28,8 @@ from updown.common.logging.setup import get_logger
 
 _logger = get_logger("api.preview")
 
-SWEEP_EVERY = 120.0
-"""바퀴 사이(초)."""
+SWEEP_EVERY = 300.0
+"""바퀴 사이(초) — 예비 신호 창(1H 판 15분)에 두세 번 걸리면 충분하다 (T331 · 2분 → 5분)."""
 
 BETWEEN_RUNS = 0.3
 """판 사이 쉼(초) — 한 판 계산이 이벤트 루프를 오래 쥐지 않게 나눈다."""
@@ -104,7 +107,7 @@ def found_now() -> list[str]:
 
 
 async def preview_loop() -> None:
-    """누가 보고 있으면 2분마다 한 바퀴 — 화면을 연 직후엔 5초 안에 첫 바퀴."""
+    """누가 보고 있으면 `SWEEP_EVERY` 마다 한 바퀴 — 화면을 연 직후엔 5초 안에 첫 바퀴."""
     last: float | None = None
     shown: list[str] | None = None
     while True:

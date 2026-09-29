@@ -181,6 +181,34 @@ MS_PER_S = 1000.0
 한참 동안 계속 당긴다. 화면 폴링이 1.5초이므로 90초면 **60번 놓쳐야** 식는다.
 """
 
+PREVIEW_WINDOW_FLOOR_S = 600
+PREVIEW_WINDOW_CAP_S = 1800
+"""마감 전 예비 신호를 재는 창(초) — 축 간격의 1/4 을 [10분, 30분] 으로 자른다 (T331).
+
+1H 판은 매시 45분 뒤 · 4H · 1D 판은 마감 30분 전부터만 형성 중 봉을 묻고 탐지기를 돌린다.
+그 전에는 봉이 어차피 크게 바뀌므로 "지금 값으로 닫히면" 이 뜻이 없고, 40판 x 2분 훑기가
+평시 CPU 의 약 10%p 를 먹어 크레딧을 바닥냈다(2026-09-30 20:17 리더 락 상실).
+"""
+
+
+def near_close(seconds: int, now_epoch: float) -> bool:
+    """이 축의 다음 마감이 예비 신호 창 안에 있나 (순수 · T331).
+
+    Args:
+        seconds: 축 간격(초). Gate 봉은 에포크 배수에 정렬된다(4H = 00 · 04 · 08 … UTC).
+        now_epoch: 지금(에포크 초).
+
+    Returns:
+        마감까지 남은 시간이 창 이하면 True. 창의 두 배보다 짧은 축(15m 이하)은 늘 True —
+        5분 훑기 사이에 창을 통째로 건너뛸 수 있어서다.
+    """
+    if seconds <= 2 * PREVIEW_WINDOW_FLOOR_S:
+        return True
+    window = max(PREVIEW_WINDOW_FLOOR_S, min(seconds // 4, PREVIEW_WINDOW_CAP_S))
+    left = seconds - (now_epoch % seconds)
+    return left <= window
+
+
 FORMING_TTL = 0.7
 """진행 중 봉을 거래소에 다시 묻기까지의 최소 간격(초).
 
@@ -4078,6 +4106,9 @@ class LiveRunner:
             ⛔ **판정 · 원장 · 주문을 안 건드린다** — `Session.preview` 가 판정 캐시 밖에서 잰다.
             형성 중 봉은 `forming()` 그대로(TTL · 실패는 None). 예비라서 펀드 문(자리 · 상한 ·
             브레이크)은 안 거친다 — 깜빡여도 진입이 약속된 것이 아니다.
+
+            ⭐ T331 — **마감이 가까운 축만** 묻는다(`near_close`). 걸어 둔 진입 표(`waiting`)는
+            조회가 없어 늘 낸다. 벽시계를 읽지만 화면 전용이라 판정 경로(규칙 #5)와 무관하다.
         """
         session = self._session
         waiting = session.waiting_trade
@@ -4094,8 +4125,9 @@ class LiveRunner:
             return None
         held = set(self._feed.timeframes)
         forming: dict[Timeframe, Candle] = {}
+        now_epoch = datetime.now(UTC).timestamp()
         for frame in {book.timeframe for book in session.playbooks}:
-            if frame not in held:
+            if frame not in held or not near_close(interval_seconds(frame), now_epoch):
                 continue
             bar = await self.forming(frame)
             if bar is not None:

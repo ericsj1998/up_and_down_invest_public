@@ -57,3 +57,42 @@ def test_found_now_lists_only_hits() -> None:
     mod.PREVIEWS["a"] = (0.0, None)
     mod.PREVIEWS["c"] = (0.0, {"kind": "waiting"})
     assert mod.found_now() == ["b", "c"]
+
+
+class TestNearClose:
+    """T331 — 마감이 가까운 축만 잰다. 5분 훑기가 창(1H 15분)에 두세 번 걸린다."""
+
+    def test_the_sweep_is_five_minutes(self) -> None:
+        assert mod.SWEEP_EVERY == 300.0
+        assert mod.SWEEP_EVERY < mod.STALE_AFTER
+
+    def test_one_hour_last_fifteen_minutes(self) -> None:
+        from updown.orchestration.walkforward.live_runner import near_close
+
+        hour = 3600
+        assert near_close(hour, 10 * hour + 45 * 60)
+        assert near_close(hour, 10 * hour + 59 * 60)
+        assert not near_close(hour, 10 * hour + 44 * 60)
+        assert not near_close(hour, 10 * hour)
+
+    def test_four_hours_last_thirty_minutes(self) -> None:
+        from updown.orchestration.walkforward.live_runner import near_close
+
+        four = 4 * 3600
+        assert near_close(four, 2 * four + four - 30 * 60)
+        assert not near_close(four, 2 * four + four - 31 * 60)
+        assert not near_close(four, 2 * four + 3600)
+
+    def test_a_day_is_capped_at_thirty_minutes(self) -> None:
+        from updown.orchestration.walkforward.live_runner import near_close
+
+        day = 86400
+        assert near_close(day, 3 * day - 1800)
+        assert not near_close(day, 3 * day - 1801)
+
+    def test_short_frames_are_always_due(self) -> None:
+        from updown.orchestration.walkforward.live_runner import near_close
+
+        assert near_close(900, 0.0)
+        assert near_close(900, 100.0)
+        assert near_close(300, 5.0)

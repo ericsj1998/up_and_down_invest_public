@@ -515,6 +515,48 @@ async def account_of(email: str) -> Account | None:
         return await session.scalar(sa.select(Account).where(Account.email == email))
 
 
+ACCOUNT_CACHE_S = 30.0
+_account_cache: dict[str, tuple[float, Account]] = {}
+
+
+async def account_cached(email: str) -> Account | None:
+    """`account_of` 의 30초 캐시 — **미들웨어 전용** (T331).
+
+    Args:
+        email: 소문자 이메일.
+
+    Returns:
+        계정. 없으면 None(없음은 기억하지 않는다 — 방금 만든 행을 30초 동안 못 보면 안 된다).
+
+    Note:
+        🔴 2026-09-30 실계좌: RUN 카드 40개 x 6/분 = 요청 240/분이 저마다 계정 행을 읽어
+        DB 풀(4 + 2)을 채웠고, 스틸이 겹치자 권한 조회가 시간 초과로 떨어졌다
+        (`market_grants_unreadable`). 등급 · 차단 · 로그아웃은 고치는 쪽이 `invalidate_account`
+        를 불러 이 프로세스에는 즉시, 다른 프로세스에는 30초 안에 듣는다 — 묶음 · 덮어쓰기
+        행의 60초 규약과 같은 결이다.
+    """
+    now = time.monotonic()
+    hit = _account_cache.get(email)
+    if hit is not None and now - hit[0] < ACCOUNT_CACHE_S:
+        return hit[1]
+    found = await account_of(email)
+    if found is not None:
+        _account_cache[email] = (now, found)
+    return found
+
+
+def invalidate_account(email: str | None = None) -> None:
+    """계정 행을 고친 뒤 캐시를 비운다 — 등급 · 차단 · 삭제 · 로그아웃 · 보류 해제.
+
+    Args:
+        email: 이 사람만. None 이면 전부.
+    """
+    if email is None:
+        _account_cache.clear()
+    else:
+        _account_cache.pop(email, None)
+
+
 @dataclass(frozen=True, slots=True)
 class Caller:
     """이번 요청을 보낸 사람 — 미들웨어가 `request.state.caller` 에 둔다."""
@@ -938,7 +980,7 @@ async def caller_of(request: Request) -> Caller | None:
     #    안 된다.
     if on_real_money() and is_guest_email(email):
         return None
-    found = await account_of(email)
+    found = await account_cached(email)
     if found is None or not found.alive():
         return None
     # ⭐ T267 #9 — 로그아웃 뒤의 옛 쪽지는 서명이 맞아도 없는 것과 같다.
@@ -1181,6 +1223,7 @@ async def logout(request: Request) -> Response:
             found = await session.scalar(sa.select(Account).where(Account.email == who.email))
             if found is not None:
                 found.sessions_invalid_before = datetime.now(UTC)
+        invalidate_account(who.email)
         _logger.info("logout_revoked", payload={"email": who.email})
     return made
 
@@ -1481,6 +1524,7 @@ async def set_hold(
         if found is None:
             raise HTTPException(404, f"{target} 계정이 없다")
         found.hold_released_until = now + timedelta(days=days) if days > 0 else None
+        invalidate_account(target)
         _logger.info(
             "account_hold_changed",
             payload={"email": target, "days": days, "by": who.email if who else "?"},
@@ -1598,6 +1642,7 @@ def erase_account(found: Account, now: datetime) -> None:
     """
     found.deleted_at = now
     found.blocked = True
+    invalidate_account(found.email)
 
 
 def revive_account(found: Account, now: datetime) -> None:
@@ -1619,6 +1664,7 @@ def revive_account(found: Account, now: datetime) -> None:
     found.approved_by = ""
     found.audit = False
     found.last_login_at = now
+    invalidate_account(found.email)
 
 
 @router.get("/contacts")
@@ -1892,6 +1938,7 @@ async def set_blocked(
             if (admins or 0) <= 1:
                 raise HTTPException(400, "마지막 관리자다 — 차단하면 아무도 승인할 수 없다")
         found.blocked = wanted
+        invalidate_account(target)
         _logger.info(
             "account_blocked_changed",
             payload={
@@ -2123,6 +2170,7 @@ async def _apply_grant(
     if next_collection and found.approved_at is None:
         found.approved_at = datetime.now(UTC)
         found.approved_by = actor.email if actor else "?"
+    invalidate_account(found.email)
     _logger.info(
         "account_grant_changed",
         payload={

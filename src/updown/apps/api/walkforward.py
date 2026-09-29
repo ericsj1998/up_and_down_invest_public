@@ -2694,11 +2694,34 @@ async def _venue_snapshot(
     Raises:
         HTTPException: 조회 실패. ⛔ 조용히 빈 값을 내면 **"잔재 없음"** 이 되고,
             그것은 있는 위험을 없다고 말하는 것이다 (규칙 #8).
+
+    Note:
+        ⭐ T331 — 어댑터가 한 벌(`venue_snapshot` · 포지션 · 미결 · 조건부 세 호출)을 주면
+        그것을 읽고, 이력은 `recent_orders_all`(한 호출)로 붙인다. 전에는 `console_state` 가
+        종목 41개의 청산 이력 · 끝난 주문까지 조립했다(`position_close` 20/분) — 대조에는
+        포지션 · 걸린 주문 · 끝난 주문만 필요하다. 못 하는 어댑터는 예전 길 그대로다.
     """
-    from updown.apps.api.exchange import console_state
+    from updown.apps.api.exchange import (
+        _orders_adapter,  # pyright: ignore[reportPrivateUsage]
+        _recent_all,  # pyright: ignore[reportPrivateUsage]
+        console_state,
+    )
 
     try:
-        body = await console_state(market=market)
+        adapter = _orders_adapter(market)
+        snap = await venue_snapshot(market, adapter)
+        if snap is None:
+            body = await console_state(market=market)
+        else:
+            grouped = await _recent_all(adapter, market)
+            body = snapshot_body(
+                positions=snap.positions,
+                orders=snap.orders,
+                stops=snap.stops,
+                finished=grouped or {},
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(503, f"{market} 거래소 상태를 못 읽었다 — {exc}") from exc
     owned = {
@@ -2717,6 +2740,33 @@ async def _venue_snapshot(
     ]:
         resting.setdefault(str(row.get("symbol", "")), []).append(row)
     return body, owned, positions, resting
+
+
+def snapshot_body(
+    *,
+    positions: Mapping[str, Mapping[str, str]],
+    orders: Mapping[str, list[dict[str, str]]],
+    stops: Mapping[str, list[dict[str, str]]],
+    finished: Mapping[str, list[dict[str, str]]],
+) -> dict[str, Any]:
+    """시장 한 벌을 `console_state` 와 **같은 모양**의 몸통으로 (순수 · T331).
+
+    Args:
+        positions: 종목 → 포지션 칸.
+        orders: 종목 → 미결 주문 줄들.
+        stops: 종목 → 조건부 줄들.
+        finished: 종목 → 끝난 주문 줄들(부분 체결 계수기의 재료).
+
+    Returns:
+        `{positions, orders, stops, history}` — 줄마다 `symbol` 이 붙는다. 대조 · 잔재 목록은
+        이 네 칸만 읽는다.
+    """
+    return {
+        "positions": [{**row, "symbol": symbol} for symbol, row in positions.items()],
+        "orders": [{**row, "symbol": symbol} for symbol, rows in orders.items() for row in rows],
+        "stops": [{**row, "symbol": symbol} for symbol, rows in stops.items() for row in rows],
+        "history": [{**row, "symbol": symbol} for symbol, rows in finished.items() for row in rows],
+    }
 
 
 RECONCILE_S = 120
