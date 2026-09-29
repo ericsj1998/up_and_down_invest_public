@@ -759,7 +759,9 @@ export function FundPanel({
                     {v.position
                       ? v.shares && v.shares.length > 1
                         ? `${v.position.side} · 몫 ${v.shares.length}`
-                        : `${v.position.side} @ ${fmtPrice(v.position.entry)}`
+                        : `${v.position.side} @ ${fmtPrice(v.position.entry)}${
+                            v.position.name ? ` · ${v.position.name}` : ""
+                          }`
                       : v.holding
                         ? "보유"
                         : v.preview

@@ -1767,6 +1767,9 @@ export type FundLeg = {
   verified_realized?: string | null;
   position?: {
     side: string;
+    /** 이 포지션을 든 다리 id(`playbook`) · 짧은 이름 — 2026-09-30 "어떤 매매법으로 들어갔는지". */
+    leg?: string;
+    name?: string;
     entry: string;
     target: string;
     stop: string;
@@ -1811,6 +1814,8 @@ export type FundPreview = {
   side: string;
   /** 귀속 키(`playbook@version`). */
   leg: string;
+  /** 다리 짧은 이름(`MACD 롱` 등) — 2026-09-30 "예비 신호에도 다리 이름". */
+  name?: string;
   frame: string;
   entry: string;
   stop: string;

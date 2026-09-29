@@ -1509,8 +1509,8 @@ async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
         "unrealized": unreal,
         "holding": held is not None,
         # ⭐ 진입 가능성(깜빡임 · 2026-09-27) — 걸어 둔 진입 표 또는 마감 전 예비 신호.
-        #    없거나 낡으면 None.
-        "preview": preview_of(handle),
+        #    없거나 낡으면 None. ⭐ 2026-09-30 사용자 "예비 신호에도 다리 이름" — `name` 을 붙인다.
+        "preview": _named_preview(session, preview_of(handle)),
         # 🔴 **원장과 거래소가 갈리면 이 종목 손익은 미확정이다** (2026-09-01 사용자
         #    신고). 두 신호를 나눠 싣는다: `reconciled` = 포지션 갈림(고아·유령·무방비),
         #    `accounting_ok` = 실현손익 회계가 거래소와 부호까지 맞나(`pnl_sign_split`).
@@ -1527,6 +1527,10 @@ async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
     if held is not None:
         row["position"] = {
             "side": "롱" if held.direction.sign > 0 else "숏",
+            # ⭐ 2026-09-30 사용자 "어떤 매매법으로 그 포지션에 들어갔는지 종목 표에서" —
+            #    다리 id · 짧은 이름.
+            "leg": held.playbook.split("@")[0],
+            "name": leg_label(session, held.playbook),
             "entry": str(held.entry),
             "target": str(held.planned_target),
             "stop": str(held.planned_stop),
@@ -1552,6 +1556,23 @@ async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
             {item.playbook: leg_label(session, item.playbook) for item in shares},
         )
     return row
+
+
+def _named_preview(session: Any, preview: dict[str, Any] | None) -> dict[str, Any] | None:
+    """예비 신호에 다리 짧은 이름(`name`)을 붙인다 — 화면이 "예비 신호 · 롱 · MACD 롱" 으로 적는다.
+
+    Args:
+        session: 그 판의 세션(다리 선언을 안다).
+        preview: `preview_of` 결과(`leg` = 귀속 키) 또는 None.
+
+    Returns:
+        같은 사전 + `name`. None 이면 None.
+    """
+    if preview is None:
+        return None
+    leg = str(preview.get("leg", ""))
+    name = leg_label(session, leg) if leg else ""
+    return {**preview, "name": name or leg.split("@")[0]}
 
 
 def share_rows(

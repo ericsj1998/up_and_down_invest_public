@@ -129,7 +129,7 @@ export function heatColor(change: number | null | undefined): { bg: string; fg: 
  * 펀드 문(자리 · 명목 상한 · 브레이크) 전이라 진입이 약속된 것은 아니다. 그 말을 툴팁에 그대로 싣는다.
  */
 export function previewText(p: FundPreview, legName?: string): string {
-  const leg = legName || p.leg.split("@")[0] || "";
+  const leg = legName || p.name || p.leg.split("@")[0] || "";
   if (p.kind === "waiting") {
     return `진입 주문 대기 · ${p.side} @ ${trimNum(p.entry)} · 손절 ${trimNum(p.stop)} · ${leg}`;
   }
@@ -141,7 +141,10 @@ export function previewText(p: FundPreview, legName?: string): string {
 
 /** 표 · 칸에 들어갈 짧은 말. */
 export function previewShort(p: FundPreview): string {
-  return p.kind === "waiting" ? `진입 주문 · ${p.side}` : `예비 신호 · ${p.side}`;
+  // ⭐ 2026-09-30 사용자 "예비 신호에도 다리 이름" — 어느 다리의 신호인지 같이 적는다.
+  const leg = p.name || p.leg.split("@")[0] || "";
+  const head = p.kind === "waiting" ? `진입 주문 · ${p.side}` : `예비 신호 · ${p.side}`;
+  return leg ? `${head} · ${leg}` : head;
 }
 
 function trimNum(value: string): string {
