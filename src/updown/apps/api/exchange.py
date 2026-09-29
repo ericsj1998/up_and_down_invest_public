@@ -33,6 +33,7 @@ from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Body, HTTPException, Request
 
+from updown.apps.api.exchange_snapshot import SNAPSHOT_TTL_S, venue_snapshot
 from updown.apps.api.market_hours import market_status_payload
 from updown.common.cache import TtlCache
 from updown.common.costs import DEFAULT_CONFIG_PATH, CostConfigError, load_cost_table
@@ -671,8 +672,13 @@ async def _state_fresh(symbol: str = DEFAULT_SYMBOL, market: str = "GATE") -> di
     #    첫 배포(2026-09-05)에서 테스트넷 키의 화이트리스트에 서버 IP 가 없어 500 만 떴다 —
     #    사람이 "왜" 를 로그에서 찾아야 했다.
     try:
-        balance = await orders.get_balance()
-        position = await orders.position_snapshot(instrument)
+        # ⭐ T330 — 시장 한 벌(10초)에서 꺼낸다. 못 하는 어댑터면 예전처럼 종목별로 묻는다.
+        snap = await venue_snapshot(market, orders)
+        if snap is not None:
+            balance, position = snap.balance, snap.position_of(symbol)
+        else:
+            balance = await orders.get_balance()
+            position = await orders.position_snapshot(instrument)
         tracked = await _tracked(orders, market)
         history = await _all_history(orders, market, tracked)
     except HTTPException:
@@ -835,7 +841,39 @@ async def _all_live(
         진짜 포지션이 그 안에 묻힌다.
 
         ⭐ 동시에 묻는다. 순차로 하면 종목 수만큼 곱해진다.
+
+        ⭐ T330 — 어댑터가 한 벌(`book_snapshot`)을 줄 수 있으면 **세 번의 호출**로 끝낸다
+        (종목 41개 x 3 = 123 → 3). 한 벌은 10초 캐시라 화면 폴링과 같은 신선도다.
     """
+    try:
+        snap = await venue_snapshot(market, orders)
+    except Exception as exc:
+        # ⚠️ 한 벌이 실패하면 종목별 경로로 — 하나 때문에 화면 전체가 비지 않게(규칙 #8-1 방향).
+        _logger.warning(
+            "console_snapshot_unreadable", payload={"market": market, "error": str(exc)[:140]}
+        )
+        snap = None
+    if snap is not None:
+        wanted = set(tracked)
+        return {
+            "orders": [
+                {**row, "symbol": symbol}
+                for symbol, rows in snap.orders.items()
+                if symbol in wanted
+                for row in rows
+            ],
+            "stops": [
+                {**row, "symbol": symbol}
+                for symbol, rows in snap.stops.items()
+                if symbol in wanted
+                for row in rows
+            ],
+            "positions": [
+                {**row, "symbol": symbol}
+                for symbol, row in snap.positions.items()
+                if symbol in wanted and row
+            ],
+        }
 
     async def one(symbol: str) -> _Live:
         """종목 하나의 미결·조건부·포지션을 동시에 묻는다.
@@ -906,7 +944,11 @@ async def _all_history(
         것을 못 본다 (절대 규칙 #8-1 과 같은 방향).
 
         ⭐ 동시에 묻는다. 순차로 하면 종목 수만큼 곱해진다.
+
+        ⭐ T330 — 어댑터가 전 종목 한 벌(`recent_orders_all`)을 주면 **한 번**만 묻는다(10초 캐시).
+        종목마다 `orders?status=finished` 를 묻던 것이 10분에 3,120회였다.
     """
+    grouped = await _recent_all(orders, market)
 
     async def one(symbol: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
         """종목 하나의 끝난 주문(손익 붙임)과 실현 손익 이력.
@@ -921,9 +963,13 @@ async def _all_history(
         closes = await _closes(orders, instrument)
         lot = await _lot(orders, instrument)
         try:
-            rows = cast(
-                "list[dict[str, str]]",
-                await orders.recent_orders(instrument),  # type: ignore[attr-defined]
+            rows = (
+                list(grouped.get(symbol, []))
+                if grouped is not None
+                else cast(
+                    "list[dict[str, str]]",
+                    await orders.recent_orders(instrument),  # type: ignore[attr-defined]
+                )
             )
         except Exception as exc:
             _logger.warning(
@@ -949,6 +995,35 @@ async def _all_history(
     history.sort(key=lambda row: str(row.get("create_time", "")), reverse=True)
     closes.sort(key=lambda row: str(row.get("time", "")), reverse=True)
     return {"history": history, "closes": closes}
+
+
+_RECENT_CACHE = TtlCache[dict[str, list[dict[str, str]]]]("exchange.recent_all", SNAPSHOT_TTL_S)
+"""전 종목 끝난 주문 한 벌 — 시장마다 10초 (T330)."""
+
+
+async def _recent_all(orders: object, market: str) -> dict[str, list[dict[str, str]]] | None:
+    """전 종목의 끝난 주문을 한 번에 — 못 하는 어댑터면 None(종목별 경로).
+
+    Args:
+        orders: 주문 어댑터.
+        market: 거래소.
+
+    Returns:
+        `{종목: 줄들}` 또는 None.
+
+    Note:
+        실패하면 None 을 내서 종목별 경로로 간다 — 이력이 통째로 비는 것보다 낫다(규칙 #8-1 방향).
+    """
+    fetch = getattr(orders, "recent_orders_all", None)
+    if fetch is None:
+        return None
+    try:
+        return await _RECENT_CACHE.get_or_fetch(f"recent:{market}", fetch)
+    except Exception as exc:
+        _logger.warning(
+            "console_recent_all_unreadable", payload={"market": market, "error": str(exc)[:140]}
+        )
+        return None
 
 
 _CLOSES_TTL_S = 120.0

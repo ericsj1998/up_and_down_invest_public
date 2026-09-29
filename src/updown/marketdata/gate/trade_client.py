@@ -583,11 +583,12 @@ class GateTradeClient:
             raise GateApiError(f"주문 응답이 객체가 아니다: {type(found).__name__}")
         return cast("dict[str, Any]", found)
 
-    async def list_orders(self, contract: str, status: str = "open") -> list[dict[str, Any]]:
+    async def list_orders(self, contract: str | None, status: str = "open") -> list[dict[str, Any]]:
         """주문 목록.
 
         Args:
-            contract: `BTC_USDT`.
+            contract: `BTC_USDT`. **None 이면 전 계약**(T330 · 화면 스냅샷 한 벌) — 줄마다
+                `contract` 가 온다.
             status: `open` 또는 `finished`.
 
         Returns:
@@ -597,11 +598,10 @@ class GateTradeClient:
             GateAuthError: 401.
             GateApiError: 그 외.
         """
-        found = await self._request(
-            "GET",
-            f"/futures/{SETTLE}/orders",
-            params={"contract": contract, "status": status},
+        params = (
+            {"status": status} if contract is None else {"contract": contract, "status": status}
         )
+        found = await self._request("GET", f"/futures/{SETTLE}/orders", params=params)
         if not isinstance(found, list):
             raise GateApiError(f"주문 목록이 배열이 아니다: {type(found).__name__}")
         return cast("list[dict[str, Any]]", found)
@@ -983,11 +983,11 @@ class GateTradeClient:
             raise GateApiError(f"호가 응답이 객체가 아니다: {type(found).__name__}")
         return cast("dict[str, Any]", found)
 
-    async def list_stops(self, contract: str) -> list[dict[str, Any]]:
+    async def list_stops(self, contract: str | None) -> list[dict[str, Any]]:
         """걸려 있는 조건부 주문들.
 
         Args:
-            contract: `BTC_USDT`.
+            contract: `BTC_USDT`. **None 이면 전 계약**(T330) — 줄의 `initial.contract` 로 가른다.
 
         Returns:
             열린 조건부 주문 목록.
@@ -999,11 +999,10 @@ class GateTradeClient:
             🔴 **포지션이 있으면 이 목록이 비어 있지 않아야 한다.** 비었는데 포지션이
             있으면 손절이 없는 상태다 — 만료됐거나 걸리지 않은 것이고, 둘 다 사건이다.
         """
-        found = await self._request(
-            "GET",
-            f"/futures/{SETTLE}/price_orders",
-            params={"status": "open", "contract": contract},
+        params = (
+            {"status": "open"} if contract is None else {"status": "open", "contract": contract}
         )
+        found = await self._request("GET", f"/futures/{SETTLE}/price_orders", params=params)
         if not isinstance(found, list):
             raise GateApiError(f"조건부 목록이 배열이 아니다: {type(found).__name__}")
         return cast("list[dict[str, Any]]", found)

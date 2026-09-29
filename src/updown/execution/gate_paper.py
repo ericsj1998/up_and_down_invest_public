@@ -85,6 +85,69 @@ POSITION_MISSING = "POSITION_NOT_FOUND"
 """
 
 
+POSITION_KEEP: Final = (
+    "size",
+    "entry_price",
+    "mark_price",
+    "unrealised_pnl",
+    "leverage",
+    "margin",
+    "liq_price",
+    "value",
+)
+"""`position_snapshot` 이 화면에 넘기는 칸 — 전 종목 스냅샷(T330)도 **같은 칸**이어야 한다."""
+ORDER_KEEP: Final = (
+    "id",
+    "size",
+    "left",
+    "price",
+    "text",
+    "status",
+    "is_reduce_only",
+    "create_time",
+)
+FINISHED_KEEP: Final = (
+    "id",
+    "size",
+    "left",
+    "price",
+    "fill_price",
+    "text",
+    "status",
+    "finish_as",
+    "is_reduce_only",
+    "create_time",
+    "finish_time",
+)
+RECENT_LIMIT: Final = 40
+"""`recent_orders` 가 종목마다 내는 최대 줄 수 — 전 종목 한 벌도 종목마다 같은 수로 자른다."""
+
+
+def position_row(raw: dict[str, Any]) -> dict[str, str]:
+    """Gate 포지션 원문 → 화면 칸(`POSITION_KEEP`) 문자열 사전 (종목별 · 전 종목 공용)."""
+    return {name: str(raw.get(name, "")) for name in POSITION_KEEP}
+
+
+def order_row(raw: dict[str, Any], keep: tuple[str, ...] = ORDER_KEEP) -> dict[str, str]:
+    """Gate 주문 원문 → 화면 칸 문자열 사전 (미결 · 끝난 주문 공용)."""
+    return {name: str(raw.get(name, "")) for name in keep}
+
+
+def stop_row(raw: dict[str, Any]) -> dict[str, str]:
+    """Gate 조건부 원문 → 화면 칸 — 발동가와 **만료 시각**을 담는다 (중첩 사전을 좁힌다)."""
+    rule = cast("dict[str, Any]", raw.get("trigger") or {})
+    order = cast("dict[str, Any]", raw.get("initial") or {})
+    return {
+        "id": str(raw.get("id", "")),
+        "trigger_price": str(rule.get("price", "")),
+        "expiration": str(rule.get("expiration", "")),
+        "size": str(order.get("size", "")),
+        "reduce_only": str(order.get("reduce_only", "")),
+        "text": str(order.get("text") or raw.get("text") or ""),
+        "create_time": str(raw.get("create_time", "")),
+    }
+
+
 def _stop_expiring_soon(item: dict[str, Any], *, now: float | None = None) -> bool:
     """이 조건부 손절의 만료가 `STOP_REFRESH_BEFORE_S`(3일) 안으로 다가왔나 (장투 · 갭2).
 
@@ -524,17 +587,70 @@ class GatePaperAdapter:
         #    그것을 "보유 중" 으로 읽으면 화면이 없는 포지션의 청산가를 띄운다.
         if zero(raw.get("size")):
             return {}
-        keep = (
-            "size",
-            "entry_price",
-            "mark_price",
-            "unrealised_pnl",
-            "leverage",
-            "margin",
-            "liq_price",
-            "value",
+        return position_row(raw)
+
+    async def book_snapshot(self) -> dict[str, dict[str, Any]]:
+        """**전 종목 한 벌** — 포지션 · 미결 주문 · 조건부를 세 번의 호출로 (T330 · 2026-09-30).
+
+        Returns:
+            `{positions: {종목: 칸}, orders: {종목: [미결]}, stops: {종목: [조건부]}}` —
+            종목별 메서드(`position_snapshot` · `open_orders` · `open_stops`)와 **같은 칸**이다.
+            `size` 0 인 껍데기 포지션은 뺀다.
+
+        Note:
+            🔴 **화면 표시 전용이다.** 러너의 판정 · 손절 · 대조는 종목별 메서드를 그대로
+            쓴다 — 이 한 벌은 최대 10초 낡을 수 있고, 그 낡음이 매매 경로에 들어가면 안 된다.
+
+            왜 필요한가: RUN 카드 40개가 10초마다 각자 `positions/<종목>` 을 물어 api 컨테이너가
+            80% 를 썼다(2026-09-30 17:48 KST · 10분에 거래소 호출 12,699). Gate 는 셋 다 종목
+            없이 한 번에 준다.
+        """
+        raw_positions, raw_orders, raw_stops = (
+            await self._trade.get_positions(),
+            await self._trade.list_orders(None, status="open"),
+            await self._trade.list_stops(None),
         )
-        return {name: str(raw.get(name, "")) for name in keep}
+        positions: dict[str, dict[str, str]] = {}
+        for raw in raw_positions:
+            if zero(raw.get("size")):
+                continue
+            symbol = str(raw.get("contract") or raw.get("symbol") or "")
+            if symbol:
+                positions[symbol] = position_row(raw)
+        orders: dict[str, list[dict[str, str]]] = {}
+        for raw in raw_orders:
+            symbol = str(raw.get("contract") or "")
+            if symbol:
+                orders.setdefault(symbol, []).append(order_row(raw))
+        stops: dict[str, list[dict[str, str]]] = {}
+        for raw in raw_stops:
+            initial = cast("dict[str, Any]", raw.get("initial") or {})
+            symbol = str(initial.get("contract") or raw.get("contract") or "")
+            if symbol:
+                stops.setdefault(symbol, []).append(stop_row(raw))
+        return {"positions": positions, "orders": orders, "stops": stops}
+
+    async def recent_orders_all(self) -> dict[str, list[dict[str, str]]]:
+        """**전 종목**의 끝난 주문 — 한 번의 호출 (T330).
+
+        Returns:
+            `{종목: 최근 것이 앞인 줄들(종목마다 최대 `RECENT_LIMIT`)}` — `recent_orders` 와
+            같은 칸.
+
+        Note:
+            Gate `orders?status=finished` 는 계약 없이 부르면 계정 전체의 최근 주문을 준다
+            (기본 100줄). 콘솔 상태 갱신마다 40종목을 따로 묻던 것(10분에 3,120회)을 한 번으로.
+        """
+        rows = await self._trade.list_orders(None, status="finished")
+        out: dict[str, list[dict[str, str]]] = {}
+        for raw in rows:
+            symbol = str(raw.get("contract") or "")
+            if not symbol:
+                continue
+            bucket = out.setdefault(symbol, [])
+            if len(bucket) < RECENT_LIMIT:
+                bucket.append(order_row(raw, FINISHED_KEEP))
+        return out
 
     async def open_positions(self) -> list[dict[str, str]]:
         """계정에 **열려 있는 포지션 전부** — 종목을 몰라도 부를 수 있다.
@@ -792,8 +908,7 @@ class GatePaperAdapter:
             실제로 걸려 있는 주문이다 — 둘이 갈리는 것을 눈으로 봐야 유령을 잡는다.
         """
         rows = await self._trade.list_orders(to_contract(instrument), status="open")
-        keep = ("id", "size", "left", "price", "text", "status", "is_reduce_only", "create_time")
-        return [{name: str(row.get(name, "")) for name in keep} for row in rows]
+        return [order_row(row) for row in rows]
 
     async def open_stops(self, instrument: Instrument) -> list[dict[str, str]]:
         """조건부(스탑) 주문들.
@@ -809,23 +924,8 @@ class GatePaperAdapter:
             걸었다는 기억은 만료를 모른다. 화면에 만료를 띄워야 사람이 알아챈다.
         """
         rows = await self._trade.list_stops(to_contract(instrument))
-        out: list[dict[str, str]] = []
-        for row in rows:
-            # ⚠️ 중첩 사전이라 좁혀 준다 — Gate 응답은 · 안에 값을 넣는다.
-            rule = cast("dict[str, Any]", row.get("trigger") or {})
-            order = cast("dict[str, Any]", row.get("initial") or {})
-            out.append(
-                {
-                    "id": str(row.get("id", "")),
-                    "trigger_price": str(rule.get("price", "")),
-                    "expiration": str(rule.get("expiration", "")),
-                    "size": str(order.get("size", "")),
-                    "reduce_only": str(order.get("reduce_only", "")),
-                    "text": str(order.get("text") or row.get("text") or ""),
-                    "create_time": str(row.get("create_time", "")),
-                }
-            )
-        return out
+        # ⚠️ 중첩 사전이라 좁혀 준다 — Gate 응답은 · 안에 값을 넣는다 (`stop_row`).
+        return [stop_row(row) for row in rows]
 
     async def recent_orders(self, instrument: Instrument) -> list[dict[str, str]]:
         """**끝난 주문들** — 체결됐거나 취소된 것.
@@ -848,20 +948,7 @@ class GatePaperAdapter:
             *"다 채워졌다"* 가 아니다. IOC 시장가는 일부만 체결되고 끝날 수 있다.
         """
         rows = await self._trade.list_orders(to_contract(instrument), status="finished")
-        keep = (
-            "id",
-            "size",
-            "left",
-            "price",
-            "fill_price",
-            "text",
-            "status",
-            "finish_as",
-            "is_reduce_only",
-            "create_time",
-            "finish_time",
-        )
-        return [{name: str(row.get(name, "")) for name in keep} for row in rows[:40]]
+        return [order_row(row, FINISHED_KEEP) for row in rows[:RECENT_LIMIT]]
 
     async def cancel_stop(self, stop_id: str) -> None:
         """조건부 주문 하나를 거둔다.

@@ -58,6 +58,7 @@ from updown.apps.api.auth import (
     require_market_trade,
     require_playbook_trade,
 )
+from updown.apps.api.exchange_snapshot import venue_snapshot
 from updown.apps.api.stock_order import StockOrderRejectedError, hours_of, stock_order_terms
 from updown.common.config import load_settings as load_app_settings
 from updown.common.costs import (
@@ -1656,7 +1657,14 @@ async def live_health(key: str) -> dict[str, Any]:
         account = {"note": "관찰 전용 — 거래소에 계약이 없어 계좌를 묻지 않는다"}
     else:
         try:
-            account = await runner.exchange()
+            # ⭐ T330 — 시장 한 벌(10초)에서 자기 종목을 꺼낸다. 판 40개가 각자 거래소를 묻던
+            #    것이 CPU 80% 의 원인이었다. 못 하는 어댑터면 예전처럼 `exchange()`.
+            snap = await venue_snapshot(runner.instrument.market.value, runner.order_adapter)
+            account = (
+                runner.exchange_view(snap.balance, snap.position_of(runner.instrument.symbol))
+                if snap is not None
+                else await runner.exchange()
+            )
         except Exception as exc:  # 표시용이라 어떤 실패도 화면을 막지 않는다
             _logger.warning(
                 "live_account_unreadable", payload={"session_id": key, "error": str(exc)}

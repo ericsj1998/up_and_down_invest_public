@@ -46,6 +46,7 @@ from updown.analysis.indicators.reference import reference_regime
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Market, Timeframe
+from updown.common.domain.market import Balance
 from updown.common.domain.order import OrderKind, OrderResult, OrderStatus
 from updown.common.domain.session import MarketCalendar, SessionConfigError, Tradability
 from updown.common.logging.setup import get_logger
@@ -507,6 +508,25 @@ class PositionLister(Protocol):
         Returns:
             각 행에 `symbol` 이 있는 포지션 행들.
         """
+        ...
+
+
+@runtime_checkable
+class BookSnapshotter(Protocol):
+    """계정의 포지션 · 미결 · 조건부를 **전 종목 한 벌**로 말할 수 있는 어댑터 (T330 · 화면 전용).
+
+    Note:
+        🔴 `PositionLister` 와 따로 둔다(같은 이유 — 프로토콜을 넓히면 기존 구현이 말없이 빠진다).
+        화면(RUN 카드 40개 · 콘솔 상태)이 종목마다 거래소를 묻던 것을 한 벌로 바꾸는 자리이고,
+        **러너의 매매 경로는 이것을 쓰지 않는다** — 한 벌은 최대 10초 낡을 수 있다.
+    """
+
+    async def book_snapshot(self) -> dict[str, dict[str, Any]]:
+        """`{positions: {종목: 칸}, orders: {종목: [줄]}, stops: {종목: [줄]}}` — 종목별 칸."""
+        ...
+
+    async def get_balance(self) -> Balance:
+        """계좌 잔고."""
         ...
 
 
@@ -3716,6 +3736,32 @@ class LiveRunner:
         held: dict[str, str] = {}
         if isinstance(self._orders, PositionAware):
             held = await self._orders.position_snapshot(self.instrument)
+        return self.exchange_view(balance, held)
+
+    @property
+    def order_adapter(self) -> Any:
+        """이 판의 주문 어댑터 — 화면이 **전 종목 스냅샷**(T330 `venue_snapshot`)을 얻는 데 쓴다.
+
+        Note:
+            ⛔ 주문을 내는 데 쓰지 않는다 — 주문 경로는 러너 안에 있고 게이트가 어댑터 획득을
+            독점한다(절대 규칙 #0). 여기는 이미 얻은 어댑터를 **읽기용으로 보여 주는** 창이다.
+        """
+        return self._orders
+
+    def exchange_view(self, balance: Balance, held: dict[str, str]) -> dict[str, object]:
+        """`exchange()` 의 **모양 만들기** — 이미 읽은 잔고 · 포지션으로 (T330).
+
+        Args:
+            balance: 계좌 잔고.
+            held: 이 종목의 포지션 칸(`position_snapshot` 과 같은 칸). 없으면 빈 사전.
+
+        Returns:
+            `exchange()` 와 같은 사전.
+
+        Note:
+            화면이 40판을 10초마다 물을 때 러너마다 거래소를 다시 묻지 않고, 시장별 한 벌
+            (`venue_snapshot`)에서 자기 종목을 꺼내 여기로 넘긴다 — 값의 **모양과 뜻은 그대로**다.
+        """
         # 🔴 **계좌의 `position_margin` 은 0 으로 온다** (2026-08-18 실측). 포지션이
         #    `margin=500.85` 로 열려 있는데도 계좌 요약은 0 이었다 — 격리 마진 포지션을
         #    계좌 수준에서 세지 않는 것으로 보인다.
