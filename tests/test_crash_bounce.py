@@ -130,8 +130,10 @@ class TestDeclaration:
         assert needs.vol_pct_bars == 120 and needs.vol_pct_rank == 500
         assert needs.bars >= 621  # 120 로그수익 + 500 창 + 1
 
-    def test_bundle_230_carries_six_legs_and_stays_unlisted(self) -> None:
+    def test_bundle_230_carries_six_legs_and_is_the_listed_default(self) -> None:
+        """2026-09-30 사용자 "매매법도 최신 기준으로" — 2.3.0 이 선택창 유일본 · 권장(1.27.0)."""
         books = {b.playbook_id: b for b in load_playbooks()}
         bundle = books["private_strategy"]
         assert "private_strategy" in bundle.bundle and len(bundle.bundle) == 6
-        assert bundle.listed is False
+        assert bundle.listed is True and bundle.recommended is True
+        assert books["private_strategy"].listed is False  # 2.2.0 은 내렸다(귀속 보존)
