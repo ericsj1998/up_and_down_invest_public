@@ -2062,6 +2062,13 @@ class LiveRunner:
         self._fired("adopt", f"거래소 포지션 {size} 계약을 원장으로 되읽었다")
         self._session.ledger.add(record)
         self._session.adopt(record)
+        # 🔴 **이어받은 기록에 진입 주문을 보내지 않는다** (2026-09-30 실계좌 사고 · T332 후속).
+        #    `_place()` 는 "열림 · 아직 안 보낸 · 체결 기록 없는" 원장 기록을 새 계획으로 보고
+        #    진입을 보낸다. 되살린 기록은 `_revived_open` 으로 비켜 가지만 **입양 기록은 그 목록에
+        #    없어** 다음 걸음에 진입이 한 번 더 나갔다 — XRP 32계약을 이어받은 뒤 14:00Z 에
+        #    51계약을 또 사서 83계약 · 손절 51 이 됐다. 이 포지션은 이미 거래소에 있다 —
+        #    보낸 것으로 표시해 `_place` 가 건드리지 않게 한다(손절은 `_guard_stop` 이 건다).
+        self._sent.add(trade_id)
         self.placed[trade_id] = {
             "order_id": "adopted",
             "status": "adopted",
