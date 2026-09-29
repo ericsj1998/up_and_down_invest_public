@@ -6,6 +6,8 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from updown.apps.api import rebalancer as mod
 from updown.apps.api import walkforward as wf
 from updown.orchestration.walkforward.ledger import Outcome
@@ -16,23 +18,24 @@ class TestOpenRecordsOf:
         assert mod.open_records_of(None) == ()
         assert mod.open_records_of("") == ()
 
-    def test_unknown_session_means_nothing(self, monkeypatch) -> None:
+    def test_unknown_session_means_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod, "SESSIONS", {})
         assert mod.open_records_of("live-none") == ()
 
-    def test_only_open_records_are_copied(self, monkeypatch) -> None:
-        from tests.test_live_adopt import FakeSession  # 최소 세션 — 원장 기록 목록만 쓴다
-
+    def test_only_open_records_are_copied(self, monkeypatch: pytest.MonkeyPatch) -> None:
         opened = SimpleNamespace(outcome=Outcome.OPEN, trade_id="a")
-        closed = SimpleNamespace(outcome=Outcome.STOPPED, trade_id="b")
-        session = FakeSession()
-        session.ledger.records.extend([opened, closed])  # type: ignore[attr-defined]
-        monkeypatch.setattr(mod, "SESSIONS", {"live-x": SimpleNamespace(session=session)})
-        monkeypatch.setattr(
-            mod, "replace", lambda item: item
-        )  # SimpleNamespace 는 dataclass 가 아니다
+        closed = SimpleNamespace(outcome=Outcome.STOP_LOSS, trade_id="b")
+        live = SimpleNamespace(
+            session=SimpleNamespace(ledger=SimpleNamespace(records=[opened, closed]))
+        )
+        monkeypatch.setattr(mod, "SESSIONS", {"live-x": live})
+
+        def same(item: object) -> object:  # SimpleNamespace 는 dataclass 가 아니다
+            return item
+
+        monkeypatch.setattr(mod, "replace", same)
         got = mod.open_records_of("live-x")
-        assert [item.trade_id for item in got] == ["a"]
+        assert [getattr(item, "trade_id") for item in got] == ["a"]  # noqa: B009
 
 
 class TestWiring:
