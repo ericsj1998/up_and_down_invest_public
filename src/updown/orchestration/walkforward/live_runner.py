@@ -2028,7 +2028,11 @@ class LiveRunner:
             risk = abs(entry - trigger)
             far = risk * SENTINEL_RR * 2
             first = target = entry - far if short else entry + far
-        trade_id = adopted_id(orders)
+        # 🔴 T332 후속(2026-09-30 22:39 KST 자동 전환 뒤 실측) — 몫 모드는 익절 주문이 없어
+        #    `orders` 만 보면 **새 매매 id 를 만든다**. 그러면 T328 꼬리 비교(매매 8자)가 옛 손절과
+        #    안 맞아 종목마다 조건부 손절이 둘이 됐다(XRP · LINK · CRV). 손절 이름에도 같은 매매 id
+        #    가 박혀 있으므로 거기서도 되뽑는다 — 이어받은 기록이 옛 손절을 제 것으로 알아본다.
+        trade_id = adopted_id([*orders, *stops])
         cost = load_cost_table(DEFAULT_CONFIG_PATH).for_market(self.instrument.market)
         # ⭐ T291 — 되읽은 포지션은 **그 방향을 드는 매매법**에 귀속한다. 한 세션에 1H 롱 · 4H 숏
         #    두 다리가 실리면 대표(롱 다리)로 적힌 숏은 자기 청산 규칙을 잃는다.
