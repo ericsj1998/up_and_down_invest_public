@@ -45,6 +45,7 @@ from updown.marketdata.gate.trade_client import (
     GateTradeClient,
     gate_text,
     price_text,
+    same_share,
 )
 from updown.marketdata.shared_read import forget as forget_shared
 from updown.marketdata.shared_read import shared
@@ -367,16 +368,19 @@ class GatePaperAdapter:
         Note:
             등록을 먼저 · 취소를 나중에(전량 경로와 같은 까닭 — 무방비보다 이중이 낫다).
         """
-        mine_text = gate_text(key)
         wanted_price = price_text(trigger)
         wanted_size = -size if long else size
-        keep = False
-        stale: list[str] = []
+        exact = gate_text(key)
+        mine: list[tuple[str, bool, bool]] = []  # (id · 값이 맞는가 · 이름이 지금 표식인가)
         for item in existing:
             got_initial: object = item.get("initial")
             initial = cast("dict[str, Any]", got_initial) if isinstance(got_initial, dict) else {}
-            if str(initial.get("text", "")) != mine_text:
-                continue  # 🔴 다른 몫(또는 전량) 손절 — 안 건드린다
+            text = str(initial.get("text", ""))
+            # 🔴 T328 — 판 표식(앞 6자)이 달라도 꼬리(매매 8자 · sl · 몫)가 같으면 **이 몫의
+            #    손절**이다. text 를 통째로 비교하면 펀드 전환 · 되살리기로 표식이 바뀐 옛 손절을
+            #    "없다" 로 보고 하나 더 건다(CRV_USDT · 2026-09-29 · 같은 발동가 둘).
+            if not same_share(text, key):
+                continue  # 다른 몫(또는 전량) 손절 — 안 건드린다
             got: object = item.get("trigger")
             priced: object = (
                 cast("dict[str, Any]", got).get("price") if isinstance(got, dict) else None
@@ -387,17 +391,19 @@ class GatePaperAdapter:
                 and int(str(initial.get("size", 0))) == wanted_size
                 and not _stop_expiring_soon(item)
             )
-            if same:
-                keep = True
-                continue
             fid: object = item.get("id")
-            if fid is not None:
-                stale.append(str(fid))
-        if keep and not stale:
+            mine.append(("" if fid is None else str(fid), same, text == exact))
+        # 맞는 것이 여럿이면(T328 겹침) **지금 표식의 것**을 남긴다 — 러너가 붙잡은 id · 되찾기
+        #    (`_find_share_stop_id`)가 보는 것과 같은 손절이라 대조가 엇갈리지 않는다. 없으면 첫째.
+        fit = [fid for fid, same, _ in mine if same]
+        keeper = next((fid for fid, same, now in mine if same and now), fit[0] if fit else None)
+        # 값이 다르거나(갈아 끼움) · 맞는 것이 이미 있는데 또 있다(겹침) → 거둔다
+        stale = [fid for fid, _, _ in mine if fid and fid != keeper]
+        if keeper is not None and not stale:
             return None
         made = (
             None
-            if keep
+            if keeper is not None
             else await self._trade.place_stop(contract, trigger, long=long, size=size, text=key)
         )
         for fid_text in stale:

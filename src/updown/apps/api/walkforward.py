@@ -2494,6 +2494,12 @@ async def autostart_live() -> str | None:
                         # ⚠️ 증거금이 비어 있으면 그 RUN 은 지갑 전액을 쓰던 것이다 —
                         #    되살릴 때 기본값을 씌우면 규모가 조용히 달라진다.
                         **({"margin": row["margin"]} if row["margin"] else {}),
+                        # 🔴 T328(2026-09-30) — **주문 표식(run_key) · 금고 셋 · 판정 축도
+                        #    물려준다**(부활 경로와 같게). 펀드 전환으로 띄운 판은 옛 판의 표식을
+                        #    이어받아(`meta.run_key`) 주문에 그 이름을 붙였는데, 재시작 되살리기는
+                        #    이 값을 안 넘겨 저장된 키로 새 이름을 만들었다 — CRV_USDT 에 같은
+                        #    발동가 손절이 둘(1.26.1 배포 · 옛 `t-f780d1-…` + 새 `t-411bb0-…`).
+                        **revive_settings_of(row),
                     }
                 )
         except RunStoreError as exc:

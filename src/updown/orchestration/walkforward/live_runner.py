@@ -84,12 +84,14 @@ from updown.orchestration.walkforward.order_mapping import (
     contracts_for,
     entry_order,
     fit_to_margin,
+    gate_text,
     limit_entry_order,
     order_key,
     order_root,
     resize_order,
     rounding_drift_pct,
     run_tag,
+    same_share,
     take_profit_orders,
 )
 from updown.orchestration.walkforward.session import STEP_FRAME, Session
@@ -2304,10 +2306,19 @@ class LiveRunner:
             except Exception as exc:
                 self._log.warning("live_reconcile_unreadable", payload={"error": str(exc)[:140]})
                 return False
-            alive = {str(row.get("text", "")).removeprefix("t-") for row in stops}
-            gone = [
-                item for item in shares if self._share_stop_key(item).replace(":", "-") not in alive
-            ]
+            # T328 — 러너가 붙잡은 손절 id 가 있으면 **그 id 가 사라졌는가**로 본다. 표식이 달라진
+            #    옛 손절(고아)이 남아 있어도 이 몫은 나간 것이다(고아는 닫는 길에서 거둔다). id 를
+            #    모르면(재시작) 판 표식이 달라진 손절도 "살아 있다" 로 센다(꼬리 비교).
+            alive_ids = {str(row.get("id", "")) for row in stops} - {""}
+            alive = [str(row.get("text", "")) for row in stops]
+
+            def stop_gone(item: TradeRecord) -> bool:
+                tracked = self._share_stop_ids.get(item.trade_id, "")
+                if tracked:
+                    return tracked not in alive_ids
+                return not any(same_share(text, self._share_stop_key(item)) for text in alive)
+
+            gone = [item for item in shares if stop_gone(item)]
             if not gone:
                 return False  # 조회 지연 — 손절은 다 걸려 있다
             dropped = owed - size
@@ -2355,6 +2366,12 @@ class LiveRunner:
             self._fired("reconcile", f"거래소가 몫을 먼저 닫았다 — {outcome.value} @ {fill}")
             self._session.ledger.replace(done)
             self._session.release(leg=held.playbook)
+            # 🔴 T328 — 거래소가 이 몫을 닫았으면(손절 발동 · 강제 청산) **이 몫 이름의 손절 잔재를
+            #    거둔다**. 발동한 손절은 이미 사라졌지만 판 표식이 달라진 옛 손절(펀드 전환 ·
+            #    되살리기)이 남아 다음 포지션을 옛 값에서 닫을 수 있다. 실패해도 나가는 길을 막지
+            #    않는다(규칙 #8-1).
+            with contextlib.suppress(Exception):
+                await self._withdraw_share_orders(held)
             self._share_stop_ids.pop(held.trade_id, None)
             await self._align_fee(done.trade_id)
             closed_any = True
@@ -4322,14 +4339,20 @@ class LiveRunner:
             #    (`_share_misses` 에 이름이 있다).
             try:
                 stops = await self._orders.open_stops(self.instrument)
-                alive = {str(row.get("text", "")).removeprefix("t-") for row in stops}
-                bare = [
-                    item.trade_id
+                texts = [str(row.get("text", "")) for row in stops]
+                open_shares = [
+                    item
                     for item in self._session.ledger.records
-                    if item.outcome is Outcome.OPEN
-                    and item.trade_id in self._share_misses
-                    and self._share_stop_key(item).replace(":", "-") not in alive
+                    if item.outcome is Outcome.OPEN and item.trade_id in self._share_misses
                 ]
+                # T328 — 판 표식이 달라도 꼬리가 같으면 그 몫의 손절이다.
+                counts = {
+                    item.trade_id: sum(
+                        1 for text in texts if same_share(text, self._share_stop_key(item))
+                    )
+                    for item in open_shares
+                }
+                bare = [tid for tid, n in counts.items() if n == 0]
                 if bare:
                     found.append(
                         {
@@ -4337,6 +4360,20 @@ class LiveRunner:
                             "level": "error",
                             "detail": (
                                 f"몫 {', '.join(bare)} 의 조건부 손절이 없다 — 그 몫이 무방비다"
+                            ),
+                        }
+                    )
+                dup = [f"{tid} x{n}" for tid, n in counts.items() if n > 1]
+                if dup:
+                    # 🔴 T328 — 같은 몫에 손절이 둘 이상(옛 판 표식 잔재). 발동 때 둘째는 무효라
+                    #    무해하나 포지션이 닫힌 뒤 고아로 남아 다음 포지션을 옛 값에서 닫을 수
+                    #    있다 — 다음 점검(`_guard_stop`)이 여분을 거둔다.
+                    found.append(
+                        {
+                            "code": "stop_dup",
+                            "level": "warn",
+                            "detail": (
+                                f"몫 {', '.join(dup)} 의 조건부 손절이 겹친다 — 여분을 거둔다"
                             ),
                         }
                     )
@@ -6774,7 +6811,10 @@ class LiveRunner:
                     if str(row.get("text", "")).removeprefix("t-").startswith(f"{root}-"):
                         with contextlib.suppress(Exception):
                             await self._orders.cancel_order(str(row["id"]))
-        want = self._share_stop_key(held).replace(":", "-")
+        # 🔴 T328 — 판 표식이 달라진 옛 손절(펀드 전환 · 되살리기)도 **꼬리(매매 8자 · sl · 몫)** 로
+        #    찾아 거둔다. text 를 통째로 비교하면 옛 표식 손절이 고아로 남아 다음 포지션을 옛 값에서
+        #    닫는다.
+        want = self._share_stop_key(held)
         ids = {self._share_stop_ids.pop(held.trade_id, "")} - {""}
         stops = self._orders if isinstance(self._orders, StopAware) else None
         if stops is not None:
@@ -6782,7 +6822,7 @@ class LiveRunner:
                 ids |= {
                     str(row.get("id", ""))
                     for row in await stops.open_stops(self.instrument)
-                    if str(row.get("text", "")).removeprefix("t-") == want
+                    if same_share(str(row.get("text", "")), want)
                 }
         cancel = getattr(self._orders, "cancel_stop", None)
         if cancel is not None:
@@ -6795,7 +6835,7 @@ class LiveRunner:
             left = await stops.open_stops(self.instrument)
         except Exception:
             return False
-        return not any(str(row.get("text", "")).removeprefix("t-") == want for row in left)
+        return not any(same_share(str(row.get("text", "")), want) for row in left)
 
     async def _find_share_stop_id(self, held: TradeRecord) -> str:
         """거래소에 걸린 **이 몫의 조건부 손절 id** — text(몫 키)로 찾는다 (T320 P4).
@@ -6808,19 +6848,19 @@ class LiveRunner:
         """
         if not isinstance(self._orders, StopAware):
             return ""
-        want = self._share_stop_key(held).replace(":", "-")
+        want = self._share_stop_key(held)
         try:
             rows = await self._orders.open_stops(self.instrument)
         except Exception:
             return ""
-        return next(
-            (
-                str(row.get("id", ""))
-                for row in rows
-                if str(row.get("text", "")).removeprefix("t-") == want
-            ),
-            "",
-        )
+        # T328 — 판 표식이 달라도 꼬리가 같으면 이 몫의 손절이다. 겹치면 **지금 표식의 것**을
+        #    먼저 — 어댑터(`_share_stop`)가 남기는 것과 같은 손절을 붙잡아야 대조가 엇갈리지 않는다.
+        mine = [row for row in rows if same_share(str(row.get("text", "")), want)]
+        now = gate_text(want)
+        best = next((row for row in mine if str(row.get("text", "")) == now), None)
+        if best is None and mine:
+            best = mine[0]
+        return "" if best is None else str(best.get("id", ""))
 
     def _guard_price(self, held: TradeRecord) -> Decimal:
         """거래소에 걸 조건부 손절 자리 — `Session.guard_price` (T233 ②).

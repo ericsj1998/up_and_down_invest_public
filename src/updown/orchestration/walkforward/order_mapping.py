@@ -40,7 +40,11 @@ from decimal import ROUND_DOWN, Decimal
 
 from updown.common.domain.instrument import Instrument, Side
 from updown.common.domain.order import OrderKind, OrderRequest, OrderType
+from updown.marketdata.gate.trade_client import gate_text, key_tail, same_share
 from updown.orchestration.walkforward.ledger import Direction, TradeRecord
+
+# T328 — 몫 손절 이름 · 꼬리 비교는 층 때문에 trade_client 에 산다. 러너는 여기서 가져간다.
+__all__ = ["gate_text", "key_tail", "same_share"]
 
 RUN_CHARS = 6
 """주문 이름에 넣는 **판 표식** 길이 (T18 ⑤)."""

@@ -128,6 +128,37 @@ TEXT_LIMIT: Final = 30
 """
 
 
+_RUN_CHARS = 6
+"""주문 이름 앞의 판 표식 자릿수 — `order_mapping.RUN_CHARS` 와 같은 값(층 때문에 여기 따로)."""
+
+
+def key_tail(key_or_text: str) -> str:
+    """멱등키(또는 거래소 text)에서 **판 표식을 뗀 꼬리** — `{trade 8}-{kind}-{leg}` (T328).
+
+    Args:
+        key_or_text: `{run 6}-{trade 8}:sl:0` 같은 멱등키, 또는 `t-{run 6}-{trade 8}-sl-0` 같은
+            거래소 text.
+
+    Returns:
+        `{trade 8}-sl-0`. 판 표식이 없는 옛 형식(`{trade 12}:tp:1`)은 그대로(`{trade 12}-tp-1`).
+
+    Note:
+        🔴 **판 표식은 같은 매매에서도 바뀔 수 있다**(T328 · 2026-09-30): 펀드 전환은 옛 판의 표식을
+        물려주고(`run_key`), API 재시작 되살리기는 저장된 판 키를 썼다 — CRV_USDT 에 같은 발동가
+        손절이 둘 걸렸다. 몫 손절을 **찾을 때는 이 꼬리로** 비교한다. 새로 낼 때의 이름은 그대로다.
+    """
+    flat = key_or_text.removeprefix("t-").replace(":", "-")
+    head, sep, rest = flat.partition("-")
+    if sep and len(head) == _RUN_CHARS and rest.count("-") >= 2:
+        return rest
+    return flat
+
+
+def same_share(text: str, key: str) -> bool:
+    """거래소 text 가 이 몫 키의 것인가 — 판 표식이 달라도 꼬리가 같으면 같은 몫이다 (T328)."""
+    return bool(text) and key_tail(text) == key_tail(key)
+
+
 def gate_text(key: str) -> str:
     """도메인 멱등키 → Gate `text` 필드.
 
