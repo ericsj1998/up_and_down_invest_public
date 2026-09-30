@@ -2362,7 +2362,9 @@ class Session:
             # ⭐ 411차 — 시간 청산(`max_hold_bars`). 체결 뒤 판정 TF 봉이 그만큼 닫혔으면
             #    종가에 전량.
             #    손절 · 목표는 위에서 먼저 봤다. 신호 청산과 같은 종가라 값은 연구 순서와 같다.
-            if book.max_hold_bars is not None and self._bars_held(held, book) >= book.max_hold_bars:
+            #    T335 Q9 — 셋업이 실어 보낸 보유 상한(`TradeRecord.max_hold_bars`)을 먼저 본다.
+            hold_cap = held.max_hold_bars if held.max_hold_bars is not None else book.max_hold_bars
+            if hold_cap is not None and self._bars_held(held, book) >= hold_cap:
                 done = held.closed(
                     at=bar.ts,
                     price=bar.close,
@@ -3659,6 +3661,7 @@ class Session:
             cost_pct=cost.round_trip_pct,
             leverage=exposure,
             hold_level=setup.hold_level,
+            max_hold_bars=setup.max_hold_bars,
             evidence=setup.evidence,
         )
         # 🔴 **부르기 전에 기하를 본다.** 지정가라 진입가가 이미 정해져 있으므로,
@@ -4396,6 +4399,7 @@ class Session:
             cost_pct=cost.round_trip_pct,
             leverage=exposure,
             hold_level=setup.hold_level,
+            max_hold_bars=setup.max_hold_bars,
             # 🔴 **왜 들어갔는지를 값과 함께 적는다** (T16 ①). 원장이 가격만 남기면
             #    판이 죽은 뒤에는 *"왜 들어갔는지 모르는 매매"* 가 되고, 근거는 거래소
             #    어디에도 없어 되읽을 수 없다.

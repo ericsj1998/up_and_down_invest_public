@@ -96,3 +96,17 @@ class TestGate:
 
     def test_max_one_allows_one_fake(self) -> None:
         assert setup_of(window_with_fake(), fail_history_max=1) is not None
+
+
+class TestHoldBars:
+    def test_hold_cap_only_when_history_exists(self) -> None:
+        made = setup_of(window_with_fake(), fail_history_hold_bars=12)
+        assert made is not None and made.max_hold_bars == 12
+
+    def test_no_hold_cap_without_history(self) -> None:
+        made = setup_of(window_with_fake(fake_at=None), fail_history_hold_bars=12)
+        assert made is not None and made.max_hold_bars is None
+
+    def test_off_leaves_cap_empty(self) -> None:
+        made = setup_of(window_with_fake())
+        assert made is not None and made.max_hold_bars is None

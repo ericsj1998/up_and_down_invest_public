@@ -333,6 +333,11 @@ class TradeRecord:
     half_at: datetime | None = None
     cost_pct: Decimal = COST_UNKNOWN
     leverage: Decimal = Decimal(1)
+    max_hold_bars: int | None = None
+    """이 매매만의 보유 상한(판정 TF 봉 수) — `TradeSetup.max_hold_bars` 를 옮긴다 (T335 Q9).
+
+    비어 있으면 매매법의 `max_hold_bars`. 시간 청산은 이 값을 먼저 본다.
+    """
     hold_level: Decimal | None = None
     """**뚫린 레벨** — 돌파 매매만 든다 (T44). 청산이 캔들 색 대신 이 값을 본다.
 
@@ -698,6 +703,7 @@ class TradeRecord:
             cost_pct=self.cost_pct if cost_pct is None else cost_pct,
             leverage=self.leverage,
             hold_level=self.hold_level,
+            max_hold_bars=self.max_hold_bars,
             confirmed=self.confirmed,
             # ⚠️ **반익 사유를 안 옮기면 청산되는 순간 사라진다** — 원장에 남는 것은
             #    이 사본이고, 그러면 표에서 두 경로가 다시 뭉개진다.

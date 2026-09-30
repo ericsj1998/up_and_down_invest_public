@@ -183,6 +183,7 @@ def to_json(pending: PendingEntry) -> dict[str, Any]:
             "cost_pct": str(r.cost_pct),
             "leverage": str(r.leverage),
             "hold_level": None if r.hold_level is None else str(r.hold_level),
+            "max_hold_bars": r.max_hold_bars,
             "confirmed": r.confirmed,
             "entry_fills": [[str(p), str(q)] for p, q in r.entry_fills],
             "note": r.note,
@@ -236,6 +237,7 @@ def from_json(raw: Mapping[str, Any]) -> PendingEntry:
         cost_pct=Decimal(str(r.get("cost_pct", "0"))),
         leverage=Decimal(str(r.get("leverage", "1"))),
         hold_level=_dec(r.get("hold_level")),
+        max_hold_bars=None if r.get("max_hold_bars") is None else int(r["max_hold_bars"]),
         confirmed=r.get("confirmed"),
         entry_fills=tuple(
             (Decimal(str(p)), Decimal(str(q)))
