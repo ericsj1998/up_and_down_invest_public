@@ -337,7 +337,7 @@ class TestStartSweepsBeforeItRuns:
         from updown.apps.api import walkforward as wf
 
         assert "runner.swept" in self._start()
-        assert '"swept": runner.swept' in inspect.getsource(wf.live_health)
+        assert '"swept": runner.swept' in inspect.getsource(wf._health_of)  # pyright: ignore[reportPrivateUsage]
 
 
 class TestTheConsoleSeesThem:

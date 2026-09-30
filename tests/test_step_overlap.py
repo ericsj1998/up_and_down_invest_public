@@ -120,7 +120,7 @@ class TestItSkipsInsteadOfQueueing:
         """⚠️ 급증하면 **걸음이 너무 오래 걸린다**는 뜻이라 사람이 봐야 한다."""
         from updown.apps.api import walkforward as wf
 
-        assert "runner.overlaps" in inspect.getsource(wf.live_health)
+        assert "runner.overlaps" in inspect.getsource(wf._health_of)  # pyright: ignore[reportPrivateUsage]
 
 
 class TestBothLoopsStillShareOnePath:

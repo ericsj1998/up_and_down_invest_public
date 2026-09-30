@@ -14,20 +14,26 @@ class TestDeclaration:
     def test_220_is_superseded_by_230(self) -> None:
         books = {b.playbook_id: b for b in load_playbooks()}
         assert books["private_strategy"].superseded_by == "private_strategy"
+        # 2.4.0 (1.28.0 · 2026-09-30)
+        assert books["private_strategy"].superseded_by == "private_strategy"
         assert books["private_strategy"].superseded_by is None
         assert books["private_strategy"].listed is True
+        assert books["private_strategy"].listed is False
 
     def test_only_the_live_bundle_declares_it(self) -> None:
         declared = {b.playbook_id for b in load_playbooks() if b.superseded_by}
-        assert declared == {"private_strategy"}
+        assert declared == {"private_strategy", "private_strategy"}
 
 
 class TestSupersedingPlaybook:
     def test_follows_the_declaration(self) -> None:
         books = load_playbooks()
         assert (
-            mod.superseding_playbook("private_strategy", books) == "private_strategy"
+            mod.superseding_playbook("private_strategy", books)
+            == "private_strategy"
         )
+        nxt = mod.superseding_playbook("private_strategy", books)
+        assert nxt == "private_strategy"
         assert mod.superseding_playbook("private_strategy", books) is None
         assert mod.superseding_playbook("no_such_playbook", books) is None
 

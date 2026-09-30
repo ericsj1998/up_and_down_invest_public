@@ -135,5 +135,8 @@ class TestDeclaration:
         books = {b.playbook_id: b for b in load_playbooks()}
         bundle = books["private_strategy"]
         assert "private_strategy" in bundle.bundle and len(bundle.bundle) == 6
-        assert bundle.listed is True and bundle.recommended is True
+        # 1.28.0(2026-09-30): 2.3.0 은 2.4.0(`_cb_r5`)으로 자동 전환(T332) — 선택창엔 2.4.0 만
+        assert bundle.listed is False and bundle.superseded_by == "private_strategy"
+        new = books["private_strategy"]
+        assert new.listed is True and new.recommended is True and new.bundle == bundle.bundle
         assert books["private_strategy"].listed is False  # 2.2.0 은 내렸다(귀속 보존)

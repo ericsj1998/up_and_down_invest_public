@@ -71,7 +71,9 @@ class TestItIsCounted:
         """⛔ 세션만 세고 화면이 못 보면 없는 것과 같다."""
         from updown.apps.api import walkforward as api
 
-        source = inspect.getsource(api.live_health)
+        source = inspect.getsource(
+            api._health_of
+        )  # T334 몸통  # pyright: ignore[reportPrivateUsage]
         assert "half_withheld" in source
         # ⚠️ 함께 안 실리던 것들도 같이 낸다 — 셋은 서로 다른 사건이다.
         for name in ("stale_plans", "expired", "guarded"):

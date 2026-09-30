@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Any
 
-from updown.analysis.playbook.select import _KNOWN_KEYS, load_playbooks
+from updown.analysis.playbook.select import load_playbooks
+from updown.analysis.playbook.types import Playbook
 from updown.orchestration.walkforward.session import trail_exit_hit
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
 H = timedelta(hours=1)
 
 
-def _rows(highs: list[str], closes: list[str]) -> list[SimpleNamespace]:
+def _rows(highs: list[str], closes: list[str]) -> list[Any]:
+    # 판정 함수는 ts · high · close 만 읽는다 — 봉 대신 이름 공간으로 충분하다
     return [
         SimpleNamespace(ts=T0 + k * H, high=Decimal(h), close=Decimal(c))
         for k, (h, c) in enumerate(zip(highs, closes, strict=True))
@@ -22,9 +26,11 @@ def _rows(highs: list[str], closes: list[str]) -> list[SimpleNamespace]:
 
 class TestTrailExit:
     def test_key_is_declarable_and_frozen_by_default(self) -> None:
-        assert "trail_exit_pct_long" in _KNOWN_KEYS
-        # 실계좌 매매법은 이 키를 안 쓴다 — 기본 None 이면 청산 가지가 없는 것과 같다
-        assert all(book.trail_exit_pct_long is None for book in load_playbooks())
+        assert "trail_exit_pct_long" in {f.name for f in fields(Playbook)}
+        # 1.28.0(2026-09-30): 실계좌 돌파 롱 다리만 15 를 선언한다(R15) — 나머지는 None(동결)
+        got = {b.playbook_id: b.trail_exit_pct_long for b in load_playbooks()}
+        assert got["private_strategy"] == Decimal(15)
+        assert all(v is None for k, v in got.items() if k != "private_strategy")
 
     def test_hits_when_close_retraces_from_peak(self) -> None:
         # 진입 100 · 고가 120 까지 오른 뒤 종가 101 (= 120 x 0.85 = 102 아래) → 나간다
