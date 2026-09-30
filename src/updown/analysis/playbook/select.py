@@ -717,6 +717,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         if body.get("ma_exit_above_short") is None
                         else int(body["ma_exit_above_short"])
                     ),
+                    trail_exit_pct_long=(
+                        None
+                        if body.get("trail_exit_pct_long") is None
+                        else Decimal(str(body["trail_exit_pct_long"]))
+                    ),
                     macd_exit_below_long=(
                         None
                         if body.get("macd_exit_below_long") is None

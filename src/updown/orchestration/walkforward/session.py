@@ -2569,6 +2569,20 @@ class Session:
                     level = sma([row.close for row in gauge.rows], book.ma_exit_below_long)[-1]
                     if level is not None and gauge.rows[-1].close < level:
                         flipped = True
+            # ⭐ **되돌림 청산** (683차 R15 후보 · 세션 재현) — 판정 TF 종가가 보유 뒤 최고가
+            #    대비 `trail_exit_pct_long`% 아래로 **마감**하면 전량.
+            #    None 이면 이 가지는 없는 것과 같다.
+            if (
+                not flipped
+                and long
+                and book.trail_exit_pct_long is not None
+                and held.opened_at is not None
+            ):
+                gauge = self._frame(book.timeframe, None)
+                if gauge is not None and gauge.rows:
+                    flipped = trail_exit_hit(
+                        held.entry, held.opened_at, gauge.rows, book.trail_exit_pct_long
+                    )
             # 🔴 **숏 거울상** (T290) — 판정 TF 종가가 SMA(N) **위로 마감**하면 숏을 전량 정리한다.
             #    닫힌 삼각수렴 하방 이탈 숏의 청산이다. None 이면 이 가지는 없는 것과 같다.
             if not flipped and not long and book.ma_exit_above_short is not None:
@@ -3421,6 +3435,7 @@ class Session:
                 if short
                 else (
                     item.ma_exit_below_long,
+                    item.trail_exit_pct_long,
                     item.adx_exit_long,
                     item.adx_exit_above_long,
                     item.macd_exit_below_long,
@@ -4540,3 +4555,29 @@ def run_to_end(session: Session, *, limit: int = 100_000) -> Sequence[Snapshot]:
         if shot.opened is not None or shot.closed or shot.proposals:
             out.append(shot)
     return out
+
+
+def trail_exit_hit(
+    entry: Decimal, opened_at: datetime, rows: Sequence[Candle], pct: Decimal
+) -> bool:
+    """되돌림 청산 판정 — 마지막 닫힌 봉 종가 ≤ 보유 뒤 최고가 x (1 - pct/100) 인가 (683차 R15).
+
+    Args:
+        entry: 평단(최고가의 바닥값 — 연구 정의는 진입 종가에서 시작한다).
+        opened_at: 체결 시각. 이 시각 이후에 시작한 봉의 고가만 최고가에 넣는다.
+        rows: 판정 TF 의 닫힌 봉(오래된 것부터).
+        pct: 되돌림 문턱(%).
+
+    Returns:
+        나가야 하면 True.
+
+    Note:
+        연구(`fakebreak/exits.py` trail)는 진입 봉 다음 봉부터 고가를 갱신하고 그 봉 종가와
+        비교한다 —
+        여기서도 마지막 봉의 고가를 최고가에 넣은 뒤 그 봉 종가와 비교한다(같은 봉 안 순서 동일).
+    """
+    peak = entry
+    for row in rows:
+        if row.ts >= opened_at and row.high > peak:
+            peak = row.high
+    return rows[-1].close <= peak * (Decimal(1) - pct / Decimal(100))

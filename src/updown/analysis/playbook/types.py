@@ -1002,6 +1002,13 @@ class Playbook:
 
     ⛔ None 이면 동결이다 (§5.6.2) — 기존 매매법은 한 글자도 다르게 돌지 않는다.
     """
+    trail_exit_pct_long: Decimal | None = None
+    """롱 보유 중 판정 TF 종가가 **보유 뒤 최고가 대비 X% 아래로 마감**하면 전량 나간다.
+
+    683차 R15 후보 · 세션 재현용. 최고가 = 진입가와 진입 뒤 판정 TF 봉 고가의 최댓값(연구
+    `fakebreak/exits.py` trail 정의 그대로). SMA 마감 청산과 같은 봉에 둘 다 맞으면 결과는
+    같다(종가 청산). ⛔ None 이면 동결이다 (§5.6.2) — 실계좌 매매법은 이 키를 안 쓴다.
+    """
     macd_exit_below_long: bool | None = None
     """롱 보유 중 판정 TF 의 MACD 선이 시그널 **아래에서 마감**하면 전량 나간다 (419 · 420차).
 
