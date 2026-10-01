@@ -4233,6 +4233,40 @@ async def _refill_cap(wallet: Decimal | None = None) -> Decimal | None:
     return resolve_cap(cap_text(await _settings.get(REFILL_CAP_KEY)), wallet)
 
 
+async def budget_facts(paper: object, market: Market) -> tuple[Decimal, Decimal] | None:
+    """(계좌 총액, 같은 거래소의 열린 실계좌 판들이 잡은 예산 합) — 판 예산 문의 두 값.
+
+    판을 띄울 때의 문(`_budget_room`)과 펀드 생성 "전액" 단추(`GET /rebalancer/room` ·
+    사용자 2026-10-02)가 **같은 자**를 쓰려고 뗐다. 둘이 다른 식을 쓰면 "전액" 을 눌렀는데
+    문이 400 으로 막는다.
+
+    Args:
+        paper: 주문 어댑터.
+        market: 거래소 — 합산은 같은 거래소 판들만.
+
+    Returns:
+        `(total, taken)`. 저장소가 없거나 · 증거금 계좌가 아니거나(주식 페이퍼) · 총액을 못 읽으면
+        None — 그때 문은 막지 않는다(⛔ 조회 실패가 길을 막으면 안 된다).
+    """
+    if _store is None or not isinstance(paper, MarginAware):
+        return None
+    total = Decimal(0)
+    with contextlib.suppress(Exception):
+        cash = cast("Decimal", (await paper.get_balance()).cash)  # type: ignore[attr-defined]
+        total = Decimal(str(cash)) + await paper.account_margin()
+    if total <= 0:
+        return None
+    taken = Decimal(0)
+    with contextlib.suppress(Exception):
+        for row in await _store.open_runs(live=True):
+            if str(row.get("market", "")) != market.value:
+                continue  # 다른 거래소 계좌의 판 — 이 계좌의 방을 안 먹는다
+            found = row.get("margin")
+            if found:
+                taken += Decimal(str(found))
+    return total, taken
+
+
 async def _budget_room(paper: object, wanted: Decimal, symbol: str, market: Market) -> None:
     """이 판의 예산이 **같은 거래소 계좌의 총액 안에 들어가나** (T21 ⑨).
 
@@ -4257,22 +4291,10 @@ async def _budget_room(paper: object, wanted: Decimal, symbol: str, market: Mark
 
         ⛔ 못 읽으면 막지 않는다. 조회 실패로 판을 못 띄우면 안전 장치가 길을 막는다.
     """
-    if _store is None or not isinstance(paper, MarginAware):
+    facts = await budget_facts(paper, market)
+    if facts is None:
         return
-    total = Decimal(0)
-    with contextlib.suppress(Exception):
-        cash = cast("Decimal", (await paper.get_balance()).cash)  # type: ignore[attr-defined]
-        total = Decimal(str(cash)) + await paper.account_margin()
-    if total <= 0:
-        return
-    taken = Decimal(0)
-    with contextlib.suppress(Exception):
-        for row in await _store.open_runs(live=True):
-            if str(row.get("market", "")) != market.value:
-                continue  # 다른 거래소 계좌의 판 — 이 계좌의 방을 안 먹는다
-            found = row.get("margin")
-            if found:
-                taken += Decimal(str(found))
+    total, taken = facts
     # ⚠️ 센트 아래 잔재는 넘김이 아니다 — 1/7 같은 비중의 Decimal 반올림 꼬리(10^-19)가 "300 을
     #    넘는다" 로 펀드 생성을 막았다 (2026-09-05). 비교는 센트 단위로 한다.
     if (taken + wanted).quantize(Decimal("0.01")) > total.quantize(Decimal("0.01")):

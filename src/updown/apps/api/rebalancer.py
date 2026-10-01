@@ -49,6 +49,7 @@ from updown.apps.api.walkforward import (
     _close_live_position,
     _drop_one,
     _live_start,
+    budget_facts,
     leg_label,
     run_store,
 )
@@ -2043,6 +2044,80 @@ async def defaults(market: str = "GATE", playbook: str = "") -> dict[str, Any]:
         "members": members,
         "missing": missing,
     }
+
+
+def _floor_cents(value: Decimal) -> Decimal:
+    """센트 아래를 버린다 · 음수는 0 — "전액" 이 문을 한 푼도 넘지 않게."""
+    return max(value, Decimal(0)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+
+@router.get("/room")
+async def room(market: str = "GATE") -> dict[str, Any]:
+    """전액 단추가 넣을 값 — 지금 펀드 생성 · 입금이 받을 수 있는 최대 (사용자 2026-10-02).
+
+    사용자: *"펀드 생성이나 자금 추가 할 때 '전액' 을 선택할 수 있게 해줘."*
+
+    Args:
+        market: 거래소.
+
+    Returns:
+        `{market, total, budgets, create_max, pooled, deposit_max}` — 금액은 문자열(USDT).
+        `create_max` = 계좌 총액 - 같은 거래소 열린 판들의 예산 합(판 예산 문과 같은 자 ·
+        `budget_facts`). `deposit_max` = 계좌 총액 - 같은 거래소 세션 원장 합(입금 문과 같은 자 ·
+        `_account_headroom`). 둘 다 센트 아래를 버린다(종목 예산이 센트 내림이라 합이 넘지 않는다).
+        못 읽으면 그 칸은 None.
+
+    Raises:
+        HTTPException: 모르는 거래소면 400 · 주문 어댑터를 못 얻으면 503.
+
+    Note:
+        두 값이 다른 까닭: 판을 띄우는 문은 **판 예산**(margin_budget)을, 입금 문은 **원장
+        평가금**(equity)을 계좌 총액과 견준다. 화면이 하나의 숫자로 둘을 채우면 한쪽 문이
+        막는다. 증거금 계좌가 아닌 시장(주식 페이퍼)은 판 예산 문이 없어 `create_max` 를 그
+        계좌 현금으로 준다.
+    """
+    from updown.apps.api.exchange import _orders_adapter  # pyright: ignore[reportPrivateUsage]
+
+    try:
+        venue = Market(market)
+    except ValueError as exc:
+        raise HTTPException(400, f"모르는 거래소다: {market}") from exc
+    orders = _orders_adapter(market)
+    out: dict[str, Any] = {
+        "market": venue.value,
+        "total": None,
+        "budgets": None,
+        "create_max": None,
+        "pooled": None,
+        "deposit_max": None,
+    }
+    facts = await budget_facts(orders, venue)
+    if facts is not None:
+        total, taken = facts
+        out |= {
+            "total": str(total.quantize(Decimal("0.01"))),
+            "budgets": str(taken.quantize(Decimal("0.01"))),
+            "create_max": str(_floor_cents(total - taken)),
+        }
+    else:
+        try:
+            cash = Decimal(str((await orders.get_balance()).cash))
+            out |= {
+                "total": str(cash.quantize(Decimal("0.01"))),
+                "create_max": str(_floor_cents(cash)),
+            }
+        except Exception as exc:
+            _logger.warning("fund_room_unavailable: %s %s", market, str(exc)[:160])
+    head = await _account_headroom(venue.value)
+    if head is not None:
+        total_h, pooled = head
+        out |= {
+            "pooled": str(pooled.quantize(Decimal("0.01"))),
+            "deposit_max": str(_floor_cents(total_h - pooled)),
+        }
+        if out["total"] is None:
+            out["total"] = str(total_h.quantize(Decimal("0.01")))
+    return out
 
 
 def fallback_leverage(market: Market) -> str:

@@ -2593,6 +2593,22 @@ export function fundDefaults(
   );
 }
 
+/**
+ * "전액" 단추의 값 (사용자 2026-10-02) — 지금 펀드 생성 · 입금이 받을 수 있는 최대(USDT · 센트 내림).
+ * `create_max` 는 판 예산 문과 같은 자(계좌 총액 - 열린 판 예산 합), `deposit_max` 는 입금 문과 같은 자
+ * (계좌 총액 - 세션 원장 합)라 둘이 다를 수 있다. 계좌를 못 읽으면 null.
+ */
+export function fundRoom(market: string): Promise<{
+  market: string;
+  total: string | null;
+  budgets: string | null;
+  create_max: string | null;
+  pooled: string | null;
+  deposit_max: string | null;
+}> {
+  return request(`/rebalancer/room?market=${encodeURIComponent(market)}`);
+}
+
 export function fundCreate(body: {
   label: string;
   total_cash: string;

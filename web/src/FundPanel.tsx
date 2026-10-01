@@ -221,6 +221,9 @@ export function FundPanel({
   } | null>(null);
   const [flowAmount, setFlowAmount] = useState("");
   const [flowNote, setFlowNote] = useState("");
+  /** "전액" 을 눌렀을 때 그 값의 근거(계좌 총액 · 이미 잡힌 몫 · 남은 자리) — 칸 아래 한 줄. */
+  const [createRoom, setCreateRoom] = useState("");
+  const [flowRoom, setFlowRoom] = useState("");
   const [books, setBooks] = useState<
     {
       id: string;
@@ -378,6 +381,47 @@ export function FundPanel({
     }
   };
 
+  /**
+   * "전액" (사용자 2026-10-02: *"펀드 생성이나 자금 추가 할 때 '전액' 을 선택할 수 있게"*) — 그 거래소
+   * 계좌에 지금 남은 자리를 칸에 채운다. 서버가 판 예산 문 · 입금 문과 **같은 자**로 잰 값이라 누르고
+   * 바로 보내도 그 문에 안 걸린다. 값만 채우고 보내지는 않는다 — 확인은 사람이 누른다.
+   */
+  const fillCreateAll = async () => {
+    setErr("");
+    try {
+      const r = await api.fundRoom(market);
+      if (r.create_max === null) {
+        setErr("거래소 계좌를 못 읽어 전액을 정할 수 없다 — 잠시 뒤 다시");
+        return;
+      }
+      setCash(r.create_max);
+      const thin = Number(r.create_max) < 1;
+      setCreateRoom(
+        `계좌 총액 ${fmt(r.total)} · 이미 판들이 잡은 예산 ${fmt(r.budgets ?? "0")} · 남은 ${fmt(r.create_max)} USDT` +
+          (thin ? " — 기존 펀드가 계좌를 거의 다 쓴다. 그 펀드를 지우거나 거래소에 더 넣어야 새 펀드를 만들 수 있다" : ""),
+      );
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  const fillDepositAll = async (f: FundStatus) => {
+    setErr("");
+    try {
+      const r = await api.fundRoom(f.market || "GATE");
+      if (r.deposit_max === null) {
+        setErr("거래소 계좌를 못 읽어 전액을 정할 수 없다 — 잠시 뒤 다시");
+        return;
+      }
+      setFlowAmount(r.deposit_max);
+      setFlowRoom(
+        `계좌 총액 ${fmt(r.total)} · 원장에 이미 배정 ${fmt(r.pooled ?? "0")} · 넣을 수 있는 최대 ${fmt(r.deposit_max)} USDT`,
+      );
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
   const runTick = async (id: string) => {
     setBusy(id);
     setErr("");
@@ -489,6 +533,7 @@ export function FundPanel({
   const openFlow = (f: FundStatus, kind: "in" | "out") => {
     setPending({ id: f.fund_id, kind });
     setFlowAmount("");
+    setFlowRoom("");
     setFlowNote(noteFor(kind));
   };
 
@@ -1048,11 +1093,28 @@ export function FundPanel({
                             min="0"
                             step="any"
                             value={flowAmount}
-                            onChange={(e) => setFlowAmount(e.target.value)}
+                            onChange={(e) => {
+                              setFlowAmount(e.target.value);
+                              setFlowRoom("");
+                            }}
                             placeholder="0"
                             autoFocus
                           />
                         </label>
+                        {pending.kind === "in" ? (
+                          <button
+                            className="btn small"
+                            onClick={() => fillDepositAll(f)}
+                            disabled={busy === f.fund_id || f.anchor?.mode === "account"}
+                            title={
+                              f.anchor?.mode === "account"
+                                ? "이 펀드는 계좌 전체를 굴려 거래소 입금을 자동으로 읽는다 — 거래소에 넣고 '지금 리밸런싱'"
+                                : "거래소 계좌에서 아직 원장에 안 들어간 돈 전부를 칸에 채운다"
+                            }
+                          >
+                            전액
+                          </button>
+                        ) : null}
                         <label className="field" style={{ flex: 1 }}>
                           메모 (선택)
                           <input
@@ -1086,11 +1148,17 @@ export function FundPanel({
                             setPending(null);
                             setFlowAmount("");
                             setFlowNote("");
+                            setFlowRoom("");
                           }}
                         >
                           취소
                         </button>
                       </div>
+                      {flowRoom ? (
+                        <p className="card-hint" style={{ marginBottom: 0 }}>
+                          {flowRoom}
+                        </p>
+                      ) : null}
                     </>
                   ) : pending.kind === "drop" ? (
                     <div className="row">
@@ -1160,12 +1228,29 @@ export function FundPanel({
         </label>
         <label className="field">
           시작 자본
-          <input value={cash} onChange={(e) => setCash(e.target.value)} />
+          <input
+            value={cash}
+            onChange={(e) => {
+              setCash(e.target.value);
+              setCreateRoom("");
+            }}
+          />
         </label>
+        <button
+          className="btn small"
+          onClick={() => fillCreateAll()}
+          disabled={busy === "create"}
+          title="이 거래소 계좌에서 다른 판들이 아직 안 잡은 돈 전부를 시작 자본에 채운다"
+        >
+          전액
+        </button>
         <SelectField
           label="거래소"
           value={market}
-          onChange={setMarket}
+          onChange={(m) => {
+            setMarket(m);
+            setCreateRoom("");
+          }}
           options={groupMarkets.map((m) => ({ value: m }))}
         />
         <SelectField
@@ -1186,6 +1271,11 @@ export function FundPanel({
           {mayTradeHere ? (busy === "create" ? "만드는 중…" : "펀드 만들기") : "🔒 거래 권한 없음"}
         </button>
       </div>
+      {createRoom ? (
+        <p className="card-hint" style={{ marginTop: 4 }}>
+          {createRoom}
+        </p>
+      ) : null}
       {closedAsk && (
         <div className="book-card" role="alert">
           <span className="card-name">지금은 장 마감이다</span>

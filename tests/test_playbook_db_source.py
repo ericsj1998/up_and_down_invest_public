@@ -1,3 +1,4 @@
+# pyright: reportUnusedFunction=false, reportPrivateUsage=false
 """DB 매매법 선언 + YAML 합치기 (T349 · 2026-10-02).
 
 파일이 SSoT: 같은 id 는 파일이 이기고 DB 줄은 그늘에 든다 · DB 를 못 읽어도 파일 선언으로
