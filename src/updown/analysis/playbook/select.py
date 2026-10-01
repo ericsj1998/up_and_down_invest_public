@@ -32,6 +32,7 @@ from updown.analysis.playbook.types import (
     ConflictSide,
     DepthTilt,
     DrawdownBrake,
+    EarlyEntry,
     EntryLimit,
     NewHighTilt,
     PeerOpenCap,
@@ -402,6 +403,19 @@ def _ref_sma_down(raw: object, name: str) -> RefSmaDown:
         raise PlaybookConfigError(f"{name}.entry_ref_sma_down — {exc}") from exc
 
 
+def _early_entry(raw: object, name: str) -> EarlyEntry:
+    """조기 진입 한 줄 — `{minute: 30}` (T345 · P125B).
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.early_entry")
+    try:
+        return EarlyEntry(minute=int(str(body["minute"])))
+    except (ArithmeticError, KeyError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.early_entry — {exc}") from exc
+
+
 def _ref_vol_pct(raw: object, name: str) -> RefVolPct:
     """기준 종목 변동성 백분위 문 한 줄 — `{bars: 120, rank: 500, low: "0.816"}` (T329).
 
@@ -751,6 +765,11 @@ def _load_file(target: Path) -> list[Playbook]:
                         None
                         if body.get("entry_ref_vol_pct") is None
                         else _ref_vol_pct(body["entry_ref_vol_pct"], f"playbooks.{name}")
+                    ),
+                    early_entry=(
+                        None
+                        if body.get("early_entry") is None
+                        else _early_entry(body["early_entry"], f"playbooks.{name}")
                     ),
                     entry_vol_target=(
                         None

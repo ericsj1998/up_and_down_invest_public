@@ -52,6 +52,7 @@ from updown.analysis.structures.level_book import build_levels, roles_at
 from updown.analysis.structures.swing import SwingKind, find_pivots
 from updown.analysis.trend.service import evaluate as trend_evaluate
 from updown.common.costs import DEFAULT_CONFIG_PATH, MarketCosts, load_cost_table
+from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Timeframe
 from updown.common.domain.reports import TrendDirection
 from updown.common.domain.session import MarketCalendar
@@ -82,7 +83,6 @@ from updown.orchestration.walkforward.ledger import (
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping, Sequence
 
-    from updown.common.domain.candle import Candle
     from updown.common.domain.reports import Indicators
     from updown.common.domain.trend import TrendState
 
@@ -602,6 +602,18 @@ class Session:
     🔴 **역선택을 보는 값이다.** 지정가는 가격이 계속 불리하게 갈 때 제일 잘 채워지므로,
     체결률만 보면 *"좋은 자리만 놓치고 있다"* 가 안 보인다.
     """
+
+    early_ids: set[str] = field(default_factory=lambda: set[str]())
+    """조기 진입(T345 · `early_entry`)으로 든 기록의 id.
+
+    그 봉이 닫힐 때 마감 룰을 못 채우면 마감 종가에 나간다.
+    """
+
+    early_entered: int = 0
+    """조기 진입 수 (관측용 · §1-0s)."""
+
+    early_unmet: int = 0
+    """조기 진입 뒤 마감 룰 미충족으로 나간 수 (관측용)."""
 
     fill_probe: list[dict[str, object]] = field(default_factory=lambda: [])
     """지정가가 **얼마나 아깝게** 안 채워졌나 — 체결 모형 보정용 (2026-08-30 · T165).
@@ -1855,6 +1867,10 @@ class Session:
         if not self.fund_ready:
             self._count("blocked:awaiting_fund")
         opened = self._enter(shot) if self._may_enter(idle=idle, tripped=tripped) else None
+        # ⭐ T345 조기 진입 — 마감 판정에서 못 샀고(보통 봉이 안 닫혔다) 지금이 선언한 분이면
+        #    부분 봉으로 본다.
+        if opened is None and self._may_enter(idle=idle, tripped=tripped):
+            opened = self._early_enter(shot)
         # 관측 규약 (§1-0s): 순간값만으로는 "관망"과 "탐지 정지"를 사후 구별 못 한다.
         self.seen_proposals += len(shot.proposals)
         self.seen_blocked += sum(1 for item in shot.proposals if item.blocked)
@@ -2572,6 +2588,25 @@ class Session:
             # ⭐ **되돌림 청산** (683차 R15 후보 · 세션 재현) — 판정 TF 종가가 보유 뒤 최고가
             #    대비 `trail_exit_pct_long`% 아래로 **마감**하면 전량.
             #    None 이면 이 가지는 없는 것과 같다.
+            # ⭐ T345 — 조기 진입은 그 봉이 닫힐 때 마감 룰(이 걸음의 후보)에 같은 매매법이
+            #    있어야 남는다. 없으면 가짜(종가가 밴드 안으로 돌아왔다)라 마감 종가에 나간다
+            #    — 711 ~ 714 B 변형.
+            if not flipped and held.trade_id in self.early_ids and held.opened_at is not None:
+                gauge = self._frame(book.timeframe, None)
+                if gauge is not None and gauge.rows:
+                    bar_start = self._frame_start(held.opened_at, book.timeframe)
+                    if gauge.rows[-1].ts >= bar_start:
+                        confirmed = shot is not None and any(
+                            item.playbook.playbook_id == book.playbook_id
+                            and not item.blocked
+                            and item.setup.stop_loss < item.setup.avg_entry
+                            for item in shot.proposals
+                        )
+                        self.early_ids.discard(held.trade_id)
+                        if not confirmed:
+                            flipped = True
+                            self.early_unmet += 1
+                            self._count("early_unmet")
             if (
                 not flipped
                 and long
@@ -4158,6 +4193,107 @@ class Session:
         self._count(f"entered:{record.playbook}")
         self.journal()
         return record
+
+    @staticmethod
+    def _frame_start(ts: datetime, frame: Timeframe) -> datetime:
+        """시각 `ts` 가 속한 `frame` 봉의 시작 시각 (UTC 에포크 기준 정렬)."""
+        span = interval(frame)
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
+        return epoch + ((ts - epoch) // span) * span
+
+    def _early_enter(self, shot: Snapshot) -> TradeRecord | None:
+        """조기 진입 (T345 · P125B · 2026-10-01) — 봉이 닫히기 전 선언한 분에 **부분 봉**으로 산다.
+
+        Args:
+            shot: 이 걸음의 스냅샷(마감 봉 판정) — 추세 · 박스 · 선언을 같이 쓴다.
+
+        Returns:
+            체결된 기록. 선언이 없거나 · 시점이 아니거나 · 후보가 없으면 None.
+
+        Note:
+            부분 봉 = `price_frame` 의 닫힌 봉들 중 지금 진입 TF 봉 시작 이후 것을 하나로 합친 것
+            (시가 = 첫 봉 시가 · 고저 = 최고 · 최저 · 종가 = 마지막 봉 종가 · 거래량 = 합).
+            그것을 진입 TF 마감 봉들 뒤에 붙인 컨텍스트로 탐지기를 부른다 — 탐지기는 `as_of` 로
+            부분 봉을 알아보고 관통 하한을 룰의 `early_pen_min_atr` 로 올려 본다(0 이면 안 낸다).
+            진입 · 손절 · 크기 · 문은 전부 `_enter` 그대로다 — 다른 길로 사지 않는다(규칙 #4).
+
+            🔴 기본(선언 None)에서는 아무 일도 없다(§5.6.2). `price_frame` 이 없어도 없다.
+        """
+        books = [b for b in self.playbooks if b.early_entry is not None]
+        if not books:
+            return None
+        now = self.cursor
+        found: tuple[Proposal, ...] = ()
+        ctx = self.context()
+        override = self._regime_override()
+        for frame in sorted({b.timeframe for b in books}, key=lambda f: f.value):
+            start = self._frame_start(now, frame)
+            minutes = int((now - start).total_seconds() // 60)
+            mine = [b for b in books if b.timeframe is frame and b.early_entry is not None]
+            if not any(b.early_entry is not None and b.early_entry.minute == minutes for b in mine):
+                continue
+            # 부분 봉 재료 = 진입 TF 보다 잘고 봉인된 축 중 가장 잔 것(방아쇠 축 · 없으면 걸음 축).
+            finer = [
+                f
+                for f in (self.price_frame, self.step_frame)
+                if f is not None and interval(f) < interval(frame) and f in self.feed.timeframes
+            ]
+            if not finer:
+                continue
+            source = min(finer, key=interval)
+            sub = [c for c in self.feed.judged(source) if c.ts >= start]
+            if not sub:
+                continue
+            partial = Candle(
+                instrument=self.instrument,
+                timeframe=frame,
+                ts=start,
+                open=sub[0].open,
+                high=max(c.high for c in sub),
+                low=min(c.low for c in sub),
+                close=sub[-1].close,
+                volume=sum((c.volume for c in sub), Decimal(0)),
+            )
+            rows = list(ctx.candles.get(frame, ()))
+            if rows and rows[-1].ts >= start:
+                continue  # 이 봉은 이미 닫혀 있다(마감 판정이 본다)
+            ctx2 = replace(ctx, candles={**ctx.candles, frame: [*rows, partial]}, as_of=now)
+            box = self._frame(frame, None)
+            found += tuple(
+                propose(
+                    ctx2,
+                    timeframe=frame,
+                    has_box=box.has_box if box is not None else shot.has_box,
+                    playbooks=mine,
+                    trend_override=override,
+                    registry=self.registry,
+                )
+            )
+        if not found:
+            return None
+        early_shot = Snapshot(
+            at=now,
+            proposals=found,
+            trend=dict(shot.trend),
+            has_box=shot.has_box,
+            declared=shot.declared,
+        )
+        opened = self._enter(early_shot)
+        if opened is not None:
+            self.early_ids.add(opened.trade_id)
+            self.early_entered += 1
+            self._count("early_entered")
+            _logger.info(
+                "session_early_entered",
+                payload={
+                    "trade_id": opened.trade_id,
+                    "at": now.isoformat(),
+                    "entry": str(opened.entry),
+                    "stop": str(opened.planned_stop),
+                    "note": "부분 봉 조기 진입 — 마감 때 룰을 못 채우면 마감 종가에 나간다 (T345)",
+                },
+            )
+        return opened
 
     def _enter(self, shot: Snapshot) -> TradeRecord | None:
         """후보가 나온 **그 자리에서 즉시 산다** (시장가).

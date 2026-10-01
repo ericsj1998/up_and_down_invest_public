@@ -329,6 +329,34 @@ class RefSmaDown:
 
 
 @dataclass(frozen=True, slots=True)
+class EarlyEntry:
+    """돌파 롱 조기 진입 선언 (T345 · 711 ~ 714 P125B · §495-2).
+
+    Attributes:
+        minute: 진입 TF 봉 시작부터 몇 분 지난 시점에 부분 봉으로 판정하나(30).
+
+    Raises:
+        ValueError: 분이 1 ~ 59 밖인 경우.
+
+    Note:
+        부분 봉의 관통 하한(1.25 ATR)과 손절 여유(min(부분 저가, 종가 - 0.2 ATR))는 **룰**
+        (`private_strategy.yml` `early_pen_min_atr` · `early_stop_pad_atr`)이 든다 — 탐지기가 부분 봉
+        (마감 전)을 받으면 그 값으로 판정하고, 관통 하한이 0 이면 부분 봉에서 셋업을 안 낸다.
+        연구 원장 711 ~ 714: 진짜 돌파봉 안 30분 종가가 1H 종가보다 0.4 ~ 0.6% 싸다
+        (짝 건당 +0.36 → +1.02) · 관통 1.25 ATR 부터 가짜(1H 미충족 · 승률 0 ~ 8%)의 손실이
+        진짜의 이득보다 작다. 마감 때 룰을 못 채운 조기 진입은 **마감 종가에 나간다**
+        (B 변형 · 익절 변형은 승격을 뺏어 더 낮았다).
+    """
+
+    minute: int
+
+    def __post_init__(self) -> None:
+        """값이 선언으로서 말이 되는지."""
+        if not 1 <= self.minute <= 59:
+            raise ValueError(f"조기 진입 시점은 1 ~ 59 분이다: {self.minute}")
+
+
+@dataclass(frozen=True, slots=True)
 class RefVolPct:
     """기준 종목(BTC) 4H 실현변동성 백분위가 `low` **이상**일 때만 새로 든다 (T329 급락 되돌림).
 
@@ -1044,6 +1072,13 @@ class Playbook:
 
     값은 러너가 주입한다(`Session.ref_sma_down`). 🔴 **None(모름)이면 진입을 보류한다**(규칙 #8-1).
     ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    early_entry: EarlyEntry | None = None
+    """돌파 롱 **조기 진입**(T345 · P125B · 2026-10-01) — 진입 TF 봉이 닫히기 전 `minute` 분 시점에
+    부분 봉으로 룰을 판정해 켜지면 그 시점 종가에 든다. 마감 때 룰을 못 채우면 마감 종가에 나간다.
+
+    🔴 기본 None = 지금과 같다(§5.6.2 동결). 세션이 `price_frame` 봉으로 부분 봉을 합성한다 —
+    `price_frame` 이 없으면 아무 일도 없다.
     """
     entry_ref_vol_pct: RefVolPct | None = None
     """기준 종목(BTC) 4H 실현변동성 백분위가 하한 이상일 때만 새로 든다 (T329 · 급락 되돌림 롱).
