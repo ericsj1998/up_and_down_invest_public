@@ -4222,7 +4222,10 @@ class Session:
         books = [b for b in self.playbooks if b.early_entry is not None]
         if not books:
             return None
-        now = self.cursor
+        # 🔴 커서 = 마지막으로 닫힌 걸음 봉의 시작 시각. 벽시계 "지금" 은 커서 + 걸음(러너 · 재현
+        #    주입이 같은 규약 · `t279_parity._inject_refs`). :30 선언을 커서 분으로 맞추면 영원히
+        #    안 걸린다(T345 1차 탐침 · 2026-10-02).
+        now = self.cursor + interval(self.step_frame)
         found: tuple[Proposal, ...] = ()
         ctx = self.context()
         override = self._regime_override()
