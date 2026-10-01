@@ -14,9 +14,9 @@ from typing import Any
 
 import pytest
 
-from updown.analysis.playbook.select import (  # pyright: ignore[reportPrivateUsage]
+from updown.analysis.playbook.select import (
     PlaybookConfigError,
-    _entry_exposure_cap,
+    _entry_exposure_cap,  # pyright: ignore[reportPrivateUsage]
     entry_limit,
 )
 from updown.analysis.playbook.types import EntryLimit
