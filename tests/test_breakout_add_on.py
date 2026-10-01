@@ -151,6 +151,9 @@ class TestDeclaration:
             "private_strategy",
             "private_strategy",  # 411차 세션 재현용 — MACD 불타기 그대로
             "private_strategy",  # 515차 세션 재현용 — 위 + 조용한 반등 더 싣기(T318)
+            # 혼합 2.5.0 K05B25 (2026-10-02) — 2.4.0 다리 복사(노출 x0.5)
+            "private_strategy",
+            "private_strategy",
         }
         assert books["private_strategy"].add_on == macd_rule
         # 🔴 실계좌 다리는 측정한 값 그대로 · 선언 버전은 그대로(펀드 다리 귀속 키가 버전을 품는다)

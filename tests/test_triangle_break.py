@@ -207,6 +207,7 @@ class TestItIsWiredLikeAnyOtherRule:
             "private_strategy",  # T304 — 혼합 2.0.0-V 의 삼각 다리(4x · 변동성 목표)
             "private_strategy",  # 384차 측정용 — 띠만 뺌
             "private_strategy",
+            "private_strategy",  # 혼합 2.5.0 K05B25 — 2.4.0 다리 복사(2026-10-02)
         }
 
 
@@ -222,6 +223,7 @@ class TestRegimeBand:
             "private_strategy",  # T304 #8 측정용 — 급등 상한만 더함
             "private_strategy",
             "private_strategy",  # T304 — 혼합 2.0.0-V 의 삼각 다리
+            "private_strategy",  # 혼합 2.5.0 K05B25 — 2.4.0 다리 복사(2026-10-02)
         }, "기존 매매법에 국면 문이 켜지면 안 된다"
         assert books["private_strategy"].entry_ref_return_band == RefReturnBand(
             bars=360, low=Decimal("-0.15"), high=Decimal("0.15")
@@ -270,6 +272,7 @@ class TestSurgeCap:
             "private_strategy",  # T304 — 혼합 2.0.0-V 의 삼각 다리
             "private_strategy",  # 384차 측정용 — 띠만 뺌
             "private_strategy",
+            "private_strategy",  # 혼합 2.5.0 K05B25 — 2.4.0 다리 복사(2026-10-02)
         }
         cap = RefSurgeCap(days=7, high=Decimal("0.08204173132170967"))
         for name in on:

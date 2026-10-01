@@ -289,7 +289,7 @@ class TestTilted:
     def test_only_the_live_long_leg_has_it(self) -> None:
         books = load_playbooks()
         on = {b.playbook_id for b in books if b.size_mult_power is not None}
-        assert on == {"private_strategy"}
+        assert on == {"private_strategy", "private_strategy"}  # K05B25 복사
         plain = next(b for b in books if b.playbook_id == "private_strategy")
         assert tilted(Decimal("1.5"), plain) == Decimal("1.5")
 
@@ -325,6 +325,9 @@ class TestLiveDeclaration:
             "private_strategy",
             "private_strategy",  # T329 급락 되돌림 롱 — 12봉 시간 청산(재현용)
             "private_strategy",  # T329 — 실계좌 다리(혼합 2.3.0 · listed false)
+            "private_strategy",  # 혼합 2.5.0 K05B25 — 2.4.0 다리 복사(2026-10-02)
+            "private_strategy",
+            "private_strategy",
         }
 
 

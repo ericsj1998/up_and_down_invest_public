@@ -95,3 +95,33 @@ class EventLog(Base):
     event_type: Mapped[str] = mapped_column(index=True)
     payload_json: Mapped[JsonDict]
     ts: Mapped[datetime] = mapped_column(server_default=sa.func.now(), index=True)
+
+
+class PlaybookDecl(Base):
+    """DB 에 저장한 매매법 선언 하나 (T349 · 2026-10-02).
+
+    Note:
+        🔴 **파일(`config/playbooks.yml`)이 SSoT 이고 이 표는 덧붙이기다.** 같은 id 가 둘이면
+        파일이 이긴다 — 파일은 코드 리뷰 · 재현 · 귀속을 거친 선언이고, 이 표는 재배포 없이
+        펀드 매매법을 갈아 끼우려고 사람이 API 로 넣는 선언이다(사용자 2026-10-02
+        "② DB 저장 매매법 + YAML 과 합치기").
+
+        ⚠️ `body` 는 YAML 블록을 그대로 JSON 으로 담은 것이고 **같은 파서**(`select.parse_block`)가
+        읽는다 — 모르는 키 · 셋업 id · 값 모양 검사가 파일과 똑같이 걸린다. `basket` 은
+        `config/baskets.yml by_playbook.<id>` 블록과 같은 모양(`{block, members}`) · None 이면
+        묶음 기본 바스켓.
+
+        ⛔ 룰(탐지기) 추가는 범위 밖 — 기존 룰 id 만 가리킬 수 있다.
+    """
+
+    __tablename__ = "playbook_decls"
+
+    playbook_id: Mapped[str] = mapped_column(primary_key=True)
+    body: Mapped[JsonDict]
+    basket: Mapped[JsonDict | None] = mapped_column(default=None)
+    enabled: Mapped[bool] = mapped_column(default=True, server_default=sa.true())
+    created_by: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=sa.func.now(), onupdate=sa.func.now()
+    )

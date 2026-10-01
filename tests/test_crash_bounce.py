@@ -137,6 +137,13 @@ class TestDeclaration:
         assert "private_strategy" in bundle.bundle and len(bundle.bundle) == 6
         # 1.28.0(2026-09-30): 2.3.0 은 2.4.0(`_cb_r5`)으로 자동 전환(T332) — 선택창엔 2.4.0 만
         assert bundle.listed is False and bundle.superseded_by == "private_strategy"
+        r5 = books["private_strategy"]
+        assert r5.bundle == bundle.bundle
+        # 1.29.0(2026-10-02): 2.4.0 은 2.5.0(`_cb_k05` · 다리 노출 x0.5 · 브레이크 5% → x0.25)으로
+        # 자동 전환 —
+        #    다리 id 는 `_k05` 가 붙은 새 선언(귀속 키 보존) · 선택창엔 2.5.0 만
+        assert r5.listed is False and r5.superseded_by == "private_strategy"
         new = books["private_strategy"]
-        assert new.listed is True and new.recommended is True and new.bundle == bundle.bundle
+        assert new.listed is True and new.recommended is True
+        assert new.bundle == tuple(f"{leg}_k05" for leg in bundle.bundle)
         assert books["private_strategy"].listed is False  # 2.2.0 은 내렸다(귀속 보존)

@@ -30,7 +30,15 @@ class TestTrailExit:
         # 1.28.0(2026-09-30): 실계좌 돌파 롱 다리만 15 를 선언한다(R15) — 나머지는 None(동결)
         got = {b.playbook_id: b.trail_exit_pct_long for b in load_playbooks()}
         assert got["private_strategy"] == Decimal(15)
-        assert all(v is None for k, v in got.items() if k != "private_strategy")
+        assert got["private_strategy"] == Decimal(15)  # K05B25 복사(2026-10-02)
+        # a6_s · a6_s_early = T345 · T346 세션 재현용 돌파 롱(2.4.0 다리와 같은 R15)
+        r15 = {
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+        }
+        assert all(v is None for k, v in got.items() if k not in r15)
 
     def test_hits_when_close_retraces_from_peak(self) -> None:
         # 진입 100 · 고가 120 까지 오른 뒤 종가 101 (= 120 x 0.85 = 102 아래) → 나간다

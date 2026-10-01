@@ -35,6 +35,7 @@ from uuid import uuid4
 import yaml
 from fastapi import APIRouter, Body, HTTPException, Request
 
+from updown.analysis.playbook import db_source as playbook_db_source
 from updown.analysis.playbook.select import default_playbook, load_playbooks
 from updown.analysis.playbook.types import BreadthCap, DrawdownBrake, Playbook
 from updown.apps.api.admin import instrument_of
@@ -1877,6 +1878,12 @@ def _default_basket(market: str, playbook: str = "") -> tuple[list[dict[str, str
     if playbook:
         by_book = cast("dict[str, Any]", top.get("by_playbook") or {})
         candidate = by_book.get(playbook)
+        if candidate is None:
+            # ⭐ T349 — 파일에 없으면 DB 선언의 바스켓 (파일이 이긴다)
+            candidate = next(
+                (r.basket for r in playbook_db_source.rows() if r.playbook_id == playbook),
+                None,
+            )
         if isinstance(candidate, dict):
             book_spec = cast("dict[str, Any]", candidate)
             if str(book_spec.get("block", "default")) == basket_block_of(market):
@@ -1915,7 +1922,8 @@ def _leg_scopes() -> dict[str, list[str]]:
     if not isinstance(raw, dict):
         return {}
     by_book = cast("dict[str, Any]", cast("dict[str, Any]", raw).get("by_playbook") or {})
-    out: dict[str, list[str]] = {}
+    # ⭐ T349 — DB 선언의 바스켓을 먼저 깔고 파일로 덮는다 (같은 id 는 파일이 이긴다)
+    out: dict[str, list[str]] = dict(playbook_db_source.baskets())
     for name, body in by_book.items():
         if isinstance(body, dict):
             rows = cast("list[dict[str, Any]]", cast("dict[str, Any]", body).get("members") or [])

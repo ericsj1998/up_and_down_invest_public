@@ -42,7 +42,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
 
 from updown.common.db.models.enums import LogLevel
-from updown.common.db.models.ops import AppSetting, EventLog
+from updown.common.db.models.ops import AppSetting, EventLog, PlaybookDecl
 from updown.common.db.models.walkforward import (
     WalkforwardCalibration,
     WalkforwardOrder,
@@ -283,6 +283,157 @@ class SettingsStore:
                 await session.commit()
         except Exception as exc:
             raise RunStoreError(f"설정을 저장할 수 없다: {exc}") from exc
+
+
+class PlaybookDeclStore:
+    """DB 에 저장한 매매법 선언 (`playbook_decls` · T349).
+
+    Note:
+        읽는 쪽(로더)은 `analysis.playbook.db_source` 가 동기로 읽는다 — 여기는 API 가
+        **넣고 지우는** 쪽이다. 넣고 지운 사실은 `event_logs` 에 남긴다(재배포 없이 실계좌
+        매매법이 바뀌는 길이라 누가 언제 무엇을 넣었는지가 회전 뒤에도 남아야 한다).
+    """
+
+    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+        """세션 팩토리를 받는다.
+
+        Args:
+            factory: DB 세션 팩토리.
+        """
+        self._factory = factory
+
+    async def list(self) -> list[dict[str, Any]]:
+        """저장된 선언 전부 (꺼진 것 포함) — 화면 · API 목록용.
+
+        Returns:
+            `{playbook_id, body, basket, enabled, created_by, created_at, updated_at}` 들.
+            못 읽으면 빈 목록.
+        """
+        try:
+            async with self._factory() as session:
+                rows = (
+                    await session.execute(sa.select(PlaybookDecl).order_by(PlaybookDecl.created_at))
+                ).scalars()
+                return [
+                    {
+                        "playbook_id": row.playbook_id,
+                        "body": row.body,
+                        "basket": row.basket,
+                        "enabled": row.enabled,
+                        "created_by": row.created_by,
+                        "created_at": row.created_at.isoformat(),
+                        "updated_at": row.updated_at.isoformat(),
+                    }
+                    for row in rows
+                ]
+        except Exception as exc:
+            _logger.error("playbook_decls_unreadable", payload={"error": str(exc)[:160]})
+            return []
+
+    async def put(
+        self,
+        playbook_id: str,
+        body: dict[str, Any],
+        *,
+        basket: dict[str, Any] | None,
+        by: str,
+        enabled: bool = True,
+    ) -> None:
+        """선언을 넣거나 덮어쓴다.
+
+        Args:
+            playbook_id: 매매법 id (파일 선언과 겹치면 로더가 파일을 고르고 이 줄은 그늘에 든다).
+            body: 선언 블록 — 파일의 `playbooks.<id>` 와 같은 모양. 검증은 부르는 쪽(파서)이
+                끝낸 뒤다.
+            basket: `by_playbook.<id>` 모양의 바스켓. 없으면 None.
+            by: 넣는 사람(이메일).
+            enabled: 거짓이면 로더가 읽지 않는다.
+
+        Raises:
+            RunStoreError: DB 에 닿을 수 없는 경우 — 조용히 실패하면 넣었다고 믿는다 (규칙 #8).
+        """
+        try:
+            async with self._factory() as session:
+                statement = insert(PlaybookDecl).values(
+                    playbook_id=playbook_id,
+                    body=body,
+                    basket=basket,
+                    enabled=enabled,
+                    created_by=by,
+                )
+                await session.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=["playbook_id"],
+                        set_={
+                            "body": statement.excluded.body,
+                            "basket": statement.excluded.basket,
+                            "enabled": statement.excluded.enabled,
+                            "updated_at": sa.func.now(),
+                        },
+                    )
+                )
+                session.add(
+                    EventLog(
+                        trace_id=get_trace_id() or new_trace_id(),
+                        actor=by or "?",
+                        module="orchestration.walkforward.store",
+                        level=LogLevel.INFO,
+                        event_type="playbook_decl_put",
+                        payload_json={
+                            "playbook_id": playbook_id,
+                            "enabled": enabled,
+                            "version": str(body.get("version", "")),
+                            "keys": sorted(str(k) for k in body),
+                            "basket_members": (
+                                len(cast("list[object]", basket.get("members") or []))
+                                if basket
+                                else 0
+                            ),
+                        },
+                    )
+                )
+                await session.commit()
+        except Exception as exc:
+            raise RunStoreError(f"매매법 선언을 저장할 수 없다: {exc}") from exc
+
+    async def delete(self, playbook_id: str, *, by: str) -> bool:
+        """선언을 지운다.
+
+        Args:
+            playbook_id: 매매법 id.
+            by: 지우는 사람.
+
+        Returns:
+            지웠으면 참, 없었으면 거짓.
+
+        Raises:
+            RunStoreError: DB 에 닿을 수 없는 경우.
+        """
+        try:
+            async with self._factory() as session:
+                removed = (
+                    await session.execute(
+                        sa.delete(PlaybookDecl)
+                        .where(PlaybookDecl.playbook_id == playbook_id)
+                        .returning(PlaybookDecl.playbook_id)
+                    )
+                ).scalars()
+                gone = len(list(removed)) > 0
+                if gone:
+                    session.add(
+                        EventLog(
+                            trace_id=get_trace_id() or new_trace_id(),
+                            actor=by or "?",
+                            module="orchestration.walkforward.store",
+                            level=LogLevel.INFO,
+                            event_type="playbook_decl_deleted",
+                            payload_json={"playbook_id": playbook_id},
+                        )
+                    )
+                await session.commit()
+                return gone
+        except Exception as exc:
+            raise RunStoreError(f"매매법 선언을 지울 수 없다: {exc}") from exc
 
 
 class RunStore:

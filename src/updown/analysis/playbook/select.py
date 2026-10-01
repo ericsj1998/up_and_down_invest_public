@@ -24,6 +24,7 @@ from typing import Any, cast
 import yaml
 
 from updown.analysis import plugins
+from updown.analysis.playbook import db_source
 from updown.analysis.playbook.types import (
     AddOn,
     BreadthCap,
@@ -48,7 +49,9 @@ from updown.analysis.playbook.types import (
 from updown.common.domain.evidence import Family, Grade
 from updown.common.domain.instrument import MarketGroup, Timeframe
 from updown.common.domain.reports import TrendDirection
+from updown.common.logging.setup import get_logger
 
+_logger = get_logger(__name__)
 DEFAULT_CONFIG_PATH = plugins.DEFAULT_PLAYBOOKS
 """선언의 단일 출처. `costs.yml` 과 같은 자리에 둔다."""
 
@@ -647,7 +650,27 @@ def _load_file(target: Path) -> list[Playbook]:
     declared = _mapping(parsed, f"{target} 최상위").get("playbooks")
     if not declared:
         raise PlaybookConfigError(f"{target} 에 playbooks 항목이 비어 있다")
+    return _parse_declared(declared)
 
+
+def parse_block(name: str, raw_body: object) -> Playbook:
+    """선언 블록 하나(YAML 의 `playbooks.<name>` 값과 같은 모양)를 플레이북으로 (T349).
+
+    Args:
+        name: 플레이북 id.
+        raw_body: 블록(매핑). DB 선언 · API 검증이 파일과 **같은 파서**로 읽으려고 연 문.
+
+    Returns:
+        플레이북.
+
+    Raises:
+        PlaybookConfigError: 모르는 키 · 빠진 키 · 값 모양이 틀린 경우 — 파일과 같은 기준.
+    """
+    return _parse_declared({name: raw_body})[0]
+
+
+def _parse_declared(declared: object) -> list[Playbook]:
+    """`playbooks` 매핑 전부를 선언 순서대로 읽는다 — 파일 · DB 가 같은 길을 탄다."""
     out: list[Playbook] = []
     for name, raw_body in _mapping(declared, "playbooks").items():
         body = _mapping(raw_body, f"playbooks.{name}")
@@ -928,6 +951,19 @@ def load_playbooks(path: Path | None = None) -> tuple[Playbook, ...]:
                 )
             seen[book.playbook_id] = target
             out.append(book)
+    # ⭐ T349 — DB 에 저장한 선언을 **뒤에** 붙인다. 파일이 SSoT: 같은 id 는 파일이 이기고
+    #    DB 줄은 건너뛴다(조용히 덮어쓰면 리뷰 · 재현을 거친 선언이 API 한 번에 바뀐다).
+    #    `path` 를 준 호출(시험 · 도구)은 파일만.
+    if path is None:
+        for row in db_source.rows():
+            if row.playbook_id in seen:
+                _logger.warning(
+                    "playbook_db_shadowed_by_file",
+                    payload={"playbook_id": row.playbook_id, "file": str(seen[row.playbook_id])},
+                )
+                continue
+            out.append(parse_block(row.playbook_id, row.body))
+            seen[row.playbook_id] = Path("<db>")
     return tuple(out)
 
 

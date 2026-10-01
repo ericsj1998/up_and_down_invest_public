@@ -196,6 +196,7 @@ class TestItIsWiredLikeAnyOtherRule:
             "private_strategy",  # T308 · 378차 측정용 — 숏 불타기 판정만 켰다
             "private_strategy",  # 411차 측정용 — 영상 1 원형 + 히스토그램 두 봉 + 26봉
             "private_strategy",  # 515차 측정용 — 위 + 조용한 반등 더 싣기(T318)
+            "private_strategy",  # 혼합 2.5.0 K05B25 — 2.4.0 다리 복사(2026-10-02)
         }
 
 

@@ -43,10 +43,14 @@ from updown.analysis.detectors.rules import RuleConfig, load_rules
 from updown.analysis.indicators.adx import adx
 from updown.analysis.indicators.ma import sma
 from updown.analysis.indicators.volatility import realized_vol
+from updown.analysis.playbook import db_source as playbook_db_source
+from updown.analysis.playbook.select import DEFAULT_CONFIG_PATH as PLAYBOOKS_FILE
 from updown.analysis.playbook.select import (
+    PlaybookConfigError,
     active_playbooks,
     default_playbook,
     load_playbooks,
+    parse_block,
 )
 from updown.analysis.playbook.types import Playbook
 from updown.analysis.structures.box_range import SPAN_COVER
@@ -143,6 +147,7 @@ from updown.orchestration.walkforward.sealed_filler import SealedFiller
 from updown.orchestration.walkforward.session import STEP_FRAME
 from updown.orchestration.walkforward.store import (
     REFILL_CAP_KEY,
+    PlaybookDeclStore,
     RunStore,
     RunStoreError,
     SettingsStore,
@@ -466,6 +471,8 @@ def run_store() -> RunStore | None:
 _store: RunStore | None = None
 
 _settings: SettingsStore | None = None
+_decls: PlaybookDeclStore | None = None
+"""DB 매매법 선언 저장소 (T349) — 기동 훅이 붙인다. None 이면 선언 API 는 503."""
 _candles: CandleRepository | None = None
 """봉 캐시의 저장소 (T240) — 폴링 브로커(토스)의 급전 시드가 여기서 먼저 읽힌다."""
 """앱 전체가 공유하는 설정 (T21 ⑦) — 재충전 상한이 여기 산다."""
@@ -511,11 +518,13 @@ def attach_store(factory: async_sessionmaker[AsyncSession] | None) -> None:
         ⚠️ **엔진을 여기서 만들지 않는다.** 만들면 API 가 이미 든 커넥션 풀과 별도 풀이
         생기고, 종료할 때 아무도 안 닫는다.
     """
-    global _store, _settings, _candles
+    global _store, _settings, _candles, _decls
     _store = None if factory is None else RunStore(factory)
     _candles = None if factory is None else CandleRepository(factory)
     # ⭐ 금고 한도는 판 저장소와 **같은 팩토리**를 쓴다 — 풀을 하나로 유지한다.
     _settings = None if factory is None else SettingsStore(factory)
+    # ⭐ T349 — DB 매매법 선언(넣고 지우는 쪽). 읽는 쪽은 로더가 `db_source` 로 직접 읽는다.
+    _decls = None if factory is None else PlaybookDeclStore(factory)
 
 
 """라이브 세션의 러너들 — 건강 상태를 보여주려고 따로 든다.
@@ -3311,6 +3320,156 @@ async def playbooks(request: Request) -> dict[str, Any]:
     return listing
 
 
+def _require_superadmin(request: Request, what: str) -> str:
+    """슈퍼관리자(`manage_roles`)만 — 호출자가 없으면(시험 · 내부) 통과. 이메일을 돌려준다."""
+    who = getattr(request.state, "caller", None)
+    if who is None:
+        return ""
+    if not who.has(Cap.MANAGE_ROLES):
+        need = Cap.MANAGE_ROLES.value
+        raise HTTPException(403, f"{what}는 슈퍼관리자('{need}' 기능)만 할 수 있다")
+    return str(who.email)
+
+
+@router.get("/playbooks/decls")
+async def playbook_decls(request: Request) -> dict[str, Any]:
+    """DB 에 저장한 매매법 선언 목록 (T349).
+
+    Args:
+        request: 요청 — 슈퍼관리자만.
+
+    Returns:
+        `{decls: [...], source: {enabled, rows, ever, last_error}, file_ids: [...]}`.
+        `file_ids` 는 파일 선언의 id 들 — DB 줄이 같은 id 면 파일에 가려진다는 것을 화면이
+        보여 주려고 싣는다.
+    """
+    _require_superadmin(request, "매매법 선언 조회")
+    if _decls is None:
+        raise HTTPException(503, "매매법 선언 저장소가 없다 (DB 미연결)")
+    return {
+        "decls": await _decls.list(),
+        "source": playbook_db_source.status(),
+        "file_ids": sorted(book.playbook_id for book in load_playbooks(PLAYBOOKS_FILE)),
+    }
+
+
+@router.post("/playbooks")
+async def put_playbook_decl(
+    request: Request, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
+    """매매법 선언을 DB 에 넣는다 — 재배포 없이 (T349 · 사용자 2026-10-02 "API 로 매매법 추가").
+
+    Args:
+        request: 요청 — 🔴 슈퍼관리자만. 실계좌가 고를 수 있는 매매법이 늘어나는 길이다.
+        payload: `{id, body, basket?, enabled?}`. `body` 는 `config/playbooks.yml` 의
+            `playbooks.<id>` 블록과 **같은 모양**(같은 파서가 읽는다) · `basket` 은
+            `config/baskets.yml by_playbook.<id>` 블록과 같은 모양.
+
+    Returns:
+        `{ok, id, version, setups, bundle, source: "db"}`.
+
+    Raises:
+        HTTPException: 400 모양이 틀림(파서 메시지 그대로) · 모르는 셋업 · 묶음 구성원 없음 ·
+            409 파일 선언과 id 가 겹침(파일이 이기므로 넣어도 안 보인다) · 503 DB 없음.
+
+    Note:
+        🔴 **파일이 SSoT 다.** 파일에 있는 id 는 거절한다 — 받아 두면 "넣었는데 안 바뀌는"
+        조용한 실패가 된다.
+        룰(`config/rules/*.yml`)은 범위 밖이다 — 선언이 쓰는 셋업은 **이미 있는** 룰이어야 한다.
+    """
+    by = _require_superadmin(request, "매매법 선언 추가")
+    if _decls is None:
+        raise HTTPException(503, "매매법 선언 저장소가 없다 (DB 미연결)")
+    playbook_id = str(payload.get("id") or "").strip()
+    if not re.fullmatch(r"[a-z0-9_]{3,80}", playbook_id):
+        raise HTTPException(400, "id 는 소문자 · 숫자 · 밑줄 3~80자여야 한다")
+    body = payload.get("body")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "body 는 playbooks.yml 의 블록(매핑)이어야 한다")
+    body_d = cast("dict[str, Any]", body)
+    basket = payload.get("basket")
+    if basket is not None and not isinstance(basket, dict):
+        raise HTTPException(400, "basket 은 baskets.yml by_playbook 블록(매핑)이어야 한다")
+    basket_d = None if basket is None else cast("dict[str, Any]", basket)
+    file_ids = {book.playbook_id for book in load_playbooks(PLAYBOOKS_FILE)}
+    if playbook_id in file_ids:
+        raise HTTPException(
+            409,
+            f"'{playbook_id}' 는 파일(config/playbooks.yml)에 있다 — 파일이 이기므로 DB 선언은"
+            " 안 보인다",
+        )
+    try:
+        book = parse_block(playbook_id, body_d)
+    except PlaybookConfigError as exc:
+        raise HTTPException(400, f"선언이 틀렸다: {exc}") from exc
+    catalog = load_rules()
+    unknown = [name for name in book.setups if name not in catalog]
+    if unknown:
+        raise HTTPException(400, f"없는 셋업(룰): {unknown} — 룰은 파일(config/rules)에서만 만든다")
+    known_ids = file_ids | {row.playbook_id for row in playbook_db_source.rows()} | {playbook_id}
+    missing = [name for name in book.bundle if name not in known_ids]
+    if missing:
+        raise HTTPException(400, f"묶음 구성원이 없다: {missing}")
+    if book.superseded_by and book.superseded_by not in known_ids:
+        raise HTTPException(400, f"superseded_by 대상이 없다: {book.superseded_by}")
+    if basket_d is not None:
+        members = basket_d.get("members")
+        if not isinstance(members, list) or len(playbook_db_source.basket_symbols(basket_d)) != len(
+            cast("list[object]", members)
+        ):
+            raise HTTPException(400, "basket.members 는 `{symbol, weight}` 목록이어야 한다")
+    enabled = bool(payload.get("enabled", True))
+    try:
+        await _decls.put(playbook_id, body_d, basket=basket_d, by=by, enabled=enabled)
+    except RunStoreError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    playbook_db_source.invalidate()
+    _logger.info(
+        "playbook_decl_put",
+        payload={"id": playbook_id, "by": by, "version": book.version, "enabled": enabled},
+    )
+    return {
+        "ok": True,
+        "id": playbook_id,
+        "version": book.version,
+        "setups": list(book.setups),
+        "bundle": list(book.bundle),
+        "enabled": enabled,
+        "source": "db",
+    }
+
+
+@router.delete("/playbooks/{playbook_id}")
+async def delete_playbook_decl(request: Request, playbook_id: str) -> dict[str, Any]:
+    """DB 매매법 선언을 지운다 (T349).
+
+    Args:
+        request: 요청 — 슈퍼관리자만.
+        playbook_id: 매매법 id. 파일 선언은 못 지운다(404 가 아니라 409).
+
+    Returns:
+        `{ok, id}`.
+
+    Note:
+        ⚠️ 도는 판은 메모리의 선언으로 계속 돈다 — 지운다고 포지션이 닫히지 않는다. 그
+        매매법으로 **새** 판을 띄우는 것만 막힌다.
+    """
+    by = _require_superadmin(request, "매매법 선언 삭제")
+    if _decls is None:
+        raise HTTPException(503, "매매법 선언 저장소가 없다 (DB 미연결)")
+    if any(book.playbook_id == playbook_id for book in load_playbooks(PLAYBOOKS_FILE)):
+        raise HTTPException(409, f"'{playbook_id}' 는 파일 선언이다 — API 로 지울 수 없다")
+    try:
+        gone = await _decls.delete(playbook_id, by=by)
+    except RunStoreError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if not gone:
+        raise HTTPException(404, f"DB 에 '{playbook_id}' 선언이 없다")
+    playbook_db_source.invalidate()
+    _logger.info("playbook_decl_deleted", payload={"id": playbook_id, "by": by})
+    return {"ok": True, "id": playbook_id}
+
+
 def _playbooks_all() -> dict[str, Any]:
     """선언된 플레이북 전부 (T13 ①).
 
@@ -3318,10 +3477,13 @@ def _playbooks_all() -> dict[str, Any]:
         `{playbooks: [...]}`. 각 항목에 국면·시간축·셋업이 실린다.
     """
     catalog = load_rules()
+    db_ids = {row.playbook_id for row in playbook_db_source.rows()}
     return {
         "playbooks": [
             {
                 "id": item.playbook_id,
+                # ⭐ T349 — 어디서 왔나. 파일과 겹치면 파일이 이기므로 "db" 는 파일에 없는 것뿐이다.
+                "source": "db" if item.playbook_id in db_ids else "file",
                 "attribution": item.attribution,
                 "label": item.label or item.attribution,
                 # ⭐ 권장 세트 그룹을 설정에서 정한다 (2026-08-24) — 하드코딩 제거.

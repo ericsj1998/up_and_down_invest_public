@@ -157,6 +157,12 @@ class TestDeclaration:
             "private_strategy",
             "private_strategy",
             "private_strategy",
+            "private_strategy",  # 혼합 2.5.0 K05B25 — 2.4.0 다리 복사(2026-10-02)
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
         }
 
     def test_legs_survive_a_save_and_restore(self) -> None:
