@@ -791,6 +791,7 @@ def run_of_text(text: str) -> str:
 
 
 _NOT_REALISED = (Outcome.OPEN, Outcome.PENDING, Outcome.CANCELLED, Outcome.TRANSFERRED)
+"""돈이 움직이지 않은 결말 — 취소(못 채운 계획) · 이관은 청산이 아니다."""
 
 SHARE_WITHDRAW_RECHECK_S = 0.4
 """몫 손절을 거둔 뒤 거래소 목록을 다시 읽기 전 기다리는 초 — 취소 전파 지연(2026-09-30 SAND)."""
@@ -798,7 +799,31 @@ SHARE_EXIT_RETRIES = 3
 """몫 청산이 막혔을 때 다음 걸음에서 다시 닫아 보는 횟수 — 그 뒤는 손절만 두고 사람에게 넘긴다."""
 ADOPT_STOP_LOOKBACK = timedelta(hours=48)
 """거래소에 손절이 없는 포지션을 이어받을 때 원장의 마지막 계획을 믿는 시간 창."""
-"""돈이 움직이지 않은 결말 — 취소(못 채운 계획)는 청산이 아니다."""
+ADOPT_RETRY_S = 60.0
+"""고아 포지션(이어받기 거부 · 원장 없는 보유)을 다시 이어받아 보는 간격(초)."""
+
+
+def foreign_stop_ids(stops: Sequence[dict[str, str]], key: str) -> list[str]:
+    """이어받는 몫의 키가 **아닌** 조건부 손절 id — 콘솔 · 운영 스크립트로 건 것 (2026-10-01).
+
+    Args:
+        stops: 거래소에 걸린 조건부들(발동가 있는 것).
+        key: 이어받는 몫의 손절 멱등키.
+
+    Returns:
+        우리 이름이 아닌 손절 id 들. 우리 몫 손절이 걸린 **뒤에** 거둔다 — 그 전엔 그것이
+        유일한 보호다.
+
+    Note:
+        SAND 사고 뒤 운영 스크립트로 건 손절(`ops-…`)로 이어받으면 `_guard_stop` 이 우리 키로
+        하나 더 걸어 손절이 둘이 된다. 둘을 두면 다음 재시작의 `adopt()` 가 "몫 여럿" 으로
+        거부한다(T320) — 그래서 우리 것이 선 뒤 남의 것을 거둬 **정확히 하나**만 남긴다.
+    """
+    return [
+        str(row["id"])
+        for row in stops
+        if row.get("id") and not same_share(str(row.get("text", "")), key)
+    ]
 
 
 def _notice_closes(runner: object, before: int) -> None:
@@ -2114,6 +2139,19 @@ class LiveRunner:
             # ⭐ T320 — 몫 하나로 이어받는다: 그 몫의 계약 수 = 거래소 전량(몫 손절이 그
             #    크기로 걸린다).
             record = dc_replace(record, contracts=int(abs(size)))
+            # ⭐ 2026-10-01 — 남의 이름(콘솔 · 운영 스크립트)의 손절로 이어받았으면 봐 둔다.
+            #    우리 몫 손절이 걸린 뒤 `_withdraw_foreign_stops` 가 거둬 손절을 하나로 만든다.
+            foreign = foreign_stop_ids(armed, self._share_stop_key(record))
+            if foreign:
+                self._foreign_stops()[trade_id] = foreign
+                self._log.info(
+                    "live_adopt_foreign_stop",
+                    payload={
+                        "trade_id": trade_id,
+                        "stops": foreign,
+                        "note": "우리 키가 아닌 손절로 이어받는다 — 우리 손절이 선 뒤 거둔다",
+                    },
+                )
         self._fired("adopt", f"거래소 포지션 {size} 계약을 원장으로 되읽었다")
         self._session.ledger.add(record)
         self._session.adopt(record)
@@ -3651,6 +3689,7 @@ class LiveRunner:
     async def _walk_once(self) -> None:
         """걸음 한 번의 본체 — **`_one_step` 만 부른다** (겹침 방어가 거기 있다)."""
         await self._retry_share_exits()
+        await self._retry_adopt()
         # 🔴 **체결 판정용 봉을 먼저 채운다.** `Session._tick()` 은 `STEP_FRAME`(5m) 의
         #    마지막 봉으로 **진입가와 체결·청산**을 정하는데, 라이브에서 그 축은 웹소켓이
         #    구독하지 않아 **시드 이후 한 번도 갱신되지 않았다.**
@@ -6746,6 +6785,88 @@ class LiveRunner:
         tries = state.setdefault("_exit_tries", {})
         return retry, tries
 
+    def _foreign_stops(self) -> dict[str, list[str]]:
+        """이어받을 때 봐 둔 **남의 이름의 손절** id — 몫(매매 id)별 (2026-10-01)."""
+        return cast("dict[str, list[str]]", self.__dict__.setdefault("_adopt_foreign", {}))
+
+    async def _retry_adopt(self) -> None:
+        """고아 포지션을 걸음마다 다시 이어받아 본다 — 손절이 생기면 경고가 스스로 풀린다.
+
+        Note:
+            `adopt()` 는 판이 뜰 때 한 번만 돌았다. 그래서 "조건부 손절 없음" 으로 거부된 뒤
+            사람이 손절을 걸어도 **누군가 콘솔 단추를 누르기 전까지** 경고가 서 있었고 포지션은
+            관리 밖이었다(SAND · 2026-10-01). 거부됐거나 감사가 두 번 연속 "거래소엔 있는데
+            원장엔 없다" 를 본 종목은 `ADOPT_RETRY_S` 마다 다시 이어받아 본다.
+
+            ⛔ **보호가 생겨야만 이어받는다** — `adopt()` 의 안전 규약(손절 없으면 거부 · 남의 판
+            포지션은 안 줍는다)은 그대로다. 여기는 *다시 묻는 것*만 더한다.
+
+            이어받으면 `_guard_stop` 이 우리 키로 손절을 걸고, 남의 이름 손절은 그 뒤 거둔다
+            (`_withdraw_foreign_stops`) — 손절은 끝내 정확히 하나다.
+        """
+        state = self.__dict__
+        streak = int(state.get("_mismatch_streak", 0))
+        if self._adopt_refused is None and streak < 2:
+            return
+        if any(item.outcome is Outcome.OPEN for item in self._session.ledger.records):
+            return
+        if getattr(self._session, "waiting_trade", None) is not None:
+            return  # 우리 지정가가 봉 사이에 채워진 것 — 고아가 아니라 반영 대기다
+        now = time.monotonic()
+        if now - float(state.get("_adopt_retry_at", 0.0)) < ADOPT_RETRY_S:
+            return
+        state["_adopt_retry_at"] = now
+        if await self.adopt():
+            self._adopt_refused = None
+            state["_mismatch_streak"] = 0
+            self._log.info(
+                "live_adopt_recovered",
+                payload={"note": "고아였던 포지션을 다시 이어받았다 — 경고를 스스로 걷는다"},
+            )
+
+    async def _withdraw_foreign_stops(self, held: TradeRecord) -> None:
+        """이어받을 때 봐 둔 남의 이름의 손절을 **우리 몫 손절이 걸린 뒤** 거둔다 (2026-10-01).
+
+        Args:
+            held: 방금 손절을 건 몫.
+
+        Note:
+            우리 손절 id 를 모르면(걸기 실패 · 되찾기 실패) 거두지 않는다 — 그때는 남의 손절이
+            유일한 보호다. 못 거둔 것은 남겨 다음 걸음이 다시 본다.
+        """
+        pending = self._foreign_stops()
+        ids = pending.get(held.trade_id)
+        if not ids:
+            return
+        if not self._share_stop_ids.get(held.trade_id):
+            return
+        cancel = getattr(self._orders, "cancel_stop", None)
+        if cancel is None:
+            return
+        left: list[str] = []
+        for stop_id in ids:
+            try:
+                await cancel(stop_id)
+            except Exception as exc:
+                left.append(stop_id)
+                self._log.warning(
+                    "live_adopt_foreign_stop_kept",
+                    payload={"trade_id": held.trade_id, "stop": stop_id, "error": str(exc)[:120]},
+                )
+        if left:
+            pending[held.trade_id] = left
+        else:
+            pending.pop(held.trade_id, None)
+        self._log.info(
+            "live_adopt_foreign_stop_withdrawn",
+            payload={
+                "trade_id": held.trade_id,
+                "withdrawn": [one for one in ids if one not in left],
+                "ours": self._share_stop_ids.get(held.trade_id, ""),
+                "note": "우리 몫 손절이 섰다 — 남의 이름 손절을 거둬 손절을 하나로 둔다",
+            },
+        )
+
     async def _guard_stop(self, *, escalate: bool = True) -> None:
         """포지션이 있으면 브로커측 손절이 걸려 있는지 확인하고, 없으면 건다.
 
@@ -6851,6 +6972,8 @@ class LiveRunner:
         # ⭐ **걸 기회를 가졌다** — 성공이든 실패든. 이 뒤의 "조건부 0건" 은 진짜 무방비다
         #    (사용자 신고 2026-08-20: 손절이 나가기 **전에** 경보가 먼저 울렸다).
         self._armed_for = held.trade_id
+        if failed is None and self._shared:
+            await self._withdraw_foreign_stops(held)
         if isinstance(failed, StopBlownError):
             # 🔴 **이건 "못 걸었다" 가 아니라 "이미 지났다" 다** (2026-08-20 실측).
             #

@@ -6,6 +6,10 @@
    48시간 안)이 있으면 그 손절로 이어받는다 · 없으면 전처럼 거부.
 ③ `set_auto_all`: 도는 판 전부의 `auto` 를 바꾸고 설정 저장소에 남긴다.
 ④ `Outcome.TRANSFERRED` 는 실현이 아니다.
+⑤ `_retry_adopt`: 거부됐거나 원장 없는 보유를 걸음마다(간격 안에 한 번) 다시 이어받아 본다 —
+   손절이 생기면 경고가 스스로 풀린다.
+⑥ `foreign_stop_ids` · `_withdraw_foreign_stops`: 남의 이름(운영 스크립트)의 손절로 이어받았으면
+   우리 몫 손절이 선 **뒤에** 그것을 거둬 손절을 하나로 둔다.
 """
 
 from __future__ import annotations
@@ -208,3 +212,106 @@ class TestAutoAll:
 def test_transferred_is_not_realised() -> None:
     assert Outcome.TRANSFERRED in lr._NOT_REALISED  # pyright: ignore[reportPrivateUsage]
     assert Outcome.TRANSFERRED.value == "이관"
+
+
+class _Log:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def info(self, event: str, **_kw: Any) -> None:
+        self.events.append(event)
+
+    warning = info
+    error = info
+
+
+def _orphan_runner(orders: object, *, refused: str | None, streak: int = 0) -> LiveRunner:
+    runner = _runner(orders)
+    runner._log = _Log()  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
+    runner._adopt_refused = refused  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
+    runner.__dict__["_mismatch_streak"] = streak
+    return runner
+
+
+class TestRetryAdopt:
+    def test_a_refused_orphan_is_adopted_again_and_the_warning_clears(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⭐ 손절을 걸어 주면 다음 걸음이 스스로 이어받는다 — 콘솔 단추를 누르지 않아도."""
+        monkeypatch.setattr(lr, "ADOPT_RETRY_S", 0.0)
+        runner = _orphan_runner(_Stops([[]]), refused="조건부 손절 없음")
+        calls: list[int] = []
+
+        async def adopt() -> bool:
+            calls.append(1)
+            return True
+
+        runner.adopt = adopt  # type: ignore[method-assign]
+        asyncio.run(runner._retry_adopt())  # pyright: ignore[reportPrivateUsage]
+        assert calls == [1]
+        assert runner._adopt_refused is None  # pyright: ignore[reportPrivateUsage]
+        assert runner.__dict__["_mismatch_streak"] == 0
+        assert "live_adopt_recovered" in runner._log.events  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
+
+    def test_the_retry_waits_the_interval_and_skips_when_the_ledger_holds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(lr, "ADOPT_RETRY_S", 3600.0)
+        calls: list[int] = []
+
+        async def adopt() -> bool:
+            calls.append(1)
+            return False
+
+        runner = _orphan_runner(_Stops([[]]), refused="조건부 손절 없음")
+        runner.adopt = adopt  # type: ignore[method-assign]
+        asyncio.run(runner._retry_adopt())  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(runner._retry_adopt())  # pyright: ignore[reportPrivateUsage]
+        assert calls == [1]  # 간격 안에는 한 번만 묻는다
+        # 거부도 아니고 감사도 조용하면 묻지 않는다
+        quiet = _orphan_runner(_Stops([[]]), refused=None, streak=1)
+        quiet.adopt = adopt  # type: ignore[method-assign]
+        asyncio.run(quiet.__class__._retry_adopt(quiet))  # pyright: ignore[reportPrivateUsage]
+        assert calls == [1]
+        # 감사가 두 번 연속 "원장 없는 보유" 를 봤으면 묻는다
+        seen = _orphan_runner(_Stops([[]]), refused=None, streak=2)
+        seen.adopt = adopt  # type: ignore[method-assign]
+        asyncio.run(seen._retry_adopt())  # pyright: ignore[reportPrivateUsage]
+        assert calls == [1, 1]
+        # 원장이 이미 보유 중이면 고아가 아니다
+        holding = _orphan_runner(_Stops([[]]), refused="x")
+        holding._session.ledger.records.append(_record(outcome=Outcome.OPEN, closed_at=None))  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
+        holding.adopt = adopt  # type: ignore[method-assign]
+        asyncio.run(holding._retry_adopt())  # pyright: ignore[reportPrivateUsage]
+        assert calls == [1, 1]
+
+
+class TestForeignStops:
+    def test_stops_not_keyed_to_the_share_are_foreign(self) -> None:
+        held = _record()
+        key = lr.order_key(held.trade_id, OrderKind.STOP_LOSS.value, 0, RUN)
+        ops = {"id": "ops-1", "text": "ops-sand-orphan-sl-20261001", "trigger_price": "0.04129"}
+        assert lr.foreign_stop_ids([_share_row(held, "s-1"), ops], key) == ["ops-1"]
+        assert lr.foreign_stop_ids([_share_row(held, "s-1")], key) == []
+
+    def test_a_foreign_stop_is_withdrawn_only_after_our_share_stop_stands(self) -> None:
+        """⭐ 우리 손절 id 를 모르면 남의 손절이 유일한 보호다 — 거두지 않는다."""
+        held = _record()
+        stops = _Stops([[]])
+        runner = _orphan_runner(stops, refused=None)
+        runner._foreign_stops()[held.trade_id] = ["ops-1"]  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(runner._withdraw_foreign_stops(held))  # pyright: ignore[reportPrivateUsage]
+        assert stops.cancelled == []
+        runner._share_stop_ids[held.trade_id] = "s-1"  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(runner._withdraw_foreign_stops(held))  # pyright: ignore[reportPrivateUsage]
+        assert stops.cancelled == ["ops-1"]
+        assert held.trade_id not in runner._foreign_stops()  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_refused_cancel_keeps_the_foreign_stop_for_the_next_step(self) -> None:
+        held = _record()
+        stops = _Stops([[]], cancel_fails=True)
+        runner = _orphan_runner(stops, refused=None)
+        runner._foreign_stops()[held.trade_id] = ["ops-1"]  # pyright: ignore[reportPrivateUsage]
+        runner._share_stop_ids[held.trade_id] = "s-1"  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(runner._withdraw_foreign_stops(held))  # pyright: ignore[reportPrivateUsage]
+        assert runner._foreign_stops()[held.trade_id] == ["ops-1"]  # pyright: ignore[reportPrivateUsage]
