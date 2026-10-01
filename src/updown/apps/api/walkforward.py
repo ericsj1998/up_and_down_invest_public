@@ -1862,10 +1862,15 @@ async def live_health_all() -> dict[str, Any]:
 
 
 @router.post("/live-all/auto")
-async def set_auto_all(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+async def set_auto_all(
+    request: Request, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
     """도는 라이브 판 **전부**의 새 진입을 멈추거나 켜고 그 뜻을 **DB 에 남긴다** (2026-10-01).
 
     Args:
+        request: 요청 — 🔴 **슈퍼관리자(`manage_roles` 기능)만** 누를 수 있다(사용자 2026-10-02
+            "펀드 전체 매매 일시중지 버튼 · 단 슈퍼관리자 권한 필수"). 실계좌 전체를 멈추거나
+            되살리는 스위치라 거래 권한만으로는 모자란다. 호출자가 없으면(시험 · 내부) 통과한다.
         payload: `{on}`. 거짓이면 새 진입을 안 받는다.
 
     Returns:
@@ -1876,6 +1881,10 @@ async def set_auto_all(payload: Annotated[dict[str, Any], Body()]) -> dict[str, 
         자동 전환 되살리기에서 다시 켜질 상태였다. `app_settings.live_entries_halted` 가 "1" 이면
         `_live_start` 가 새 판을 `auto=False` 로 띄운다. 손절 · 청산 · 대조는 그대로 돈다(§1.2.1).
     """
+    who = getattr(request.state, "caller", None)
+    if who is not None and not who.has(Cap.MANAGE_ROLES):
+        need = Cap.MANAGE_ROLES.value
+        raise HTTPException(403, f"전 판 진입 정지 · 재개는 슈퍼관리자('{need}' 기능)만 할 수 있다")
     wanted = bool(payload.get("on", True))
     changed = 0
     for key in list(LIVE_RUNNERS):

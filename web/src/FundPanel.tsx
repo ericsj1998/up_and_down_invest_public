@@ -695,7 +695,16 @@ export function FundPanel({
                 <Fragment key={sym}>
                 <tr
                   className={v.preview ? "entry-soon" : undefined}
-                  title={v.preview ? previewText(v.preview) : undefined}
+                  title={
+                    v.preview
+                      ? previewText(v.preview)
+                      : openRun && v.handle
+                        ? `${sym} 세부(RUN)로 이동`
+                        : undefined
+                  }
+                  // 종목 줄 클릭 = 그 종목의 RUN 세부로 (사용자 2026-10-02 · 히트맵 타일 · 카드 모서리와 같은 통로)
+                  onClick={() => (openRun && v.handle ? openRun(v.handle, sym) : undefined)}
+                  style={openRun && v.handle ? { cursor: "pointer" } : undefined}
                 >
                   <td>{sym}</td>
                   <td className="opt" style={{ textAlign: "right" }}>{v.weight}</td>

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -201,7 +202,8 @@ class TestAutoAll:
 
         store = _Settings()
         monkeypatch.setattr(wf, "_settings", store)
-        out = asyncio.run(wf.set_auto_all({"on": False}))
+        _req = SimpleNamespace(state=SimpleNamespace(caller=None))  # 호출자 없음 = 통과
+        out = asyncio.run(wf.set_auto_all(_req, {"on": False}))  # type: ignore[arg-type]
         assert out == {"auto": False, "changed": 2, "runs": 2, "persisted": True}
         assert lives["a"].session.auto is False
         assert lives["b"].session.auto is False

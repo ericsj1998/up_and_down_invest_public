@@ -407,7 +407,9 @@ export function Runs({ rows, open, refresh, available }: Props) {
       </Fold>
 
       <h2 className="section-title">도는 RUN {alive.length}개</h2>
-      {alive.length ? (
+      {/* 🔴 전부 중지 · 재개는 슈퍼관리자(`manage_roles`)만 — 실계좌 전체를 멈추는 스위치라
+          거래 권한만으로는 모자란다(사용자 2026-10-02). 서버(`POST /live-all/auto`)가 다시 판정한다. */}
+      {alive.length && me.who?.caps?.includes("manage_roles") ? (
         <p style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
           {/* 🔴 전부 중지는 새 진입만 멈춘다 — 든 포지션의 손절·청산은 계속 관리된다.
               DB 에 남아 재시작·리더 교체·매매법 전환 뒤에도 유지된다 (2026-10-01). */}
