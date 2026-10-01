@@ -72,8 +72,8 @@ class TestItIsCounted:
         from updown.apps.api import walkforward as api
 
         source = inspect.getsource(
-            api._health_of
-        )  # T334 몸통  # pyright: ignore[reportPrivateUsage]
+            api._health_of  # pyright: ignore[reportPrivateUsage]  # T334 몸통
+        )
         assert "half_withheld" in source
         # ⚠️ 함께 안 실리던 것들도 같이 낸다 — 셋은 서로 다른 사건이다.
         for name in ("stale_plans", "expired", "guarded"):

@@ -10,10 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
-from updown.analysis.playbook.select import PlaybookConfigError, _entry_exposure_cap, entry_limit
+from updown.analysis.playbook.select import (  # pyright: ignore[reportPrivateUsage]
+    PlaybookConfigError,
+    _entry_exposure_cap,
+    entry_limit,
+)
 from updown.analysis.playbook.types import EntryLimit
 from updown.orchestration.rebalancer import SessionBridge
 from updown.orchestration.rebalancer.gate import LegPort, SlotGate
@@ -67,7 +72,7 @@ class TestDeclaration:
     @pytest.mark.parametrize(
         "raw", [{"count": 0, "hours": 24}, {"count": 1, "hours": 0}, {"count": 1}]
     )
-    def test_entry_limit_rejects_nonsense(self, raw: dict) -> None:
+    def test_entry_limit_rejects_nonsense(self, raw: dict[str, Any]) -> None:
         with pytest.raises(PlaybookConfigError):
             entry_limit(raw, "t")
 

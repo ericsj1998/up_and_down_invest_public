@@ -16,9 +16,13 @@ TABLE = {"private_strategy@0.1.0": "MACD 롱", "private_strategy@0.1.0": "돌파
 
 
 @pytest.fixture(autouse=True)
-def _named(monkeypatch: pytest.MonkeyPatch) -> None:
+def _named(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
     """`leg_label` 대역 — 귀속 키 → 짧은 이름. 모르는 키는 빈 문자열(진짜 함수와 같은 폴백 계약)."""
-    monkeypatch.setattr(api, "leg_label", lambda _session, key: TABLE.get(key, ""))
+
+    def label(_session: object, key: str) -> str:
+        return TABLE.get(key, "")
+
+    monkeypatch.setattr(api, "leg_label", label)
 
 
 def _named_preview(preview: dict[str, Any] | None) -> dict[str, Any] | None:
