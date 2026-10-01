@@ -453,6 +453,16 @@ RUNNING = asyncio.Semaphore(MAX_RUNNING)
 
 LIVE_RUNNERS: dict[str, LiveRunner] = {}
 
+HALT_KEY = "live_entries_halted"
+"""app_settings 키 — "1" 이면 모든 라이브 판이 **새 진입만** 멈춘다 (2026-10-01 · 재시작을
+넘는다)."""
+
+
+def run_store() -> RunStore | None:
+    """지금의 판 저장소 — 모듈 밖(재조정기)이 전환 뒤 옛 판 줄을 이관으로 닫을 때 쓴다."""
+    return _store
+
+
 _store: RunStore | None = None
 
 _settings: SettingsStore | None = None
@@ -1503,6 +1513,18 @@ async def _live_start(
                 "note": "매매법 전환 — 앞 세션의 열린 기록을 물려받았다(거래소 되읽기 아님 · T333)",
             },
         )
+    # 🔴 전 판 진입 정지 스위치(DB · 2026-10-01) — 새로 뜨는 판 · 되살아나는 판 · 전환된 판도
+    #    따른다. `auto` 는 메모리뿐이라 재시작 · 리더 교체 · 자동 전환 되살리기에서 진입이
+    #    되살아났다.
+    if _settings is not None and await _settings.get(HALT_KEY) == "1":
+        session.auto = False
+        _logger.warning(
+            "live_start_entries_halted",
+            payload={
+                "session_id": handle,
+                "note": "전 판 진입 정지 스위치가 켜져 있다 — 새 진입 없이 뜬다",
+            },
+        )
     session.journal_path = JOURNAL_ROOT / f"{handle}.json"
     session.journal_meta = {
         "session_id": handle,
@@ -1837,6 +1859,46 @@ async def live_health_all() -> dict[str, Any]:
         기억하면 보는 사람이 몇이든 서버 일은 10초에 한 번이다. 매매 경로와 무관(표시 전용).
     """
     return await _HEALTH_ALL.get_or_fetch("all", health_all_fresh)
+
+
+@router.post("/live-all/auto")
+async def set_auto_all(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+    """도는 라이브 판 **전부**의 새 진입을 멈추거나 켜고 그 뜻을 **DB 에 남긴다** (2026-10-01).
+
+    Args:
+        payload: `{on}`. 거짓이면 새 진입을 안 받는다.
+
+    Returns:
+        `{auto, changed, runs, persisted}`.
+
+    Note:
+        사용자가 라이브를 내리려 40판을 하나씩 껐는데 `auto` 는 메모리뿐이라 재시작 · 리더 교체 ·
+        자동 전환 되살리기에서 다시 켜질 상태였다. `app_settings.live_entries_halted` 가 "1" 이면
+        `_live_start` 가 새 판을 `auto=False` 로 띄운다. 손절 · 청산 · 대조는 그대로 돈다(§1.2.1).
+    """
+    wanted = bool(payload.get("on", True))
+    changed = 0
+    for key in list(LIVE_RUNNERS):
+        live = SESSIONS.get(key)
+        if live is None:
+            continue
+        if live.session.auto != wanted:
+            live.session.auto = wanted
+            changed += 1
+    persisted = False
+    if _settings is not None:
+        await _settings.put(HALT_KEY, "0" if wanted else "1", by="live-all/auto")
+        persisted = True
+    _logger.info(
+        "live_auto_all_set",
+        payload={
+            "auto": wanted,
+            "changed": changed,
+            "runs": len(LIVE_RUNNERS),
+            "persisted": persisted,
+        },
+    )
+    return {"auto": wanted, "changed": changed, "runs": len(LIVE_RUNNERS), "persisted": persisted}
 
 
 @router.post("/live/{key}/auto")

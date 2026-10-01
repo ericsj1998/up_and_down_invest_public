@@ -63,6 +63,9 @@ _KOREAN_PATHS = (
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/mnt/c/Windows/Fonts/malgun.ttf",  # WSL 개발
 )
+_KOREAN_BOLD_PATHS = (
+    "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",  # 안 등록하면 findfont 경고
+)
 
 
 def _ensure_korean_font(plt: ModuleType, fm: ModuleType) -> None:
@@ -76,6 +79,11 @@ def _ensure_korean_font(plt: ModuleType, fm: ModuleType) -> None:
         컨테이너는 `fonts-nanum`, WSL 개발은 윈도우 Malgun 을 쓴다. 못 찾으면 경고만 남기고
         진행한다 — 리포트는 리스크 증가 행동이 아니라서 두부가 나더라도 죽이지 않는다 (§1.2.1).
     """
+    for bold in _KOREAN_BOLD_PATHS:
+        try:
+            fm.fontManager.addfont(bold)
+        except (FileNotFoundError, OSError):
+            continue
     available = {f.name for f in fm.fontManager.ttflist}
     for name in _KOREAN_NAMES:
         if name in available:

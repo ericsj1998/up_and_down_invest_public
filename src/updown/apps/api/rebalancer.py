@@ -49,6 +49,7 @@ from updown.apps.api.walkforward import (
     _drop_one,
     _live_start,
     leg_label,
+    run_store,
 )
 from updown.common.cache import TtlCache
 from updown.common.domain.capabilities import capabilities_of
@@ -2737,6 +2738,13 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
             )
             new_handles[member.symbol] = handle
             new_ports[member.symbol] = port
+            # ⭐ 물려준 열린 기록은 옛 판 쪽에서 이관으로 닫는다(2026-10-01) — 안 하면 "보유중"
+            #    유령이 남는다.
+            store = run_store()
+            if old and inherited and store is not None:
+                await store.transfer_open_trades(
+                    old, [item.trade_id for item in inherited], to_key=handle
+                )
     except Exception as exc:
         if widened is not None:  # 넓힌 바스켓은 되돌린다 — 펀드 종목과 핸들이 어긋나지 않게
             fund.coordinator.engine.basket = old_basket

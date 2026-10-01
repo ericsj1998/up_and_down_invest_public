@@ -1230,6 +1230,62 @@ class RunStore:
         except Exception as exc:
             raise RunStoreError(f"판 메타를 저장할 수 없다 ({run_id}): {exc}") from exc
 
+    async def transfer_open_trades(self, key: str, trade_ids: Sequence[str], *, to_key: str) -> int:
+        """전환(T333)이 새 판에 물려준 열린 기록을 옛 판 쪽에서 **이관**으로 닫는다 (2026-10-01).
+
+        Args:
+            key: 옛 판의 짧은 id.
+            trade_ids: 물려준 매매 id.
+            to_key: 새 판의 짧은 id — note 에 남긴다.
+
+        Returns:
+            닫은 줄 수. 실패하면 0(던지지 않는다 — 전환을 막지 않는다).
+
+        Note:
+            안 하면 옛 판의 줄이 영원히 "보유중" 으로 남아(2026-09-30 XRP · CRV · LINK · AAVE 유령)
+            표 · 프로브 · 감사가 포지션을 두 번 센다. 돈은 안 움직였으므로 `TRANSFERRED` 는
+            실현이 아니다.
+        """
+        if not trade_ids:
+            return 0
+        try:
+            async with self._factory() as session:
+                run_id = (
+                    await session.execute(
+                        sa.select(WalkforwardRun.id).where(WalkforwardRun.key == key)
+                    )
+                ).scalar_one_or_none()
+                if run_id is None:
+                    return 0
+                done = cast(
+                    "sa.CursorResult[Any]",
+                    await session.execute(
+                        sa.update(WalkforwardTrade)
+                        .where(
+                            WalkforwardTrade.run_id == run_id,
+                            WalkforwardTrade.trade_id.in_(list(trade_ids)),
+                            WalkforwardTrade.outcome == Outcome.OPEN.value,
+                        )
+                        .values(
+                            outcome=Outcome.TRANSFERRED.value,
+                            closed_at=datetime.now(UTC),
+                            note=f"이관 → {to_key}",
+                        )
+                    ),
+                )
+                await session.commit()
+                return int(done.rowcount or 0)
+        except Exception as exc:
+            _logger.error(
+                "wf_trades_untransferred",
+                payload={
+                    "key": key,
+                    "error": str(exc)[:200],
+                    "note": "옛 판 줄이 보유중으로 남는다",
+                },
+            )
+            return 0
+
     async def close(self, key: str, *, reason: str) -> bool:
         """판을 닫는다 — **사람이 RUN 을 지울 때만**.
 

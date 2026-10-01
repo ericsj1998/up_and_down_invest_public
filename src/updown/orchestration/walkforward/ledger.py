@@ -144,6 +144,9 @@ class Outcome(StrEnum):
     STOP_LOSS = "손절"
     LIQUIDATED = "강제청산"
     CANCELLED = "취소"
+    TRANSFERRED = "이관"
+    """매매법 전환(T333)이 새 판에 물려준 기록 — 옛 판 쪽 줄은 돈이 안 움직인 채 닫힌다
+    (2026-10-01)."""
 
 
 MAINTENANCE_MARGIN = SIZING_MAINTENANCE_MARGIN

@@ -790,7 +790,14 @@ def run_of_text(text: str) -> str:
     return ""
 
 
-_NOT_REALISED = (Outcome.OPEN, Outcome.PENDING, Outcome.CANCELLED)
+_NOT_REALISED = (Outcome.OPEN, Outcome.PENDING, Outcome.CANCELLED, Outcome.TRANSFERRED)
+
+SHARE_WITHDRAW_RECHECK_S = 0.4
+"""몫 손절을 거둔 뒤 거래소 목록을 다시 읽기 전 기다리는 초 — 취소 전파 지연(2026-09-30 SAND)."""
+SHARE_EXIT_RETRIES = 3
+"""몫 청산이 막혔을 때 다음 걸음에서 다시 닫아 보는 횟수 — 그 뒤는 손절만 두고 사람에게 넘긴다."""
+ADOPT_STOP_LOOKBACK = timedelta(hours=48)
+"""거래소에 손절이 없는 포지션을 이어받을 때 원장의 마지막 계획을 믿는 시간 창."""
 """돈이 움직이지 않은 결말 — 취소(못 채운 계획)는 청산이 아니다."""
 
 
@@ -1012,6 +1019,10 @@ class LiveRunner:
         ⭐ 0 이 아닌 것 자체는 정상이다 — 두 루프가 같은 함수를 쓰는 설계의 결과다.
         급증하면 **걸음이 너무 오래 걸린다**는 뜻이므로 그때 봐야 한다.
         """
+        self._exit_retry: dict[str, TradeRecord] = {}
+        """막힌 몫 청산 — 다음 걸음에 다시 닫는다(2026-09-30 SAND 사고 · `_retry_share_exits`)."""
+        self._exit_tries: dict[str, int] = {}
+        """몫 청산을 미룬 횟수 — `SHARE_EXIT_RETRIES` 를 넘으면 손절만 두고 사람에게 넘긴다."""
         self._share_stop_ids: dict[str, str] = {}
         """몫 모드(T320 P3)에서 몫(매매 id)마다 걸린 조건부 손절 id — 발동 기록을 몫에 잇는 열쇠."""
         self._share_misses: dict[str, int] = {}
@@ -1899,6 +1910,48 @@ class LiveRunner:
             self.failures = count
             self.last_error = f"재시작 전 거절 {count}건 — {why}"[:200]
 
+    def _stop_from_ledger(self, size: Decimal) -> Decimal | None:
+        """거래소에 손절이 없는 포지션의 손절을 **원장의 마지막 계획**에서 되찾는다 (SAND 사고).
+
+        Args:
+            size: 거래소 포지션 크기(부호 = 방향).
+
+        Returns:
+            그 기록의 `planned_stop`. 같은 방향 · 같은 계약 수(몫) · `ADOPT_STOP_LOOKBACK` 안에 닫힌
+            기록이 없으면 None(= 전처럼 입양 거부).
+
+        Note:
+            세션발 청산이 거래소 닫기에 실패하면 원장은 닫혔고 손절은 거둬진 채 포지션만 남는다.
+            그때 이어받기가 "손절 없음" 으로 거부하면 아무도 안 지키는 포지션이 된다(SAND
+            5,104계약 · 7시간 · 2026-09-30).
+            그 기록의 손절은 지어낸 값이 아니라 **이 포지션에 쓰던 계획**이다 — 그것으로 이어받고
+            `_guard_stop` 이 같은 값으로 손절을 다시 건다.
+        """
+        want = Direction.SHORT if size < 0 else Direction.LONG
+        when = self._session.cursor
+        for item in reversed(self._session.ledger.records):
+            if item.outcome is Outcome.OPEN or item.direction is not want:
+                continue
+            if item.planned_stop <= 0:
+                continue
+            if item.contracts and int(abs(size)) != int(item.contracts):
+                continue
+            closed = item.closed_at or item.opened_at
+            if closed is None or when - closed > ADOPT_STOP_LOOKBACK:
+                continue
+            self._log.warning(
+                "live_adopt_stop_from_ledger",
+                payload={
+                    "trade_id": item.trade_id,
+                    "planned_stop": str(item.planned_stop),
+                    "size": str(size),
+                    "note": "거래소에 손절이 없어 원장의 마지막 계획으로 이어받는다 — "
+                    "손절은 _guard_stop 이 건다",
+                },
+            )
+            return item.planned_stop
+        return None
+
     async def adopt(self) -> bool:
         """거래소에 **이미 열려 있는 포지션**을 원장으로 이어받는다.
 
@@ -1955,6 +2008,8 @@ class LiveRunner:
             (Decimal(str(row["trigger_price"])) for row in stops if row.get("trigger_price")),
             None,
         )
+        if trigger is None:
+            trigger = self._stop_from_ledger(size)
         if trigger is None:
             # ⛔ 계획의 뿌리가 없다 — 지어내지 않고 사람에게 넘긴다.
             self._adopt_refused = (
@@ -3595,6 +3650,7 @@ class LiveRunner:
 
     async def _walk_once(self) -> None:
         """걸음 한 번의 본체 — **`_one_step` 만 부른다** (겹침 방어가 거기 있다)."""
+        await self._retry_share_exits()
         # 🔴 **체결 판정용 봉을 먼저 채운다.** `Session._tick()` 은 `STEP_FRAME`(5m) 의
         #    마지막 봉으로 **진입가와 체결·청산**을 정하는데, 라이브에서 그 축은 웹소켓이
         #    구독하지 않아 **시드 이후 한 번도 갱신되지 않았다.**
@@ -6594,9 +6650,31 @@ class LiveRunner:
                 payload={
                     "trade_id": now.trade_id,
                     "note": "남은 몫 손절이 다른 몫을 닫을 수 있어 안 닫았다 — "
-                    "감사가 갈린 상태를 알린다",
+                    "손절을 되돌려 걸고 다음 걸음에 다시 닫는다",
                 },
             )
+            # 🔴 거둔 손절이 실제로는 사라졌을 수 있다(2026-09-30 SAND) — 되돌려 걸어 무방비를 막고,
+            #    다음 걸음에 다시 닫는다. 거듭 막히면 손절만 두고 사람에게 넘긴다.
+            again = await self._arm_stop(now)
+            if again is not None:
+                self._log.error(
+                    "live_share_exit_rearm_failed",
+                    payload={"trade_id": now.trade_id, "error": str(again)[:160]},
+                )
+            retry, tries_of = self._exit_state()
+            tries = tries_of.get(now.trade_id, 0) + 1
+            tries_of[now.trade_id] = tries
+            if tries <= SHARE_EXIT_RETRIES:
+                retry[now.trade_id] = before
+            else:
+                self._log.error(
+                    "live_share_exit_abandoned",
+                    payload={
+                        "trade_id": now.trade_id,
+                        "tries": tries,
+                        "note": "몫 청산을 거듭 미뤘다 — 손절은 걸려 있다 · 사람이 본다",
+                    },
+                )
             return
         try:
             done = await self._orders.submit_order(
@@ -6619,6 +6697,7 @@ class LiveRunner:
                 )
             return
         self.orders += 1
+        self._exit_state()[1].pop(now.trade_id, None)
         await self._note_order(
             now.trade_id,
             role=role,
@@ -6640,6 +6719,32 @@ class LiveRunner:
                     "note": "거래소에 몫보다 적게 남아 있었다 — 남은 만큼만 닫았다",
                 },
             )
+
+    async def _retry_share_exits(self) -> None:
+        """막혔던 몫 청산을 다음 걸음에 다시 닫는다 (2026-09-30 SAND 사고).
+
+        Note:
+            `_apply_exit_share` 가 손절을 못 거둔 것으로 판정하면 닫지 않고 여기 적는다. 그 사이
+            손절은 되돌려 걸려 있다. 다시 닫을 때 `_withdraw_share_orders` 가 되돌린 손절을 거두고
+            시장가로 닫는다.
+        """
+        pending, tries_of = self._exit_state()
+        if not pending:
+            return
+        for trade_id, before in list(pending.items()):
+            pending.pop(trade_id, None)
+            self._log.warning(
+                "live_share_exit_retry",
+                payload={"trade_id": trade_id, "tries": tries_of.get(trade_id, 0)},
+            )
+            await self._apply_exit_share(before)
+
+    def _exit_state(self) -> tuple[dict[str, TradeRecord], dict[str, int]]:
+        """막힌 몫 청산 대기줄과 미룬 횟수 — 생성자를 우회한 더블에도 안전하게 만든다."""
+        state = self.__dict__
+        retry = state.setdefault("_exit_retry", {})
+        tries = state.setdefault("_exit_tries", {})
+        return retry, tries
 
     async def _guard_stop(self, *, escalate: bool = True) -> None:
         """포지션이 있으면 브로커측 손절이 걸려 있는지 확인하고, 없으면 건다.
@@ -6923,11 +7028,21 @@ class LiveRunner:
                     await cancel(stop_id)
         if stops is None:
             return True
-        try:
-            left = await stops.open_stops(self.instrument)
-        except Exception:
-            return False
-        return not any(same_share(str(row.get("text", "")), want) for row in left)
+        # 🔴 2026-09-30 SAND 사고 — 거둔 **직후** 되읽은 목록에 그 손절이 아직 보여 "못 거뒀다" 로
+        #    판정했고, 그래서 청산을 미뤘는데 손절은 실제로 사라져 **무방비 고아**가 됐다(원장은
+        #    닫힘 · 거래소 5,104계약 · 조건부 0). 거둔 직후의 목록은 전파 지연일 수 있다 — 잠깐
+        #    기다려 세 번까지 다시 읽는다. 그래도 남으면 "못 거뒀다" 다(호출자가 손절을 되돌려 걸고
+        #    다음 걸음에 다시 닫는다 — 남은 몫 손절이 다른 몫을 닫는 위험은 끝까지 안 진다).
+        for attempt in range(3):
+            try:
+                left = await stops.open_stops(self.instrument)
+            except Exception:
+                return False
+            if not any(same_share(str(row.get("text", "")), want) for row in left):
+                return True
+            if attempt < 2:
+                await asyncio.sleep(SHARE_WITHDRAW_RECHECK_S)
+        return False
 
     async def _find_share_stop_id(self, held: TradeRecord) -> str:
         """거래소에 걸린 **이 몫의 조건부 손절 id** — text(몫 키)로 찾는다 (T320 P4).

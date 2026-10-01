@@ -25,6 +25,7 @@ import {
   healthAll as fetchHealthAll,
   playbooks,
   setAuto,
+  setAutoAll,
   startLive,
   symbols,
   type Book,
@@ -406,6 +407,28 @@ export function Runs({ rows, open, refresh, available }: Props) {
       </Fold>
 
       <h2 className="section-title">도는 RUN {alive.length}개</h2>
+      {alive.length ? (
+        <p style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+          {/* 🔴 전부 중지는 새 진입만 멈춘다 — 든 포지션의 손절·청산은 계속 관리된다.
+              DB 에 남아 재시작·리더 교체·매매법 전환 뒤에도 유지된다 (2026-10-01). */}
+          <button
+            className="btn small"
+            disabled={busy !== ""}
+            title="모든 RUN 의 새 진입만 멈춘다 — 든 포지션은 계속 관리된다 · 재시작 뒤에도 유지"
+            onClick={() => act("auto-all-off", () => setAutoAll(false))}
+          >
+            {busy === "auto-all-off" ? "…" : "전부 중지"}
+          </button>
+          <button
+            className="btn small"
+            disabled={busy !== ""}
+            title="모든 RUN 의 새 진입을 다시 받는다"
+            onClick={() => act("auto-all-on", () => setAutoAll(true))}
+          >
+            {busy === "auto-all-on" ? "…" : "전부 재개"}
+          </button>
+        </p>
+      ) : null}
       {error ? <ErrorCard message={error} /> : null}
       {popupNote ? <p className="notice bad">{popupNote}</p> : null}
       <div className="table-wrap">

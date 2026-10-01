@@ -1479,6 +1479,17 @@ export function reportSend(body: {
  *
  * ⭐ 이쪽은 **새 진입만** 막는다. 이미 든 것은 계속 관리된다.
  */
+/** 도는 라이브 판 전부의 새 진입을 멈추거나 켠다 — DB 에 남아 재시작 뒤에도 유지된다 (2026-10-01). */
+export function setAutoAll(
+  on: boolean,
+): Promise<{ auto: boolean; changed: number; runs: number; persisted: boolean }> {
+  return request(`/walkforward/live-all/auto`, {
+    method: "POST",
+    headers: JSON_POST,
+    body: JSON.stringify({ on }),
+  });
+}
+
 export function setAuto(key: string, on: boolean): Promise<{ auto: boolean }> {
   return request(`/walkforward/live/${key}/auto`, {
     method: "POST",

@@ -58,6 +58,7 @@ def register_resource_beat(
         name=JOB_ID,
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=every_s,  # 걸음이 길어 몇 초 늦는 것은 정상 — 경고만 늘린다(2026-10-01)
         replace_existing=True,
     )
     _logger.info("job_registered", payload={"job": JOB_ID, "every_s": every_s})
