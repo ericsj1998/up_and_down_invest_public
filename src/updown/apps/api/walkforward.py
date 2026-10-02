@@ -405,10 +405,12 @@ class Live:
     runner: asyncio.Task[None] | None = None
     waiting: bool = False
     """동시 실행 티켓을 기다리는 중인가 — 멈춘 것과 다르다."""
-    chart: dict[Timeframe, tuple[int, float, list[dict[str, Any]]]] = field(
-        default_factory=dict[Timeframe, "tuple[int, float, list[dict[str, Any]]]"]
+    chart: dict[Timeframe, tuple[tuple[int, datetime | None], float, list[dict[str, Any]]]] = field(
+        default_factory=dict[
+            Timeframe, "tuple[tuple[int, datetime | None], float, list[dict[str, Any]]]"
+        ]
     )
-    """작도 캐시 — `시간축 -> (봉 수, 그린 시각, 그림)`.
+    """작도 캐시 — `시간축 -> ((봉 수, 마지막 봉 시각), 그린 시각, 그림)`.
 
     🔴 봉은 **덧붙기만** 하므로 봉 수가 완전한 열쇠다. 같은 봉 수에서 다시 그리면
     **반드시 같은 그림**이 나오므로 재사용이 결과를 바꾸지 않는다 (절대 규칙 #5).
@@ -5212,6 +5214,22 @@ def _chart_ttl(key: str, live: Live) -> float:
     return max(CHART_TTL, interval_seconds(frame) / 10)
 
 
+def chart_key(rows: Sequence[Candle]) -> tuple[int, datetime | None]:
+    """작도 캐시 열쇠 — (봉 수, 마지막 봉 시각) (2026-10-03 · 순수).
+
+    Args:
+        rows: 판정 봉들(오래된 것 → 최신).
+
+    Returns:
+        봉 수와 마지막 봉 시각. 봉이 없으면 시각은 None.
+
+    Note:
+        라이브 급전은 창(T313)을 넘는 옛 봉을 버려 봉 수가 늘지 않는다 — 봉 수만 열쇠로 쓰면
+        배포 뒤 첫 그림이 영원히 다시 나간다(새 봉이 들어와도 수가 같다).
+    """
+    return (len(rows), rows[-1].ts if rows else None)
+
+
 def _chart(
     live: Live, at: datetime | None, only: Timeframe | None, *, ttl: float = CHART_TTL
 ) -> list[dict[str, Any]]:
@@ -5247,9 +5265,13 @@ def _chart(
     #      완전한 열쇠이고, 재사용이 결과를 바꾸지 않는다 (절대 규칙 #5).
     #
     #    ⛔ 되감기(`at`)는 캐시하지 않는다 — 같은 봉 수라도 다른 시점이라 그림이 다르다.
-    bars = -1
+    # 🔴 **열쇠 = (봉 수, 마지막 봉 시각)** (2026-10-03 사용자 신고 "BTC 한시간봉이 점프").
+    #    라이브 급전이 창(T313 · 시드 800 + 여유)을 넘는 옛 봉을 버리게 된 뒤로 봉 수가 늘지
+    #    않아, 봉 수만 보던 열쇠가 배포 뒤 첫 그림을 영원히 다시 줬다 — 17시에서 멈춘 차트
+    #    끝에 실시간 봉이 붙어 점프처럼 보였다. 마지막 봉 시각이 바뀌면 다시 그린다.
+    bars: tuple[int, datetime | None] | None = None
     if at is None and only is not None:
-        bars = len(session.feed.judged(only))
+        bars = chart_key(session.feed.judged(only))
         cached = live.chart.get(only)
         # 🔴 **봉 수만으로는 재생 중에 캐시가 아무 일도 안 한다** (사용자 지적
         #    2026-08-17: *"진행하다 점점 느려지더니 결국 거의 동작을 안할 정도"*).
@@ -5401,7 +5423,7 @@ def _chart(
         flags=live.flags,
         frames=tuple(views),
     ).to_dict()["frames"]
-    if bars >= 0 and only is not None:
+    if bars is not None and only is not None:
         live.chart[only] = (bars, time.monotonic(), drawn)
     return drawn
 
