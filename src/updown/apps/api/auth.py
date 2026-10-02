@@ -51,6 +51,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from updown.analysis.playbook.select import load_playbooks
+from updown.apps.api import showcase
 from updown.common.db.models.accounts import (
     Account,
     AccountContact,
@@ -2866,6 +2867,10 @@ async def _pass(request: Request, call_next: Any, *, need: Need, who: Caller | N
                 status_code=429,
                 headers={"Retry-After": "10"},
             )
+        # ⭐ 쇼케이스(포트폴리오 데모) — 리더가 없으니 판 · 펀드를 새로 띄우면 아무도 관리하지
+        #    않는다. 안내와 함께 거절.
+        if showcase.enabled():
+            return JSONResponse({"detail": showcase.MESSAGE, "showcase": True}, status_code=403)
         gate = getattr(request.app.state, "trading_leader", None)
         if gate is not None and not gate.is_leader:
             return JSONResponse(

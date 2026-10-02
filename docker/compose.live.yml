@@ -106,9 +106,17 @@ services:
     restart: always
     env_file:
       - ../.env.demo
+    # ⭐ 쇼케이스(2026-10-02 · 사용자 "포폴용 데모를 CPU 소모를 줄이면서") — 거래 리더를 안 잡아 판 · 펀드 · 관리 루프가
+    #    하나도 안 돈다(`apps/api/showcase.py`). 화면 · 차트 · 분석 · 기록은 요청이 올 때만 일한다.
+    environment:
+      UPDOWN_SHOWCASE: "1"
+    # 🔴 CPU 천장 0.25 코어 + 낮은 몫(128 대 기본 1024) — 방문자가 무거운 화면을 눌러도 데모만 느려지고 실계좌 api 는
+    #    CPU 를 먼저 받는다. 9/30 세 번째 스틸 사고(데모가 버스트 크레딧을 갉음)의 재발 방지 상한.
+    cpu_shares: 128
     deploy:
       resources:
         limits:
+          cpus: "0.25"
           memory: 192M  # T268 #8 — 블루그린 겹침 창(api+api_b) 에 1 GB 를 안 넘게 (데모 실측 95 MiB)
     # 🔴 실계좌와 **다른 볼륨** (2026-09-08 실측). base 의 api 슬롯을 물려받아 같은 `runlogs` 를 쓰니
     #    데모가 실계좌 펀드 파일(`logs/funds`)을 읽어 테스트넷에 자기 판을 만들고 그 파일을 같이 썼고,

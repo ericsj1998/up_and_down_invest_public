@@ -286,9 +286,16 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         #    락 없이 거래하면 이중매매 방지가 무의미하므로 **없으면 안 한다**(fail-safe).
         #    운영 `ApiState` 는 항상 redis 를 만든다.
         redis = getattr(resolved_state, "redis", None)
+        # ⭐ 쇼케이스(포트폴리오 데모 · 2026-10-02) — 리더를 안 잡는다 = 되살리기 · 관리 루프가
+        #    하나도 안 돈다.
+        #    거래 요청은 문(auth.guard)이 안내와 함께 거절한다(`showcase.MESSAGE`).
+        from updown.apps.api import showcase
+
+        if showcase.enabled():
+            _logger.info("showcase_mode", payload={"note": "거래 리더 · 관리 루프 없음 · 조회만"})
         leader = (
             TradingLeader(redis, start=_start_trading, stop=_stop_trading)
-            if redis is not None
+            if redis is not None and not showcase.enabled()
             else None
         )
         # 🔴 문(auth.guard)과 /health 가 리더 여부를 읽는다 (T212 블루그린). 팔로워는 거래
