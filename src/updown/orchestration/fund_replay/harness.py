@@ -54,7 +54,7 @@ if TYPE_CHECKING:
 
 HOUR = timedelta(hours=1)
 FOUR = timedelta(hours=4)
-_FRAME_HOURS = {Timeframe.H1: 1, Timeframe.H4: 4}
+_FRAME_MINUTES = {Timeframe.M15: 15, Timeframe.H1: 60, Timeframe.H4: 240}
 
 
 @dataclass(slots=True)
@@ -81,9 +81,14 @@ class ReplayBoard:
     needs: RefNeeds | None = None
 
     @property
+    def minutes(self) -> int:
+        """걸음 간격(분) — 세션의 걸음 축. 15분은 T345 조기 진입 재현(2026-10-02)."""
+        return _FRAME_MINUTES[self.session.step_frame]
+
+    @property
     def hours(self) -> int:
-        """걸음 간격(시간) — 세션의 걸음 축."""
-        return _FRAME_HOURS[self.session.step_frame]
+        """걸음 간격(시간 · 15분 걸음은 1) — 예전 호출 자리용."""
+        return max(1, self.minutes // 60)
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,21 +193,28 @@ class FundReplay:
         Returns:
             걸은 결과.
         """
+        # ⭐ 시계 눈금 = 판들 걸음 중 가장 잔 것(최대 1시간). 전부 1H · 4H 면 예전과 한 시간씩 ·
+        #    같은 순서 · 같은 난수 소비라 결과가 한 비트도 안 바뀐다. 15분 판(T345 조기 진입)이
+        #    있으면 15분씩 밀되 정시 일(기준 국면 · 펀딩 · 펀드 틱 · 자정 잔고)은 정시에만 한다.
+        tick = min([HOUR, *(timedelta(minutes=b.minutes) for b in self.boards)])
         t = start
         while t < end:
-            t += HOUR
-            if t.hour % 4 == 0:
+            t += tick
+            on_hour = t.minute == 0
+            if on_hour and t.hour % 4 == 0:
                 self._inject_ref(t)
-            self._inject_funding(t)
-            due = [b for b in self.boards if t.hour % b.hours == 0]
+            if on_hour:
+                self._inject_funding(t)
+            of_day = t.hour * 60 + t.minute
+            due = [b for b in self.boards if of_day % b.minutes == 0]
             self._rnd.shuffle(due)
             for board in due:
                 self._halt_if_exhausted(board, t)
                 board.session.step()
                 self._after_step(board, t)
-            if t.hour % 4 == 0:
+            if on_hour and t.hour % 4 == 0:
                 self.coordinator.tick()
-            if t.hour == 0:
+            if on_hour and t.hour == 0:
                 self.result.equity.append((t, self.coordinator.engine.balance))
         return self.result
 
