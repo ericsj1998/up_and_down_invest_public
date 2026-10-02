@@ -58,6 +58,14 @@ bash scripts/deploy/ship.sh                 # main 에서만 · 태그 = v<버�
 - 화면 — 목록 20초 · 상세 15초 · 콘솔 20초 · **탭이 안 보이면 안 당긴다**. 화면을 오래 켜 둘 때는 탭을 뒤로 보낸다.
 - 재는 법: `bash scripts/ops/remote.sh scripts/ops/probe_cpu_budget.sh`(컨테이너별 CPU · 스틸 · nginx 요청 빈도).
 
+🔵 **데모 = 정적 저장본 (1.32.0 · 2026-10-02 · 포트폴리오용).** 1 GB 서버에서 데모 API 가 스왑을 밀어 실계좌 api 까지 스왑에
+올렸다 → 운영의 데모 행선지는 **web nginx 가 저장본(`web/public/__demo` · 비공개 경로)으로 바로 답한다** · 데모 API 컨테이너는
+`.demo_off` 로 꺼 둔다. 게스트 입장은 쿠키 하나 · 만들기 · 바꾸기는 403 안내 · 구글 로그인은 늘 실계좌 API. 로컬 dev(TLS 없음)는
+지금처럼 진짜 데모 API.
+- 저장본 다시 만들기: 데모 API 를 잠깐 켠 상태(`rm ~/updown/.demo_off` + `compose up -d api_demo`)에서 연구 PC 가
+  `bash scripts/dev/demo_snapshot.sh` → 커밋 → 배포 → 다시 `bash scripts/ops/remote.sh scripts/ops/demo_off.sh`.
+- 화면 점검: `scripts/dev/demo_static_check.mjs`(게스트로 화면마다 실패한 /api 수 · 캡처).
+
 되돌리기: `IMAGE_TAG=<이전 태그> ENV=live bash scripts/deploy/bluegreen.sh` (서버에서 · 이미지는 남아 있다).
 
 ⭐ **Docker Desktop 이 꺼져 있으면 `make up`·`make rebuild` 가 먼저 켠다** (`scripts/ops/docker_ensure.sh` · 2026-09-14). WSL 에서

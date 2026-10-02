@@ -39,6 +39,8 @@ FROM nginx:1.27-alpine AS runtime
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx_security.conf /etc/nginx/snippets/updown_security.conf
+COPY nginx_proxy.conf /etc/nginx/snippets/updown_proxy.conf
 
 # ⚠️ 헬스체크가 **정적 파일**을 본다. nginx 프로세스 생존만 보면 빌드 산출물이 비어도
 #    healthy 로 뜬다 — 화면은 백지인데 컨테이너는 정상이라고 말하는 상태가 된다.

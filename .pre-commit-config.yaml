@@ -26,7 +26,8 @@ repos:
         # ⚠️ 근거 화면 산출물(T222)은 화면이 읽는 자료라 저장소에 싣는다 — 45미래 경로 3.5 MB · 합성 상세(일봉·청산 창)
         #   7.3 MB · E1 백테스트(봉·매매) 2.5 MB. 재생성은 `scenario_paths.py` 3분 · `backtest_paths.py` 1분. 한도를
         #   올리는 대신 **이 디렉토리의 원시 배열과 머리(JSON)만** 뺀다: 다른 큰 파일(데이터·로그)의 실수 커밋은 여전히 막는다.
-        exclude: ^config/evidence/.*\.(f32|i32|json)$
+        #   정적 데모 저장본(web/public/__demo · 2026-10-02)도 화면이 읽는 자료다 — 백테스트 목록 응답이 1.9 MB. JSON 만 뺀다.
+        exclude: ^(config/evidence/.*\.(f32|i32|json)|web/public/__demo/.*\.json)$
       - id: detect-private-key
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
