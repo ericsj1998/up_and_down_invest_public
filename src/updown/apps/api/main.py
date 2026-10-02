@@ -257,11 +257,13 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         _trade_tasks: list[asyncio.Task[None]] = []
         # 1 GB 호스트 — engine 잡(자원 비트)을 리더 api 안에서 돌린다 (`inproc_engine` 참조).
         #    플래그가 꺼져 있으면 None 이고 아무 일도 없다 (dev·paper).
-        from updown.apps.api import inproc_engine
+        from updown.apps.api import inproc_engine, showcase
 
         _inproc = (
             inproc_engine.InprocEngine(getattr(resolved_state, "redis", None))
-            if inproc_engine.enabled() and getattr(resolved_state, "redis", None) is not None
+            if inproc_engine.enabled()
+            and getattr(resolved_state, "redis", None) is not None
+            and not showcase.enabled()
             else None
         )
 
@@ -286,16 +288,18 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         #    락 없이 거래하면 이중매매 방지가 무의미하므로 **없으면 안 한다**(fail-safe).
         #    운영 `ApiState` 는 항상 redis 를 만든다.
         redis = getattr(resolved_state, "redis", None)
-        # ⭐ 쇼케이스(포트폴리오 데모 · 2026-10-02) — 리더를 안 잡는다 = 되살리기 · 관리 루프가
-        #    하나도 안 돈다.
-        #    거래 요청은 문(auth.guard)이 안내와 함께 거절한다(`showcase.MESSAGE`).
-        from updown.apps.api import showcase
-
+        # ⭐ 쇼케이스(포트폴리오 데모 · 2026-10-02) — 리더는 잡아 **데모 펀드는 돈다**. 대신 펀드에
+        #    필요 없는 루프(예비 신호 · 알림 · 리포트 · AI 채점 · 봉 예열 · 자원 비트)는 안
+        #    띄우고,
+        #    새 판 · 펀드를 만드는 거래 요청은 문(auth.guard)이 안내와 함께 거절한다
+        #    (`showcase.MESSAGE`).
         if showcase.enabled():
-            _logger.info("showcase_mode", payload={"note": "거래 리더 · 관리 루프 없음 · 조회만"})
+            _logger.info(
+                "showcase_mode", payload={"note": "데모 펀드만 · 부가 루프 없음 · 새 판 거절"}
+            )
         leader = (
             TradingLeader(redis, start=_start_trading, stop=_stop_trading)
-            if redis is not None and not showcase.enabled()
+            if redis is not None
             else None
         )
         # 🔴 문(auth.guard)과 /health 가 리더 여부를 읽는다 (T212 블루그린). 팔로워는 거래
@@ -371,6 +375,16 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         with contextlib.suppress(Exception):
             await reconcile_once()
         tasks.append(asyncio.create_task(reconcile_loop(), name="exchange-reconcile"))
+        # ⭐ 쇼케이스(포트폴리오 데모) — 펀드 · 판 · 감시 · 대조까지만. 하루 한 점 자산 스냅샷
+        #    (펀드 차트)만 더하고
+        #    예비 신호(가장 무거움) · 알림 · 리포트 · AI 채점 · 봉 예열 · 메모리 비트는 안 띄운다.
+        from updown.apps.api import showcase
+
+        if showcase.enabled():
+            from updown.apps.api.report import equity_snapshot_loop as showcase_equity_loop
+
+            tasks.append(asyncio.create_task(showcase_equity_loop(), name="equity-snapshot"))
+            return
         # ⭐ AI 차트 주문 채점 루프 (T273 3단계) — 익은 회차를 한 시간마다 판정한다.
         from updown.apps.api.chart_order import resolve_loop as chart_order_resolve_loop
 

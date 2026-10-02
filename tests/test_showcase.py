@@ -52,3 +52,28 @@ def test_guard_refuses_trade_writes_in_showcase(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("UPDOWN_SHOWCASE", "1")
     monkeypatch.setenv("LIVE_ORDERS", "0")
     assert showcase.enabled() is True
+
+
+def test_showcase_runs_the_fund_but_skips_the_extras() -> None:
+    """리더는 잡고(펀드가 돈다) 부가 루프는 쇼케이스 분기 뒤에만 있다."""
+    from updown.apps.api import main
+
+    src = inspect.getsource(main)
+    assert "if redis is not None and not showcase.enabled()" not in src, "리더를 잡아야 펀드가 돈다"
+    cut = src.index("if showcase.enabled():\n            from updown.apps.api.report import")
+    before, after = src[:cut], src[cut:]
+    for must in (
+        "autostart_live()",
+        "restore_funds()",
+        "rebalance_loop()",
+        "watch_forever()",
+        "reconcile_loop()",
+    ):
+        assert must in before, must
+    for extra in (
+        "preview_loop()",
+        "notify_loop()",
+        "daily_report_loop()",
+        "chart_order_resolve_loop()",
+    ):
+        assert extra in after and extra not in before, extra
