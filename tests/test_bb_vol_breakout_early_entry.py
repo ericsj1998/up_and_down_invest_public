@@ -93,6 +93,48 @@ class TestPartialBar:
         assert tight is not None and tight.stop_loss == rows[-1].low
 
 
+def m15(hh: int, mm: int) -> Candle:
+    return Candle(
+        instrument=INSTRUMENT,
+        timeframe=Timeframe.M15,
+        ts=T0.replace(hour=hh, minute=mm),
+        open=Decimal(100),
+        high=Decimal(101),
+        low=Decimal(99),
+        close=Decimal(100),
+        volume=Decimal(1),
+    )
+
+
+class TestSessionClock:
+    """세션 결함 두 개(2026-10-02 · DOGE 2022-07-20 탐침).
+
+    조기 진입이 한 걸음 일렀고, 진입 전 봉으로 손절됐다.
+    """
+
+    def test_now_is_the_end_of_the_last_closed_source_bar(self) -> None:
+        from updown.orchestration.walkforward.session import early_clock
+
+        # 07:00 · 07:15 15분봉이 닫혔다 = 지금 07:30 → 1H 봉 시작에서 30분(:30 선언이 걸린다)
+        both = [m15(7, 0), m15(7, 15)]
+        assert early_clock(both, Timeframe.M15) == T0.replace(hour=7, minute=30)
+        # 07:00 하나만 닫혔으면 지금은 07:15 다 — 예전엔 07:30 으로 셈해 15분 부분 봉으로 샀다
+        assert early_clock([m15(7, 0)], Timeframe.M15) == T0.replace(hour=7, minute=15)
+        assert early_clock([], Timeframe.M15) is None
+
+    def test_stop_confirm_ignores_bars_closed_before_the_entry_bar(self) -> None:
+        from updown.orchestration.walkforward.session import confirm_after_entry
+
+        before = bar(6, Decimal(100))  # 06:00 1H — 돌파 앞 봉
+        breakout = bar(7, Decimal(100))  # 07:00 1H — 돌파봉
+        early_open = T0.replace(hour=7, minute=15)  # 조기 진입(체결 봉 07:15)
+        assert not confirm_after_entry(before, early_open, Timeframe.H1)
+        assert confirm_after_entry(breakout, early_open, Timeframe.H1)
+        # 마감 진입(체결 봉 07:45 · 확인 봉 = 돌파봉 자신)은 예전과 같다
+        assert confirm_after_entry(breakout, T0.replace(hour=7, minute=45), Timeframe.H1)
+        assert not confirm_after_entry(None, early_open, Timeframe.H1)
+
+
 class TestDeclaration:
     def test_minute_must_be_inside_the_bar(self) -> None:
         assert EarlyEntry(minute=30).minute == 30

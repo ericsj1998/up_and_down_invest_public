@@ -342,6 +342,52 @@ def tilted(size_mult: Decimal, book: Playbook) -> Decimal:
     return size_mult**power
 
 
+def early_clock(rows: Sequence[Candle], frame: Timeframe) -> datetime | None:
+    """조기 진입의 "지금" — 재료 축의 마지막 마감 봉이 **끝난** 시각 (T345 결함 ① · 순수).
+
+    Args:
+        rows: 재료 축(방아쇠 · 걸음 축)의 마감 봉들. 오래된 것 → 최신.
+        frame: 그 봉들의 시간축.
+
+    Returns:
+        마지막 봉 시작 + 봉 길이. 봉이 없으면 None.
+
+    Note:
+        커서 + 걸음으로 재면 커서 규약(봉 시작인가 · 끝인가)에 따라 한 걸음씩 어긋난다 —
+        2026-10-02 탐침에서 :30 선언이 :15 에 15분짜리 부분 봉으로 샀다.
+        봉에서 재면 규약과 무관하다.
+    """
+    if not rows:
+        return None
+    return rows[-1].ts + interval(frame)
+
+
+def confirm_after_entry(
+    confirm: Candle | None, opened_at: datetime | None, frame: Timeframe
+) -> bool:
+    """손절 확인 봉이 진입 TF 기준으로 진입 봉 **이후**인가 (T345 결함 ② · 순수).
+
+    Args:
+        confirm: 진입 TF 의 마지막 마감봉.
+        opened_at: 매매가 열린 시각(체결 봉 시작).
+        frame: 진입 TF.
+
+    Returns:
+        확인 봉의 시작이 진입 시각이 속한 진입 TF 봉의 시작 이후면 True.
+        봉이나 시각이 없으면 False.
+
+    Note:
+        마감 진입은 확인 봉 = 돌파봉 자신이라 늘 True 다(예전과 같다). 조기 진입은 돌파봉이
+        아직 안 닫혀 마지막 마감봉이 돌파 **앞** 봉이다 — 그 몸통으로 손절을 판정하면
+        진입 전 가격으로 나간다.
+    """
+    if confirm is None or opened_at is None:
+        return False
+    span = interval(frame)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    return confirm.ts >= epoch + ((opened_at - epoch) // span) * span
+
+
 @dataclass(slots=True)
 class Session:
     """걸어가기 한 판.
@@ -2295,6 +2341,14 @@ class Session:
         #      `planned_stop` 이 아니라 **실제 종가**로 적는다 — 계획가로 적으면
         #      원장이 손실을 축소해 말한다 (관측 규약 §1-0s).
         confirm = self._confirm_bar()
+        # 🔴 T345 결함 ②(2026-10-02) — 조기 진입은 진입 TF 봉이 닫히기 전에 든다.
+        #    그때 "마지막 마감봉" 은 돌파 **앞** 봉이라 몸통이 손절선(부분 봉 저가) 아래에
+        #    있기 마련이고, 가격이 손절에 닿지도 않았는데 손절로 나갔다
+        #    (조기 63건 중 59건 · 합 -193%p). 진입 전 봉으로는 손절을 확인하지 않는다.
+        if held.trade_id in self.early_ids and not confirm_after_entry(
+            confirm, held.opened_at, self._book_of(held).timeframe
+        ):
+            confirm = None
         body = None if confirm is None else (confirm.open + confirm.close) / Decimal(2)
         hit_stop = body is not None and (
             body < held.planned_stop if long else body > held.planned_stop
@@ -4222,19 +4276,12 @@ class Session:
         books = [b for b in self.playbooks if b.early_entry is not None]
         if not books:
             return None
-        # 🔴 커서 = 마지막으로 닫힌 걸음 봉의 시작 시각. 벽시계 "지금" 은 커서 + 걸음(러너 · 재현
-        #    주입이 같은 규약 · `t279_parity._inject_refs`). :30 선언을 커서 분으로 맞추면 영원히
-        #    안 걸린다(T345 1차 탐침 · 2026-10-02).
-        now = self.cursor + interval(self.step_frame)
         found: tuple[Proposal, ...] = ()
         ctx = self.context()
         override = self._regime_override()
+        now: datetime | None = None
         for frame in sorted({b.timeframe for b in books}, key=lambda f: f.value):
-            start = self._frame_start(now, frame)
-            minutes = int((now - start).total_seconds() // 60)
             mine = [b for b in books if b.timeframe is frame and b.early_entry is not None]
-            if not any(b.early_entry is not None and b.early_entry.minute == minutes for b in mine):
-                continue
             # 부분 봉 재료 = 진입 TF 보다 잘고 봉인된 축 중 가장 잔 것(방아쇠 축 · 없으면 걸음 축).
             finer = [
                 f
@@ -4244,7 +4291,19 @@ class Session:
             if not finer:
                 continue
             source = min(finer, key=interval)
-            sub = [c for c in self.feed.judged(source) if c.ts >= start]
+            rows_src = list(self.feed.judged(source))
+            # 🔴 "지금" = 재료 축의 마지막 마감 봉이 끝난 시각(T345 결함 ① · 2026-10-02).
+            #    예전엔 커서 + 걸음이었는데 커서가 이미 그 봉의 끝이라 한 걸음 일렀다 —
+            #    :30 선언이 :15 에 15분짜리 부분 봉으로 샀다(DOGE 2022-07-20 탐침 ·
+            #    커서 07:15 · 마지막 15분봉 07:00). 봉에서 재면 규약과 무관하다.
+            now = early_clock(rows_src, source)
+            if now is None:
+                continue
+            start = self._frame_start(now, frame)
+            minutes = int((now - start).total_seconds() // 60)
+            if not any(b.early_entry is not None and b.early_entry.minute == minutes for b in mine):
+                continue
+            sub = [c for c in rows_src if c.ts >= start]
             if not sub:
                 continue
             partial = Candle(
@@ -4272,7 +4331,7 @@ class Session:
                     registry=self.registry,
                 )
             )
-        if not found:
+        if not found or now is None:
             return None
         early_shot = Snapshot(
             at=now,
