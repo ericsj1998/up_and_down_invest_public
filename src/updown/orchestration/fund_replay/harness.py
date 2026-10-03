@@ -317,7 +317,14 @@ class FundReplay:
                         rec.closed(at=rec.placed_at, price=rec.entry, outcome=Outcome.CANCELLED)
                     )
                     if rec.outcome is Outcome.OPEN:
-                        board.session.release()
+                        # 실계좌 `_skip_unfillable` 과 같다 — 몫 모드면 그 몫만 놓는다.
+                        #   통째로 놓으면 몫이 여럿일 때 T320 오류로 멈췄다(2026-10-03).
+                        if any(
+                            getattr(b, "share_same_side", False) for b in board.session.playbooks
+                        ):
+                            board.session.release(leg=rec.playbook)
+                        else:
+                            board.session.release()
                     self._note(t, board, "unfillable", tid, f"budget {led.sizing_base:.2f}")
                     continue
                 board.contracts[tid] = n
