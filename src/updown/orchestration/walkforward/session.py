@@ -362,6 +362,29 @@ def early_clock(rows: Sequence[Candle], frame: Timeframe) -> datetime | None:
     return rows[-1].ts + interval(frame)
 
 
+def signal_bar(rows: Sequence[Candle], tick: Candle, frame: Timeframe) -> Candle:
+    """체결 봉 시각까지 닫힌 진입 TF 의 마지막 봉 — 크기 기울이기의 돌파봉 (T336 · 순수).
+
+    Args:
+        rows: 진입 TF 의 판정 봉들(오래된 것 → 최신).
+        tick: 체결 봉(라이브는 걸음 축 5분봉).
+        frame: 진입 TF.
+
+    Returns:
+        `tick.ts` 이전에 시작해 한 봉 길이 안에 있는 진입 TF 마지막 봉. 없으면 `tick`.
+
+    Note:
+        라이브 1H 마감 진입은 체결 봉이 그 시간의 :50 · :55 5분봉이라 같은 시간의 1H 봉
+        (:00 시작)을 고른다. 조기 진입처럼 진입 TF 봉이 아직 안 닫혔으면 마지막 닫힌 봉이
+        한 봉 넘게 앞이라 `tick` 을 돌려준다.
+    """
+    span = interval(frame)
+    for row in reversed(rows):
+        if row.ts <= tick.ts:
+            return row if tick.ts - row.ts < span else tick
+    return tick
+
+
 def confirm_after_entry(
     confirm: Candle | None, opened_at: datetime | None, frame: Timeframe
 ) -> bool:
@@ -1769,6 +1792,21 @@ class Session:
         marked = bar.close > high
         self._count("new_high:on" if marked else "new_high:off")
         return rule.on if marked else rule.off
+
+    def _signal_bar(self, book: Playbook, tick: Candle) -> Candle:
+        """크기 기울이기가 볼 돌파봉 — 진입 TF 의 방금 닫힌 봉(T336 · `signal_bar`).
+
+        Args:
+            book: 후보를 낸 매매법(`timeframe` = 진입 TF).
+            tick: 체결 봉(방아쇠 · 걸음 축).
+
+        Returns:
+            진입 TF 봉. 그 축이 급전에 없거나 한 봉 넘게 지났으면 `tick` 그대로(예전과 같다).
+        """
+        frame = book.timeframe
+        if frame not in self.feed.timeframes or tick.timeframe is frame:
+            return tick
+        return signal_bar(self.feed.judged(frame), tick, frame)
 
     def _depth_mult(self, book: Playbook, bar: Candle) -> Decimal:
         """돌파 깊이 크기 기울이기(T307 · 468차) — 얕은 돌파 `down` 배 · 깊은 돌파 `up` 배.
@@ -4580,10 +4618,16 @@ class Session:
         # ⭐ 탐지기가 낸 크기 승수 (T81). 기본 1 — 지정가 경로와 같은 규칙이다.
         #    T15(411차) — 매매법이 제곱을 선언했으면 기울기에 건다(`size_mult_power`).
         exposure *= tilted(setup.size_mult, chosen.playbook)
+        # 🔴 T336(2026-10-03) — 기울이기는 **진입 TF 의 돌파봉**으로 잰다. 체결 봉(`bar`)은
+        #    라이브에서 걸음 축(5분)이라, 깊이를 5분 BB · ATR 로 재 91% 가 "얕음 x0.8" 이 됐고
+        #    (1H 와 단계 일치 37%) 전고점은 돌파한 그 시간의 앞 45분 고가까지 넣어 1H 기준
+        #    "위" 179건 중 41건만 x1.88 이었다(핵심 6 · 2022 ~ · `logs/t279/depth_tf_mismatch.py`
+        #    · `nh_tf_mismatch.py`). 재현 · 연구는 체결 봉이 1H 라 그대로다.
+        sig = self._signal_bar(chosen.playbook, bar)
         # ⭐ 446 · 447차 — 전고점 크기 기울이기(선언이 있을 때만 · 없으면 1).
-        exposure *= self._new_high_mult(chosen.playbook, bar)
+        exposure *= self._new_high_mult(chosen.playbook, sig)
         # ⭐ T307 · 468차 — 돌파 깊이 크기 기울이기(선언이 있을 때만 · 없으면 1 · 1.5제곱 안 탄다).
-        exposure *= self._depth_mult(chosen.playbook, bar)
+        exposure *= self._depth_mult(chosen.playbook, sig)
         # ⭐ T291 — 다리 배율이 선언돼 있으면 그 다리의 노출로 바꾼다(없으면 그대로).
         exposure = self._leg_scaled(exposure, owner)
         # ⭐ T304 — 변동성 목표 크기. 다리 노출 뒤 · 펀드 문 앞(연구 `size_fn` 과 같은 순서).
