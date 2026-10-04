@@ -44,6 +44,7 @@ from updown.analysis.playbook.types import (
     RefSmaDown,
     RefSurgeCap,
     RefVolPct,
+    SmaTilt,
     VolTarget,
 )
 from updown.common.domain.evidence import Family, Grade
@@ -520,6 +521,42 @@ def depth_tilt(raw: object, name: str) -> DepthTilt:
         raise PlaybookConfigError(f"{name}.depth_tilt — {exc}") from exc
 
 
+def sma_tilts(raw: object, name: str) -> tuple[SmaTilt, ...]:
+    """상위 봉 이평 띠 크기 목록 (T359).
+
+    예: `[{timeframe: 1d, period: 20, low: "3.994", high: "9.249", mult: "0.75"}, …]`.
+
+    Args:
+        raw: 선언 값(목록).
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언 튜플(적힌 순서 · 배수는 세션이 곱한다).
+
+    Raises:
+        PlaybookConfigError: 목록이 아니거나 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    if not isinstance(raw, list):
+        raise PlaybookConfigError(f"{name}.sma_tilts 는 목록이다: {raw!r}")
+    out: list[SmaTilt] = []
+    for k, item in enumerate(cast("list[object]", raw)):
+        body = _mapping(item, f"{name}.sma_tilts[{k}]")
+        try:
+            out.append(
+                SmaTilt(
+                    timeframe=Timeframe(str(body["timeframe"])),
+                    period=int(body["period"]),
+                    mult=Decimal(str(body["mult"])),
+                    back=int(body.get("back", 0)),
+                    low=None if body.get("low") is None else Decimal(str(body["low"])),
+                    high=None if body.get("high") is None else Decimal(str(body["high"])),
+                )
+            )
+        except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+            raise PlaybookConfigError(f"{name}.sma_tilts[{k}] — {exc}") from exc
+    return tuple(out)
+
+
 def new_high_tilt(raw: object, name: str) -> NewHighTilt:
     """전고점 크기 기울이기 한 줄 — `{days: 120, on: "1.88", off: "0.94"}` (446 · 447차).
 
@@ -826,6 +863,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         None
                         if body.get("depth_tilt") is None
                         else depth_tilt(body["depth_tilt"], f"playbooks.{name}")
+                    ),
+                    sma_tilts=(
+                        ()
+                        if body.get("sma_tilts") is None
+                        else sma_tilts(body["sma_tilts"], f"playbooks.{name}")
                     ),
                     entry_limit=(
                         None

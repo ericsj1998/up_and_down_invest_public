@@ -552,6 +552,74 @@ class NewHighTilt:
 
 
 @dataclass(frozen=True, slots=True)
+class SmaTilt:
+    """상위 봉 이평 띠 크기 — 닫힌 `timeframe` 봉의 SMA 거리 · 기울기가 띠 안이면 `mult` 배 (T359).
+
+    혼합 3.1 의 손잡이 넷을 한 자료형으로 적는다(연구 `fakebreak.features` 와 같은 식 ·
+    판 861 · 874 ~ 876):
+
+    - Q4 = 1D SMA20 거리 [+3.994, +9.249)% 돌파 x0.75
+    - S2Z = 1D SMA50 5봉 기울기 [-1.946, -0.629)% 돌파 건너뜀
+    - T = 4H SMA20 거리 >= +0.66% 삼각 숏 건너뜀
+    - M = 4H SMA20 거리 >= -3.66% MACD 숏 x0.5
+
+    Attributes:
+        timeframe: 이평을 잴 봉 — 신호봉이 닫힌 순간까지 **닫힌** 봉만 쓴다(상위 TF 문 규약).
+        period: SMA 기간.
+        back: 0 이면 거리 = 마지막 종가 ÷ SMA - 1 · 양수면 기울기 = SMA ÷ `back` 봉 전 SMA - 1(%).
+        low: 띠 아래 끝(포함 · %) · None 이면 아래 끝 없음.
+        high: 띠 위 끝(제외 · %) · None 이면 위 끝 없음.
+        mult: 띠 안일 때 크기 배수. 0 이면 그 진입을 건너뛴다(한 건만 — 정지가 아니다).
+
+    Raises:
+        ValueError: 기간 · 배수 · 띠가 말이 안 되는 경우.
+
+    Note:
+        값을 모르면(봉 부족) 배수 1 — 연구에서 값이 없는 줄(NaN)을 그대로 둔 것과 같다.
+    """
+
+    timeframe: Timeframe
+    period: int
+    mult: Decimal
+    back: int = 0
+    low: Decimal | None = None
+    high: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        """값이 띠 기울이기로서 말이 되는지."""
+        if self.period < 2 or self.back < 0:
+            raise ValueError(f"SMA 기간 ≥ 2 · 기울기 봉 ≥ 0: {self.period} · {self.back}")
+        if self.mult < 0:
+            raise ValueError(f"배수는 0 이상이다(0 = 건너뜀): {self.mult}")
+        if self.low is None and self.high is None:
+            raise ValueError("띠 끝이 하나는 있어야 한다(low · high)")
+        if self.low is not None and self.high is not None and not self.low < self.high:
+            raise ValueError(f"띠는 low < high: {self.low} · {self.high}")
+
+    def value(self, closes: list[Decimal]) -> Decimal | None:
+        """닫힌 봉 종가(오래된 것 → 최근) → 거리 · 기울기(%) · 모자라면 None."""
+        need = self.period + self.back
+        if len(closes) < need:
+            return None
+        sma_now = sum(closes[-self.period :], Decimal(0)) / self.period
+        if sma_now <= 0:
+            return None
+        if self.back == 0:
+            return (closes[-1] / sma_now - 1) * 100
+        tail = closes[-need : len(closes) - self.back]
+        sma_then = sum(tail, Decimal(0)) / self.period
+        if sma_then <= 0:
+            return None
+        return (sma_now / sma_then - 1) * 100
+
+    def holds(self, value: Decimal) -> bool:
+        """값이 띠 [low, high) 안인가."""
+        if self.low is not None and value < self.low:
+            return False
+        return not (self.high is not None and value >= self.high)
+
+
+@dataclass(frozen=True, slots=True)
 class DepthTilt:
     """돌파 깊이 크기 기울이기 — 깊이 삼분위로 얕은 쪽 `down` 배 · 깊은 쪽 `up` 배 (T307 · 468차).
 
@@ -1104,6 +1172,10 @@ class Playbook:
     """돌파 깊이 크기 기울이기(T307 · 468차) — 시장가 진입의 노출에 곱한다.
 
     ⛔ None 이면 동결이다 (§5.6.2)."""
+    sma_tilts: tuple[SmaTilt, ...] = ()
+    """상위 봉 이평 띠 크기(T359 · 혼합 3.1 Q4 · S2Z · T · M) — 진입 노출에 곱한다 · 0 = 건너뜀.
+
+    ⛔ 비어 있으면 동결이다 (§5.6.2)."""
     entry_limit: EntryLimit | None = None
     """다리의 신규 진입 수 상한(452차) — 펀드 문이 센다.
 

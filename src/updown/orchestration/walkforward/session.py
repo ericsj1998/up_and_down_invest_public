@@ -1847,6 +1847,42 @@ class Session:
             self._count("depth:down" if mult < 1 else ("depth:up" if mult > 1 else "depth:mid"))
         return mult
 
+    def _sma_tilt_mult(self, book: Playbook, bar: Candle) -> Decimal:
+        """상위 봉 이평 띠 크기(T359 · 혼합 3.1 Q4 · S2Z · T · M) — 띠 안인 선언의 배수를 곱한다.
+
+        Args:
+            book: 후보를 낸 매매법.
+            bar: 신호봉(진입 TF 의 방금 닫힌 봉 · `_signal_bar`).
+
+        Returns:
+            노출 배수(0 이면 이 진입을 건너뛴다). 선언이 없으면 1(동결 · §5.6.2).
+
+        Note:
+            신호봉이 닫힌 순간까지 **닫힌** 상위 봉만 쓴다(봉 끝 ≤ 신호봉 끝) — 연구(`sma_band` ·
+            `sma_slope_band` · `tri_sma_tilt`)가 `ends ≤ i` 로 자른 것과 같다. 모르면(봉 부족 ·
+            축 없음) 그 선언은 1 배. 깔때기에 `sma_tilt:<번호>:in · out · unknown` 을 센다.
+        """
+        if not book.sma_tilts:
+            return Decimal(1)
+        end = bar.ts + frame_span(bar.timeframe)
+        mult = Decimal(1)
+        for k, rule in enumerate(book.sma_tilts):
+            if rule.timeframe not in self.feed.timeframes:
+                self._count(f"sma_tilt:{k}:unknown")
+                continue
+            span = frame_span(rule.timeframe)
+            closes = [c.close for c in self.feed.judged(rule.timeframe) if c.ts + span <= end]
+            value = rule.value(closes)
+            if value is None:
+                self._count(f"sma_tilt:{k}:unknown")
+                continue
+            if rule.holds(value):
+                self._count(f"sma_tilt:{k}:in")
+                mult *= rule.mult
+            else:
+                self._count(f"sma_tilt:{k}:out")
+        return mult
+
     def _may_enter(self, *, idle: bool, tripped: bool) -> bool:
         """**신규 진입을 받아도 되는가** — 스위치를 한 자리에 모은다.
 
