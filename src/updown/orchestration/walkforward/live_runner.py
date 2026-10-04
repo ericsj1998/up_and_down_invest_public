@@ -190,6 +190,42 @@ PREVIEW_WINDOW_CAP_S = 1800
 평시 CPU 의 약 10%p 를 먹어 크레딧을 바닥냈다(2026-09-30 20:17 리더 락 상실).
 """
 
+PRICE_CATCHUP_TRIES = 6
+PRICE_CATCHUP_WAIT_S = 0.5
+"""판정 걸음에서 가격 축(5m)이 판정 축 마감보다 뒤처졌을 때 TTL 을 무시하고
+다시 받는 횟수 · 사이 간격(초) (T372).
+
+최대 약 2.5초 기다린다 — 거래소가 방금 닫힌 봉을 내기까지의 틈이다. 판정을 미루면 다음 걸음이
+판정 축 한 칸 뒤(1H 판이면 1시간 뒤)라 진입이 그만큼 늦는다 — 그래서 미루지 않고 잠깐 기다린다.
+"""
+
+ENTRY_FILL_SANITY_PCT = Decimal(3)
+"""시장가 진입 평단이 원장 진입가와 이만큼(%) 넘게 다르면 원장 진입가를 고치지 않는다 (T372).
+
+슬리피지는 보통 0.3% 안이다 — 그보다 훨씬 크면 응답 해석이 틀렸을 수 있어
+지어내지 않고 경고만 남긴다(규칙 #8).
+"""
+
+
+def closed_rows(rows: Sequence[Candle], frame: Timeframe, now: datetime) -> list[Candle]:
+    """REST 로 받은 봉 중 **조회 시각까지 닫힌 것만** (순수 · T372 · 2026-10-04).
+
+    Args:
+        rows: 거래소가 준 봉(시각 오름차순 · 마지막이 진행 중일 수도 아닐 수도 있다).
+        frame: 그 봉의 시간축.
+        now: 조회를 보낸 시각(UTC) — 그 전에 닫힌 봉만 확정값이다.
+
+    Returns:
+        `봉 시작 + 간격 <= now` 인 봉.
+
+    Note:
+        🔴 예전 `rows[:-1]` 은 "마지막 = 진행 중" 이라 가정했다. 마감 직후 거래소가 새 봉을 아직
+        안 열었으면 마지막이 **방금 닫힌 봉**이라 그것을 버렸고, 1H 마감 걸음의 진입가 · 시각이
+        5분 낡은 봉으로 적혔다. 웹소켓(`ws.py`)과 `forming()` 이 이미 쓰는 같은 기준으로 맞춘다.
+    """
+    span = timedelta(seconds=interval_seconds(frame))
+    return [row for row in rows if row.ts + span <= now]
+
 
 def near_close(seconds: int, now_epoch: float) -> bool:
     """이 축의 다음 마감이 예비 신호 창 안에 있나 (순수 · T331).
@@ -3402,6 +3438,69 @@ class LiveRunner:
             f"다른 시점에서 나온다 (2026-08-18 에 4건이 그렇게 나갔다)"
         )
 
+    def _price_frame_lags(self) -> bool:
+        """가격 축(5m) 마지막 봉의 마감이 판정 축 마지막 봉의 마감보다 이른가 (T372).
+
+        Returns:
+            이르면 True. 두 축 중 하나가 비었거나 가격 축이 곧 판정 축이면 False.
+
+        Note:
+            `price_drift` 는 판정 축 한 칸까지 봐준다(두 축 마감이 정확히 안 겹치는 것을 정상으로) —
+            그 너그러움 때문에 1H 마감 걸음이 5분 낡은 가격 봉으로 판정됐다. 여기는 **판정 축 마감을
+            가격 축이 덮었는가**만 묻는다(덮지 못했으면 다시 받을 이유가 있다).
+        """
+        if self.price_frame is self.entry:
+            return False
+        price_rows = self._feed.observed(self.price_frame)
+        judge_rows = self._feed.observed(self.entry)
+        if not price_rows or not judge_rows:
+            return False
+        price_closed = price_rows[-1].ts + timedelta(seconds=interval_seconds(self.price_frame))
+        judge_closed = judge_rows[-1].ts + timedelta(seconds=interval_seconds(self.entry))
+        return price_closed < judge_closed
+
+    async def _catch_up_price_frame(
+        self, tries: int = PRICE_CATCHUP_TRIES, wait: float = PRICE_CATCHUP_WAIT_S
+    ) -> None:
+        """판정 걸음에서 가격 축이 판정 축 마감을 못 덮었으면 TTL 을 무시하고 다시 받는다 (T372).
+
+        Args:
+            tries: 최대 조회 횟수.
+            wait: 두 번째 조회부터 사이에 기다리는 초.
+
+        Note:
+            🔴 **왜**: `refresh` 는 TTL(간격의 1/10 = 30초) 로 막히고 `_keep_fresh` 가 1초마다
+            그 TTL 을 새로 걸어, HH:00 판정 걸음에서 가격 축이 대개 HH:59:3x 에 받은 그대로였다 —
+            그때 :55 봉은 진행 중이라 빠져 마지막이 :50 봉이었다. 실계좌 돌파 롱 14건 중 11건의
+            원장 진입 시각이 :50 · 진입가가 그 봉 종가로 적혔다(주문은 HH:00:04 ~ 21 에 정상으로
+            나갔다 · `scripts/ops/probe_entry_orders.sh` · 2026-10-04).
+
+            ⛔ 판정은 미루지 않는다 — 다 해도 못 따라잡으면 경고만 남기고 기존 `price_drift`
+            가드에 맡긴다. 미루면 다음 걸음이 판정 축 한 칸 뒤라 진입이 그만큼 늦는다.
+        """
+        for attempt in range(tries):
+            if not self._price_frame_lags():
+                return
+            if attempt:
+                await asyncio.sleep(wait)
+            try:
+                await self.refresh(self.price_frame, force=True)
+            except Exception as exc:  # 조회 실패는 기존 가드(price_drift)가 다룬다
+                self._log.warning("live_price_catchup_failed", payload={"error": str(exc)[:140]})
+                return
+        if self._price_frame_lags():
+            self._log.warning(
+                "live_price_frame_stale",
+                payload={
+                    "frame": self.price_frame.value,
+                    "tries": tries,
+                    "note": (
+                        "가격 축이 판정 축 마감을 못 덮었다 — 진입가가 앞 봉 값일 수 있다"
+                        "(price_drift 가드 그대로)"
+                    ),
+                },
+            )
+
     async def _one_step(self) -> None:
         """봉 하나를 판정하고 주문까지 낸다 — **한 번에 하나만 돈다**.
 
@@ -3737,6 +3836,9 @@ class LiveRunner:
                 },
             )
         await self.refresh(self.price_frame)
+        # 🔴 T372 — 판정 축이 막 닫혔는데 가격 축 마지막 봉이 그보다 이르면(대개 5분 낡은 :50 봉)
+        #    TTL 을 무시하고 잠깐 다시 받는다. 안 그러면 진입가 · 진입 시각이 그 낡은 봉으로 적힌다.
+        await self._catch_up_price_frame()
         # 🔴 **채웠는데도 뒤처져 있으면 판정하지 않는다** (T15-3). 위 `refresh` 가 조용히
         #    실패했을 수 있고, 그 상태로 판정하면 계획과 진입가가 다른 시점에서 나온다.
         #
@@ -4051,11 +4153,13 @@ class LiveRunner:
                 self._refreshed.pop(frame, None)
                 self._refresh_state.pop(frame, None)
 
-    async def refresh(self, frame: Timeframe) -> int:
+    async def refresh(self, frame: Timeframe, *, force: bool = False) -> int:
         """**보고 있는 축**을 거래소에서 새로 받아 채운다.
 
         Args:
             frame: 갱신할 시간축.
+            force: TTL 을 무시하고 지금 받는다 — 판정 걸음에서 가격 축이 판정 축보다 뒤처졌을 때만
+                (T372 · `_catch_up_price_frame`).
 
         Returns:
             새로 들어간 봉 수. 이미 최신이면 0.
@@ -4091,8 +4195,8 @@ class LiveRunner:
                 self.instrument, frame, now - span * SEED_BARS, now
             )
             self._refreshed[frame] = time.monotonic()
-            # ⛔ 마지막은 진행 중이다 — 버린다(시드와 같다).
-            return self._feed.add_frame(frame, rows[:-1] if rows else rows)
+            # ⛔ 진행 중 봉은 버린다(시드와 같다) — 시각으로 가린다(T372 · `closed_rows`).
+            return self._feed.add_frame(frame, closed_rows(rows, frame, now))
         # 🔴 **그 축의 간격보다 자주 조회하지 않는다.** 화면은 `/state` 를 700ms 마다
         #    치는데, 그때마다 거래소에 물으면 10초봉 하나를 보는 동안 초당 한 번씩
         #    REST 를 때린다 — 새 봉은 10초에 하나뿐인데 14번은 헛걸음이고, 그러다
@@ -4116,7 +4220,7 @@ class LiveRunner:
         ttl = max(1.0, seconds / 10)
         now_mono = time.monotonic()
         last = self._refreshed.get(frame)
-        if last is not None and now_mono - last < ttl:
+        if not force and last is not None and now_mono - last < ttl:
             return 0
         # 🔴 **이미 받은 봉을 다시 받지 않는다** (2026-08-29 요율 제한 사고).
         #
@@ -4139,8 +4243,11 @@ class LiveRunner:
         rows = await self._quotes.get_candles(self.instrument, frame, now - span * bars, now)
         if not rows:
             return 0
-        # ⛔ 마지막은 **진행 중**이다 — 버린다.
-        closed = rows[:-1]
+        # ⛔ **진행 중 봉은 버린다 — 시각으로 가린다**(T372 · 2026-10-04).
+        #    예전에는 `rows[:-1]` 로 마지막 봉을 무조건 버렸다. 마감 직후 거래소가 새 봉을 아직
+        #    안 열었으면 마지막 봉이 **방금 닫힌 봉**인데 그것까지 버려, 1H 마감 걸음의 진입가 ·
+        #    진입 시각이 5분 낡은 :50 봉으로 원장에 적혔다(실계좌 돌파 롱 14건 중 11건).
+        closed = closed_rows(rows, frame, now)
         if not closed:
             return 0
         return self._feed.backfill(frame, closed)
@@ -7543,6 +7650,38 @@ class LiveRunner:
             # ⭐ 몫의 계약 수(T320 P1) — 노출을 못 세도 체결 수량은 사실이라 먼저 적는다.
             live = dc_replace(live, contracts=int(qty))
             self._session.ledger.replace(live)
+            # 🔴 T372 — 원장 진입가를 **거래소 평단**으로 맞춘다(청산가 보정
+            #    `live_exit_price_corrected` 와 대칭 · 거래소가 진실). 예전에는 평단을 배율 · 계약
+            #    수에만 쓰고 원장 진입가는 판정 봉 종가로 남아, 원장 손익이 "낡은 진입가 + 실제
+            #    청산가" 로 섞였다.
+            #    ⛔ 평단이 없거나 너무 멀면(응답 해석이 틀렸을 수 있다) 지어내지 않는다(규칙 #8).
+            avg = entry.average_price
+            if avg and avg > 0 and live.entry > 0 and avg != live.entry:
+                gap = abs(avg / live.entry - 1) * 100
+                if gap <= ENTRY_FILL_SANITY_PCT:
+                    self._log.info(
+                        "live_entry_price_corrected",
+                        payload={
+                            "trade_id": record.trade_id,
+                            "from": str(live.entry),
+                            "to": str(avg),
+                            "gap_pct": f"{gap:.3f}",
+                            "note": "판정 봉 종가 → 거래소 평단 (청산가 보정과 대칭)",
+                        },
+                    )
+                    live = dc_replace(live, entry=avg)
+                    self._session.ledger.replace(live)
+                else:
+                    self._log.warning(
+                        "live_entry_fill_far",
+                        payload={
+                            "trade_id": record.trade_id,
+                            "entry": str(live.entry),
+                            "average_price": str(avg),
+                            "gap_pct": f"{gap:.3f}",
+                            "note": "평단이 원장 진입가와 너무 멀다 — 고치지 않는다(규칙 #8)",
+                        },
+                    )
         if base <= 0 or qty <= 0 or price <= 0 or multiplier <= 0:
             self._log.warning(
                 "live_filled_exposure_unknown",
@@ -8237,8 +8376,9 @@ async def build_live_feed(
     for frame in frames:
         span = timedelta(seconds=interval_seconds(frame))
         rows = await quotes.get_candles(instrument, frame, now - span * bars, now)
-        # ⛔ 마지막 봉을 버린다 — 진행 중일 수 있고, 미마감 값이 확정으로 남으면 안 된다.
-        seed[frame] = rows[:-1] if rows else rows
+        # ⛔ 진행 중 봉을 버린다 — 미마감 값이 확정으로 남으면 안 된다. 시각으로 가린다(T372):
+        #    마지막 봉이 이미 닫힌 봉이면(거래소가 새 봉을 아직 안 열었다) 그것은 남긴다.
+        seed[frame] = closed_rows(rows, frame, now)
     # ⭐ T313 — 판정 창 = 시드 길이(연구 · 재현의 800봉 창과 같다) · 급전이 안 자란다
     return LiveFeed(cast("dict[Timeframe, Sequence[object]]", seed), entry, window=bars)  # type: ignore[arg-type]
 

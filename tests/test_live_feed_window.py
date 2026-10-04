@@ -153,7 +153,10 @@ class TestRunnerViewFrames:
         stub = _runner(frozenset({Timeframe.M5, Timeframe.H1, Timeframe.H4, Timeframe.D1}))
         stub._watched[Timeframe.M1] = time.monotonic()
         added = asyncio.run(LiveRunner.refresh(stub, Timeframe.M1))
-        assert added == 4 and Timeframe.M1 in stub._feed.timeframes  # 마지막(진행 중)은 버림
+        # T372 — 진행 중 봉은 **시각으로** 가린다(`closed_rows`). 이 가짜 봉 다섯은 전부
+        #   과거라 모두 닫힌 봉이다(예전 `rows[:-1]` 은 마지막을 무조건 버려 4 였다 —
+        #   방금 닫힌 봉까지 버리던 결함).
+        assert added == 5 and Timeframe.M1 in stub._feed.timeframes
         stub._watched[Timeframe.M1] = time.monotonic() - WATCH_TTL - 1
         LiveRunner._drop_unwatched(stub)  # pyright: ignore[reportPrivateUsage]
         assert Timeframe.M1 not in stub._feed.timeframes and stub.forgot == [Timeframe.M1]
