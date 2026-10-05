@@ -15,7 +15,7 @@ export type SignalLineSpec = {
   role: "upper" | "lower";
   /** 두 점 — 시각은 초(UTC). */
   points: { time: number; value: number }[];
-  token: string;
+  colorVar: string;
   fallback: string;
   /** 열린 매매는 굵게(2) · 닫힌 매매는 얇게(1). */
   width: 1 | 2;
@@ -23,9 +23,9 @@ export type SignalLineSpec = {
   dashed: boolean;
 };
 
-const COLORS: Record<SignalGeometry["kind"], { token: string; fallback: string }> = {
-  channel: { token: "--signal-channel", fallback: "#3b6fd6" },
-  triangle: { token: "--signal-triangle", fallback: "#8e44ad" },
+const COLORS: Record<SignalGeometry["kind"], { colorVar: string; fallback: string }> = {
+  channel: { colorVar: "--signal-channel", fallback: "#3b6fd6" },
+  triangle: { colorVar: "--signal-triangle", fallback: "#8e44ad" },
 };
 
 function seconds(ts: string): number {
@@ -75,7 +75,7 @@ export function signalLineSpecs(
           { time: s, value: at(s) },
           { time: e, value: at(e) },
         ],
-        token: COLORS[item.kind].token,
+        colorVar: COLORS[item.kind].colorVar,
         fallback: COLORS[item.kind].fallback,
         width: item.open ? 2 : 1,
         dashed: !item.matched,

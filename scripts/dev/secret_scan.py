@@ -69,6 +69,9 @@ ALLOW = (
     # URL 경로는 시크릿이 아니다 — `TOKEN_… = "/admin/toss/warm"` 이 걸렸다
     # (2026-09-11 · 옛 커밋에 남음)
     "/admin/toss/",
+    # CSS 변수 이름은 시크릿이 아니다 — 차트 색 `token: "--signal-channel"` 이 걸렸다
+    # (2026-10-05 T378 · 칸 이름은 `colorVar` 로 바꿨지만 옛 커밋 7374b024 에 남음)
+    "--signal-",
 )
 _IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_]*$")  # 값이 아니라 변수 이름 (`KEY=NVIDIA_API_KEY`)
 

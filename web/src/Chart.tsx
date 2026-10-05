@@ -932,7 +932,7 @@ export function Chart({
     );
     for (const spec of specs) {
       const drawn = made.addSeries(LineSeries, {
-        color: tone(spec.token, spec.fallback),
+        color: tone(spec.colorVar, spec.fallback),
         lineWidth: spec.width,
         lineStyle: spec.dashed ? LineStyle.Dashed : LineStyle.Solid,
         priceLineVisible: false,
