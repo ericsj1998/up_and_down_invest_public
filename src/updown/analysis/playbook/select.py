@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import fields
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -31,6 +32,7 @@ from updown.analysis.playbook.types import (
     ConflictAction,
     ConflictRule,
     ConflictSide,
+    DateWindows,
     DepthTilt,
     DrawdownBrake,
     EarlyEntry,
@@ -557,6 +559,50 @@ def sma_tilts(raw: object, name: str) -> tuple[SmaTilt, ...]:
     return tuple(out)
 
 
+def size_windows(raw: object, name: str) -> DateWindows:
+    """날짜 창 크기 (T389 · G2).
+
+    예: `{mult: "0.5", evaluated_through: 2026-09-30, windows: [[2026-04-01, 2026-04-28], …]}`.
+
+    Args:
+        raw: 선언 값(사전).
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 날짜 · 값이 말이 안 되는 경우.
+    """
+    body = _mapping(raw, f"{name}.size_windows")
+    try:
+        spans: object = body["windows"]
+        if not isinstance(spans, list):
+            raise TypeError(f"windows 는 목록이다: {spans!r}")
+        windows: list[tuple[date, date]] = []
+        for item in cast("list[object]", spans):
+            if not isinstance(item, list) or len(cast("list[object]", item)) != 2:
+                raise TypeError(f"창은 [첫날, 끝날] 이다: {item!r}")
+            pair = cast("list[object]", item)
+            windows.append((_day(pair[0]), _day(pair[1])))
+        return DateWindows(
+            mult=Decimal(str(body["mult"])),
+            windows=tuple(windows),
+            evaluated_through=_day(body["evaluated_through"]),
+        )
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.size_windows — {exc}") from exc
+
+
+def _day(raw: object) -> date:
+    """YAML 날짜(이미 `date` 이거나 ISO 문자열) → `date`."""
+    if isinstance(raw, datetime):
+        raise TypeError(f"날짜만 받는다(시각 없음): {raw!r}")
+    if isinstance(raw, date):
+        return raw
+    return date.fromisoformat(str(raw))
+
+
 def new_high_tilt(raw: object, name: str) -> NewHighTilt:
     """전고점 크기 기울이기 한 줄 — `{days: 120, on: "1.88", off: "0.94"}` (446 · 447차).
 
@@ -869,6 +915,12 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         if body.get("sma_tilts") is None
                         else sma_tilts(body["sma_tilts"], f"playbooks.{name}")
                     ),
+                    size_windows=(
+                        None
+                        if body.get("size_windows") is None
+                        else size_windows(body["size_windows"], f"playbooks.{name}")
+                    ),
+                    fresh_close_hours=_positive_int(body, "fresh_close_hours", f"playbooks.{name}"),
                     entry_limit=(
                         None
                         if body.get("entry_limit") is None

@@ -1883,6 +1883,63 @@ class Session:
                 self._count(f"sma_tilt:{k}:out")
         return mult
 
+    def _window_mult(self, book: Playbook, bar: Candle) -> Decimal:
+        """날짜 창 크기(T389 · G2) — 신호봉 마감 날짜(UTC)가 창 안이면 `mult` 배.
+
+        Args:
+            book: 후보를 낸 매매법.
+            bar: 신호봉(`_signal_bar`).
+
+        Returns:
+            노출 배수. 선언이 없으면 1(동결 · §5.6.2).
+
+        Note:
+            재현(`t370_fund_replay --g2`)이 `bar.ts + 봉 길이` 의 날짜로 본 것과 같다. 표가 낡았으면
+            (`DateWindows.stale`) 1 배로 두고 `size_windows:stale` 을 센다 — 깔때기에 남아 매달
+            새로 쓰는 일을 잊으면 화면에 보인다.
+        """
+        rule = book.size_windows
+        if rule is None:
+            return Decimal(1)
+        day = (bar.ts + frame_span(bar.timeframe)).date()
+        if rule.stale(day):
+            self._count("size_windows:stale")
+            if self.funnel["size_windows:stale"] == 1:
+                _logger.warning(
+                    "size_windows_stale",
+                    payload={
+                        "playbook_id": book.playbook_id,
+                        "evaluated_through": rule.evaluated_through.isoformat(),
+                        "day": day.isoformat(),
+                    },
+                )
+            return Decimal(1)
+        if rule.holds(day):
+            self._count("size_windows:in")
+            return rule.mult
+        return Decimal(1)
+
+    def _fresh_close(self, book: Playbook) -> bool:
+        """신호 TF 봉이 닫힌 뒤 `fresh_close_hours` 안의 걸음인가(T389 · 일봉 신호 A).
+
+        Args:
+            book: 후보를 낸 매매법(`timeframe` = 신호 TF).
+
+        Returns:
+            들어도 되면 참. 선언이 없으면 늘 참(동결 · §5.6.2).
+
+        Note:
+            커서(= 마지막 마감 봉의 다음 시작) - 신호 TF 봉 경계 < N 시간. 일봉이면 UTC 00:00 뒤
+            첫 N 시간이다 — 재현(`t370_fund_replay --dchA`)이 1H 걸음에서 커서 00:00 만 들인 것과
+            같은 뜻이고, 라이브 5분 걸음은 00:00 ~ 00:55 커서가 든다.
+        """
+        hours = book.fresh_close_hours
+        if hours is None:
+            return True
+        span = int(frame_span(book.timeframe).total_seconds())
+        now = int(self.cursor.timestamp())
+        return now - (now // span) * span < hours * 3600
+
     def _may_enter(self, *, idle: bool, tripped: bool) -> bool:
         """**신규 진입을 받아도 되는가** — 스위치를 한 자리에 모은다.
 
@@ -4664,6 +4721,17 @@ class Session:
         exposure *= self._new_high_mult(chosen.playbook, sig)
         # ⭐ T307 · 468차 — 돌파 깊이 크기 기울이기(선언이 있을 때만 · 없으면 1 · 1.5제곱 안 탄다).
         exposure *= self._depth_mult(chosen.playbook, sig)
+        # ⭐ T389 — 혼합 3.1 이평 띠(Q4 · S2Z · T · M · 0 이면 건너뜀) · G2 날짜 창 · 일봉 신호 A.
+        #    재현(`t359_fund_replay_m31` · `t370_fund_replay`)이 깊이 배수 자리에 곱하고 변동성
+        #    크기에서 건너뛴 것과 같은 자리다(그 사이 다리 노출은 곱셈뿐이라 순서가 안 바뀐다).
+        tilt = self._sma_tilt_mult(chosen.playbook, sig)
+        if tilt <= 0:
+            self._count("gate:sma_tilt")
+            return None
+        exposure *= tilt * self._window_mult(chosen.playbook, sig)
+        if not self._fresh_close(chosen.playbook):
+            self._count("gate:fresh_close")
+            return None
         # ⭐ T291 — 다리 배율이 선언돼 있으면 그 다리의 노출로 바꾼다(없으면 그대로).
         exposure = self._leg_scaled(exposure, owner)
         # ⭐ T304 — 변동성 목표 크기. 다리 노출 뒤 · 펀드 문 앞(연구 `size_fn` 과 같은 순서).

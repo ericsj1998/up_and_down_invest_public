@@ -29,6 +29,7 @@ order_block + UPTREND    →  눌림목 매매
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
@@ -620,6 +621,50 @@ class SmaTilt:
 
 
 @dataclass(frozen=True, slots=True)
+class DateWindows:
+    """날짜 창 크기 — 신호봉 마감 날짜(UTC)가 창 안이면 `mult` 배 (T389 · T368 G2).
+
+    G2 = BTC 월봉 저항 거부(`analysis.context.month_reject`) 달이 닫힌 다음 날부터 28일 돌파 롱
+    x0.5. 월봉은 과거 수년이 있어야 판정되므로 라이브 급전(800봉)에서 다시 재지 않고, 만든 창을
+    선언에 적는다(`scripts/research/t389_reject_windows.py` · 매달 새로 쓴다).
+
+    Attributes:
+        mult: 창 안일 때 크기 배수.
+        windows: (첫날, 끝날) 목록 — 양 끝 포함.
+        evaluated_through: 판정에 넣은 마지막 닫힌 달의 끝날.
+
+    Raises:
+        ValueError: 배수가 음수이거나 창의 끝이 첫날보다 앞인 경우.
+
+    Note:
+        `evaluated_through` 다음 달이 끝난 뒤의 날짜는 **표가 낡았다**(새 달이 판정되지 않았다) —
+        세션이 `size_windows:stale` 을 세고 경고를 남긴다. 창 밖으로 치므로 크기는 1 배다.
+    """
+
+    mult: Decimal
+    windows: tuple[tuple[date, date], ...]
+    evaluated_through: date
+
+    def __post_init__(self) -> None:
+        """값이 날짜 창으로서 말이 되는지."""
+        if self.mult < 0:
+            raise ValueError(f"배수는 0 이상이다: {self.mult}")
+        for first, last in self.windows:
+            if last < first:
+                raise ValueError(f"창 끝이 첫날보다 앞이다: {first} · {last}")
+
+    def holds(self, day: date) -> bool:
+        """그 날짜가 창 안인가."""
+        return any(first <= day <= last for first, last in self.windows)
+
+    def stale(self, day: date) -> bool:
+        """그 날짜를 판정하기엔 표가 낡았나 — `evaluated_through` 다음 달 끝을 넘었다."""
+        nxt = self.evaluated_through + timedelta(days=1)
+        after = date(nxt.year + nxt.month // 12, nxt.month % 12 + 1, 1)
+        return day >= after
+
+
+@dataclass(frozen=True, slots=True)
 class DepthTilt:
     """돌파 깊이 크기 기울이기 — 깊이 삼분위로 얕은 쪽 `down` 배 · 깊은 쪽 `up` 배 (T307 · 468차).
 
@@ -1176,6 +1221,16 @@ class Playbook:
     """상위 봉 이평 띠 크기(T359 · 혼합 3.1 Q4 · S2Z · T · M) — 진입 노출에 곱한다 · 0 = 건너뜀.
 
     ⛔ 비어 있으면 동결이다 (§5.6.2)."""
+    size_windows: DateWindows | None = None
+    """날짜 창 크기(T389 · G2) — 신호봉 마감 날짜가 창 안이면 진입 노출에 곱한다.
+
+    ⛔ None 이면 동결이다 (§5.6.2)."""
+    fresh_close_hours: int | None = None
+    """신호 TF 봉이 닫힌 뒤 이 시간 안의 걸음에서만 든다(T389 · 일봉 신호 A · T370).
+
+    늦은 걸음에서 같은 신호로 드는 것(자리가 늦게 빈 경우 등)을 건너뛴다.
+
+    ⛔ None 이면 동결이다 (§5.6.2)."""
     entry_limit: EntryLimit | None = None
     """다리의 신규 진입 수 상한(452차) — 펀드 문이 센다.
 
