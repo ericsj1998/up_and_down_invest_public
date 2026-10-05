@@ -9,7 +9,7 @@
  * 내려가 다음 폴링이 전부 건너뛰어지고, 화면은 **조용히 얼어붙는다.** 실제로 겪었다.
  */
 
-import type { Frame, Plan } from "./chartTypes";
+import type { Frame, Plan, SignalGeometry } from "./chartTypes";
 
 const BASE = "/api";
 
@@ -1040,6 +1040,8 @@ export type State = {
   log: Trade[];
   /** 요청한 시간축 하나만 온다 — 다섯을 다 그리면 응답마다 작도가 다섯 벌 돈다. */
   frames: Frame[];
+  /** T378 — 일봉 채널 · 삼각수렴 매매의 신호 때 탐지기가 본 선(열린 매매 전부 + 최근 닫힌 6건). */
+  signal_geometry?: SignalGeometry[];
   /**
    * **플레이북이 지금 도는가, 안 돌면 무엇 때문인가.**
    *

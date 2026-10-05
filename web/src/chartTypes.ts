@@ -56,6 +56,29 @@ export type Frame = {
   layers: Layer[];
 };
 
+/**
+ * **신호 때 탐지기가 본 선** (T378 · 2026-10-05) — 일봉 채널 · 삼각수렴 매매의 채널선 · 두 변.
+ *
+ * 🔴 화면의 '채널' 레이어(종가 회귀 · 최신 봉까지 다시 그림)와 **다른 것**이다. 이쪽은 진입한 그 봉에서
+ * 탐지기가 판정에 쓴 선 그대로라, 사후에 다시 그려지지 않는다. `matched` 가 거짓이면 다시 잰 사건이
+ * 신호와 다르다(창 앞머리 차이) — 화면이 점선으로 그 사실을 말한다.
+ */
+export type SignalGeometry = {
+  trade_id: string;
+  playbook: string;
+  kind: "channel" | "triangle";
+  /** 탐지기 판정 축(`1d` · `4h`). */
+  frame: string;
+  /** 신호봉 시작 시각. */
+  signal_ts: string;
+  lines: { role: "upper" | "lower"; t1: string; p1: number; t2: string; p2: number }[];
+  /** 삼각 스윙(`H` · `L`) · 일봉 채널 돌파 문턱(`trigger`). */
+  points: { t: string; p: number; kind: string }[];
+  note: string;
+  matched: boolean;
+  open: boolean;
+};
+
 /** 지금 들고 있는 포지션의 계획값 — 차트가 선으로 그린다. */
 export type Plan = {
   entry?: string;

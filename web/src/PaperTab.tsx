@@ -17,6 +17,7 @@ import { openPct } from "./chart/tradeBoxes";
 import { addLabel, closedPct } from "./tradeAdd";
 import { splitPosition } from "./shares";
 import { IndicatorPanel } from "./chart/IndicatorPanel";
+import { signalNote } from "./chart/signalGeometry";
 import { readStance } from "./adx";
 import { useForming } from "./useForming";
 import { pick, useStream } from "./useStream";
@@ -1030,7 +1031,16 @@ export function PaperTab({ run, home, named }: Props) {
             // ⭐ 끝난 매매를 상자로 — 점만으로는 "어디서 어디까지" 가 안 보인다 (2026-09-21).
             trades={pastTrades}
             focusTradeId={focusTrade}
+            // ⭐ T378 — 일봉 채널 · 삼각수렴 매매는 신호 때 탐지기가 본 선을 그대로 긋는다.
+            geometry={state?.signal_geometry}
           />
+          {state?.signal_geometry && state.signal_geometry.length > 0 ? (
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 12, opacity: 0.8 }}>
+              {state.signal_geometry.map((g) => (
+                <li key={`${g.trade_id}:${g.kind}`}>{signalNote(g)}</li>
+              ))}
+            </ul>
+          ) : null}
           {/* ⭐ 지표(이평 · 볼린저) 설정 — 모든 차트가 같은 설정을 본다 (사용자 요구 2026-09-06). */}
           <div style={{ marginTop: 8 }}>
             <IndicatorPanel compact />

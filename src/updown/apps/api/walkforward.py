@@ -104,6 +104,7 @@ from updown.orchestration.inspection.overlays import (
     adx_overlay,
     ma_layer,
 )
+from updown.orchestration.inspection.signal_geometry import signal_geometry
 from updown.orchestration.inspection.snapshot import FrameView, Layer, build_frame, project
 from updown.orchestration.inspection.snapshot import Snapshot as ChartSnapshot
 from updown.orchestration.leftovers import sweep as sweep_leftovers
@@ -6030,6 +6031,10 @@ def _state(key: str, at: datetime | None = None, only: Timeframe | None = None) 
             "detections": session.detections,
         },
         "log": [_record(item) for item in reversed(book.records)],
+        # ⭐ T378(2026-10-05 사용자 "화면에 탐지기가 신호 때 본 선을 그대로") —
+        #    일봉 채널 · 삼각수렴 매매의 신호봉에서 탐지기가 본 선. 차트 캐시(봉 열쇠)와
+        #    섞지 않는다 — 매매마다 한 번 재고 바뀌지 않는다.
+        "signal_geometry": signal_geometry(session, book.records),
     }
 
 

@@ -50,8 +50,9 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import type { Candle, Frame, Plan } from "./chartTypes";
+import type { Candle, Frame, Plan, SignalGeometry } from "./chartTypes";
 import { planLinesOf } from "./chart/planLines";
+import { signalLineSpecs } from "./chart/signalGeometry";
 import {
   type Gate,
   gateText,
@@ -324,6 +325,12 @@ type Props = {
   trades?: TradeMark[];
   /** 상자를 진하게 칠하고 테두리를 두를 매매 하나 (표에서 고른 것). */
   focusTradeId?: string | null;
+  /**
+   * **신호 때 탐지기가 본 선** (T378 · 2026-10-05) — 일봉 채널 · 삼각수렴 매매의 채널선 · 두 변.
+   * 서버가 탐지기의 같은 함수로 잰 끝점을 그대로 긋는다(`chart/signalGeometry.ts`). 화면의 '채널' 레이어와
+   * 다르다 — 그쪽은 최신 봉까지 다시 그려 돌파봉까지 감싼다.
+   */
+  geometry?: SignalGeometry[];
 };
 
 /** 상자를 칠할 지난 매매의 최대 개수 — 라이브 판은 보통 한 자리다. 넘으면 최근 것부터. */
@@ -355,6 +362,7 @@ export function Chart({
   segments,
   trades,
   focusTradeId,
+  geometry,
 }: Props) {
   const holder = useRef<HTMLDivElement | null>(null);
   const chart = useRef<IChartApi | null>(null);
@@ -708,6 +716,8 @@ export function Chart({
   const extraLines = useRef<IPriceLine[]>([]);
   /** 추세선 시리즈들 — 선 하나가 시리즈 하나다 (LWC 에 "선분" 개념이 없다). */
   const segLines = useRef<ISeriesApi<"Line">[]>([]);
+  /** 신호 때 탐지기가 본 선 시리즈들 (T378). */
+  const geoLines = useRef<ISeriesApi<"Line">[]>([]);
 
   useEffect(() => {
     const box = holder.current;
@@ -900,6 +910,45 @@ export function Chart({
       segLines.current = [];
     };
   }, [segments, frame.candles]);
+
+  // ── 신호 때 탐지기가 본 선 (T378) ───────────────────────────────────
+  //
+  // 🔴 **다시 계산하지 않는다.** 서버가 탐지기의 같은 함수로 잰 끝점을 시간 축에 올리기만 한다 —
+  //    판정 축(1d · 4h)보다 긴 봉의 차트에는 안 그리고, 차트 봉 범위로 자른다(`signalLineSpecs`).
+  useEffect(() => {
+    const made = chart.current;
+    if (made === null) return;
+    for (const line of geoLines.current) made.removeSeries(line);
+    geoLines.current = [];
+    const head = frame.candles[0];
+    const tail = frame.candles[frame.candles.length - 1];
+    if (!geometry || geometry.length === 0 || head === undefined || tail === undefined) return;
+    const specs = signalLineSpecs(
+      geometry,
+      frame.timeframe,
+      stamp(head.ts),
+      stamp(tail.ts),
+      frameSeconds,
+    );
+    for (const spec of specs) {
+      const drawn = made.addSeries(LineSeries, {
+        color: tone(spec.token, spec.fallback),
+        lineWidth: spec.width,
+        lineStyle: spec.dashed ? LineStyle.Dashed : LineStyle.Solid,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      drawn.setData(
+        spec.points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
+      );
+      geoLines.current.push(drawn);
+    }
+    return () => {
+      for (const line of geoLines.current) made.removeSeries(line);
+      geoLines.current = [];
+    };
+  }, [geometry, frame.candles, frame.timeframe]);
 
   // ── 계획선 ──────────────────────────────────────────────────────────
   useEffect(() => {
