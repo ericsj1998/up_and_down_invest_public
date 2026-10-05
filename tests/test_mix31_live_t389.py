@@ -70,12 +70,11 @@ class TestLiveDeclaration:
         )
         assert books["private_strategy"].sma_tilts == ()
 
-    def test_g2_and_daily_a(self) -> None:
+    def test_no_g2_and_daily_a(self) -> None:
         books = _books()
-        windows = books["private_strategy"].size_windows
-        assert windows is not None and windows.mult == Decimal("0.5")
-        assert (date(2026, 4, 1), date(2026, 4, 28)) in windows.windows
-        assert all((last - first).days == 27 for first, last in windows.windows)
+        # G2 는 2026-10-05 밤 뺐다(사용자) — 실계좌 다리 어디에도 날짜 창 선언이 없다
+        for leg in LEGS:
+            assert books[leg].size_windows is None, leg
         assert books["private_strategy"].fresh_close_hours == 1
         for leg in set(LEGS) - {"private_strategy"}:
             assert books[leg].fresh_close_hours is None, leg
