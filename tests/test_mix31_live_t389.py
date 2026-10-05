@@ -2,7 +2,7 @@
 
 🔴 못 박는 것:
   - 실계좌 묶음 다리 값이 T376 AG70(K07) 재현과 같다 — 노출 · 브레이크 7% · 돌파 폭 상한 7.2 ·
-    legs_revision 3
+    legs_revision 4
   - 이평 띠 선언이 재현 래퍼(`t359_fund_replay_m31.TILTS`)와 같다
   - G2 창: 월봉 저항 거부 판정이 연구(`t368_weekly_monthly.level_events`)와 같은 규칙 ·
     다음 날부터 28일
@@ -27,12 +27,12 @@ from updown.common.domain.instrument import MarketGroup, Timeframe
 from updown.orchestration.walkforward import Session
 
 LEGS = {
-    "private_strategy": "2.8",
-    "private_strategy": "1.05",
-    "private_strategy": "1.575",
-    "private_strategy": "1.3125",
-    "private_strategy": "0.525",
-    "private_strategy": "0.2625",
+    "private_strategy": "4.0",
+    "private_strategy": "1.5",
+    "private_strategy": "2.25",
+    "private_strategy": "1.875",
+    "private_strategy": "0.75",
+    "private_strategy": "0.375",
 }
 
 
@@ -48,12 +48,12 @@ class TestLiveDeclaration:
             assert books[leg].version == "0.1.0", f"{leg} 귀속 키 버전은 그대로"
         for leg in set(LEGS) - {"private_strategy"}:
             brake = books[leg].drawdown_brake
-            assert brake is not None and brake.at == Decimal("0.07"), leg
+            assert brake is not None and brake.at == Decimal("0.10"), leg
         breakout = books["private_strategy"]
         assert breakout.drawdown_brake is not None
         assert breakout.drawdown_brake.scale == Decimal("0.25")
         assert breakout.breadth_cap is not None and breakout.breadth_cap.cap == Decimal("7.2")
-        assert books["private_strategy"].legs_revision == 3
+        assert books["private_strategy"].legs_revision == 4
 
     def test_tilts_match_replay_wrapper(self) -> None:
         books = _books()
