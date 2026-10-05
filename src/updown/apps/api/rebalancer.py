@@ -76,7 +76,11 @@ from updown.orchestration.rebalancer.anchor import (
     initial_state,
     manual_flow,
 )
-from updown.orchestration.rebalancer.coordinator import TickReport
+from updown.orchestration.rebalancer.coordinator import (
+    TickReport,
+    brake_key,
+    restored_brake_key,
+)
 from updown.orchestration.rebalancer.legs import (
     FundLeg,
     LegError,
@@ -194,6 +198,37 @@ RANK_WINDOW_DAYS = 60
 """rank60 모멘텀 창(일). 창 길이는 측정으로 정한다 — 값은 매매법 쪽 문서에."""
 
 
+def _ensure_brake_key(coordinator: Coordinator, fund_id: str, key: str, why: str) -> None:
+    """브레이크 원장의 매매법 열쇠를 맞춘다 — 다르면 로그를 먼저 남기고 새 브레이크를 연다 (T387).
+
+    Args:
+        coordinator: 펀드 조정자.
+        fund_id: 로그용 펀드 id.
+        key: 지금 매매법 열쇠(`brake_key`).
+        why: 로그용 사유(`restore` · `switch`).
+
+    Note:
+        사용자 결정(2026-10-05): 새 매매법(또는 다리 개정)은 옛 매매법의 고점 · 낙폭을
+        물려받지 않는다.
+        실제 잔고(펀드 원장)는 그대로다. 열쇠가 같으면 아무것도 안 바꾼다(재기동은 이어간다).
+    """
+    if coordinator.core_key == key:
+        return
+    old = coordinator.core
+    _events.warning(
+        "fund_brake_reset",
+        payload={
+            "fund_id": fund_id,
+            "why": why,
+            "from": coordinator.core_key,
+            "to": key,
+            "old_drawdown_pct": None if old is None else str(old.drawdown_pct),
+            "note": "새 매매법 · 다리 개정 → 브레이크 원장을 지금 잔고에서 고점 1.0 으로 다시 연다",
+        },
+    )
+    coordinator.reset_brake(key)
+
+
 def _attach_gate(
     coordinator: Coordinator,
     slots: int,
@@ -295,16 +330,18 @@ def _wire_gate(
         🔴 낙폭은 **조정자 장부에서 매번 읽는다**(람다) — 값을 복사해 두면 틱마다 갱신되는 낙폭이
         문에 반영되지 않아 브레이크가 첫 값에 얼어붙는다.
     """
-    ledger = coordinator.engine.ledger
     if legs:
         # ⭐ T291 — 다리마다 자기 문(배선은 `orchestration.rebalancer.wiring` · T309 ① 에서 꺼냄 —
         #    펀드 재현 도구가 같은 배선을 쓴다).
-        # ⭐ 420차 — 브레이크에서 뺀 다리가 있으면 본 다리 원장을 열고(없으면 닫고) 그 낙폭을 준다.
+        # ⭐ 420차 · T387 — 브레이크 원장(자기 매매 실현만 · 뺀 다리 몫 제외)을 열고 그 낙폭을 준다.
         coordinator.isolate(isolated_attributions(legs))
         wire_legs(coordinator.ports, legs, coordinator.brake_drawdown)
         return
     if slots <= 0 and halt_after_stops <= 0 and brake is None:
         return
+    if brake is not None:
+        # ⭐ T387 — 문 하나 펀드도 브레이크는 자기 매매 실현 원장을 본다(계좌 앵커 교정 몫 제외).
+        coordinator.isolate(frozenset())
     ports = cast(dict[str, PositionPort], coordinator.ports)
     gate = SlotGate(
         ports=ports,
@@ -313,7 +350,7 @@ def _wire_gate(
         notional_cap=notional_cap,
         notional_fit=notional_fit,
         min_grant=(Decimal(0) if leverage is None else leverage / Decimal(4)),
-        drawdown=(None if brake is None else lambda: ledger.drawdown_pct / Decimal(100)),
+        drawdown=(None if brake is None else coordinator.brake_drawdown),
         brake_at=(Decimal(0) if brake is None else brake.at),
         brake_scale=(Decimal(1) if brake is None else brake.scale),
         breadth_min=(0 if breadth is None else breadth.min),
@@ -696,8 +733,9 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
             "members": [{"symbol": m.symbol, "weight": str(m.weight)} for m in basket.members],
         },
         "twr": fund.coordinator.engine.ledger.to_dict(),
-        # ⭐ 420차 — 본 다리 원장(브레이크에서 뺀 다리가 있을 때만) · 그 증분 mark
+        # ⭐ 420차 · T387 — 브레이크 원장(자기 매매 실현만) · 매매법 열쇠 · 뺀 다리 증분 mark
         "core_twr": None if fund.coordinator.core is None else fund.coordinator.core.to_dict(),
+        "core_key": fund.coordinator.core_key,
         "leg_marks": {sym: str(mark) for sym, mark in fund.coordinator.leg_marks.items()},
         # 판 → 펀드 매핑 (2026-09-04). 지금까지 메모리(`handles`)에만 있어 리포트(스케줄러
         # 프로세스)가 판을 펀드로 못 묶었다 — 파일에 남겨 어느 프로세스든 읽게 한다.
@@ -1084,7 +1122,16 @@ async def _restore_one(data: dict[str, Any]) -> None:
         leg_marks={
             sym: Decimal(str(saved_leg_marks[sym])) for sym in marks if sym in saved_leg_marks
         },
+        core_key=restored_brake_key(
+            data.get("core_key"), playbook, int(data.get("legs_revision", 0) or 0)
+        ),
     )
+    # ⭐ T387 — 다리를 선언에서 다시 읽어 개정 번호가 올랐으면(= 새 매매법) 새 브레이크로 연다.
+    #    문을 끼우기 **전에** — 옛 고점으로 줄인 진입이 한 번이라도 나가지 않게.
+    if coordinator.core is not None or legs:
+        _ensure_brake_key(
+            coordinator, str(data["fund_id"]), brake_key(playbook, legs_revision), "restore"
+        )
     _attach_gate(
         coordinator,
         slots,
@@ -1326,7 +1373,12 @@ async def _create_fund(
         raise
 
     engine = RebalanceEngine(basket=basket, ledger=TwrLedger(equity=total_cash), slots=slots)
-    coordinator = Coordinator(engine=engine, ports=dict(ports))  # type: ignore[arg-type]
+    coordinator = Coordinator(
+        engine=engine,
+        ports=dict(ports),  # type: ignore[arg-type]
+        # ⭐ T387 — 새 펀드의 브레이크 원장 열쇠(되살릴 때 매매법 · 다리 개정이 바뀌었는지 가린다)
+        core_key=brake_key(playbook, _declared_legs_revision(playbook) if legs else 0),
+    )
     _attach_gate(
         coordinator,
         slots,
@@ -2839,10 +2891,14 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
     fund.coordinator.ports = new_ports  # type: ignore[assignment]
     # 새 세션의 원장은 0 부터 — 옛 정산 mark 를 물려주면 증분이 틀린다 (T285)
     fund.coordinator.marks = {}
-    fund.coordinator.leg_marks = {}  # 420차 — 뺀 다리 증분도 같다(본 다리 원장은 이어간다)
+    fund.coordinator.leg_marks = {}  # 420차 — 뺀 다리 증분도 같다
     fund.playbook = new_pb
     fund.legs = new_legs
     fund.legs_revision = _declared_legs_revision(new_pb) if new_legs else 0
+    # ⭐ T387 — 새 매매법은 새 브레이크(옛 고점 · 낙폭을 안 물려받는다 · 실제 잔고는 그대로).
+    _ensure_brake_key(
+        fund.coordinator, fund.fund_id, brake_key(new_pb, fund.legs_revision), "switch"
+    )
     _reattach_gate(fund)  # 갈아 끼운 세션에도
     await _tick(fund)
 

@@ -51,6 +51,37 @@ class SessionPort(Protocol):
         ...
 
 
+def brake_key(playbook: str, legs_revision: int) -> str:
+    """브레이크 원장의 매매법 열쇠 — 매매법 id 와 다리 개정 번호 (T387).
+
+    Args:
+        playbook: 펀드가 도는 매매법(묶음) id.
+        legs_revision: 펀드 다리의 개정 번호(`Fund.legs_revision` · 다리 값을 선언에서
+            다시 읽으면 오른다).
+
+    Returns:
+        `"{playbook}#{legs_revision}"` — 둘 중 하나라도 바뀌면 다른 매매법으로 보고 새
+        브레이크를 연다.
+    """
+    return f"{playbook}#{legs_revision}"
+
+
+def restored_brake_key(saved_key: object, playbook: str, saved_revision: int) -> str:
+    """저장본이 기억하는 브레이크 열쇠 — 옛 저장본(열쇠 없음)은 저장된 매매법 · 개정 번호로 (T387).
+
+    Args:
+        saved_key: 펀드 파일의 `core_key`(없거나 빈 값이면 옛 저장본).
+        playbook: 저장된 매매법 id.
+        saved_revision: **되살리며 다리를 다시 읽기 전**의 저장된 개정 번호.
+
+    Returns:
+        저장 당시의 열쇠 — 되살린 뒤의 열쇠(`brake_key`)와 다르면 새 브레이크를 연다.
+    """
+    if isinstance(saved_key, str) and saved_key:
+        return saved_key
+    return brake_key(playbook, saved_revision)
+
+
 @dataclass(frozen=True, slots=True)
 class TickReport:
     """한 주기 리밸런싱 결과 (감사·표시용).
@@ -91,13 +122,20 @@ class Coordinator:
     pending: Decimal = Decimal(0)
     """정리된 세션(`release`)이 남긴 미정산 증분 — 다음 틱이 흡수한다."""
     core: TwrLedger | None = None
-    """**본 다리 원장** (418 · 419 · 420차).
+    """**브레이크 원장** (본 다리 원장 · 418 · 419 · 420차 → T387).
 
-    브레이크에서 뺀 다리(`excluded`)의 실현 손익을 뺀 잔고의 TWR 이다.
+    이 펀드 세션들의 **실현 손익만**으로 걷는 TWR 이다 — 브레이크에서 뺀 다리(`excluded`)의 실현은
+    빼고, 거래소 계좌 앵커의 교정 몫(같은 계좌의 수동 매매 · 장부에 없는 차이)도 안 넣는다.
+    입출금은 흐름이라 성과가 아니다(TWR).
 
-    있으면 낙폭 브레이크 · 낙폭 멈춤이 이 원장의 낙폭을 본다(`brake_drawdown`). 옆 다리 손실이
-    펀드 낙폭을 키워 본 다리(돌파 롱 x0.5 · MACD 숏 x0.25)를 깎던 통로를 끊는다 — 실제 잔고 ·
-    예산은 그대로 펀드 원장(`engine.ledger`)이 든다. None 이면 지금까지와 같다(펀드 원장 낙폭)."""
+    있으면 낙폭 브레이크 · 낙폭 멈춤이 이 원장의 낙폭을 본다(`brake_drawdown`). 실제 잔고 · 예산은
+    그대로 펀드 원장(`engine.ledger` · 앵커 = 계좌 총액)이 든다. None 이면 펀드 원장 낙폭
+    (첫 문 끼우기 전)."""
+    core_key: str = ""
+    """브레이크 원장의 **매매법 열쇠**(`brake_key` = 매매법 id # 다리 개정 번호 · T387).
+
+    매매법이나 다리 선언이 바뀌면 열쇠가 달라지고 새 브레이크(`reset_brake`)로 시작한다 —
+    옛 매매법의 고점을 새 매매법이 물려받지 않는다. 펀드 파일에 저장된다."""
     excluded: frozenset[str] = frozenset()
     """브레이크에서 뺀 다리의 귀속 키들 — `isolate` 가 다리 선언(`drawdown_isolated`)에서 채운다."""
     leg_marks: dict[str, Decimal] = field(default_factory=dict[str, Decimal])
@@ -106,22 +144,23 @@ class Coordinator:
     """정리된 세션이 남긴 뺀 다리의 미정산 증분."""
 
     def isolate(self, excluded: frozenset[str]) -> None:
-        """브레이크에서 뺄 다리를 정한다 — 처음이면 본 다리 원장을 펀드 원장에서 복제해 연다.
+        """브레이크에서 뺄 다리를 정한다 — 처음이면 브레이크 원장을 펀드 원장에서 복제해 연다.
 
         Args:
-            excluded: 뺄 다리의 귀속 키들. 비면 본 다리 원장을 닫는다(펀드 원장 낙폭으로 돌아간다).
+            excluded: 뺄 다리의 귀속 키들. 비어도 브레이크 원장은 남는다(뺄 다리 몫만 0).
 
         Note:
-            복제 시점엔 뺀 다리 손익이 0 이므로 본 다리 고점 = 펀드 고점이다
-            (연구 `brake_excl` 과 같다).
+            복제 시점엔 뺀 다리 손익이 0 이므로 브레이크 고점 = 펀드 고점이다
+            (연구 `brake_excl` 과 같다 · 같은 매매법이 이어지는 동안 고점을 잃지 않는다).
+            🔴 T387 — 뺄 다리가 없어도 원장을 닫지 않는다. 닫으면 브레이크가 펀드 원장(계좌
+            총액 앵커)을 보게 되고, 같은 계좌의 수동 매매 손익이 브레이크에 다시 들어온다.
         """
         self.excluded = excluded
-        if not excluded:
-            self.core = None
-            self.leg_marks = {}
-            return
         if self.core is None:
             self.core = TwrLedger.from_dict(self.engine.ledger.to_dict())
+        if not excluded:
+            self.leg_marks = {}
+            return
         # 이미 정산 mark 가 있는 세션은 뺀 다리 mark 도 지금 잡는다 — 없으면 다음 틱에 펀드
         # 증분엔 뺀 다리 몫이 들어가는데 본 다리 원장에선 안 빠진다(mark 가 짝을 잃는다).
         for sym, port in self.ports.items():
@@ -130,8 +169,29 @@ class Coordinator:
                 if now is not None:
                     self.leg_marks[sym] = now
 
+    def reset_brake(self, key: str) -> None:
+        """새 매매법의 브레이크를 연다 — 지금 잔고에서 고점 1.0 으로 다시 시작한다 (T387).
+
+        Args:
+            key: 새 매매법 열쇠(`brake_key`).
+
+        Note:
+            옛 매매법의 고점 · 낙폭은 새 매매법이 물려받지 않는다(사용자 2026-10-05). 실제 잔고 ·
+            펀드 원장은 그대로다. 정산 mark 가 있는 세션은 뺀 다리 mark 도 지금 값으로 잡는다
+            (`isolate` 와 같은 규칙 — 짝을 잃지 않게).
+        """
+        start = self.engine.balance if self.engine.balance > 0 else Decimal(1)
+        self.core = TwrLedger(equity=start)
+        self.core_key = key
+        self.leg_marks = {}
+        for sym, port in self.ports.items():
+            if sym in self.marks:
+                now = self._isolated_realized(port)
+                if now is not None:
+                    self.leg_marks[sym] = now
+
     def brake_drawdown(self) -> Decimal:
-        """브레이크가 볼 낙폭(0~1) — 본 다리 원장이 있으면 그것, 없으면 펀드 원장."""
+        """브레이크가 볼 낙폭(0~1) — 브레이크 원장이 있으면 그것, 없으면 펀드 원장."""
         ledger = self.core if self.core is not None else self.engine.ledger
         return ledger.drawdown_pct / Decimal(100)
 
@@ -206,17 +266,16 @@ class Coordinator:
                 if leg_mark is not None:
                     leg_pnl += now_x - leg_mark
                 self.leg_marks[sym] = now_x
-        prev = self.engine.balance
         budgets = (
             self.engine.settle(anchor, flow)
             if anchor is not None
             else self.engine.rebalance(pnl, flow)
         )
         if self.core is not None:
-            # 펀드 원장이 이 기간에 움직인 만큼(앵커면 장부 교정 몫까지)에서
-            # 뺀 다리 몫만 빼고 적는다.
-            moved = (anchor if anchor is not None else prev + pnl) - prev
-            self.core.step(self.core.equity + moved - leg_pnl, flow)
+            # 🔴 T387 — 이 펀드 세션들의 실현 증분(`pnl`)에서 뺀 다리 몫만 빼고 적는다. 앵커 교정 몫
+            #    (앵커값 - 장부 · 같은 계좌의 수동 매매 · 장부에 없는 차이)은 펀드 원장(잔고)에만
+            #    들어가고 브레이크 원장엔 안 들어간다. 앵커가 없는 걷기(펀드 재현)는 전과 같다.
+            self.core.step(self.core.equity + pnl - leg_pnl, flow)
         for sym, budget in budgets.items():
             port = self.ports.get(sym)
             if port is not None:

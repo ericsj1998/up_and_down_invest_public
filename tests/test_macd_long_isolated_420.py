@@ -211,7 +211,8 @@ class TestCoreLedger:
         coord.isolate(frozenset())
         ports["BTC_USDT"].earn_iso(Decimal(-100))
         coord.tick()
-        assert coord.core is None
+        # T387 — 뺄 다리가 없어도 브레이크 원장은 남는다(자기 매매 실현을 다 담는다)
+        assert coord.core is not None
         assert coord.brake_drawdown() == Decimal("0.1")
 
     def test_ports_without_realized_of_count_as_zero(self) -> None:
