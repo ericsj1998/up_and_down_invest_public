@@ -180,6 +180,32 @@ class TestLifeFeeIsSplitByTradedNotional:
         assert now_of(run, b).fee_actual == Decimal("0.88") * 570 / 990
         assert now_of(run, a).cost_pct == Decimal("0.88") * 420 / 990 / 200
 
+    def test_a_ledger_label_ahead_of_the_fill_still_matches(self) -> None:
+        """🔴 2026-10-06 실계좌 — 원장 진입은 5분봉 시작 이름표라 거래소 생애 시작보다 10분 앞선다.
+
+        CRV 원장 07:50 · 거래소 first_open_time 08:00:11 — 60초만 봐줘서 다섯 몫이 하나도 안 맞았다.
+        """
+        life = {
+            "first_open_time": str(at(1).timestamp() + 611),
+            "time": str(at(8).timestamp() + 15),
+            "pnl_fee": "-0.88",
+        }
+        run, a, b = fee_board([life])
+        align(run, a)
+        assert now_of(run, a).fee_actual == Decimal("0.88") * 420 / 990
+        assert now_of(run, b).fee_actual == Decimal("0.88") * 570 / 990
+
+    def test_a_life_that_began_long_after_the_share_is_not_its_own(self) -> None:
+        """이름표 여유(15분)를 넘어 한참 뒤에 시작한 생애는 그 몫의 것이 아니다."""
+        life = {
+            "first_open_time": str(at(1).timestamp() + 3600),
+            "time": str(at(8).timestamp()),
+            "pnl_fee": "-0.88",
+        }
+        run, a, _b = fee_board([life])
+        align(run, a)
+        assert now_of(run, a).fee_actual is None
+
     def test_an_unfinished_life_is_left_alone(self) -> None:
         """포지션이 아직 남았다(청산 행 없음) — 모형 비용을 둔다."""
         run, a, _b = fee_board([])

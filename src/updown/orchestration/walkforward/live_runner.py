@@ -256,6 +256,16 @@ FORMING_TTL = 0.7
 같거나 길면 두 번에 한 번씩 같은 값이 와서 화면이 멈춘 것처럼 보인다.
 """
 
+FEE_OPEN_SLACK_S = 900.0
+"""몫 모드 수수료 맞춤에서 원장 진입 시각이 거래소 생애 시작보다 **앞설 수 있는** 폭(초).
+
+🔴 2026-10-06 — 원장 `opened_at` 은 가격 축 5분봉의 **시작 이름표**다(1.34.0 T372 뒤
+판정 봉 마감에 닫히는 5분봉 · 그 전엔 한 봉 더 낡은 봉). 거래소 `first_open_time` 은 실제
+체결(판정 봉 마감 + 몇 초)이라 원장이 5 ~ 10분 앞선다(SAND 03:50 대 04:00:14 · CRV 07:50 대
+08:00:11). 60초만 봐줘서 지금 판들의 닫힌 몫 다섯이 하나도 안 맞고 감사 주기마다(1분) 다시
+물었다. 청산 쪽 여유(+900)와 같은 폭이다.
+"""
+
 PNL_DRIFT = Decimal("0.30")
 """원장과 거래소의 실현 손익 차이 허용치 (T20 ①).
 
@@ -2854,7 +2864,7 @@ class LiveRunner:
                 fee = abs(Decimal(str(row.get("pnl_fee"))))
             except (ValueError, ArithmeticError):
                 continue
-            if first - 60 <= opened <= end and shut <= end + 900:
+            if first - FEE_OPEN_SLACK_S <= opened <= end and shut <= end + 900:
                 life = (first, end, fee)
                 break
         if life is None:
@@ -2868,7 +2878,7 @@ class LiveRunner:
             item
             for item in self._session.ledger.records
             if item.opened_at is not None
-            and first - 60 <= item.opened_at.timestamp() <= end
+            and first - FEE_OPEN_SLACK_S <= item.opened_at.timestamp() <= end
             and (item.closed_at is None or item.closed_at.timestamp() <= end + 900)
             and item.outcome is not Outcome.CANCELLED
         ]
