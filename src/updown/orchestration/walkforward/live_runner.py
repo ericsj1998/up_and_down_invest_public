@@ -3501,6 +3501,82 @@ class LiveRunner:
                 },
             )
 
+    def _stale_decision_frames(self, now: datetime | None = None) -> list[Timeframe]:
+        """판정이 읽는 축 중 **지금 닫혀 있어야 할 마지막 봉이 아직 급전에 없는** 축 (2026-10-06).
+
+        Args:
+            now: 기준 시각(시험용 · 없으면 지금).
+
+        Returns:
+            다시 받아야 할 축들(짧은 축부터). 진입 축(웹소켓) · 가격 축(T372)은 뺀다.
+
+        Note:
+            🔴 **왜**: 진입 축 · 가격 축이 아닌 축은 TTL(간격의 1/10)로만 받는다 —
+            일봉은 2.4시간마다라 판을 띄운 시각에 맞춰 매일 23:48 → 02:12Z 처럼 돌았고,
+            일봉 마감(00:00Z) 뒤 첫 1시간에는 한 번도 안 받았다. 그래서 일봉 신호 A
+            (마감 뒤 첫 1시간만 · `fresh_close_hours`)가 막 닫힌 일봉을 늘 못 봐
+            **일봉 채널 다리가 한 건도 못 들어갔다**(ADA 10-06 00:00Z 신호 놓침 ·
+            `scripts/ops/probe_1d_fetch_times.sh`). 1D 이평 띠(Q4 · S2Z)도 그 사이
+            앞날 종가로 쟀다.
+        """
+        when = now or datetime.now(UTC)
+        sec = int(when.timestamp())
+        out: list[Timeframe] = []
+        for frame in sorted(self._decision, key=interval_seconds):
+            if (
+                frame is self.entry
+                or frame is self.price_frame
+                or frame not in self._feed.timeframes
+            ):
+                continue
+            rows = self._feed.observed(frame)
+            if not rows:
+                continue
+            span = interval_seconds(frame)
+            newest = datetime.fromtimestamp(sec - sec % span - span, UTC)
+            if rows[-1].ts < newest:
+                out.append(frame)
+        return out
+
+    async def _catch_up_decision_frames(
+        self, tries: int = PRICE_CATCHUP_TRIES, wait: float = PRICE_CATCHUP_WAIT_S
+    ) -> None:
+        """판정 걸음에서 판정 축(일봉 · 4H …)이 막 닫힌 봉을 못 받았으면 TTL 을 무시하고 받는다.
+
+        Args:
+            tries: 최대 조회 횟수.
+            wait: 두 번째 조회부터 사이에 기다리는 초.
+
+        Note:
+            `_catch_up_price_frame`(T372)을 판정 축 전부로 넓힌 것(`_stale_decision_frames` 의 왜).
+            ⛔ 판정은 미루지 않는다 — 못 따라잡으면 경고만 남긴다.
+        """
+        for attempt in range(tries):
+            stale = self._stale_decision_frames()
+            if not stale:
+                return
+            if attempt:
+                await asyncio.sleep(wait)
+            for frame in stale:
+                try:
+                    await self.refresh(frame, force=True)
+                except Exception as exc:  # 조회 실패는 다음 걸음 TTL 갱신이 다시 본다
+                    self._log.warning(
+                        "live_decision_catchup_failed",
+                        payload={"frame": frame.value, "error": str(exc)[:140]},
+                    )
+                    return
+        left = self._stale_decision_frames()
+        if left:
+            self._log.warning(
+                "live_decision_frame_stale",
+                payload={
+                    "frames": [frame.value for frame in left],
+                    "tries": tries,
+                    "note": "판정 축이 막 닫힌 봉을 못 받았다 — 이 걸음은 앞 봉으로 판정한다",
+                },
+            )
+
     async def _one_step(self) -> None:
         """봉 하나를 판정하고 주문까지 낸다 — **한 번에 하나만 돈다**.
 
@@ -3839,6 +3915,9 @@ class LiveRunner:
         # 🔴 T372 — 판정 축이 막 닫혔는데 가격 축 마지막 봉이 그보다 이르면(대개 5분 낡은 :50 봉)
         #    TTL 을 무시하고 잠깐 다시 받는다. 안 그러면 진입가 · 진입 시각이 그 낡은 봉으로 적힌다.
         await self._catch_up_price_frame()
+        # 🔴 2026-10-06 — 판정이 읽는 다른 축(일봉 · 4H)도 막 닫힌 봉을 받아 둔다
+        #    (일봉 신호 A 가 늘 막혔다 · `_stale_decision_frames`).
+        await self._catch_up_decision_frames()
         # 🔴 **채웠는데도 뒤처져 있으면 판정하지 않는다** (T15-3). 위 `refresh` 가 조용히
         #    실패했을 수 있고, 그 상태로 판정하면 계획과 진입가가 다른 시점에서 나온다.
         #
@@ -6920,7 +6999,9 @@ class LiveRunner:
         if getattr(self._session, "waiting_trade", None) is not None:
             return  # 우리 지정가가 봉 사이에 채워진 것 — 고아가 아니라 반영 대기다
         now = time.monotonic()
-        if now - float(state.get("_adopt_retry_at", 0.0)) < ADOPT_RETRY_S:
+        last = state.get("_adopt_retry_at")
+        # 첫 번은 바로 묻는다 — 기본값 0 이면 부팅 1시간 안(monotonic < 간격)엔 첫 번도 건너뛰었다.
+        if last is not None and now - float(last) < ADOPT_RETRY_S:
             return
         state["_adopt_retry_at"] = now
         if await self.adopt():
