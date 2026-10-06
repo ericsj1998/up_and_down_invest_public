@@ -906,7 +906,10 @@ export function Chart({
       }
     }
     return () => {
-      for (const line of segLines.current) made.removeSeries(line);
+      // 🔴 지운 차트에서 빼지 않는다(아래 신호 선과 같은 까닭 · 2026-10-06).
+      if (chart.current === made) {
+        for (const line of segLines.current) made.removeSeries(line);
+      }
       segLines.current = [];
     };
   }, [segments, frame.candles]);
@@ -945,7 +948,12 @@ export function Chart({
       geoLines.current.push(drawn);
     }
     return () => {
-      for (const line of geoLines.current) made.removeSeries(line);
+      // 🔴 2026-10-06 — 시간축이 바뀌면 판 짓기 효과의 정리가 **먼저** 돌아 차트를 지운다(`made.remove()`).
+      //    그 뒤 지운 차트에 `removeSeries` 를 부르면 LWC 가 "Value is undefined" 로 터져 화면 전체가 안 그려졌다
+      //    (실계좌 DYDX · SAND 판 — 일봉 채널 선이 있는 판만). 지금 차트일 때만 뺀다.
+      if (chart.current === made) {
+        for (const line of geoLines.current) made.removeSeries(line);
+      }
       geoLines.current = [];
     };
   }, [geometry, frame.candles, frame.timeframe]);
