@@ -48,6 +48,8 @@ class FundLeg:
         entry_cap: 한 건 처음 노출 상한(명목 ÷ 자리 예산 · 452차 C75). None = 없음.
         peer_open_max: (짝 다리 귀속 키, 문턱) — 짝 다리 보유가 문턱 이상이면 새로 안 든다
             (512차 N4). None = 없음.
+        peer_open_boost: (짝 다리 귀속 키들, 문턱, 배수) — 짝 다리들 보유(이 진입 앞서 연 것)가 문턱
+            이상이면 신규 진입 x 배수(T400 · 혼합 3.3). None = 없음.
     """
 
     playbook: str
@@ -67,6 +69,7 @@ class FundLeg:
     entry_limit: EntryLimit | None = None
     entry_cap: Decimal | None = None
     peer_open_max: tuple[str, int] | None = None
+    peer_open_boost: tuple[tuple[str, ...], int, Decimal] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """저장용 딕셔너리 — 돌던 펀드의 다리는 선언이 바뀌어도 안 바뀐다(저장본이 이긴다)."""
@@ -108,6 +111,15 @@ class FundLeg:
                 if self.peer_open_max is None
                 else {"leg": self.peer_open_max[0], "count": self.peer_open_max[1]}
             ),
+            "peer_open_boost": (
+                None
+                if self.peer_open_boost is None
+                else {
+                    "legs": list(self.peer_open_boost[0]),
+                    "min": self.peer_open_boost[1],
+                    "mult": str(self.peer_open_boost[2]),
+                }
+            ),
         }
 
     @classmethod
@@ -127,6 +139,15 @@ class FundLeg:
         raw_limit = data.get("entry_limit")  # 1.23.0 앞 저장본엔 없다 — 없으면 끔
         raw_entry_cap = data.get("entry_cap")
         raw_peer = data.get("peer_open_max")  # T320 앞 저장본엔 없다 — 없으면 끔
+        raw_boost = data.get("peer_open_boost")  # 1.36.0 앞 저장본엔 없다 — 없으면 끔
+        boost: tuple[tuple[str, ...], int, Decimal] | None = None
+        if isinstance(raw_boost, Mapping):
+            body = cast("Mapping[str, Any]", raw_boost)
+            boost = (
+                tuple(str(item) for item in cast("Sequence[object]", body["legs"])),
+                int(body["min"]),
+                Decimal(str(body["mult"])),
+            )
         peer = None
         if isinstance(raw_peer, Mapping):
             body = cast("Mapping[str, Any]", raw_peer)
@@ -163,6 +184,7 @@ class FundLeg:
             entry_limit=limit,
             entry_cap=None if raw_entry_cap in (None, "") else Decimal(str(raw_entry_cap)),
             peer_open_max=peer,
+            peer_open_boost=boost,
         )
 
 
@@ -220,6 +242,19 @@ def declared_legs(
                     f"{name}.entry_peer_open_max.leg {cap.leg!r} — 같은 묶음의 다른 구성원이 아니다"
                 )
             peer = (peer_book.attribution, cap.count)
+        boost: tuple[tuple[str, ...], int, Decimal] | None = None
+        if book.entry_peer_open_boost is not None:
+            spec = book.entry_peer_open_boost
+            attrs: list[str] = []
+            for peer_name in spec.legs:
+                boost_book = by_id.get(peer_name)
+                if boost_book is None or peer_name not in wrapper.bundle or peer_name == name:
+                    raise LegError(
+                        f"{name}.entry_peer_open_boost.legs {peer_name!r} — "
+                        "같은 묶음의 다른 구성원이 아니다"
+                    )
+                attrs.append(boost_book.attribution)
+            boost = (tuple(attrs), spec.min, spec.mult)
         out.append(
             FundLeg(
                 playbook=book.playbook_id,
@@ -239,6 +274,7 @@ def declared_legs(
                 entry_limit=book.entry_limit,
                 entry_cap=book.entry_exposure_cap,
                 peer_open_max=peer,
+                peer_open_boost=boost,
             )
         )
     covered = {symbol for leg in out for symbol in leg.symbols}
@@ -354,6 +390,19 @@ def leg_gate(
             # 짝 다리가 저장본에 없으면(묶음을 바꿔 되살림) 모르는 채 세지 않는다 — 빈 범위로 센다.
             scope: frozenset[str] = frozenset() if peer_leg is None else frozenset(peer_leg.symbols)
             peer_ports = LegPorts(ports, peer_attr, scope)
+        boost_ports: tuple[LegPorts, ...] = ()
+        boost_min, boost_mult = 0, Decimal(1)
+        if leg.peer_open_boost is not None:
+            boost_attrs, boost_min, boost_mult = leg.peer_open_boost
+            # 짝 다리가 저장본에 없으면 빈 범위 — 보유 수는 범위와 무관하게 그 다리 기록을 센다.
+            boost_ports = tuple(
+                LegPorts(
+                    ports,
+                    attr,
+                    frozenset() if by_attr.get(attr) is None else frozenset(by_attr[attr].symbols),
+                )
+                for attr in boost_attrs
+            )
         gates[leg.attribution] = SlotGate(
             ports=LegPorts(ports, leg.attribution, frozenset(leg.symbols)),
             slots=leg.slots,
@@ -372,5 +421,8 @@ def leg_gate(
             entry_cap=leg.entry_cap,
             peer_ports=peer_ports,
             peer_open_max=peer_max,
+            boost_ports=boost_ports,
+            boost_open_min=boost_min,
+            boost_mult=boost_mult,
         )
     return LegGate(gates)

@@ -53,7 +53,7 @@ class TestLiveDeclaration:
         assert breakout.drawdown_brake is not None
         assert breakout.drawdown_brake.scale == Decimal("0.25")
         assert breakout.breadth_cap is not None and breakout.breadth_cap.cap == Decimal("7.2")
-        assert books["private_strategy"].legs_revision == 4
+        assert books["private_strategy"].legs_revision == 5  # 혼합 3.3(T400)
 
     def test_tilts_match_replay_wrapper(self) -> None:
         books = _books()

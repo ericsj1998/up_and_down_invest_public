@@ -100,6 +100,23 @@ class BreadthTimed(Protocol):
         ...
 
 
+@runtime_checkable
+class OpenBefore(Protocol):
+    """**이 시각 앞서** 연 보유 수를 줄 수 있는 포트 (T400 · 혼합 3.3 숏 열림 키우기)."""
+
+    def open_count_before(self, at: datetime) -> int:
+        """`at` 보다 먼저 연(같은 시각 제외) 보유 중 매매 수."""
+        ...
+
+
+def open_before(port: PositionPort, at: datetime) -> int:
+    """`at` 앞서 연 보유 수 — 시각을 못 주는 포트는 0.
+
+    키우기는 리스크 증가라 모르면 안 키운다(#8-1).
+    """
+    return port.open_count_before(at) if isinstance(port, OpenBefore) else 0
+
+
 @dataclass(slots=True)
 class SlotGate:
     """P3 진입 문 — 자리(slot)가 다 찼거나 그날 연속 손절 정지면 막는다.
@@ -186,6 +203,22 @@ class SlotGate:
 
     원장의 기록만 센다(`open_count`) — 별도 카운터가 없어 재시작해도 같다."""
 
+    boost_ports: tuple[Mapping[str, PositionPort], ...] = ()
+    """**짝 다리들의 눈으로 본** 펀드 포트들 (T400 · 혼합 3.3) — `boost_open_min` 이 센다.
+
+    비면 없음."""
+
+    boost_open_min: int = 0
+    """짝 다리들 보유(이 진입 **앞서** 연 것) 합 문턱 — 넘으면 신규 진입 x `boost_mult`(0 = 없음).
+
+    T400 BS15: 돌파 롱 진입 앞서 삼각 숏 · MACD 숏이 하나라도 열려 있으면 x1.5.
+    🔴 같은 시각에 든 짝은 안 센다(`open_count_before`) — 연구 원장은 같은 시각이면 롱을 먼저
+    처리했다(판 963 미래 참조 점검). 브레이크 · 한 건 상한 · 총 명목 여유 **앞에서** 곱한다
+    (연구 원장 순서 — 크기를 정한 뒤 문이 자른다)."""
+
+    boost_mult: Decimal = Decimal(1)
+    """짝 다리 보유 문턱을 넘었을 때 신규 진입에 곱할 배수(1.5). 불타기(`grant_add`)엔 안 건다."""
+
     def blocks(self, at: datetime, exposure: Decimal = Decimal(0)) -> str | None:
         """지금 새 자리를 열면 안 되는 이유 — 없으면 None.
 
@@ -241,7 +274,21 @@ class SlotGate:
             peer_open = sum(port.open_count() for port in self.peer_ports.values())
             if peer_crowded(peer_open, self.peer_open_max):
                 return Grant(Decimal(0), "peer_open")
-        return self._sized(at, exposure, cap=self.entry_cap)
+        boost = self._boost(at) if exposure > 0 else None
+        if boost is None:
+            return self._sized(at, exposure, cap=self.entry_cap)
+        given = self._sized(at, exposure * boost, cap=self.entry_cap)
+        if given.blocked is not None:
+            return given
+        # §1-0s — 키운 것도 장치로 적는다(`gate:fit:boost`) · 브레이크 · 상한이 뒤에서 다시 줄인다.
+        return Grant(given.size, None, "boost" if given.shrunk is None else f"boost+{given.shrunk}")
+
+    def _boost(self, at: datetime) -> Decimal | None:
+        """짝 다리들 보유(`at` 앞서 연 것)가 문턱 이상이면 키울 배수 — 아니면 None (T400)."""
+        if self.boost_open_min <= 0 or not self.boost_ports or self.boost_mult == 1:
+            return None
+        held = sum(open_before(port, at) for ports in self.boost_ports for port in ports.values())
+        return self.boost_mult if held >= self.boost_open_min else None
 
     def _recent_entries(self, at: datetime) -> int | None:
         """직전 `entry_window_hours` 시간(`at` 포함 · 창 시작 제외) 안의 신규 진입 수.
@@ -407,6 +454,15 @@ class LegSource(Protocol):
 
 
 @runtime_checkable
+class OpenBeforeSource(Protocol):
+    """다리별 "이 시각 앞서 연 보유 수" 를 주는 세션 다리 (T400 · `SessionBridge`)."""
+
+    def open_count_before_of(self, leg: str, at: datetime) -> int:
+        """그 다리의 보유 중 매매 중 `at` 보다 먼저 연 것의 수."""
+        ...
+
+
+@runtime_checkable
 class EntryLogSource(Protocol):
     """다리별 진입 시각을 줄 수 있는 세션 다리 (452차) — `SessionBridge` 가 구현한다."""
 
@@ -443,6 +499,13 @@ class LegPort:
     def open_exposure(self) -> Decimal:
         """이 다리의 보유 중 노출 합."""
         return self.source.open_exposure_of(self.leg)
+
+    def open_count_before(self, at: datetime) -> int:
+        """이 다리의 보유 중 매매 중 `at` 앞서 연 것의 수 — 원본이 못 주면 0 (T400)."""
+        source = self.source
+        if isinstance(source, OpenBeforeSource):
+            return source.open_count_before_of(self.leg, at)
+        return 0
 
     def entries(self) -> list[datetime] | None:
         """이 다리의 진입 시각 — 원본이 못 주면 None(문이 모름으로 보고 막는다)."""

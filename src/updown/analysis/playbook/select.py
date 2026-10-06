@@ -38,6 +38,7 @@ from updown.analysis.playbook.types import (
     EarlyEntry,
     EntryLimit,
     NewHighTilt,
+    PeerOpenBoost,
     PeerOpenCap,
     Playbook,
     PlaybookRegime,
@@ -356,6 +357,28 @@ def peer_open_cap(raw: object, name: str) -> PeerOpenCap:
         return PeerOpenCap(leg=str(body["leg"]), count=int(body["count"]))
     except (KeyError, TypeError, ValueError) as exc:
         raise PlaybookConfigError(f"{name}.entry_peer_open_max — {exc}") from exc
+
+
+def peer_open_boost(raw: object, name: str) -> PeerOpenBoost:
+    """짝 다리 보유로 키우기 한 줄 (T400) — `{legs: [삼각 · MACD 숏], min: 1, mult: "1.5"}`.
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_peer_open_boost")
+    try:
+        where = f"{name}.entry_peer_open_boost.legs"
+        legs = tuple(str(item) for item in _items(body["legs"], where))
+        return PeerOpenBoost(legs=legs, min=int(body["min"]), mult=Decimal(str(body["mult"])))
+    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_peer_open_boost — {exc}") from exc
 
 
 def _ref_band(raw: object, name: str) -> RefReturnBand:
@@ -930,6 +953,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         None
                         if body.get("entry_peer_open_max") is None
                         else peer_open_cap(body["entry_peer_open_max"], f"playbooks.{name}")
+                    ),
+                    entry_peer_open_boost=(
+                        None
+                        if body.get("entry_peer_open_boost") is None
+                        else peer_open_boost(body["entry_peer_open_boost"], f"playbooks.{name}")
                     ),
                     entry_exposure_cap=_entry_exposure_cap(body, f"playbooks.{name}"),
                     entry_fund_dd_max=_fund_dd_max(body, f"playbooks.{name}"),

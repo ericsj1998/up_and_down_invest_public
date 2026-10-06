@@ -213,6 +213,32 @@ class SessionBridge:
             if item.outcome is Outcome.OPEN and item.playbook == leg
         )
 
+    def open_count_before_of(self, leg: str, at: datetime) -> int:
+        """그 다리가 낸 보유 중 매매 중 `at` **앞서** 연 것의 수 (T400 · 혼합 3.3).
+
+        Args:
+            leg: 귀속 키.
+            at: 지금 진입하려는 봉의 시각(체결 봉 시작 이름표 · `Session._gate` 의 `at`).
+
+        Returns:
+            보유 중이고 `opened_at < at` 인 기록 수.
+
+        Note:
+            🔴 **같은 시각에 든 것은 안 센다** — 연구 원장은 같은 시각이면 롱을 먼저 처리해
+            그 순간 드는 숏을 못 봤다(판 963 미래 참조 점검). 실계좌 `opened_at` 은 체결 5분봉
+            시작 이름표라 같은 마감에 든 두 매매는 같은 값이다.
+            ⚠️ 펀드 재현은 판마다 걸음 봉(1H · 4H) 이름표라 같은 마감에 든 4H 숏이 1H 돌파보다
+            이른 이름표를 가질 수 있다 — 그 숏이 같은 눈금에서 먼저 걸었을 때만(섞음 순서) 센다.
+        """
+        return sum(
+            1
+            for item in self.session.ledger.records
+            if item.outcome is Outcome.OPEN
+            and item.playbook == leg
+            and item.opened_at is not None
+            and item.opened_at < at
+        )
+
     def exits_of(self, leg: str) -> list[tuple[datetime, bool]]:
         """그 다리의 확정된 청산 — `exits` 에 귀속 거름을 더했다 (T291).
 

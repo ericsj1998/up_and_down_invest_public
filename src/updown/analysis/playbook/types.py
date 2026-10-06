@@ -781,6 +781,42 @@ class PeerOpenCap:
 
 
 @dataclass(frozen=True, slots=True)
+class PeerOpenBoost:
+    """**짝 다리(숏)가 열려 있으면** 이 다리 진입을 키운다 (T400 · 혼합 3.3 · 2026-10-07).
+
+    짝 다리들 보유 합이 `min` 이상이면 x `mult`.
+
+    T400 판 953 ~ 964(연구 엔진 · 문턱 다섯 · 씨앗 10): 돌파 롱 진입 앞서 삼각 숏 · MACD 숏이
+    하나라도 열려 있으면 x1.5(BS15) — 연구 창 효율 26.87 → 36.64 · 창 밖 2020 ~ 21
+    9.07 → 10.57 · 이웃(x1.25 · x2 · 숏 2+) 두 창 모두 ↑ · 숏이 판정 4 · 12시간 전에 열린 것만
+    세도 효과 그대로(미래 참조 점검 · 판 963 · 964 · 열린 목록의 판정 뒤 줄 0건).
+    까닭: 시장이 빠지는 중 혼자 뚫는 상대 강도 · 그때 열린 롱이 적어 키워도 같은 방향 위험이
+    안 겹친다. ⚠️ 펀드 재현 매매로는 2022 ~ 24 에 숏 열림 돌파가 오히려 못했다.
+
+    Attributes:
+        legs: 짝 다리들의 매매법 id(같은 묶음의 구성원) — 다리를 만들 때 귀속 키로 바꾼다.
+        min: 짝 다리들 보유(이 진입 **앞서** 연 것) 합이 이 값 **이상**이면 키운다(1 이상).
+        mult: 키울 배수(0 초과).
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+    """
+
+    legs: tuple[str, ...]
+    min: int
+    mult: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 배수로서 말이 되는지."""
+        if not self.legs or any(not leg for leg in self.legs):
+            raise ValueError("짝 다리 id 가 비었다")
+        if self.min < 1:
+            raise ValueError(f"짝 다리 보유 문턱은 1 이상: {self.min}")
+        if self.mult <= 0:
+            raise ValueError(f"키울 배수는 0 초과: {self.mult}")
+
+
+@dataclass(frozen=True, slots=True)
 class BreadthCap:
     """조건부 총 명목 상한 선언 — `min` 종목 이상이 같이 밴드를 뚫었을 때만 상한을 `cap` 으로.
 
@@ -1239,6 +1275,12 @@ class Playbook:
     ⛔ None 이면 동결이다 (§5.6.2)."""
     entry_peer_open_max: PeerOpenCap | None = None
     """짝 다리 보유가 문턱 이상이면 이 다리는 새로 안 든다(512차 N4) — 펀드 문이 센다.
+
+    펀드 다리 값이라 돌던 펀드엔 묶음 `legs_revision` 을 올려야 들어간다.
+
+    ⛔ None 이면 동결이다 (§5.6.2)."""
+    entry_peer_open_boost: PeerOpenBoost | None = None
+    """짝 다리(숏)가 이 진입 앞서 열려 있으면 진입을 키운다(T400 · 혼합 3.3) — 펀드 문이 센다.
 
     펀드 다리 값이라 돌던 펀드엔 묶음 `legs_revision` 을 올려야 들어간다.
 
