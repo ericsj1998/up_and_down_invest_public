@@ -996,10 +996,16 @@ async def _live_start(
         #    약 28.8만 봉(api 메모리의 대부분)을 쥐었다. 화면용 축(10s · 1m · 15m …)은
         #    러너가 **볼 때** 싣고 안 보면 내린다(`LiveRunner.viewable`).
         rule_trigger = trigger_frame(catalog, book)
+        # ⭐ T406 — 봉 특징 띠(`bar_tilts` · CL0 · DB)가 읽는 축도 늘 데운다. 지금 묶음은 4H 다리가
+        #    있어 이미 들어 있지만, 4H 다리 없는 판이면 조용히 1 배(모름)가 되므로 축을 직접 넣는다.
+        tilt_frames = [rule.timeframe for item in books for rule in item.bar_tilts]
         decision = decision_frames(
             [item.timeframe for item in books],
             step=STEP_FRAME,
-            extra=[frame for frame in (rule_trigger, trigger_asked) if frame is not None],
+            extra=[
+                *(frame for frame in (rule_trigger, trigger_asked) if frame is not None),
+                *tilt_frames,
+            ],
         )
         frames = list(quotes.supported_frames(decision))
     # ⭐ T253 — 판 시작의 브로커 요청 수를 세고 상한(`RUN_START_REQUEST_CAP`)을 건다. 세는

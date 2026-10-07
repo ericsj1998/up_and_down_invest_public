@@ -28,6 +28,7 @@ from updown.analysis import plugins
 from updown.analysis.playbook import db_source
 from updown.analysis.playbook.types import (
     AddOn,
+    BarTilt,
     BreadthCap,
     ConflictAction,
     ConflictRule,
@@ -582,6 +583,42 @@ def sma_tilts(raw: object, name: str) -> tuple[SmaTilt, ...]:
     return tuple(out)
 
 
+def bar_tilts(raw: object, name: str) -> tuple[BarTilt, ...]:
+    """닫힌 상위 봉 하나의 ATR% · 몸통 비율 띠 크기 목록 (T406 · CL0 · DB).
+
+    예: `[{timeframe: 4h, feature: atr_pct, period: 14, high: "3.1252", mult: "0"}]`.
+
+    Args:
+        raw: 선언 값(목록).
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언 튜플(적힌 순서 · 배수는 세션이 곱한다).
+
+    Raises:
+        PlaybookConfigError: 목록이 아니거나 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    if not isinstance(raw, list):
+        raise PlaybookConfigError(f"{name}.bar_tilts 는 목록이다: {raw!r}")
+    out: list[BarTilt] = []
+    for k, item in enumerate(cast("list[object]", raw)):
+        body = _mapping(item, f"{name}.bar_tilts[{k}]")
+        try:
+            out.append(
+                BarTilt(
+                    timeframe=Timeframe(str(body["timeframe"])),
+                    feature=str(body["feature"]),
+                    mult=Decimal(str(body["mult"])),
+                    period=int(body.get("period", 14)),
+                    low=None if body.get("low") is None else Decimal(str(body["low"])),
+                    high=None if body.get("high") is None else Decimal(str(body["high"])),
+                )
+            )
+        except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+            raise PlaybookConfigError(f"{name}.bar_tilts[{k}] — {exc}") from exc
+    return tuple(out)
+
+
 def size_windows(raw: object, name: str) -> DateWindows:
     """날짜 창 크기 (T389 · G2).
 
@@ -937,6 +974,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         ()
                         if body.get("sma_tilts") is None
                         else sma_tilts(body["sma_tilts"], f"playbooks.{name}")
+                    ),
+                    bar_tilts=(
+                        ()
+                        if body.get("bar_tilts") is None
+                        else bar_tilts(body["bar_tilts"], f"playbooks.{name}")
                     ),
                     size_windows=(
                         None

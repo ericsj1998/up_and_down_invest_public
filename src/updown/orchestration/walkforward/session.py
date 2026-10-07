@@ -1883,6 +1883,51 @@ class Session:
                 self._count(f"sma_tilt:{k}:out")
         return mult
 
+    def _bar_tilt_mult(self, book: Playbook, bar: Candle) -> Decimal:
+        """닫힌 상위 봉 하나의 ATR% · 몸통 비율 띠 크기(T406 · CL0 · DB) — 띠 안 배수를 곱한다.
+
+        Args:
+            book: 후보를 낸 매매법.
+            bar: 신호봉(진입 TF 의 방금 닫힌 봉 · `_signal_bar`).
+
+        Returns:
+            노출 배수(0 이면 이 진입을 건너뛴다). 선언이 없으면 1(동결 · §5.6.2).
+
+        Note:
+            신호봉이 닫힌 순간까지 **닫힌** 그 TF 의 마지막 봉을 잰다(봉 끝 ≤ 신호봉 끝) — 연구
+            `t401_entry_census.feats`(`at(when)` = 끝 ≤ 판정 시각인 마지막 봉)와 같다.
+            급락 되돌림(4H)은 신호봉 자신, 일봉 채널은 UTC 00:00 에 닫힌 4H 봉(20:00 ~ 24:00)이다.
+            🔴 그 시각에 닫혔어야 할 봉이 아직 안 들어왔으면 **앞 봉으로 재지 않고** 모름(1 배)으로
+            둔다 — 깔때기 `bar_tilt:<번호>:stale`.
+            깔때기에 `bar_tilt:<번호>:in · out · unknown` 도 센다.
+        """
+        if not book.bar_tilts:
+            return Decimal(1)
+        end = bar.ts + frame_span(bar.timeframe)
+        mult = Decimal(1)
+        for k, rule in enumerate(book.bar_tilts):
+            if rule.timeframe not in self.feed.timeframes:
+                self._count(f"bar_tilt:{k}:unknown")
+                continue
+            span = frame_span(rule.timeframe)
+            secs = int(span.total_seconds())
+            stamp = int(end.timestamp())
+            due = datetime.fromtimestamp(stamp - stamp % secs, tz=UTC)
+            bars = [c for c in self.feed.judged(rule.timeframe) if c.ts + span <= end]
+            if not bars or bars[-1].ts + span != due:
+                self._count(f"bar_tilt:{k}:stale")
+                continue
+            value = rule.value(bars)
+            if value is None:
+                self._count(f"bar_tilt:{k}:unknown")
+                continue
+            if rule.holds(value):
+                self._count(f"bar_tilt:{k}:in")
+                mult *= rule.mult
+            else:
+                self._count(f"bar_tilt:{k}:out")
+        return mult
+
     def _window_mult(self, book: Playbook, bar: Candle) -> Decimal:
         """날짜 창 크기(T389 · G2) — 신호봉 마감 날짜(UTC)가 창 안이면 `mult` 배.
 
@@ -4729,7 +4774,13 @@ class Session:
         if tilt <= 0:
             self._count("gate:sma_tilt")
             return None
-        exposure *= tilt * self._window_mult(chosen.playbook, sig)
+        # ⭐ T406 — CL0(급락 되돌림 4H ATR% < 3.1252 건너뜀) · DB(일봉 채널 4H 몸통 < 0.3092 x0.5).
+        #    연구 판 `ftilt=`(판 971 ~ 986)가 옆 다리 크기 함수에 곱한 자리와 같다(다리 노출 앞).
+        bar_tilt = self._bar_tilt_mult(chosen.playbook, sig)
+        if bar_tilt <= 0:
+            self._count("gate:bar_tilt")
+            return None
+        exposure *= tilt * bar_tilt * self._window_mult(chosen.playbook, sig)
         if not self._fresh_close(chosen.playbook):
             self._count("gate:fresh_close")
             return None

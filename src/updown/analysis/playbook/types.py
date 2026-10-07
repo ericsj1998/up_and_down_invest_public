@@ -28,11 +28,13 @@ order_block + UPTREND    →  눌림목 매매
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
+from updown.common.domain.candle import Candle
 from updown.common.domain.evidence import Family, Grade
 from updown.common.domain.instrument import MarketGroup, Timeframe
 from updown.common.domain.reports import TrendDirection
@@ -550,6 +552,87 @@ class NewHighTilt:
             raise ValueError(f"전고점 창은 1 ~ 730일: {self.days}")
         if self.on <= 0 or self.off <= 0:
             raise ValueError(f"배수는 0 보다 커야 한다: on {self.on} · off {self.off}")
+
+
+BAR_TILT_FEATURES = ("atr_pct", "body_ratio")
+"""`BarTilt.feature` 가 받는 이름 — 연구 `t401_entry_census.feats` 의 "ATR%" · "몸통 비율"."""
+
+
+@dataclass(frozen=True, slots=True)
+class BarTilt:
+    """닫힌 상위 봉 하나의 변동성 · 모양 띠 크기 — 띠 안이면 `mult` 배 (T401 · T406).
+
+    혼합 3.3 위 연구 판(971 ~ 986)에서 두 창 · 이웃 · 실계좌 순서(무작위)까지 넘은 옆 다리 손잡이
+    둘을 적는다(연구 `t401_entry_census.feats` 와 같은 식):
+
+    - CL0 = 급락 되돌림 · 신호봉(4H) ATR% < 3.1252 건너뜀(x0)
+    - DB = 일봉 채널 · 일봉 마감 직전 4H 봉 몸통 비율 < 0.3092 x0.5
+
+    Attributes:
+        timeframe: 잴 봉 — 신호봉이 닫힌 순간까지 **닫힌 마지막 봉** 하나(상위 TF 문 규약).
+        feature: `atr_pct` = TR 의 단순 평균(`period` 봉) ÷ 그 봉 종가 x 100 ·
+            `body_ratio` = |종가 - 시가| ÷ (고가 - 저가).
+        mult: 띠 안일 때 크기 배수. 0 이면 그 진입을 건너뛴다(한 건만 — 정지가 아니다).
+        period: `atr_pct` 의 TR 평균 봉 수(연구 14 · `body_ratio` 는 안 쓴다).
+        low: 띠 아래 끝(포함) · None 이면 아래 끝 없음.
+        high: 띠 위 끝(제외) · None 이면 위 끝 없음.
+
+    Raises:
+        ValueError: 특징 이름 · 기간 · 배수 · 띠가 말이 안 되는 경우.
+
+    Note:
+        값을 모르면(봉 부족 · 그 봉이 아직 안 들어옴) 배수 1 — 연구에서 값이 없는 줄(NaN)을
+        그대로 둔 것과 같다. ATR 은 Wilder 평활이 아니라 **단순 평균**이다
+        (연구 `sma(tr, 14)` 그대로).
+    """
+
+    timeframe: Timeframe
+    feature: str
+    mult: Decimal
+    period: int = 14
+    low: Decimal | None = None
+    high: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        """값이 띠 기울이기로서 말이 되는지."""
+        if self.feature not in BAR_TILT_FEATURES:
+            raise ValueError(f"특징은 {BAR_TILT_FEATURES} 중 하나: {self.feature}")
+        if self.period < 1:
+            raise ValueError(f"기간 ≥ 1: {self.period}")
+        if self.mult < 0:
+            raise ValueError(f"배수는 0 이상이다(0 = 건너뜀): {self.mult}")
+        if self.low is None and self.high is None:
+            raise ValueError("띠 끝이 하나는 있어야 한다(low · high)")
+        if self.low is not None and self.high is not None and not self.low < self.high:
+            raise ValueError(f"띠는 low < high: {self.low} · {self.high}")
+
+    def value(self, bars: Sequence[Candle]) -> Decimal | None:
+        """닫힌 봉(오래된 것 → 최근) → 마지막 봉의 특징 값 · 모자라면 None."""
+        if not bars:
+            return None
+        last = bars[-1]
+        if self.feature == "body_ratio":
+            rng = last.high - last.low
+            if rng <= 0:
+                return Decimal(0)
+            return abs(last.close - last.open) / rng
+        if len(bars) < self.period + 1 or last.close <= 0:
+            return None
+        trs = [
+            max(
+                bars[k].high - bars[k].low,
+                abs(bars[k].high - bars[k - 1].close),
+                abs(bars[k].low - bars[k - 1].close),
+            )
+            for k in range(len(bars) - self.period, len(bars))
+        ]
+        return sum(trs, Decimal(0)) / self.period / last.close * 100
+
+    def holds(self, value: Decimal) -> bool:
+        """값이 띠 [low, high) 안인가."""
+        if self.low is not None and value < self.low:
+            return False
+        return not (self.high is not None and value >= self.high)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1255,6 +1338,12 @@ class Playbook:
     ⛔ None 이면 동결이다 (§5.6.2)."""
     sma_tilts: tuple[SmaTilt, ...] = ()
     """상위 봉 이평 띠 크기(T359 · 혼합 3.1 Q4 · S2Z · T · M) — 진입 노출에 곱한다 · 0 = 건너뜀.
+
+    ⛔ 비어 있으면 동결이다 (§5.6.2)."""
+    bar_tilts: tuple[BarTilt, ...] = ()
+    """닫힌 상위 봉 하나의 ATR% · 몸통 비율 띠 크기(T406 · CL0 · DB) — 진입 노출에 곱한다.
+
+    0 이면 건너뜀.
 
     ⛔ 비어 있으면 동결이다 (§5.6.2)."""
     size_windows: DateWindows | None = None
