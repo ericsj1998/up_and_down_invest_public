@@ -134,8 +134,8 @@ class Coordinator:
     core_key: str = ""
     """브레이크 원장의 **매매법 열쇠**(`brake_key` = 매매법 id # 다리 개정 번호 · T387).
 
-    매매법이나 다리 선언이 바뀌면 열쇠가 달라지고 새 브레이크(`reset_brake`)로 시작한다 —
-    옛 매매법의 고점을 새 매매법이 물려받지 않는다. 펀드 파일에 저장된다."""
+    매매법이나 다리 선언이 바뀌면 열쇠만 달라지고 원장(고점 · 낙폭)은 **승계**한다(T414 ·
+    2026-10-07 — 리셋은 브레이크를 끄는 것과 같았다). 펀드 파일에 저장된다."""
     excluded: frozenset[str] = frozenset()
     """브레이크에서 뺀 다리의 귀속 키들 — `isolate` 가 다리 선언(`drawdown_isolated`)에서 채운다."""
     leg_marks: dict[str, Decimal] = field(default_factory=dict[str, Decimal])
@@ -170,7 +170,7 @@ class Coordinator:
                     self.leg_marks[sym] = now
 
     def reset_brake(self, key: str) -> None:
-        """새 매매법의 브레이크를 연다 — 지금 잔고에서 고점 1.0 으로 다시 시작한다 (T387).
+        """브레이크를 지금 잔고에서 고점 1.0 으로 다시 연다 (T387 · T414 뒤 열쇠 변경은 안 부른다).
 
         Args:
             key: 새 매매법 열쇠(`brake_key`).

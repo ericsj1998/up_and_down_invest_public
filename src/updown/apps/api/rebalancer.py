@@ -199,7 +199,7 @@ RANK_WINDOW_DAYS = 60
 
 
 def _ensure_brake_key(coordinator: Coordinator, fund_id: str, key: str, why: str) -> None:
-    """브레이크 원장의 매매법 열쇠를 맞춘다 — 다르면 로그를 먼저 남기고 새 브레이크를 연다 (T387).
+    """브레이크 원장의 매매법 열쇠를 맞춘다 — 다르면 로그를 남기고 **원장은 승계**한다 (T414).
 
     Args:
         coordinator: 펀드 조정자.
@@ -208,25 +208,30 @@ def _ensure_brake_key(coordinator: Coordinator, fund_id: str, key: str, why: str
         why: 로그용 사유(`restore` · `switch`).
 
     Note:
-        사용자 결정(2026-10-05): 새 매매법(또는 다리 개정)은 옛 매매법의 고점 · 낙폭을
-        물려받지 않는다.
+        🔴 사용자 결정(2026-10-07 저녁 · T414 판 1002 · 1003): 매매법(또는 다리 개정)이 바뀌어도
+        브레이크 고점 · 낙폭을 **물려받는다**. 연구에서 열쇠가 바뀔 때마다 고점을 지금 잔고로 내리면
+        어떤 주기든 실현 MDD 27 → 35 ~ 45% · 효율 38.6 → 21 ~ 33 이었다 — 며칠마다
+        매매법을 바꾸는 운영에선 리셋이 브레이크를 끄는 것과 같다. 옛 결정(2026-10-05 리셋)은
+        그래서 뒤집었다.
+        수동 매매 · 입출금은 원장에 애초에 안 들어간다(T387)고 두 결정이 모순되지 않는다.
         실제 잔고(펀드 원장)는 그대로다. 열쇠가 같으면 아무것도 안 바꾼다(재기동은 이어간다).
+        `Coordinator.reset_brake` 는 남겨 두되 여기서는 부르지 않는다.
     """
     if coordinator.core_key == key:
         return
     old = coordinator.core
-    _events.warning(
-        "fund_brake_reset",
+    _events.info(
+        "fund_brake_inherited",
         payload={
             "fund_id": fund_id,
             "why": why,
             "from": coordinator.core_key,
             "to": key,
-            "old_drawdown_pct": None if old is None else str(old.drawdown_pct),
-            "note": "새 매매법 · 다리 개정 → 브레이크 원장을 지금 잔고에서 고점 1.0 으로 다시 연다",
+            "drawdown_pct": None if old is None else str(old.drawdown_pct),
+            "note": "새 매매법 · 다리 개정 → 브레이크 원장(고점 · 낙폭) 승계 · 열쇠만 갱신 (T414)",
         },
     )
-    coordinator.reset_brake(key)
+    coordinator.core_key = key
 
 
 def _attach_gate(

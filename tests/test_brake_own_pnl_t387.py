@@ -93,14 +93,18 @@ class TestNewMethodNewBrake:
         _ensure_brake_key(coord, "fund1", brake_key("묶음", 2), "restore")
         assert coord.brake_drawdown() == Decimal("0.2")
 
-    def test_new_revision_opens_a_new_brake(self) -> None:
+    def test_new_revision_inherits_the_brake(self) -> None:
+        """T414(2026-10-07) — 열쇠가 바뀌어도 고점 · 낙폭을 승계한다(리셋 = 브레이크 끔)."""
         coord, port = _coord()
         coord.core_key = brake_key("묶음", 2)
         port.earn(Decimal(-200))
         coord.tick()
         _ensure_brake_key(coord, "fund1", brake_key("묶음", 3), "restore")
-        assert coord.brake_drawdown() == 0
+        assert coord.brake_drawdown() == Decimal("0.2")
         assert coord.core_key == "묶음#3"
+        port.earn(Decimal(100))
+        coord.tick()
+        assert coord.brake_drawdown() == Decimal("0.1")  # 옛 고점(1000) 기준으로 이어진다
 
     def test_old_files_without_a_key_use_the_saved_revision(self) -> None:
         assert restored_brake_key(None, "묶음", 2) == "묶음#2"
