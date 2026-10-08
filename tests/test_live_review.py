@@ -362,3 +362,14 @@ def test_dedupe_keeps_the_live_row_over_the_transferred_cancel() -> None:
     new = _trade(trade_id="same", exit_price="103")
     got = dedupe_trades([old, new])
     assert len(got) == 1 and got[0].outcome != "취소"
+
+
+def test_stale_open_rows_are_marked_when_their_run_is_closed() -> None:
+    from updown.orchestration.live_review.attribution import mark_stale_open
+
+    live = money_of(_trade(trade_id="a", exit_price=None, closed=None), [])
+    stale = money_of(_trade(trade_id="b", exit_price=None, closed=None), [])
+    got = mark_stale_open([live, stale], frozenset({"run"}))  # 두 매매 모두 run_id="run"
+    assert [r.source for r in got] == ["stale", "stale"]
+    got2 = mark_stale_open([live], frozenset())
+    assert got2[0].source == "open"

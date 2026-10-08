@@ -42,12 +42,13 @@ def _head(snap: Snapshot, money: list[TradeMoney], outside: Decimal | None, days
     closed = [m for m in money if m.pnl is not None]
     total = sum((m.pnl for m in closed if m.pnl is not None), Decimal(0))
     opened = sum(1 for m in money if m.source == "open")
+    stale = sum(1 for m in money if m.source == "stale")
     from_ex = sum(1 for m in closed if m.source == "exchange")
     from_ledger = sum(1 for m in closed if m.source == "ledger")
     out = [
         f"# 라이브 매매 분석 — 최근 {days}일 · 스냅샷 {kst(snap.taken_at)} KST",
         "",
-        f"- 매매 {len(money)}건(닫힘 {len(closed)} · 열림 {opened}) · "
+        f"- 매매 {len(money)}건(닫힘 {len(closed)} · 열림 {opened} · 판 닫힌 찌꺼기 줄 {stale}) · "
         f"매매법 실현 합 **{num(total)} USDT** · 거래소 기록으로 맞춘 건 {from_ex} · "
         f"원장 추정 {from_ledger}",
     ]

@@ -173,3 +173,21 @@ def outside_money(account_book: list[dict[str, Any]], order_texts: dict[str, str
         if chg is not None:
             total += chg
     return total
+
+
+def mark_stale_open(rows: list[TradeMoney], closed_run_ids: frozenset[str]) -> list[TradeMoney]:
+    """열린 원장 줄 중 판이 이미 닫힌 것은 `stale` 로 표시 — 거래소엔 그 포지션이 없다 (T409).
+
+    Args:
+        rows: `money_of` 결과들.
+        closed_run_ids: 닫힌 판의 id 들.
+
+    Returns:
+        같은 순서의 목록. `open` 이면서 판이 닫힌 줄만 `source="stale"` 로 바뀐다.
+    """
+    from dataclasses import replace
+
+    return [
+        replace(r, source="stale") if r.source == "open" and r.trade.run_id in closed_run_ids else r
+        for r in rows
+    ]
