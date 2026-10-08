@@ -84,6 +84,7 @@ from updown.orchestration.rebalancer.coordinator import (
 from updown.orchestration.rebalancer.legs import (
     FundLeg,
     LegError,
+    brake_view,
     declared_legs,
     isolated_attributions,
     member_leverage,
@@ -1711,6 +1712,7 @@ async def _status(fund: Fund) -> dict[str, Any]:
     #    어느 쪽이든. 이 목록이 비어 있지 않으면 그 세션들은 총자본·TWR 에서 **동결
     #    격리**돼 있고(허구 손익 제외 · 벽돌 2), 화면은 헤드라인에 경고를 그린다.
     pnl = leg_pnl(fund.legs, _boards_pnl(fund, per_symbol), coord.engine.balance)
+    legs = leg_summary(fund.legs, load_playbooks())
     mismatch = [
         sym
         for sym, row in per_symbol.items()
@@ -1747,9 +1749,18 @@ async def _status(fund: Fund) -> dict[str, Any]:
         ),
         "per_symbol": per_symbol,
         # ⭐ 다리(매매법)별 손익 — 금액 · 펀드 대비 % (사용자 2026-09-27).
-        "legs": [
-            leg | pnl.get(leg["playbook"], {}) for leg in leg_summary(fund.legs, load_playbooks())
-        ],
+        "legs": [leg | pnl.get(leg["playbook"], {}) for leg in legs],
+        # ⭐ 지금 브레이크가 걸려 있나 (사용자 2026-10-09) — 다리 문과 같은 자로 판정.
+        #    위 `drawdown_pct` 는 계좌(펀드 원장 · 수동 매매 포함) 낙폭이고 이것은
+        #    매매법 실현만의 낙폭(T387 브레이크 원장)이다 — 한 칸에 두면 "41% 빠졌는데
+        #    브레이크가 안 걸렸다" 로 읽힌다.
+        "brake": brake_view(
+            fund.legs,
+            coord.brake_drawdown(),
+            fund_brake=fund.drawdown_brake,
+            own_pnl=coord.core is not None,
+            names={leg["playbook"]: leg["name"] for leg in legs},
+        ),
     }
 
 

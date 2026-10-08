@@ -17,6 +17,7 @@ import { CARD_WIDTH, FundMembers, MEMBER_FRAME_SPEC } from "./FundMembers";
 import { unrealizedPct } from "./fundMembers";
 import { FundOverview } from "./FundOverview";
 import {
+  brakeChip,
   groupedOrder,
   groupPnl,
   hourGuard,
@@ -101,6 +102,18 @@ function writePref(key: string, value: string): void {
 function pct(twr: string): string {
   const v = Number(twr) * 100;
   return `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+}
+
+/** 브레이크 칩 — 걸렸으면 붉게 · 안 걸렸으면 옅게 · 옛 서버(칸 없음)면 안 그린다 (사용자 2026-10-09). */
+function BrakeChip({ f }: { f: FundStatus }) {
+  const view = brakeChip(f.brake);
+  if (!view) return null;
+  const tone = view.tone === "on" ? "chip loss" : view.tone === "ok" ? "chip live" : "chip";
+  return (
+    <span className={tone} title={view.title} data-testid="fund-brake">
+      {view.text}
+    </span>
+  );
 }
 
 /** 다음 리밸런싱까지 남은 시간 — "2시간 34분" 꼴. */
@@ -618,6 +631,7 @@ export function FundPanel({
               · 낙폭{" "}
               <b
                 className={Number(f.drawdown_pct ?? 0) > 0 ? "loss" : undefined}
+                title="계좌(펀드 원장) 낙폭 — 앵커가 거래소 계좌 총액이라 같은 계좌의 수동 매매 손익도 들어간다. 브레이크는 이 값이 아니라 옆 칩의 매매법 낙폭을 본다"
               >
                 {Number(f.drawdown_pct ?? 0).toFixed(1)}%
               </b>
@@ -625,6 +639,10 @@ export function FundPanel({
                 {" "}
                 (최대 {Number(f.max_drawdown_pct ?? 0).toFixed(1)}%)
               </span>{" "}
+              {/* 🔴 지금 브레이크가 걸려 있나 (사용자 2026-10-09). 위 낙폭은 계좌(수동 매매 포함)이고 브레이크는
+                  매매법 실현만의 낙폭(T387)을 보므로, 한 칸만 있으면 "41% 빠졌는데 왜 x1 이냐" 로 읽힌다.
+                  걸림 판정은 서버(`brake_view` · 다리 문과 같은 자)가 하고 화면은 적기만 한다. */}
+              <BrakeChip f={f} />{" "}
               · 레버 {f.leverage}x · {f.symbols.length}종 · 전략 {f.playbook} ·
               다음 리밸런싱 <b>{countdown(f.next_tick)}</b>
               {/* 자동 앵커(T285) — 총자본이 거래소 계좌에 맞춰졌나. 못 맞추면 이유를 그대로 보여 준다. */}

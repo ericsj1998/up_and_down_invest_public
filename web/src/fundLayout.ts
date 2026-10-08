@@ -13,7 +13,7 @@
  * ⚠️ 화면(`FundPanel.tsx`)이 아니라 여기에 두는 이유: 묶음과 순서는 **규칙**이라 시험이 있어야 한다.
  */
 
-import type { FundLeg, FundPreview } from "./api";
+import type { FundBrake, FundLeg, FundPreview } from "./api";
 
 export type FundLegInfo = {
   playbook: string;
@@ -199,4 +199,50 @@ export function hourGuard(nowMs: number): { toHour: number; until: number } | nu
   if (nowMs - prev < guard) return { toHour: 0, until: prev + guard };
   if (next - nowMs <= guard) return { toHour: next - nowMs, until: next + guard };
   return null;
+}
+
+/** 브레이크 칩 — 글자 · 색조 · 툴팁. `on` = 걸림(붉게) · `ok` = 안 걸림 · `none` = 브레이크 선언 없음. */
+export type BrakeChipView = { text: string; tone: "on" | "ok" | "none"; title: string };
+
+function pct1(v: string | number | null | undefined): string {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n.toFixed(1).replace(/\.0$/, "")}%` : "—";
+}
+
+/**
+ * 브레이크 현황 → 칩 (사용자 2026-10-09: *"프론트엔드에 지금 브레이크가 걸려있는지 아닌지 표시"*).
+ *
+ * 걸렸는지는 **서버가 판정한 값**(`engaged` · 다리 문과 같은 자)을 그대로 쓴다 — 화면이 문턱과 낙폭을 다시 비교하면
+ * 둘의 자가 갈린다. 문턱은 브레이크 있는 다리들 중 가장 낮은 값을 적는다(그 값에서 처음 걸린다).
+ *
+ * @returns 옛 서버(칸 없음)면 null — 칩을 안 그린다(거짓으로 "안 걸림" 을 적지 않는다).
+ */
+export function brakeChip(b: FundBrake | null | undefined): BrakeChipView | null {
+  if (!b) return null;
+  const armed = b.legs.filter((l) => l.at !== null && !l.isolated);
+  const source = b.source === "own_pnl" ? "매매법 실현만 · 수동 매매 · 입출금 제외" : "펀드 원장(계좌 총액)";
+  if (armed.length === 0) {
+    return {
+      text: "브레이크 없음",
+      tone: "none",
+      title: `이 펀드의 다리 중 낙폭 브레이크를 선언한 다리가 없다 · 낙폭 출처 ${source}`,
+    };
+  }
+  const at = Math.min(...armed.map((l) => Number(l.at) * 100));
+  const scale = armed.map((l) => l.scale).sort()[0] ?? "";
+  const dd = pct1(b.drawdown_pct);
+  if (b.engaged) {
+    const who = armed.filter((l) => l.engaged).map((l) => l.name).join(" · ");
+    const recover = b.recover_pct !== null ? ` · 고점까지 실현 +${pct1(b.recover_pct)} 필요` : "";
+    return {
+      text: `🔴 브레이크 x${b.scale} · 매매법 낙폭 ${dd}`,
+      tone: "on",
+      title: `걸린 다리 ${who} — 문턱 ${pct1(at)} 넘음 · 신규 진입 크기 x${b.scale}${recover} · 낙폭 출처 ${source}`,
+    };
+  }
+  return {
+    text: `브레이크 안 걸림 · 매매법 낙폭 ${dd}`,
+    tone: "ok",
+    title: `문턱 ${pct1(at)} 아래 · 넘으면 신규 진입 x${scale} · 낙폭 출처 ${source}`,
+  };
 }

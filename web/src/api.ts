@@ -1898,6 +1898,35 @@ export type FundStatus = {
     pnl?: string;
     pct?: string;
   }[];
+  /**
+   * **지금 브레이크가 걸려 있나** (사용자 2026-10-09). 옛 서버는 칸이 없다.
+   *
+   * 위 `drawdown_pct` 는 계좌(펀드 원장 · 같은 계좌의 수동 매매 손익 포함) 낙폭이고, 여기 `drawdown_pct` 는
+   * 매매법 실현만의 낙폭(브레이크 원장 · `source` = own_pnl)이다 — 브레이크는 **이쪽**을 본다.
+   */
+  brake?: FundBrake | null;
+};
+
+/** 브레이크 현황 한 덩어리 — 서버 `brake_view` 가 다리 문과 같은 자(엄격 부등호)로 판정한 값. */
+export type FundBrake = {
+  source: "own_pnl" | "fund";
+  /** 브레이크가 보는 낙폭 % (0 = 고점). */
+  drawdown_pct: string;
+  engaged: boolean;
+  /** 지금 신규 진입에 곱해지는 가장 작은 배수 — 안 걸리면 "1". */
+  scale: string;
+  /** 고점으로 돌아가는 데 필요한 실현 수익률 % — 고점이면 null. */
+  recover_pct: string | null;
+  legs: {
+    playbook: string;
+    name: string;
+    /** 문턱(0~1 문자열) — 브레이크 없는 다리는 null. */
+    at: string | null;
+    scale: string | null;
+    engaged: boolean;
+    /** 브레이크 제외 다리(손익이 브레이크 원장에 안 들어가고 브레이크도 안 받는다). */
+    isolated: boolean;
+  }[];
 };
 
 /** 거래소별 잔액 — 콘솔 상단 카드 (T63 §2c 파생 · 사용자 요구 2026-08-26). */

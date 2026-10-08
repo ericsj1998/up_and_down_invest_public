@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import type { FundLeg } from "./api";
 import {
+  brakeChip,
   groupedOrder,
   groupPnl,
   heatColor,
@@ -162,5 +163,62 @@ describe("hourGuard — 매시 정각 ± 30초", () => {
     expect(hourGuard(at(10, 0, 29))).toEqual({ toHour: 0, until: at(10, 0, 30) });
     expect(hourGuard(at(10, 0, 30))).toBeNull();
     expect(hourGuard(at(10, 30, 0))).toBeNull();
+  });
+});
+
+describe("brakeChip — 지금 브레이크가 걸려 있나 (2026-10-09)", () => {
+  const leg = (name: string, at: string | null, engaged = false, isolated = false) => ({
+    playbook: name,
+    name,
+    at,
+    scale: at === null ? null : "0.25",
+    engaged,
+    isolated,
+  });
+  it("옛 서버(칸 없음)면 칩을 안 그린다 — 거짓 '안 걸림' 금지", () => {
+    expect(brakeChip(undefined)).toBeNull();
+    expect(brakeChip(null)).toBeNull();
+  });
+  it("안 걸림 — 매매법 낙폭과 문턱을 적는다", () => {
+    const got = brakeChip({
+      source: "own_pnl",
+      drawdown_pct: "0.00",
+      engaged: false,
+      scale: "1",
+      recover_pct: null,
+      legs: [leg("돌파 롱", "0.10"), leg("삼각 숏", null), leg("MACD 롱", "0.10", false, true)],
+    });
+    expect(got?.tone).toBe("ok");
+    expect(got?.text).toBe("브레이크 안 걸림 · 매매법 낙폭 0%");
+    expect(got?.title).toContain("문턱 10%");
+    expect(got?.title).toContain("x0.25");
+    expect(got?.title).toContain("수동 매매");
+  });
+  it("걸림 — 배수 · 낙폭 · 걸린 다리 · 회복 필요 수익률", () => {
+    const got = brakeChip({
+      source: "own_pnl",
+      drawdown_pct: "24.36",
+      engaged: true,
+      scale: "0.25",
+      recover_pct: "32.21",
+      legs: [leg("돌파 롱", "0.10", true), leg("MACD 롱", "0.10", false, true)],
+    });
+    expect(got?.tone).toBe("on");
+    expect(got?.text).toBe("🔴 브레이크 x0.25 · 매매법 낙폭 24.4%");
+    expect(got?.title).toContain("걸린 다리 돌파 롱");
+    expect(got?.title).not.toContain("MACD 롱 ·");
+    expect(got?.title).toContain("+32.2%");
+  });
+  it("브레이크 선언이 없는 펀드", () => {
+    const got = brakeChip({
+      source: "fund",
+      drawdown_pct: "41.6",
+      engaged: false,
+      scale: "1",
+      recover_pct: "71.2",
+      legs: [leg("삼각 숏", null)],
+    });
+    expect(got?.tone).toBe("none");
+    expect(got?.text).toBe("브레이크 없음");
   });
 });

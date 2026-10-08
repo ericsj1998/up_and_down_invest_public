@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 from updown.analysis.playbook.types import BreadthCap, DrawdownBrake, EntryLimit, Playbook
+from updown.decision.portfolio_rules import drawdown_scale
 from updown.orchestration.rebalancer.gate import LegGate, LegPorts, SlotGate
 
 
@@ -426,3 +427,77 @@ def leg_gate(
             boost_mult=boost_mult,
         )
     return LegGate(gates)
+
+
+def brake_view(
+    legs: Sequence[FundLeg],
+    drawdown: Decimal,
+    *,
+    fund_brake: DrawdownBrake | None = None,
+    own_pnl: bool,
+    names: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """지금 **브레이크가 걸려 있나** — 화면 · 프로브가 읽는 한 덩어리 (사용자 2026-10-09).
+
+    Args:
+        legs: 펀드의 다리들(저장본). 비어 있으면 `fund_brake` 하나로 본다.
+        drawdown: 브레이크가 보는 낙폭(0~1 · `Coordinator.brake_drawdown`).
+        fund_brake: 다리 없는 펀드의 브레이크 선언. 다리가 있으면 안 읽는다.
+        own_pnl: 참이면 낙폭 출처가 **매매법 실현만**(브레이크 원장 · T387)이다 — 같은
+            계좌의 수동 매매 · 입출금은 안 들어간다. 거짓이면 펀드 원장(계좌 총액 앵커).
+        names: 다리 귀속 키 → 짧은 이름. 없으면 매매법 id.
+
+    Returns:
+        `{source, drawdown_pct, engaged, scale, recover_pct, legs}`.
+        `scale` = 지금 신규 진입에 곱해지는 가장 작은 배수(안 걸리면 "1") ·
+        `recover_pct` = 고점으로 돌아가는 데 필요한 실현 수익률(%) ·
+        `legs` = 다리마다 `{playbook, name, at, scale, engaged, isolated}`
+        (브레이크 없는 다리는 `at` None).
+
+    Note:
+        사용자 2026-10-09 — 수동 매매로 100 달러쯤 잃고 "브레이크가 걸려 있나" 물었다.
+        그날 펀드 원장 낙폭 41.6% · 브레이크 원장 0% 였는데 화면엔 계좌 낙폭 하나뿐이라
+        둘이 같은 것으로 읽혔다. 걸림 판정은 다리 문과 **같은 자**(`drawdown_scale` ·
+        엄격 부등호)다 — 화면이 따로 세면 문과 화면이 갈린다. 판단은 없다(읽어 적을 뿐).
+    """
+    dd = max(drawdown, Decimal(0))
+    rows: list[dict[str, Any]] = []
+    scales: list[Decimal] = []
+
+    def row(key: str, name: str, brake: DrawdownBrake | None, isolated: bool) -> None:
+        now = Decimal(1) if brake is None else drawdown_scale(dd, brake.at, brake.scale)
+        if brake is not None and not isolated:
+            scales.append(now)
+        rows.append(
+            {
+                "playbook": key,
+                "name": name,
+                "at": None if brake is None else str(brake.at),
+                "scale": None if brake is None else str(brake.scale),
+                "engaged": now != 1 and not isolated,
+                "isolated": isolated,
+            }
+        )
+
+    if legs:
+        for leg in legs:
+            label = (
+                (names or {}).get(leg.attribution)
+                or (names or {}).get(leg.playbook)
+                or leg.playbook
+            )
+            row(leg.attribution, label, leg.drawdown_brake, leg.isolated)
+    elif fund_brake is not None:
+        row("", "펀드", fund_brake, False)
+    scale = min(scales) if scales else Decimal(1)
+    recover = (
+        None if dd <= 0 or dd >= 1 else (Decimal(1) / (Decimal(1) - dd) - Decimal(1)) * Decimal(100)
+    )
+    return {
+        "source": "own_pnl" if own_pnl else "fund",
+        "drawdown_pct": str(dd * Decimal(100)),
+        "engaged": scale != 1,
+        "scale": str(scale),
+        "recover_pct": None if recover is None else str(recover),
+        "legs": rows,
+    }
