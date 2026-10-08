@@ -119,8 +119,8 @@ class PortraitSource:
                 )
                 query = cast("dict[str, Any]", meta.get("query") or {})
                 pages = cast("dict[str, Any]", query.get("pages") or {})
-                first_page: object = next(iter(pages.values()), {})
-                page = cast("dict[str, Any]", first_page)
+                empty: dict[str, Any] = {}
+                page = cast("dict[str, Any]", next(iter(pages.values()), empty))
                 info = cast("list[dict[str, Any]]", page.get("imageinfo") or [{}])[0]
                 em = cast("dict[str, Any]", info.get("extmetadata") or {})
                 artist_raw = cast("dict[str, Any]", em.get("Artist") or {}).get("value")
