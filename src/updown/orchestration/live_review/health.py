@@ -278,11 +278,7 @@ def gate_owners(books: Sequence[object]) -> dict[str, list[str]]:
     """
     out: dict[str, list[str]] = {k: [] for k in GATE_ATTRS}
     for book in books:
-        name = str(
-            getattr(book, "short_label", "")
-            or getattr(book, "label", "")
-            or getattr(book, "playbook_id", "?")
-        )
+        name = str(getattr(book, "short_label", "") or getattr(book, "playbook_id", "?"))
         for gate, attr in GATE_ATTRS.items():
             if getattr(book, attr, None) is not None and name not in out[gate]:
                 out[gate].append(name)

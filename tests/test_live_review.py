@@ -389,7 +389,7 @@ def test_gate_owners_names_the_leg_that_declares_each_gate() -> None:
             entry_ref_surge_cap=object(),
         ),
         SimpleNamespace(
-            playbook_id="old", short_label="옛", listed=False, entry_ref_vol_pct=object()
+            playbook_id="old", short_label="급락 되돌림", listed=False, entry_ref_vol_pct=object()
         ),
     ]
     got = gate_owners(books)
