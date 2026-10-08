@@ -42,6 +42,27 @@ SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
 """티커 한 개 → CIK 검색 (`?keysTyped=AAPL`).
 
 `www.sec.gov` 의 표가 403 일 때의 대체 경로 (2026-09-10 실측)."""
+ARCHIVE_HEADERS: dict[str, str] = {
+    # 🔴 2026-10-08 실측(T442): 문서 저장소 `www.sec.gov/Archives/…` 는 `data.sec.gov` 와 달리 짧은
+    #    UA(`Mozilla/5.0`)도 "이름 이메일" UA 도 403("Undeclared Automated Tool")이고,
+    #    **브라우저가 보내는 헤더 묶음 전부** + HTTP/2 여야 200 이다
+    #    (logs/t279/t442/probe_sec2.sh · 일곱 가지 중 이 묶음만 통과). `From` 연락처는 기본 헤더에
+    #    남는다.
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/130.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+"""`get_text`(문서 저장소)에만 얹는 헤더. `data.sec.gov` 쪽은 `BROWSER_UA` 로 충분하다."""
+
 BROWSER_UA = "Mozilla/5.0"
 """실제로 보내는 User-Agent.
 
@@ -159,6 +180,10 @@ class EdgarClient:
             policy=RetryPolicy(max_retries=max_retries, retriable=RETRIABLE),
             throttle_of=lambda _path: throttle,
             transport=transport,
+            # 🔴 HTTP/2 — 문서 저장소(`www.sec.gov/Archives`)는 파이썬 HTTP/1.1 요청을 어떤 헤더로도
+            #    403 한다(T442 실측). `data.sec.gov` 는 둘 다 받는다. 시험 전송 계층(`transport`)이
+            #    있으면 httpx 가 그쪽을 쓴다.
+            http2=True,
         )
         self._base_url = base_url.rstrip("/")
         self._tickers_url = tickers_url
@@ -328,8 +353,40 @@ class EdgarClient:
                 raise UnknownEntityError(f"EDGAR 에 없다({url})") from exc
             raise EdgarApiError(str(exc), status_code=exc.status_code) from exc
 
+    async def get_text(self, url: str) -> str:
+        """GET 하고 본문 문자열을 돌려준다 — 문서 저장소(`www.sec.gov/Archives/…`)용 (T442).
+
+        13F 정보표(XML) · 접수 폴더 목록(JSON)처럼 `data.sec.gov` 밖의 문서를 받는다.
+
+        `ARCHIVE_HEADERS`(브라우저 헤더 묶음)를 얹는다 — 그래야 저장소가 403 을 안 낸다.
+
+        Args:
+            url: 절대 URL.
+
+        Returns:
+            본문.
+
+        Raises:
+            UnknownEntityError: 404.
+            EdgarApiError: 재시도 뒤에도 실패, 또는 2xx 가 아니다.
+        """
+        try:
+            response = await self._http.request("GET", url, headers=ARCHIVE_HEADERS)
+        except OutboundError as exc:
+            if exc.status_code == HTTP_NOT_FOUND:
+                raise UnknownEntityError(f"EDGAR 에 없다({url})") from exc
+            raise EdgarApiError(str(exc), status_code=exc.status_code) from exc
+        if response.status_code == HTTP_NOT_FOUND:
+            raise UnknownEntityError(f"EDGAR 에 없다({url})")
+        if response.is_error:
+            raise EdgarApiError(
+                f"EDGAR 오류 응답({url}): {response.status_code}", status_code=response.status_code
+            )
+        return response.text
+
 
 __all__ = [
+    "ARCHIVE_HEADERS",
     "BASE_URL",
     "CIK_WIDTH",
     "RATE_PER_SECOND",

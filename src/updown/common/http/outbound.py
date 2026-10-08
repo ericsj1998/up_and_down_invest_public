@@ -223,6 +223,7 @@ class Outbound:
         throttle_of: Callable[[str], ThrottleLike | None] | None = None,
         on_response: Callable[[str, httpx.Headers], None] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        http2: bool = False,
     ) -> None:
         """클라이언트를 만든다.
 
@@ -235,6 +236,9 @@ class Outbound:
             throttle_of: 경로 → 스로틀. None 을 돌려주면 그 경로는 안 기다린다.
             on_response: 응답마다 `(경로, 헤더)` 로 불린다 — 요율 눈금(`ratelimit.observe`) 자리.
             transport: 시험용 전송 계층.
+            http2: HTTP/2 로 말한다(`h2` 패키지). 기본 False — 출처가 요구할 때만(T442 · SEC 문서
+                저장소는 파이썬 HTTP/1.1 요청을 403 하고 HTTP/2 는 받는다 ·
+                `logs/t279/t442/probe_h2.sh`).
         """
         self.venue = venue
         self.policy = policy or RetryPolicy()
@@ -245,6 +249,7 @@ class Outbound:
         self._timeout = timeout
         self._headers = dict(headers or {})
         self._transport = transport
+        self._http2 = http2
         self._client = self._new_client()
 
     def _new_client(self) -> httpx.AsyncClient:
@@ -254,6 +259,7 @@ class Outbound:
             timeout=self._timeout,
             headers=self._headers,
             transport=self._transport,
+            http2=self._http2,
         )
 
     @property

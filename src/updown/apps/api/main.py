@@ -70,6 +70,8 @@ from updown.apps.api.report import router as report_router
 from updown.apps.api.resources_admin import router as resources_admin_router
 from updown.apps.api.toss_proxy import router as toss_proxy_router
 from updown.apps.api.walkforward import router as walkforward_router
+from updown.apps.api.whalesurfer import attach_whalesurfer
+from updown.apps.api.whalesurfer import router as whalesurfer_router
 from updown.common import paths as log_paths
 from updown.common.config import Settings, load_settings
 from updown.common.db.session import create_engine, create_session_factory
@@ -225,6 +227,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         attach_fundamentals(resolved_state.session_factory, resolved_state.settings)
         # ⭐ 주요 일정 달력(T276) — FRED·Finnhub 키는 설정에서. 없으면 그 출처만 이유와 함께 빈다.
         attach_calendar(resolved_state.settings)
+        attach_whalesurfer(resolved_state.settings)  # T442 — 13F 보유 지도(EDGAR 연락처만 쓴다)
         # ⭐ 저평가 1단계 캐시의 Redis 사본 — 배포·재시작 뒤에도 "준비 중 N종" 이 안 뜨게
         #    (2026-09-11).
         attach_quick_cache(getattr(resolved_state, "redis", None))
@@ -323,6 +326,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
             attach_state_store(None)
             attach_fundamentals(None)
             attach_calendar(None)
+            attach_whalesurfer(None)
             attach_quick_cache(None)
             attach_candles(None)
             attach_accounts(None)
@@ -497,6 +501,9 @@ def create_app(state: ApiState | None = None) -> FastAPI:
     # ⭐ 거시 지표(T262) — VIX·선물·환율·금리·물가. 시장 공개 값이라 읽기 권한.
     app.include_router(macro_router)
     app.include_router(calendar_router)  # T276 주요 일정 달력 — 예정일만, 방향 없음
+    app.include_router(
+        whalesurfer_router
+    )  # T442 WhaleSurfer — 13F 보유 지도 · 분석 · 안내만, 주문 없음
     # ⭐ 차트 채점(dev · T281) — 연구 결과 JSON 을 차트에 놓고 O/X·수기 포지션. 관리자만.
     app.include_router(grading_router)
     # ⭐ 온보딩 위저드(T247) — 초안은 계정 저장소, 생성은 펀드 API 를 그대로 부른다.

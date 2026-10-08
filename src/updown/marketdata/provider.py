@@ -530,6 +530,27 @@ def fundamentals_adapter(settings: Settings, config: FundamentalsConfig) -> Fund
     return EdgarAdapter(EdgarClient(settings.edgar_user_agent), config)
 
 
+def edgar_client(settings: Settings) -> EdgarClient:
+    """EDGAR 클라이언트 — 재무 **밖** 공시(13F 보유 보고 등)를 읽는 길의 유일한 획득 지점.
+
+    절대 규칙 #0 · T442.
+
+    Args:
+        settings: `edgar_user_agent` 를 읽는다.
+
+    Returns:
+        연락처 헤더 · 초당 10 요청 스로틀이 든 클라이언트.
+
+    Raises:
+        ConfigurationError: `EDGAR_USER_AGENT` 가 비었다(규칙 #8 · `fundamentals_adapter` 와 같다).
+    """
+    if not settings.edgar_user_agent:
+        raise ConfigurationError(
+            "EDGAR_USER_AGENT 가 비었다 — SEC 는 이름·이메일 없는 요청을 403 으로 막는다"
+        )
+    return EdgarClient(settings.edgar_user_agent)
+
+
 def calendar_adapter(settings: Settings, config: CalendarConfig) -> CalendarAdapter:
     """주요 일정 어댑터 — **조회 경로의 유일한 획득 지점** (절대 규칙 #0 · T276).
 

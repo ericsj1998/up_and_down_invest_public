@@ -20,7 +20,7 @@ dependencies = [
     # D-3: redis-py — 시세 캐시 / 단일 실행 락 / 알림 큐
     "redis>=5.2",
     "apscheduler>=3.11",
-    "httpx>=0.28",
+    "httpx[http2]>=0.28",  # T442 — SEC 문서 저장소(www.sec.gov)는 HTTP/1.1 파이썬 요청을 403 하고 HTTP/2 는 받는다
     "websockets>=14.0",
     "structlog>=24.4",
     "pydantic-settings>=2.7",

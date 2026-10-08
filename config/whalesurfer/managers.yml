@@ -1,0 +1,91 @@
+# WhaleSurfer — 추적하는 13F 보고자 목록 (T442 · 2026-10-08).
+#
+# - 13F 는 **기관 단위** 보고다. `person` 은 그 기관을 대표하는 운용자(표시용)이고, `label` 은 보고자 이름이다.
+# - CIK 는 2026-10-08 EDGAR submissions 의 이름과 대조했다(logs/t279/t440/probe_cik2.py · 전부 일치 · 최근 13F-HR 2026-08).
+# - `image` 는 아직 없다(null) — 사진 출처 · 라이선스는 T442 §6([결정 필요]). 넣으면 `image: /brand/whales/<cik>.jpg` 꼴.
+# - 🔴 13F 에는 공매도가 없다. "숏 위주 인물" 은 이 표로 구분할 수 없고 Put 보유로만 간접 추정된다.
+# - 확인 필요(이 CIK 의 13F-HR 이 끊김 · 새 CIK 를 찾아 넣는다): Appaloosa 0001006438(마지막 2016-02) · Greenlight Capital 0001079114(2024-02).
+managers:
+  - { cik: "0001067983", label: "Berkshire Hathaway", person: "Warren Buffett" }
+  - { cik: "0001336528", label: "Pershing Square Capital Management", person: "Bill Ackman" }
+  - { cik: "0001649339", label: "Scion Asset Management", person: "Michael Burry" }
+  - { cik: "0001061768", label: "Baupost Group", person: "Seth Klarman" }
+  - { cik: "0001350694", label: "Bridgewater Associates", person: "Ray Dalio" }
+  - { cik: "0001536411", label: "Duquesne Family Office", person: "Stanley Druckenmiller" }
+  - { cik: "0001037389", label: "Renaissance Technologies", person: "Jim Simons" }
+  - { cik: "0001423053", label: "Citadel Advisors", person: "Ken Griffin" }
+  - { cik: "0001029160", label: "Soros Fund Management", person: "George Soros" }
+  - { cik: "0001040273", label: "Third Point", person: "Dan Loeb" }
+  - { cik: "0001167483", label: "Tiger Global Management", person: "Chase Coleman" }
+  - { cik: "0001061165", label: "Lone Pine Capital", person: "Stephen Mandel" }
+  - { cik: "0001791786", label: "Elliott Investment Management", person: "Paul Singer" }
+  - { cik: "0000921669", label: "Icahn Capital", person: "Carl Icahn" }
+  - { cik: "0001697748", label: "ARK Investment Management", person: "Cathie Wood" }
+  - { cik: "0001135730", label: "Coatue Management", person: "Philippe Laffont" }
+  - { cik: "0001103804", label: "Viking Global Investors", person: "Andreas Halvorsen" }
+  - { cik: "0001009207", label: "D. E. Shaw & Co.", person: "David Shaw" }
+  - { cik: "0001179392", label: "Two Sigma Investments", person: "John Overdeck · David Siegel" }
+  - { cik: "0001273087", label: "Millennium Management", person: "Izzy Englander" }
+  - { cik: "0001549575", label: "Dalal Street (Pabrai Funds)", person: "Mohnish Pabrai" }
+  - { cik: "0001166559", label: "Gates Foundation Trust", person: "Bill Gates" }
+  - { cik: "0001709323", label: "Himalaya Capital Management", person: "Li Lu" }
+  - { cik: "0001112520", label: "Akre Capital Management", person: "Chuck Akre" }
+  - { cik: "0000949509", label: "Oaktree Capital Management", person: "Howard Marks" }
+  - { cik: "0001603466", label: "Point72 Asset Management", person: "Steve Cohen" }
+  - { cik: "0001056831", label: "Fairholme Capital Management", person: "Bruce Berkowitz" }
+  - { cik: "0001345471", label: "Trian Fund Management", person: "Nelson Peltz" }
+
+# 13F 에는 티커가 없다. 바로가기 단추(바이낸스 주식 무기한 등)에만 쓰는 **수동** CUSIP → 티커 표.
+# OpenFIGI(무료 · 키 없이 분당 25건)로 대체 예정([결정 필요] · T442 §5). 틀리면 이 표만 고친다 — 화면엔 보고서의 발행사 이름이 함께 보인다.
+cusip_tickers:
+  "037833100": AAPL
+  "594918104": MSFT
+  "023135106": AMZN
+  "67066G104": NVDA
+  "02079K305": GOOGL
+  "02079K107": GOOG
+  "30303M102": META
+  "88160R101": TSLA
+  "084670702": BRKB
+  "11135F101": AVGO
+  "46625H100": JPM
+  "92826C839": V
+  "91324P102": UNH
+  "30231G102": XOM
+  "478160104": JNJ
+  "931142103": WMT
+  "57636Q104": MA
+  "742718109": PG
+  "437076102": HD
+  "22160K105": COST
+  "68389X105": ORCL
+  "191216100": KO
+  "060505104": BAC
+  "166764100": CVX
+  "58933Y105": MRK
+  "713448108": PEP
+  "64110L106": NFLX
+  "007903107": AMD
+  "00724F101": ADBE
+  "79466L302": CRM
+  "674599105": OXY
+  "025816109": AXP
+  "615369105": MCO
+  "125523100": CB
+  "500754106": KHC
+  "23918K108": DVA
+  "01609W102": BABA
+  "874039100": TSM
+  "69608A108": PLTR
+  "19260Q107": COIN
+  "594972408": MSTR
+  "254687106": DIS
+  "458140100": INTC
+  "17275R102": CSCO
+  "747525103": QCOM
+  "90353T100": UBER
+  "532457108": LLY
+  "00287Y109": ABBV
+  "78462F103": SPY
+  "46090E103": QQQ
+  "78463V107": GLD
