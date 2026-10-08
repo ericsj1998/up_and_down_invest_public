@@ -163,6 +163,10 @@ def test_figi_pick_prefers_us_composite_and_file_title() -> None:
         == "File:Warren_Buffett_KU_Visit.jpg"
     )
     assert file_title("https://x/y/Some%20Name.png") == "File:Some Name.png"
+    assert (
+        file_title("https://x/y/Pic.jpg?campaign=api&utm_content=thumbnail_unscaled")
+        == "File:Pic.jpg"
+    )
 
 
 def _rep(rows: list[tuple[str, int, int]]) -> dict[str, Any]:

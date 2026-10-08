@@ -38,7 +38,9 @@ def file_title(image_url: str) -> str | None:
 
     썸네일 URL 은 `/thumb/…/이름/000px-이름` 꼴이라 원본 URL 을 쓴다.
     """
-    name = urllib.parse.unquote(image_url.rsplit("/", 1)[-1])
+    # 요약 API 의 원본 URL 에는 `?campaign=…` 같은 꼬리가 붙는다 — 경로만 본다.
+    path = urllib.parse.urlsplit(image_url).path
+    name = urllib.parse.unquote(path.rsplit("/", 1)[-1])
     return f"File:{name}" if name else None
 
 
@@ -117,11 +119,14 @@ class PortraitSource:
                 )
                 query = cast("dict[str, Any]", meta.get("query") or {})
                 pages = cast("dict[str, Any]", query.get("pages") or {})
-                page = cast("dict[str, Any]", next(iter(pages.values()), {}))
+                first_page: object = next(iter(pages.values()), {})
+                page = cast("dict[str, Any]", first_page)
                 info = cast("list[dict[str, Any]]", page.get("imageinfo") or [{}])[0]
                 em = cast("dict[str, Any]", info.get("extmetadata") or {})
-                artist = _plain(str(em.get("Artist", {}).get("value", "")))
-                lic = str(em.get("LicenseShortName", {}).get("value", "")).strip()
+                artist_raw = cast("dict[str, Any]", em.get("Artist") or {}).get("value")
+                lic_raw = cast("dict[str, Any]", em.get("LicenseShortName") or {}).get("value")
+                artist = _plain(str(artist_raw or ""))
+                lic = str(lic_raw or "").strip()
                 result["credit"] = " · ".join(x for x in (artist, lic, "Wikimedia Commons") if x)
             except (OutboundError, ValueError) as exc:
                 result["credit"] = "Wikimedia Commons"

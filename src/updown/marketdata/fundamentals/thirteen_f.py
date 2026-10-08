@@ -220,7 +220,7 @@ async def all_filings(client: EdgarLike, subs: Mapping[str, Any]) -> dict[str, A
 
 
 async def recent_reports(
-    client: EdgarLike, cik: str, limit: int = 1, *, deep: bool = False
+    client: EdgarLike, cik: str, limit: int = 1, *, deep: bool = False, strict: bool = True
 ) -> list[Report13F]:
     """최근 13F-HR 을 받아 보유 줄까지 만든다 — 접수 한 건에 EDGAR 요청 둘(index.json · 정보표).
 
@@ -229,12 +229,13 @@ async def recent_reports(
         cik: 보고자 CIK(앞 0 있어도 된다).
         limit: 최근 몇 분기.
         deep: True 면 옛 접수 묶음까지 읽어 `recent` 밖의 13F 도 본다(`all_filings`).
+        strict: False 면 정보표 XML 이 없는 접수(2013-06 전의 텍스트 13F)는 건너뛴다. True 면 예외.
 
     Returns:
         새것부터. 13F-HR 이 없는 CIK 면 빈 목록.
 
     Raises:
-        ThirteenFError: 정보표 파일을 못 찾았거나 XML 이 깨졌다.
+        ThirteenFError: 정보표 파일을 못 찾았거나(strict) XML 이 깨졌다.
     """
     subs = await client.submissions(cik)
     if deep:
@@ -252,6 +253,8 @@ async def recent_reports(
             infotable_name(cast("Mapping[str, Any]", index)) if isinstance(index, Mapping) else None
         )
         if name is None:
+            if not strict:
+                continue  # 2013-06 전 텍스트 13F — XML 정보표가 없다
             raise ThirteenFError(f"정보표 XML 을 못 찾았다: {meta['accession']}")
         text = await client.get_text(f"{folder}/{name}")
         out.append(
