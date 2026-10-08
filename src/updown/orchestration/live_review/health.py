@@ -278,8 +278,6 @@ def gate_owners(books: Sequence[object]) -> dict[str, list[str]]:
     """
     out: dict[str, list[str]] = {k: [] for k in GATE_ATTRS}
     for book in books:
-        if getattr(book, "listed", True) is False:
-            continue
         name = str(
             getattr(book, "short_label", "")
             or getattr(book, "label", "")
