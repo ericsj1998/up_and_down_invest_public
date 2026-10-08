@@ -2558,6 +2558,14 @@ export function consoleBalances(): Promise<{
       testnet?: string;
       /** 오늘(KST 00시~) 실현 순손익 — 수수료·펀딩 포함 (2026-08-26). */
       today_pnl?: string;
+      month_pnl?: string;
+      /** 매매법 몫(시스템 주문) · 밖(사람 주문 → 출금으로 봄) · 모름 — 끝난 주문 text 로 가른다 (2026-10-09). */
+      today_pnl_strategy?: string;
+      today_pnl_outside?: string;
+      today_pnl_unknown?: string;
+      month_pnl_strategy?: string;
+      month_pnl_outside?: string;
+      month_pnl_unknown?: string;
     }
   >;
 }> {

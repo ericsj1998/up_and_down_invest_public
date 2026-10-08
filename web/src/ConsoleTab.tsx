@@ -181,6 +181,13 @@ export function ConsoleTab({ openRun }: Props) {
         error?: string;
         today_pnl?: string;
         month_pnl?: string;
+        /** 매매법 몫(시스템 주문 `t-`) · 밖(사람 주문 — 화면은 출금) · 모름(주문 번호 못 찾음) — 2026-10-09. 옛 서버는 없다. */
+        today_pnl_strategy?: string;
+        today_pnl_outside?: string;
+        today_pnl_unknown?: string;
+        month_pnl_strategy?: string;
+        month_pnl_outside?: string;
+        month_pnl_unknown?: string;
       }
     >
   >({});
@@ -438,11 +445,20 @@ export function ConsoleTab({ openRun }: Props) {
   // ⭐ 손익 카드 — 금액+% 병기 원칙. 오늘 손익(사용자 요구 2026-08-26)에서 **이번 달 손익을 큰 값으로 ·
   //    오늘은 그 아래 작은 줄로** 바꿨다(사용자 2026-09-24). % 분모는 둘 다 계좌 총액(위 카드와 같은 자).
   //    서버가 장부를 구간 시작까지 못 읽으면 그 칸을 안 준다 — "—" 로 그리고 0 으로 꾸미지 않는다 (규칙 #8).
-  const pnlOf = (name: string, key: "today_pnl" | "month_pnl"): number | null => {
+  type PnlKey =
+    | "today_pnl"
+    | "month_pnl"
+    | "today_pnl_strategy"
+    | "today_pnl_outside"
+    | "today_pnl_unknown"
+    | "month_pnl_strategy"
+    | "month_pnl_outside"
+    | "month_pnl_unknown";
+  const pnlOf = (name: string, key: PnlKey): number | null => {
     const raw = purses[name]?.[key];
     return raw === undefined || raw === "" ? null : Number(raw);
   };
-  const sumOf = (names: string[], key: "today_pnl" | "month_pnl") => {
+  const sumOf = (names: string[], key: PnlKey) => {
     const parts = names.map((name) => ({ name, value: pnlOf(name, key) }));
     const total = parts.some((one) => one.value !== null)
       ? parts.reduce((sum, one) => sum + (one.value ?? 0), 0)
@@ -460,19 +476,43 @@ export function ConsoleTab({ openRun }: Props) {
     const month = sumOf(names, "month_pnl");
     const today = sumOf(names, "today_pnl");
     if (month.total === null && today.total === null) return null;
-    const todayTone = toneOf(today.total);
+    // ⭐ 매매법 몫 / 출금 (사용자 2026-10-09: "매매법 손익과 출금이 분리되면 좋지 않을까"). 서버가 끝난 주문의
+    //    text 로 가른 값이 있으면 **큰 값 = 매매법 몫**이고, 사람이 거래소 화면에서 낸 주문의 손익은 "출금" 줄로,
+    //    계좌 전체 합은 그 아래 줄로 적는다 — 펀드 원장 재분류(10-09)와 같은 뜻. 옛 서버(칸 없음)면 전처럼 합만.
+    const monthOwn = sumOf(names, "month_pnl_strategy");
+    const monthOut = sumOf(names, "month_pnl_outside");
+    const monthUnk = sumOf(names, "month_pnl_unknown");
+    const todayOwn = sumOf(names, "today_pnl_strategy");
+    const todayOut = sumOf(names, "today_pnl_outside");
+    const split = monthOwn.total !== null || todayOwn.total !== null;
+    const monthMain = split ? monthOwn.total : month.total;
+    const todayMain = split ? todayOwn.total : today.total;
+    const todayTone = toneOf(todayMain);
+    const outLine = (label: string, out: number | null, whole: number | null) =>
+      out === null || whole === null || out === 0 ? null : (
+        <span className="block font-mono">
+          {label} 출금(매매법 밖 주문) {signed(out, base)} · 계좌 전체 {signed(whole, base)}
+        </span>
+      );
     return (
       <Card
-        name="이번 달 손익 (KST 1일 00시~ · 실현)"
-        value={month.total === null ? "—" : signed(month.total, base)}
-        tone={toneOf(month.total)}
+        name={split ? "이번 달 매매법 손익 (KST 1일 00시~ · 실현)" : "이번 달 손익 (KST 1일 00시~ · 실현)"}
+        value={monthMain === null ? "—" : signed(monthMain, base)}
+        tone={toneOf(monthMain)}
         hint={
           <>
             <span
               className={`block font-mono ${todayTone === "gain" ? "text-gain" : todayTone === "loss" ? "text-loss" : ""}`}
             >
-              오늘 {today.total === null ? "—" : signed(today.total, base)}
+              오늘 {todayMain === null ? "—" : signed(todayMain, base)}
             </span>
+            {split ? outLine("이번 달", monthOut.total, month.total) : null}
+            {split ? outLine("오늘", todayOut.total, today.total) : null}
+            {split && monthUnk.total !== null && monthUnk.total !== 0 ? (
+              <span className="block">
+                주문 번호를 못 찾은 손익 {signed(monthUnk.total, null)} — 어느 쪽에도 안 넣었다
+              </span>
+            ) : null}
             <span className="block">
               {names.length > 1
                 ? month.parts

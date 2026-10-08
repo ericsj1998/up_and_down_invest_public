@@ -714,6 +714,39 @@ class GatePaperAdapter:
             for row in rows
         ]
 
+    async def finished_orders(self, limit: int = 1000) -> list[dict[str, str]]:
+        """끝난 주문(전 계약) — **누가 낸 주문인가**를 가르는 재료 (사용자 2026-10-09).
+
+        Args:
+            limit: 가져올 줄 수(거래소 최대 1000).
+
+        Returns:
+            `{id, contract, text, create_time, finish_as}` 목록. 못 읽으면 빈 목록.
+
+        Note:
+            시스템 주문은 `text` 가 `t-` 로 시작한다(판 표식). 거래소 화면에서 사람이 낸 주문은
+            `web…` · `app…` · `ao-…` 다. 자금 원장(`account_book`)의 `text` 는 `계약:주문번호` 라
+            이 목록의 `id` 와 맞추면 손익 줄을 "매매법 몫 / 매매법 밖(출금으로 봄)" 으로 가를 수
+            있다.
+            ⛔ 여기서 가르지 않는다 — 규칙은 `report/performance.split_account_book` 에 있다.
+            ⚠️ 실패해도 빈 목록이다. 분류용이지 리스크 감소 행동을 막는 데 쓰이지 않는다 (§1.2.1).
+        """
+        try:
+            rows = await self._trade.list_orders(None, status="finished", limit=limit)
+        except Exception as exc:
+            _logger.warning("finished_orders_unreadable", payload={"error": str(exc)[:120]})
+            return []
+        return [
+            {
+                "id": str(row.get("id", "")),
+                "contract": str(row.get("contract", "")),
+                "text": str(row.get("text", "")),
+                "create_time": str(row.get("create_time", "")),
+                "finish_as": str(row.get("finish_as", "")),
+            }
+            for row in rows
+        ]
+
     async def set_leverage(self, instrument: Instrument, leverage: Decimal) -> None:
         """그 계약의 **격리 마진 배율**을 바꾼다 (사용자 요구 2026-08-19).
 

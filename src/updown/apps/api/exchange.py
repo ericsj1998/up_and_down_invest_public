@@ -58,6 +58,7 @@ from updown.orchestration.liquidity import Liquidity, escape_plan, probe_book
 from updown.orchestration.report.performance import (
     book_reaches,
     kst_day_and_month,
+    split_account_book,
     summarize_account_book,
 )
 from updown.orchestration.walkforward.live_runner import (
@@ -293,9 +294,18 @@ async def _balances_fresh() -> dict[str, Any]:
                 "list[dict[str, Any]]", await cast("Any", orders).account_book(limit=_BOOK_ROWS)
             )
             rows = [{k: str(v) for k, v in item.items()} for item in book]
+            # ⭐ 누구 주문인가 (사용자 2026-10-09 "매매법 손익과 출금이 분리되면") — 끝난 주문의
+            #    text 로 장부 손익 줄을 매매법 몫 / 밖(화면은 출금) / 모름으로 가른다. 목록이 없으면
+            #    (바이낸스 · 페이퍼) 합만 준다 — 화면이 그 칸을 안 그린다.
+            texts = await _order_texts(orders)
             for key, window in (("today_pnl", today), ("month_pnl", month)):
                 if book_reaches(rows, window.since, _BOOK_ROWS):
                     row[key] = str(summarize_account_book(rows, window).net)
+                    if texts is not None:
+                        parts = split_account_book(rows, window, texts)
+                        row[f"{key}_strategy"] = str(parts.strategy.net)
+                        row[f"{key}_outside"] = str(parts.outside.net)
+                        row[f"{key}_unknown"] = str(parts.unknown.net)
                 else:
                     _logger.warning(
                         "console_pnl_book_short",
@@ -327,6 +337,31 @@ _logger = get_logger("api.exchange")
 _BOOK_ROWS = 1000
 """손익 카드가 읽는 장부 줄 수 — Gate account_book 한 번에 받는 최대치.
 한 달에 수백 줄이라 보통 월초까지 닿고, 못 닿으면 `book_reaches` 가 그 칸을 비운다."""
+
+_ORDER_ROWS = 1000
+"""손익 카드 분류가 읽는 끝난 주문 수 — 장부 줄보다 적거나 같다(주문 하나가 손익 · 수수료 여러 줄).
+"""
+
+
+async def _order_texts(orders: object) -> dict[str, str] | None:
+    """끝난 주문의 `{번호: text}` — 어댑터에 `finished_orders` 가 없으면 None (분류 불가 · 합만).
+
+    Args:
+        orders: 주문 어댑터.
+
+    Returns:
+        주문 번호 → text. 목록이 비어도 빈 dict(손익 줄이 전부 `unknown` 으로 간다 — 화면이 적는다).
+    """
+    read = getattr(orders, "finished_orders", None)
+    if read is None:
+        return None
+    try:
+        found = cast("list[dict[str, str]]", await read(limit=_ORDER_ROWS))
+    except Exception as exc:
+        _logger.warning("console_order_texts_unreadable", payload={"error": str(exc)[:120]})
+        return None
+    return {str(o.get("id", "")): str(o.get("text", "")) for o in found if o.get("id")}
+
 
 DEFAULT_SYMBOL = "BTC_USDT"
 """기본 종목. 화면이 안 보내면 이것을 본다."""

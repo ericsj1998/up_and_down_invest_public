@@ -210,6 +210,84 @@ def summarize_account_book(rows: Sequence[Mapping[str, str]], window: Window) ->
     )
 
 
+SYSTEM_ORDER_PREFIX = "t-"
+"""시스템 주문의 `text` 머리 — 판 표식(`t-<판>-<매매>`).
+사람이 거래소 화면에서 낸 주문은 `web…` · `app…` · `ao-…` 다."""
+
+
+@dataclass(frozen=True, slots=True)
+class BookSplit:
+    """자금 원장을 **누구 주문인가**로 가른 집계 (사용자 2026-10-09).
+
+    Attributes:
+        strategy: 시스템 주문(`t-`)의 손익 · 수수료 + 펀딩 전부 — 매매법 몫.
+        outside: 그 밖의 주문(사람이 거래소 화면에서 낸 것) — 화면은 **출금**으로 보여 준다.
+            펀드 원장의 재분류(`fix_fund_drawdown_1009`)와 같은 뜻이다: 매매법 성과가 아니다.
+        unknown: 주문 번호를 끝난 주문 목록에서 못 찾은 손익 · 수수료 줄 — 목록이 짧아 안 닿았거나
+            거래소가 번호를 안 적은 줄. 0 이 아니면 화면이 그 사실을 적는다(어느 쪽에도 안 넣는다).
+    """
+
+    strategy: ExchangeSummary = field(default_factory=ExchangeSummary)
+    outside: ExchangeSummary = field(default_factory=ExchangeSummary)
+    unknown: ExchangeSummary = field(default_factory=ExchangeSummary)
+
+
+def book_order_id(row: Mapping[str, str]) -> str:
+    """장부 줄의 주문 번호 — Gate `text` 는 `BTC_USDT:360288374763706` 꼴. 없으면 빈 문자열."""
+    text = str(row.get("text", ""))
+    _, sep, tail = text.partition(":")
+    return tail.strip() if sep else ""
+
+
+def classify_book_row(row: Mapping[str, str], order_texts: Mapping[str, str]) -> str:
+    """장부 한 줄이 누구 몫인가 — `strategy` · `outside` · `unknown` (순수 함수).
+
+    Args:
+        row: `account_book` 줄.
+        order_texts: `{주문 번호: 주문 text}` — `finished_orders` 에서 만든다.
+
+    Returns:
+        펀딩(`fund`) · 리베이트 등 주문 번호가 없는 줄은 `strategy` 다 — 포지션을 든 쪽은 늘
+        매매법이고
+        사람 주문은 몇 분짜리라 펀딩이 안 붙는다. 손익 · 수수료 줄은 주문 번호로 가르고, 번호를
+        못 찾으면
+        `unknown`.
+    """
+    kind = _KIND_ALIASES.get(str(row.get("type", "")), str(row.get("type", "")))
+    if kind not in ("pnl", "fee"):
+        return "strategy"
+    order_id = book_order_id(row)
+    if not order_id:
+        return "unknown"
+    text = order_texts.get(order_id)
+    if text is None:
+        return "unknown"
+    return "strategy" if text.startswith(SYSTEM_ORDER_PREFIX) else "outside"
+
+
+def split_account_book(
+    rows: Sequence[Mapping[str, str]], window: Window, order_texts: Mapping[str, str]
+) -> BookSplit:
+    """자금 원장을 구간으로 자르고 매매법 몫 · 밖 · 모름으로 가른다 (순수 함수).
+
+    Args:
+        rows: `account_book` 행들.
+        window: 집계 구간.
+        order_texts: `{주문 번호: text}`.
+
+    Returns:
+        세 집계. 세 `net` 의 합 = `summarize_account_book(rows, window).net` (줄을 잃지 않는다).
+    """
+    buckets: dict[str, list[Mapping[str, str]]] = {"strategy": [], "outside": [], "unknown": []}
+    for row in rows:
+        buckets[classify_book_row(row, order_texts)].append(row)
+    return BookSplit(
+        strategy=summarize_account_book(buckets["strategy"], window),
+        outside=summarize_account_book(buckets["outside"], window),
+        unknown=summarize_account_book(buckets["unknown"], window),
+    )
+
+
 def _row_time(row: Mapping[str, str]) -> datetime | None:
     """장부 한 줄의 시각(UTC) — 못 읽으면 None.
 

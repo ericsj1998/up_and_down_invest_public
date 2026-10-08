@@ -583,13 +583,17 @@ class GateTradeClient:
             raise GateApiError(f"주문 응답이 객체가 아니다: {type(found).__name__}")
         return cast("dict[str, Any]", found)
 
-    async def list_orders(self, contract: str | None, status: str = "open") -> list[dict[str, Any]]:
+    async def list_orders(
+        self, contract: str | None, status: str = "open", *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         """주문 목록.
 
         Args:
             contract: `BTC_USDT`. **None 이면 전 계약**(T330 · 화면 스냅샷 한 벌) — 줄마다
                 `contract` 가 온다.
             status: `open` 또는 `finished`.
+            limit: 줄 수. None 이면 거래소 기본(100). `finished` 는 한 달치가 100 을 넘으므로
+                손익 카드 분류(2026-10-09)는 1000 을 준다.
 
         Returns:
             주문 목록.
@@ -601,6 +605,8 @@ class GateTradeClient:
         params = (
             {"status": status} if contract is None else {"contract": contract, "status": status}
         )
+        if limit is not None:
+            params["limit"] = str(limit)
         found = await self._request("GET", f"/futures/{SETTLE}/orders", params=params)
         if not isinstance(found, list):
             raise GateApiError(f"주문 목록이 배열이 아니다: {type(found).__name__}")

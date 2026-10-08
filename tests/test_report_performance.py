@@ -5,6 +5,7 @@
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import ClassVar
 
 import pytest
 
@@ -13,10 +14,13 @@ from updown.orchestration.report.performance import (
     LedgerSummary,
     Performance,
     Window,
+    book_order_id,
     book_reaches,
+    classify_book_row,
     compare,
     kst_day_and_month,
     render_text,
+    split_account_book,
     summarize_account_book,
     summarize_records,
 )
@@ -242,3 +246,51 @@ class TestConsolePnlWindows:
         # 바이낸스 ms 도 같은 자
         old_ms = row(datetime(2026, 8, 1, tzinfo=UTC), ms=True)
         assert book_reaches([new, new, old_ms], since, limit=3)
+
+
+class TestSplitAccountBook:
+    """손익 카드 — 매매법 몫 / 매매법 밖(출금으로 봄) / 모름 (사용자 2026-10-09).
+
+    10-08 실측: BTC 수동 롱 7회전 -111.8 이 "이번 달 손익" 에 매매법 손실처럼 섞였다.
+    """
+
+    STAMP: ClassVar[str] = str(int((T0 + timedelta(hours=1)).timestamp()))
+    TEXTS: ClassVar[dict[str, str]] = {
+        "1": "t-13dcac-832fa68",
+        "2": "web_p_82459.4_0",
+        "3": "ao-21082012381169582",
+    }
+
+    def _rows(self) -> list[dict[str, str]]:
+        return [
+            {"type": "pnl", "change": "-10.336", "time": self.STAMP, "text": "TRB_USDT:1"},
+            {"type": "fee", "change": "-0.077", "time": self.STAMP, "text": "TRB_USDT:1"},
+            {"type": "pnl", "change": "-37.4", "time": self.STAMP, "text": "BTC_USDT:2"},
+            {"type": "fee", "change": "-2.1", "time": self.STAMP, "text": "BTC_USDT:3"},
+            {"type": "fund", "change": "-0.008", "time": self.STAMP, "text": "TRB_USDT"},
+            {"type": "pnl", "change": "-1.0", "time": self.STAMP, "text": "ETH_USDT:9"},
+            {"type": "dnw", "change": "408", "time": self.STAMP, "text": ""},
+        ]
+
+    def test_system_orders_are_strategy_and_human_orders_are_outside(self) -> None:
+        got = split_account_book(self._rows(), WINDOW, self.TEXTS)
+        assert got.strategy.net == Decimal("-10.421")  # TRB 손익 · 수수료 · 펀딩
+        assert got.outside.net == Decimal("-39.5")  # web · ao 주문
+        assert got.unknown.net == Decimal("-1.0")  # 목록에 없는 주문 번호 — 어느 쪽에도 안 넣는다
+        assert got.strategy.other == {"dnw": 1}  # 입출금은 성과가 아니라 세기만
+
+    def test_the_three_parts_add_up_to_the_whole(self) -> None:
+        rows = self._rows()
+        got = split_account_book(rows, WINDOW, self.TEXTS)
+        whole = summarize_account_book(rows, WINDOW).net
+        assert got.strategy.net + got.outside.net + got.unknown.net == whole
+
+    def test_rows_without_an_order_id_are_unknown_not_guessed(self) -> None:
+        row = {"type": "pnl", "change": "-5", "time": self.STAMP, "text": "BTC_USDT"}
+        assert classify_book_row(row, self.TEXTS) == "unknown"
+        assert book_order_id(row) == ""
+        assert book_order_id({"text": "BTC_USDT:42"}) == "42"
+
+    def test_funding_without_an_order_belongs_to_the_strategy(self) -> None:
+        assert classify_book_row({"type": "fund", "text": "TRB_USDT"}, {}) == "strategy"
+        assert classify_book_row({"type": "FUNDING_FEE", "text": ""}, {}) == "strategy"
