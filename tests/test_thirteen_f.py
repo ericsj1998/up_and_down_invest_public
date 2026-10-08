@@ -11,6 +11,7 @@ import pytest
 from updown.apps.api.whalesurfer import diff_holdings, links_for, load_managers, merge_rows
 from updown.marketdata.fundamentals.thirteen_f import (
     ThirteenFError,
+    all_filings,
     infotable_name,
     parse_infotable,
     pick_reports,
@@ -104,6 +105,15 @@ class FakeEdgar:
             },
         }
 
+    async def get_json(self, url: str) -> object:
+        self.urls.append(url)
+        return {
+            "form": ["13F-HR"],
+            "accessionNumber": ["0001-13-000001"],
+            "filingDate": ["2013-05-15"],
+            "reportDate": ["2013-03-31"],
+        }
+
     async def get_text(self, url: str) -> str:
         self.urls.append(url)
         if url.endswith("/index.json"):
@@ -125,6 +135,34 @@ async def test_recent_reports_walks_submissions_index_and_infotable() -> None:
         "https://www.sec.gov/Archives/edgar/data/1234567/000126000001/index.json",
         "https://www.sec.gov/Archives/edgar/data/1234567/000126000001/infotable.xml",
     ]
+
+
+@pytest.mark.asyncio
+async def test_all_filings_appends_older_chunks() -> None:
+    fake = FakeEdgar()
+    subs = await fake.submissions("0001234567")
+    subs["filings"]["files"] = [{"name": "CIK0001234567-submissions-001.json"}]
+    merged = await all_filings(fake, subs)
+    assert merged["filings"]["recent"]["accessionNumber"] == ["0001-26-000001", "0001-13-000001"]
+    assert fake.urls[-1] == "https://data.sec.gov/submissions/CIK0001234567-submissions-001.json"
+    assert [g["accession"] for g in pick_reports(merged, 9)] == ["0001-26-000001", "0001-13-000001"]
+
+
+def test_figi_pick_prefers_us_composite_and_file_title() -> None:
+    from updown.apps.api.whalesurfer_images import file_title
+    from updown.marketdata.fundamentals.figi import pick
+
+    rows = [{"ticker": "AAPL", "exchCode": "UA"}, {"ticker": "AAPL", "exchCode": "US"}]
+    assert pick(rows) == {"ticker": "AAPL", "exchCode": "US"}
+    assert pick([{"ticker": "X", "exchCode": "UW"}]) == {"ticker": "X", "exchCode": "UW"}
+    assert pick([]) is None
+    assert (
+        file_title(
+            "https://upload.wikimedia.org/wikipedia/commons/5/5f/Warren_Buffett_KU_Visit.jpg"
+        )
+        == "File:Warren_Buffett_KU_Visit.jpg"
+    )
+    assert file_title("https://x/y/Some%20Name.png") == "File:Some Name.png"
 
 
 def _rep(rows: list[tuple[str, int, int]]) -> dict[str, Any]:

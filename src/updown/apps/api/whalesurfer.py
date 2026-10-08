@@ -24,11 +24,13 @@ from typing import Any, cast
 import yaml
 from fastapi import APIRouter, HTTPException, Query
 
+from updown.apps.api.whalesurfer_images import PortraitSource
 from updown.common.cache import TtlCache
 from updown.common.config import ConfigurationError, Settings
 from updown.common.http.outbound import Outbound, OutboundError
 from updown.common.logging.setup import get_logger
-from updown.marketdata.fundamentals.client import EdgarClient
+from updown.marketdata.fundamentals.client import EdgarClient, contact_of
+from updown.marketdata.fundamentals.figi import FigiClient
 from updown.marketdata.fundamentals.thirteen_f import Holding13F, Report13F, recent_reports
 from updown.marketdata.provider import edgar_client
 
@@ -36,6 +38,8 @@ router = APIRouter(prefix="/whalesurfer", tags=["whalesurfer"])
 _logger = get_logger("api.whalesurfer")
 
 CONFIG_PATH = Path(__file__).resolve().parents[4] / "config" / "whalesurfer" / "managers.yml"
+CACHE_DIR = Path(__file__).resolve().parents[4] / "cache" / "whalesurfer"
+"""파일 캐시(gitignore) — CUSIP → 티커(OpenFIGI) · 인물 사진(위키백과)."""
 REPORT_TTL_S = 6 * 3600.0
 PERPS_TTL_S = 6 * 3600.0
 BINANCE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
@@ -50,24 +54,44 @@ DISCLAIMER = (
 )
 
 _settings: Settings | None = None
+_enabled = False
 _client: EdgarClient | None = None
 _binance: Outbound | None = None
+_figi: FigiClient | None = None
+_portraits: PortraitSource | None = None
 _REPORTS = TtlCache[dict[str, Any]]("whalesurfer.reports", REPORT_TTL_S)
 _CONSENSUS = TtlCache[dict[str, Any]]("whalesurfer.consensus", REPORT_TTL_S)
 _PERPS = TtlCache[dict[str, Any]]("whalesurfer.perps", PERPS_TTL_S)
+_PORTRAITS = TtlCache[dict[str, Any]]("whalesurfer.portraits", REPORT_TTL_S)
 
 
 def attach_whalesurfer(settings: Settings | None) -> None:
-    """설정을 붙인다 — API 기동 훅이 부른다. None 이면 뗀다(그러면 보고 조회가 503)."""
-    global _settings, _client
+    """설정을 붙인다 — API 기동 훅이 부른다. None 이면 뗀다.
+
+    🔴 `settings.whalesurfer_enabled` 가 꺼져 있으면(서버 환경 · D7) 모든 끝점이 404 다 —
+    EDGAR · 위키백과 · OpenFIGI 를 한 번도 부르지 않는다.
+    """
+    global _settings, _enabled, _client, _figi, _portraits
     _settings = settings
+    _enabled = bool(settings is not None and settings.whalesurfer_enabled)
     _client = None
+    _figi = None
+    _portraits = None
     _REPORTS.forget()
     _CONSENSUS.forget()
+    _PORTRAITS.forget()
+
+
+def _on_or_404() -> None:
+    if not _enabled:
+        raise HTTPException(
+            404, "WhaleSurfer 는 이 환경에서 꺼져 있다(WHALESURFER_ENABLED · 로컬 전용)"
+        )
 
 
 def _client_or_503() -> EdgarClient:
     global _client
+    _on_or_404()
     if _client is None:
         if _settings is None:
             raise HTTPException(503, "설정이 안 붙었다 — API 기동 뒤에 다시")
@@ -76,6 +100,23 @@ def _client_or_503() -> EdgarClient:
         except ConfigurationError as exc:
             raise HTTPException(503, str(exc)) from exc
     return _client
+
+
+def _figi_client() -> FigiClient:
+    global _figi
+    if _figi is None:
+        _figi = FigiClient(CACHE_DIR / "cusip_figi.json")
+    return _figi
+
+
+def _portrait_source() -> PortraitSource | None:
+    """위키백과 초상 출처 — 연락처(EDGAR 선언의 이메일)가 없으면 None(사진 없이 간다)."""
+    global _portraits
+    if _portraits is None and _settings is not None and _settings.edgar_user_agent:
+        _portraits = PortraitSource(
+            CACHE_DIR / "portraits.json", contact_of(_settings.edgar_user_agent)
+        )
+    return _portraits
 
 
 def load_managers(path: Path = CONFIG_PATH) -> tuple[list[dict[str, Any]], dict[str, str]]:
@@ -94,12 +135,17 @@ def load_managers(path: Path = CONFIG_PATH) -> tuple[list[dict[str, Any]], dict[
         cik = str(row.get("cik", "")).strip()
         if not cik.isdigit():
             raise HTTPException(503, f"managers.yml 의 CIK 가 숫자가 아니다: {row!r}")
+        person = str(row.get("person", ""))
         managers.append(
             {
                 "cik": cik.zfill(10),
                 "label": str(row.get("label", "")),
-                "person": str(row.get("person", "")),
+                "person": person,
                 "image": row.get("image"),
+                "image_credit": "수동 적재" if row.get("image") else None,
+                "image_page": None,
+                # wiki: 위키백과 제목. 없으면 인물 이름 · "" 이면 사진을 찾지 않는다(기관만 있는 줄)
+                "wiki": row.get("wiki", person) if "wiki" in row else person,
                 "note": row.get("note"),
             }
         )
@@ -257,10 +303,48 @@ def links_for(ticker: str | None, perp_symbols: Sequence[str]) -> dict[str, str 
     return {"toss": None, "binance": binance, "gate": None}
 
 
+async def _with_portraits(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`image` 가 없고 `wiki` 가 비어 있지 않은 보고자에 위키백과 초상을 붙인다.
+
+    파일 캐시 + 6시간 메모리 캐시.
+    """
+    source = _portrait_source()
+    if source is None:
+        return rows
+
+    async def _build() -> dict[str, Any]:
+        sem = asyncio.Semaphore(PARALLEL)
+
+        async def one(m: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+            if m.get("image") or not m.get("wiki"):
+                return m["cik"], None
+            async with sem:
+                return m["cik"], await source.portrait(str(m["wiki"]))
+
+        got = await asyncio.gather(*(one(m) for m in rows))
+        return {cik: p for cik, p in got if p}
+
+    found = await _PORTRAITS.get_or_fetch("*", _build)
+    out: list[dict[str, Any]] = []
+    for m in rows:
+        p = found.get(m["cik"])
+        if p and p.get("image"):
+            m = {
+                **m,
+                "image": p["image"],
+                "image_credit": p.get("credit"),
+                "image_page": p.get("page"),
+            }
+        out.append(m)
+    return out
+
+
 @router.get("/managers")
 async def managers() -> dict[str, Any]:
-    """추적 목록 — 설정 표 그대로(네트워크 없음)."""
+    """추적 목록 — 설정 표 + 위키백과 초상(저작자 표시)."""
+    _on_or_404()
     rows, tickers = load_managers()
+    rows = await _with_portraits(rows)
     return {
         "managers": rows,
         "count": len(rows),
@@ -273,6 +357,7 @@ async def managers() -> dict[str, Any]:
 @router.get("/managers/{cik}")
 async def manager(cik: str, n: int = Query(4, ge=1, le=MAX_QUARTERS)) -> dict[str, Any]:
     """한 보고자의 최근 n 분기 — 보고마다 보유 줄 · 직전 분기 대비 변화."""
+    _on_or_404()
     rows, _tickers = load_managers()
     meta = next((m for m in rows if m["cik"] == cik.zfill(10)), None)
     if meta is None:
@@ -354,6 +439,7 @@ async def consensus() -> dict[str, Any]:
 @router.get("/stocks/{cusip}")
 async def stock(cusip: str) -> dict[str, Any]:
     """한 종목 — 누가 들고 있고 누가 늘리고 줄였나 · 바로가기 · 추정 손익 자리."""
+    _on_or_404()
     rows, tickers = load_managers()
     key = cusip.strip().upper()
     cons = await consensus()
@@ -384,12 +470,23 @@ async def stock(cusip: str) -> dict[str, Any]:
     holders.sort(key=lambda r: r["value_usd"], reverse=True)
     perps = await _perps()
     ticker = tickers.get(key)
+    ticker_source = "config/whalesurfer/managers.yml cusip_tickers(수동)" if ticker else None
+    if ticker is None:
+        # D3(사용자 "키 없이 쓰자") — OpenFIGI 로 찾고 파일에 캐시한다. 실패해도 종목 상세는 뜬다.
+        try:
+            got = await _figi_client().map_cusips([key])
+            ticker = cast("str | None", got.get(key, {}).get("ticker"))
+            ticker_source = "OpenFIGI" if ticker else None
+        except Exception as exc:
+            _logger.info(
+                "whalesurfer_figi_unavailable", payload={"cusip": key, "detail": str(exc)[:80]}
+            )
     issuer = slot["issuer"] if slot else (holders[0]["issuer"] if holders else None)
     return {
         "cusip": key,
         "issuer": issuer,
         "ticker": ticker,
-        "ticker_source": "config/whalesurfer/managers.yml cusip_tickers(수동)" if ticker else None,
+        "ticker_source": ticker_source,
         "consensus": slot,
         "holders": holders,
         "links": links_for(ticker, perps["symbols"]),

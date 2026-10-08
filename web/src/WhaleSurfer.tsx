@@ -383,6 +383,18 @@ export function WhaleSurferPage() {
                       {current.label} · CIK {current.cik}
                       {report ? ` · ${report.entity}` : ""}
                     </div>
+                    {current.image && current.image_credit ? (
+                      <div className="text-[10px] text-blue-gray-400">
+                        사진:{" "}
+                        {current.image_page ? (
+                          <a href={current.image_page} target="_blank" rel="noreferrer" className="underline">
+                            {current.image_credit}
+                          </a>
+                        ) : (
+                          current.image_credit
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-sm">

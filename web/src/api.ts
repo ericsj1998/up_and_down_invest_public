@@ -3199,6 +3199,9 @@ export type WhaleManager = {
   label: string;
   person: string;
   image: string | null;
+  /** 사진 출처 — 위키미디어 공용은 저작자 · 라이선스 표시가 필수라 화면에 단다. 수동 적재면 "수동 적재". */
+  image_credit: string | null;
+  image_page: string | null;
   note: string | null;
 };
 

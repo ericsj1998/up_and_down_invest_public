@@ -23,6 +23,7 @@ from typing import Any, Protocol, cast
 from updown.marketdata.fundamentals.adapter import FundamentalsError
 
 ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data"
+SUBMISSIONS_URL = "https://data.sec.gov/submissions"
 DOLLARS_SINCE = date(2023, 1, 3)
 """이 날 이후 접수분의 ``value`` 는 달러, 그 전은 천 달러."""
 FORM = "13F-HR"
@@ -38,6 +39,10 @@ class EdgarLike(Protocol):
 
     async def submissions(self, cik: str) -> dict[str, Any]:
         """``data.sec.gov/submissions/CIK….json``."""
+        ...
+
+    async def get_json(self, url: str) -> object:
+        """``data.sec.gov`` 의 JSON(옛 접수 묶음)."""
         ...
 
     async def get_text(self, url: str) -> str:
@@ -192,13 +197,38 @@ def folder_url(cik: str, accession: str) -> str:
     return f"{ARCHIVE_URL}/{cik.lstrip('0') or '0'}/{accession.replace('-', '')}"
 
 
-async def recent_reports(client: EdgarLike, cik: str, limit: int = 1) -> list[Report13F]:
+async def all_filings(client: EdgarLike, subs: Mapping[str, Any]) -> dict[str, Any]:
+    """Submissions 의 `recent`(최근 1,000건)에 옛 묶음(`filings.files[*].name`)을 이어 붙인 한 표.
+
+    큰 보고자(13D · Form 4 를 많이 내는 곳)는 13년치 13F-HR 이 `recent` 밖으로 밀려난다 — 역사
+    전체를 읽을 때(T443 백테스트)만 쓴다. 묶음 파일은 `data.sec.gov/submissions/<name>` 에 있다.
+    """
+    filings = cast("Mapping[str, Any]", subs.get("filings") or {})
+    recent = cast("Mapping[str, Any]", filings.get("recent") or {})
+    merged: dict[str, list[Any]] = {
+        k: list(cast("list[Any]", recent.get(k) or []))
+        for k in ("form", "accessionNumber", "filingDate", "reportDate")
+    }
+    for chunk in cast("list[Mapping[str, Any]]", filings.get("files") or []):
+        name = str(chunk.get("name") or "")
+        if not name:
+            continue
+        body = cast("Mapping[str, Any]", await client.get_json(f"{SUBMISSIONS_URL}/{name}"))
+        for k in merged:
+            merged[k] += list(cast("list[Any]", body.get(k) or []))
+    return {"name": subs.get("name"), "filings": {"recent": merged}}
+
+
+async def recent_reports(
+    client: EdgarLike, cik: str, limit: int = 1, *, deep: bool = False
+) -> list[Report13F]:
     """최근 13F-HR 을 받아 보유 줄까지 만든다 — 접수 한 건에 EDGAR 요청 둘(index.json · 정보표).
 
     Args:
         client: EDGAR 클라이언트(연락처 헤더 · 초당 10 요청 스로틀은 거기 있다).
         cik: 보고자 CIK(앞 0 있어도 된다).
         limit: 최근 몇 분기.
+        deep: True 면 옛 접수 묶음까지 읽어 `recent` 밖의 13F 도 본다(`all_filings`).
 
     Returns:
         새것부터. 13F-HR 이 없는 CIK 면 빈 목록.
@@ -207,6 +237,8 @@ async def recent_reports(client: EdgarLike, cik: str, limit: int = 1) -> list[Re
         ThirteenFError: 정보표 파일을 못 찾았거나 XML 이 깨졌다.
     """
     subs = await client.submissions(cik)
+    if deep:
+        subs = await all_filings(client, subs)
     entity = str(subs.get("name") or cik)
     out: list[Report13F] = []
     for meta in pick_reports(subs, limit):
@@ -244,6 +276,7 @@ __all__ = [
     "Holding13F",
     "Report13F",
     "ThirteenFError",
+    "all_filings",
     "folder_url",
     "infotable_name",
     "parse_infotable",

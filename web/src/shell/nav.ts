@@ -45,7 +45,9 @@ export const PAGES: readonly Page[] = [
   { to: "/calendar", name: "주요 일정 달력", icon: CalendarDaysIcon },
   // WhaleSurfer (T442 · 2026-10-08) — 유명 13F 보고자의 보유 지도. 분석 · 안내만 · 주문 없음. 둘째 제품 후보라 나중에 떼어 갈 수 있게
   // 이 화면의 코드는 `WhaleSurfer.tsx` · API `/whalesurfer/*` 밖으로 안 번진다.
-  { to: "/whalesurfer", name: "WhaleSurfer", icon: ChartPieIcon },
+  // 🔴 D7(사용자 2026-10-08): 서버에는 안 띄운다 — dev 빌드(VITE_LABELS=1 · 로컬 compose)에서만 보이고, API 쪽도
+  //    `WHALESURFER_ENABLED` 가 켜진 환경에서만 라우터가 붙는다.
+  { to: "/whalesurfer", name: "WhaleSurfer", icon: ChartPieIcon, dev: true },
   { to: "/report", name: "리포트", icon: ChartBarIcon },
   // 백테스트 리포트 (T222) — 어떤 데이터·전략·결과로 검증했나. 주소는 /evidence 그대로(링크 보존) · 이름만 바꿈 (사용자 2026-09-06).
   { to: "/evidence", name: "백테스트 리포트", icon: BeakerIcon },
