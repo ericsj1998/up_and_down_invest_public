@@ -1,0 +1,39 @@
+# 라이브 매매 분석기(T444) — 다리별 **기대값** · 연구 엔진 · 펀드 재현에서 적어 둔 값과 라이브를 나란히 둔다.
+#
+# 키 = 다리 귀속 키의 `@` 앞 (`private_strategy`). 값은 비워 두면(`null`) 보고서에 "—" 로 나온다 —
+# 모르는 값을 지어내지 않는다. 채울 때는 출처(판 번호 · 문서 절)를 주석으로 남긴다.
+#   win_rate_pct     기대 승률 %
+#   mean_r           기대 평균 실현 R
+#   loss_share_pct   전체 손실 중 이 다리 몫 %(연구 창 · 전 다리 합 = 100)
+#   note             출처
+legs:
+  private_strategy:
+    win_rate_pct: null
+    mean_r: null
+    loss_share_pct: null
+    note: "돌파 롱 — 연구 판 C0DB(38.60) · T425 최근 2년 분해에서 채운다"
+  private_strategy:
+    win_rate_pct: null
+    mean_r: null
+    loss_share_pct: null
+    note: "삼각 숏"
+  private_strategy:
+    win_rate_pct: null
+    mean_r: null
+    loss_share_pct: null
+    note: "MACD 숏"
+  private_strategy:
+    win_rate_pct: null
+    mean_r: null
+    loss_share_pct: null
+    note: "MACD 롱(브레이크 제외 다리)"
+  private_strategy:
+    win_rate_pct: null
+    mean_r: null
+    loss_share_pct: null
+    note: "일봉 채널"
+  private_strategy:
+    win_rate_pct: null
+    mean_r: null
+    loss_share_pct: null
+    note: "급락 되돌림"

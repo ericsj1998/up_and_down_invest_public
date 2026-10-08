@@ -172,3 +172,16 @@ fmt: ## 자동 수정 + 포맷
 	uv run ruff format .
 
 ci: lint boundaries test ## CI 와 동일한 순서로 로컬 실행
+
+# ── 라이브 매매 분석기 (T444 · 2026-10-09) ─────────────────────────────
+# 서버에서 읽기만 해 끌어오고(부하 거의 없음 · 라이브 API 는 안 두드림) 로컬에서 분석한다.
+#   make live-review            최근 30일 · Gate 공개 봉으로 경로 분석까지
+#   make live-review DAYS=60    기간 바꾸기
+#   make live-review-report     끌어오지 않고 마지막 스냅샷으로 보고서만
+DAYS ?= 30
+live-review: ## 라이브 매매 분석 — 끌어오기 + 보고서 (logs/live_review/latest.md)
+	DAYS=$(DAYS) bash scripts/ops/pull_live_review.sh
+	uv run python scripts/research/live_review.py --days $(DAYS)
+
+live-review-report: ## 라이브 매매 분석 — 마지막 스냅샷으로 보고서만
+	uv run python scripts/research/live_review.py --days $(DAYS)
