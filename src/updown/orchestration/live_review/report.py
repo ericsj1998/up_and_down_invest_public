@@ -86,7 +86,9 @@ def _spans(spans: list[PlaybookSpan]) -> list[str]:
 
 
 def _why(
-    why: dict[str, tuple[list[LegFunnel], dict[str, int]]] | None, held: list[HeldEvent] | None
+    why: dict[str, tuple[list[LegFunnel], dict[str, int]]] | None,
+    held: list[HeldEvent] | None,
+    owners: dict[str, list[str]] | None = None,
 ) -> list[str]:
     out = [
         "## 1-1. 왜 안 들어갔나 — 다리별 후보 → 막힘 → 진입 (판이 열린 뒤 누적 · 40판 합)",
@@ -123,12 +125,13 @@ def _why(
         out += [
             "진입을 붙든 사건(로그 · 사유별 · 많은 순):",
             "",
-            "| 사건 | 사유 | 횟수 | 종목 수 | 마지막 KST | 종목 보기 |",
-            "|---|---|---|---|---|---|",
+            "| 사건 | 어느 다리의 문 | 사유 | 횟수 | 종목 수 | 마지막 KST | 종목 보기 |",
+            "|---|---|---|---|---|---|---|",
         ]
         for h in held[:14]:
             out.append(
-                f"| {h.kind} | {h.why or '—'} | {h.count} | {h.symbols} | {kst(h.last_at)} | "
+                f"| {h.kind} | {_owner(h.kind, owners)} | {h.why or '—'} | {h.count} | "
+                f"{h.symbols} | {kst(h.last_at)} | "
                 f"{' '.join(h.sample_symbols)} |"
             )
         out.append("")
@@ -329,13 +332,14 @@ def render(
     notes: list[str],
     why: dict[str, tuple[list[LegFunnel], dict[str, int]]] | None = None,
     held: list[HeldEvent] | None = None,
+    owners: dict[str, list[str]] | None = None,
 ) -> str:
     """마크다운 한 장 — 절 순서는 사용자가 묻는 순서(왜 안 들어갔나 → 손실 몫 → 경로)."""
     out = _head(snap, money, outside_pnl, days)
     out += [f"- ⚠️ {note}" for note in notes]
     out.append("")
     out += _spans(spans)
-    out += _why(why, held)
+    out += _why(why, held, owners)
     out += _legs(legs, expectations)
     out += _funnel(funnel, events)
     out += _events(events)
@@ -344,3 +348,13 @@ def render(
     out += _grid(grid_by_leg, actual_r_by_leg)
     out += _trades(money)
     return "\n".join(out)
+
+
+def _owner(kind: str, owners: dict[str, list[str]] | None) -> str:
+    """사건 이름이 가리키는 문을 선언한 다리들 — 없으면 em dash."""
+    from updown.orchestration.live_review.health import gate_of
+
+    if not owners:
+        return "—"
+    names = owners.get(gate_of(kind))
+    return " · ".join(names) if names else "—"

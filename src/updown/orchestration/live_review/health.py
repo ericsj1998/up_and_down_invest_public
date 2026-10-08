@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
@@ -131,9 +132,9 @@ FUNNEL_GLOSSARY: dict[str, str] = {
     "entered:": "진입했다(다리별 · flip_ = 반대 포지션 뒤집기)",
     "blocked:": "막힘 — 다리 이름이면 세션 규칙(반대 몫 · 미대조 · 펀드 대기 · 장대봉)",
     "gate:": "펀드 문이 막음(자리 · 상한 · 브레이크 · 폭 · 기울기 · 띠 · 신선도) · fit = 줄여 진입",
-    "ref_sma": "기준(BTC) 4H 이평 방향이 안 맞아 숏을 안 열었다(T304 · 숏은 하락 확인 뒤)",
-    "ref_band": "기준(BTC) 밴드 조건이 안 맞아 안 들었다",
-    "ref_volpct": "기준(BTC) 변동성 백분위가 하한 아래(T329)",
+    "ref_sma": "기준(BTC) 4H 이평이 내려가는 중이 아니다(T304 · 지금 매매법엔 선언 없음)",
+    "ref_band": "기준(BTC) 수익률이 띠 밖(T290 · 삼각 숏 다리의 문)",
+    "ref_volpct": "BTC 4H 변동성 백분위 < 0.816(T329 · 급락 되돌림의 문 · 급락장 아니면 안 든다)",
     "ref_surge": "기준(BTC) 급등 문",
     "stop_too_tight": "손절 거리가 너무 좁아 버림",
     "stop_liq_cap": "손절이 청산선 밖이라 버림",
@@ -253,3 +254,44 @@ def held_events(events: list[dict[str, Any]]) -> list[HeldEvent]:
         last = max((t for t, _ in items if t is not None), default=None)
         out.append(HeldEvent(kind, why, len(syms), len(items), last, tuple(syms[:8])))
     return sorted(out, key=lambda h: -h.count)
+
+
+GATE_ATTRS: dict[str, str] = {
+    "ref_gate": "entry_ref_ma_gate",
+    "ref_band": "entry_ref_return_band",
+    "ref_surge": "entry_ref_surge_cap",
+    "ref_sma": "entry_ref_sma_down",
+    "ref_volpct": "entry_ref_vol_pct",
+    "funding": "funding_cap",
+}
+"""보류 사유 이름 → 매매법 선언의 칸 이름. 어느 다리가 그 문을 선언했는지 여기로 찾는다."""
+
+
+def gate_owners(books: Sequence[object]) -> dict[str, list[str]]:
+    """보류 사유마다 그 문을 선언한 다리들 — 실측: ref_volpct 는 급락 되돌림 · ref_band 는 삼각 숏.
+
+    Args:
+        books: 매매법 선언들(`load_playbooks()`). `playbook_id` · `short_label` · 문 칸을 읽는다.
+
+    Returns:
+        `{사유: [이름, …]}` — 선언한 다리가 없는 사유는 빈 목록(지금 매매법엔 그 문이 없다).
+    """
+    out: dict[str, list[str]] = {k: [] for k in GATE_ATTRS}
+    for book in books:
+        if getattr(book, "listed", True) is False:
+            continue
+        name = str(
+            getattr(book, "short_label", "")
+            or getattr(book, "label", "")
+            or getattr(book, "playbook_id", "?")
+        )
+        for gate, attr in GATE_ATTRS.items():
+            if getattr(book, attr, None) is not None and name not in out[gate]:
+                out[gate].append(name)
+    return out
+
+
+def gate_of(kind: str) -> str:
+    """사건 이름 → 보류 사유(`session_entry_ref_volpct_held` → `ref_volpct`). 모르면 그대로."""
+    core = kind.removeprefix("session_entry_").removesuffix("_held")
+    return core if core in GATE_ATTRS else kind

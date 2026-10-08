@@ -373,3 +373,28 @@ def test_stale_open_rows_are_marked_when_their_run_is_closed() -> None:
     assert [r.source for r in got] == ["stale", "stale"]
     got2 = mark_stale_open([live], frozenset())
     assert got2[0].source == "open"
+
+
+def test_gate_owners_names_the_leg_that_declares_each_gate() -> None:
+    from types import SimpleNamespace
+
+    from updown.orchestration.live_review.health import gate_of, gate_owners
+
+    books = [
+        SimpleNamespace(playbook_id="crash", short_label="급락 되돌림", entry_ref_vol_pct=object()),
+        SimpleNamespace(
+            playbook_id="tri",
+            short_label="삼각 숏",
+            entry_ref_return_band=object(),
+            entry_ref_surge_cap=object(),
+        ),
+        SimpleNamespace(
+            playbook_id="old", short_label="옛", listed=False, entry_ref_vol_pct=object()
+        ),
+    ]
+    got = gate_owners(books)
+    assert got["ref_volpct"] == ["급락 되돌림"]
+    assert got["ref_band"] == ["삼각 숏"] and got["ref_surge"] == ["삼각 숏"]
+    assert got["ref_sma"] == []
+    assert gate_of("session_entry_ref_volpct_held") == "ref_volpct"
+    assert gate_of("session_entry_gate_fit") == "session_entry_gate_fit"
