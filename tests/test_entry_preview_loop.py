@@ -96,3 +96,37 @@ class TestNearClose:
         assert near_close(900, 0.0)
         assert near_close(900, 100.0)
         assert near_close(300, 5.0)
+
+
+def test_preview_rows_carry_leg_side_entry_stop() -> None:
+    """T445 — 로그 한 줄이 복기 재료가 되려면 다리 · 방향 · 진입가 · 손절이 들어 있어야 한다."""
+    previews = {
+        "a": (
+            1.0,
+            {
+                "kind": "signal",
+                "side": "롱",
+                "leg": "bb@0.1.0",
+                "frame": "1h",
+                "entry": "100",
+                "stop": "98",
+            },
+        ),
+        "b": (
+            1.0,
+            {"kind": "waiting", "side": "숏", "leg": "tri@0.1.0", "entry": "50", "stop": "52"},
+        ),
+        "c": (1.0, None),
+    }
+    rows = mod.preview_rows(previews, ["a", "b", "zzz"])
+    assert rows[0] == {
+        "run": "a",
+        "kind": "signal",
+        "side": "롱",
+        "leg": "bb@0.1.0",
+        "frame": "1h",
+        "entry": "100",
+        "stop": "98",
+    }
+    assert rows[1]["frame"] == "" and rows[1]["leg"] == "tri@0.1.0"
+    assert rows[2]["run"] == "zzz" and rows[2]["kind"] == ""

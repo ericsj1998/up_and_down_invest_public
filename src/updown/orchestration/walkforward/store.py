@@ -32,7 +32,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -1380,6 +1380,61 @@ class RunStore:
             raise
         except Exception as exc:
             raise RunStoreError(f"판 메타를 저장할 수 없다 ({run_id}): {exc}") from exc
+
+    async def add_meta_counts(
+        self, run_id: uuid.UUID, field_name: str, delta: Mapping[str, int], *, stamp: str = ""
+    ) -> None:
+        """판 메타의 계수 칸에 **증분을 더한다** (T445 — 깔때기 영속화 · 2026-10-09).
+
+        Args:
+            run_id: 판 id.
+            field_name: `meta_json` 안의 키(`funnel`). 값은 `{키: 수}` 다.
+            delta: 더할 증분. 비어 있으면 아무것도 안 쓴다.
+            stamp: 비어 있지 않으면 `<field_name>_at` 에 적는다(마지막 저장 시각 · ISO).
+
+        Raises:
+            RunStoreError: 저장에 실패한 경우.
+
+        Note:
+            세션 깔때기는 메모리에서 누적되다 재기동이면 0 부터 다시 센다. 그래서 덮어쓰지 않고
+            **지난 저장 뒤 늘어난 만큼만** 더한다 — DB 값은 판이 열린 뒤 전체 누적이 된다.
+            한 걸음에 한 번 · 바뀐 것이 있을 때만 부르므로 판 40개면 한 시간에 많아야 40번이다.
+        """
+        if not delta:
+            return
+        try:
+            async with self._factory() as session:
+                row = (
+                    await session.execute(
+                        sa.select(WalkforwardRun).where(WalkforwardRun.id == run_id)
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    raise RunStoreError(f"판이 없다 ({run_id})")
+                meta = dict(row.meta_json or {})
+                raw = meta.get(field_name)
+                counts: dict[str, int] = {}
+                if isinstance(raw, dict):
+                    for k, v in cast("dict[str, Any]", raw).items():
+                        try:
+                            counts[str(k)] = int(v)
+                        except (TypeError, ValueError):
+                            continue
+                for k, v in delta.items():
+                    counts[k] = counts.get(k, 0) + int(v)
+                meta[field_name] = counts
+                if stamp:
+                    meta[f"{field_name}_at"] = stamp
+                await session.execute(
+                    sa.update(WalkforwardRun)
+                    .where(WalkforwardRun.id == run_id)
+                    .values(meta_json=meta)
+                )
+                await session.commit()
+        except RunStoreError:
+            raise
+        except Exception as exc:
+            raise RunStoreError(f"판 메타 계수를 더할 수 없다 ({run_id}): {exc}") from exc
 
     async def transfer_open_trades(self, key: str, trade_ids: Sequence[str], *, to_key: str) -> int:
         """전환(T333)이 새 판에 물려준 열린 기록을 옛 판 쪽에서 **이관**으로 닫는다 (2026-10-01).

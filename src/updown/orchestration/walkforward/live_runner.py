@@ -32,7 +32,7 @@ import os
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
@@ -634,6 +634,24 @@ def adopted_id(orders: Sequence[dict[str, str]]) -> str:
         if found:
             return found
     return new_trade_id()
+
+
+def funnel_delta(now: Mapping[str, int], saved: Mapping[str, int]) -> dict[str, int]:
+    """깔때기의 **늘어난 몫** — `now - saved` 중 양수만 (T445 · 순수).
+
+    Args:
+        now: 지금 세션 깔때기.
+        saved: 마지막으로 DB 에 더한 값(이번 세션 기준).
+
+    Returns:
+        키마다 늘어난 수. 변화가 없으면 빈 dict — 그러면 저장을 건너뛴다.
+    """
+    out: dict[str, int] = {}
+    for key, val in now.items():
+        gain = int(val) - int(saved.get(key, 0))
+        if gain > 0:
+            out[key] = gain
+    return out
 
 
 def trade_of_text(text: str) -> str:
@@ -1359,6 +1377,8 @@ class LiveRunner:
         self._run_id: uuid.UUID | None = None
         self._pending_json: str | None = None
         """마지막으로 저장한 대기 계획(JSON 문자열) — 같으면 다시 안 쓴다 (T218)."""
+        self._funnel_saved: dict[str, int] = {}
+        """DB 에 이미 더한 깔때기 값 — 이번 세션 기준 (T445). 걸음마다 늘어난 만큼만 더한다."""
 
     def use_store(self, store: RunStore | None, run_id: uuid.UUID, key: str = "") -> None:
         """판 저장소를 붙인다 (T16 ②).
@@ -1403,6 +1423,28 @@ class LiveRunner:
             self._pending_json = encoded
         except Exception as exc:
             self._log.warning("live_pending_persist_failed", payload={"error": str(exc)[:160]})
+
+    async def _persist_funnel(self) -> None:
+        """세션 깔때기(후보 · 막힘 · 문 · 진입)를 판 메타 `funnel` 에 증분으로 더한다 (T445).
+
+        Note:
+            사용자 2026-10-09 "왜 지금 진입을 안 했지?" — 깔때기는 메모리에만 있어 재배포 때마다
+            사라졌고, 라이브 매매 분석기(T444)가 "후보 → 막힘 → 진입" 표를 못 채웠다. 걸음마다
+            지난 저장 뒤 늘어난 만큼만 더하므로 재기동을 넘어 판이 열린 뒤 전체 누적이 DB 에 남는다.
+            ⚠️ 실패해도 걸음을 막지 않는다 (규칙 #8-1) — 기록은 리스크 감소 행동이 아니다.
+        """
+        if self._store is None or self._run_id is None:
+            return
+        delta = funnel_delta(self._session.funnel, self._funnel_saved)
+        if not delta:
+            return
+        try:
+            await self._store.add_meta_counts(
+                self._run_id, "funnel", delta, stamp=datetime.now(UTC).isoformat()
+            )
+            self._funnel_saved = dict(self._session.funnel)
+        except Exception as exc:
+            self._log.warning("live_funnel_persist_failed", payload={"error": str(exc)[:160]})
 
     async def restore_pending(self, saved: pending_mod.PendingEntry) -> set[str]:
         """저장돼 있던 대기 계획을 **거래소 사실과 대조해** 이어받는다 (T218).
@@ -3997,6 +4039,8 @@ class LiveRunner:
         await self._pump_orders()
         # ⭐ 대기 계획을 DB 에 남긴다 (T218) — 다음에 판이 다시 떠도 걸린 표를 이어받게.
         await self._persist_pending()
+        # ⭐ 깔때기 증분을 DB 에 더한다 (T445) — "왜 안 들어갔나" 가 재배포를 넘어 남게.
+        await self._persist_funnel()
         # 🔴 **채워진 만큼 손절을 다시 건다** (T19 · 사다리의 가장 위험한 자리).
         await self._resize_stop()
         # 🔴 **원장이 반익했으면 거래소에서도 던다** (사고 ③-b).

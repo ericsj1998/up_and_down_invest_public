@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from updown.common.logging.setup import get_logger
@@ -106,6 +107,29 @@ def found_now() -> list[str]:
     return sorted(run for run, (_, got) in PREVIEWS.items() if got)
 
 
+PREVIEW_FIELDS = ("kind", "side", "leg", "frame", "entry", "stop")
+"""로그에 싣는 예비 신호 칸 — `LiveRunner.preview()` 가 주는 것 중 복기에 필요한 것."""
+
+
+def preview_rows(
+    previews: Mapping[str, tuple[float, dict[str, Any] | None]], found: Sequence[str]
+) -> list[dict[str, Any]]:
+    """깜빡이는 판들의 예비 신호를 로그 한 줄에 실을 모양으로 (순수 · T445).
+
+    Args:
+        previews: `PREVIEWS` — 판 id → (잰 시각, 신호 또는 None).
+        found: 지금 깜빡이는 판 id 들.
+
+    Returns:
+        판마다 `{run, kind, side, leg, frame, entry, stop}` — 없는 칸은 빈 문자열. 최대 40판.
+    """
+    rows: list[dict[str, Any]] = []
+    for run in list(found)[:40]:
+        got = previews.get(run, (0.0, None))[1] or {}
+        rows.append({"run": run, **{k: str(got.get(k, "") or "") for k in PREVIEW_FIELDS}})
+    return rows
+
+
 async def preview_loop() -> None:
     """누가 보고 있으면 `SWEEP_EVERY` 마다 한 바퀴 — 화면을 연 직후엔 5초 안에 첫 바퀴."""
     last: float | None = None
@@ -122,8 +146,10 @@ async def preview_loop() -> None:
                 )
             found = found_now()
             if found != shown:
-                # 깜빡임 목록이 바뀔 때만 — "화면이 제대로 깜빡이나" 를 로그로 대조한다
-                # (판 id 와 종류만).
+                # 깜빡임 목록이 바뀔 때만 — "화면이 제대로 깜빡이나" 를 로그로 대조한다.
+                # ⭐ T445(2026-10-09) — 판 id 와 종류만 적던 것을 다리 · 방향 · 진입가 · 손절 ·
+                #    축까지 적는다. 분석기가 "예비 신호 → 마감 때 진입했나 · 결과는" 을 잇는
+                #    재료다. 한 줄에 최대 40판 · 바뀔 때만이라 부하는 없다.
                 shown = found
                 _logger.info(
                     "preview_found",
@@ -132,6 +158,7 @@ async def preview_loop() -> None:
                         "runs": [
                             f"{run}:{(PREVIEWS[run][1] or {}).get('kind', '')}" for run in found
                         ][:40],
+                        "previews": preview_rows(PREVIEWS, found),
                         "busy_s": round(busy, 1),
                     },
                 )
