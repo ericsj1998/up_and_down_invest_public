@@ -4,7 +4,10 @@
 # 규칙을 완화하려면 그 문서에 근거를 먼저 남긴다 — 근거 없이 뚫리는 것을 막기 위해서다.
 
 [importlinter]
-root_package = updown
+# whalesurfer(T442 · 2026-10-09 분리) — 본체와 떨어진 둘째 제품. 아래 계약 5 · 6 이 경계다.
+root_packages =
+    updown
+    whalesurfer
 
 # ------------------------------------------------------------
 # 계약 1 — 계층 순서 (plan D-6)
@@ -87,3 +90,40 @@ source_modules =
 forbidden_modules =
     updown.decision
     updown.execution
+
+# ------------------------------------------------------------
+# 계약 5 — 본체 ⇏ WhaleSurfer (T442 §1-1 ② · 2026-10-09)
+#
+# WhaleSurfer 는 불특정 다수에게 보일 둘째 제품이고, 본체는 진짜 돈을 굴리는 실계좌 서버다
+# (Lightsail 1 GB). 본체가 한 줄이라도 import 하면 공개 트래픽 · 외부 API(EDGAR · 위키백과 ·
+# OpenFIGI)가 실계좌 프로세스로 들어온다(D7 "서버에는 아예 안 띄움"). 배포 이미지에서도 뺐다
+# (`.dockerignore`).
+# ------------------------------------------------------------
+[importlinter:contract:body-not-whalesurfer]
+name = 본체는 WhaleSurfer 를 import 하지 않는다 (실계좌 서버 분리 · T442 D7)
+type = forbidden
+source_modules =
+    updown
+forbidden_modules =
+    whalesurfer
+
+# ------------------------------------------------------------
+# 계약 6 — WhaleSurfer 는 본체의 공용층만 빌린다 (T442 §1-1 ②)
+#
+# 빌려도 되는 것: `updown.common`(설정 · 로깅 · HTTP 바깥 길 · 캐시) · `updown.marketdata`
+# (EDGAR 클라이언트 획득 지점 · 재무 오류형). 매매 판단 · 주문 · 원장 · 화면 API 는 안 된다 —
+# 저장소를 떼어 낼 때 가져갈 것이 공용층 몇 파일로 끝나게 한다.
+# ------------------------------------------------------------
+[importlinter:contract:whalesurfer-borrows-common-only]
+name = WhaleSurfer 는 본체의 공용층(common · marketdata)만 import 한다 (떼어 내기 쉽게)
+type = forbidden
+source_modules =
+    whalesurfer
+forbidden_modules =
+    updown.portfolio
+    updown.analysis
+    updown.llm
+    updown.decision
+    updown.execution
+    updown.orchestration
+    updown.apps

@@ -22,6 +22,10 @@
 !config
 !alembic.ini
 !alembic
+# 🔴 WhaleSurfer(T442 · 2026-10-09 분리) — 실계좌 서버 이미지에 넣지 않는다(D7 "서버에는 아예 안 띄움").
+#    본체는 import 하지 않는다(.importlinter 계약 5). 위의 `!src` · `!config` 뒤에 와야 이긴다.
+src/whalesurfer
+config/whalesurfer
 
 # 런타임에 컨테이너 안에서 부르는 스크립트만 — 나머지 `scripts/` 는 연구·백테스트 도구다
 !scripts/runtime/seed_instruments.py

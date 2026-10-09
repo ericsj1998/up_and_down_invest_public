@@ -125,6 +125,9 @@ convention = "google"  # CLAUDE.md §2 — Google 스타일 고정
 #   지켜야 뼈대가 갈아 끼울 수 있기 때문이다.
 #   ⛔ 여기서 나온 것이 실전으로 갈 때는 `src/` 로 옮겨 적고, 그때는 면제가 없다.
 "scripts/research/**" = ["D", "E501", "C408", "ARG001", "B023", "RUF002"]
+# whalesurfer/scripts/** 는 WhaleSurfer 의 적재 · 백테스트 도구(T442 · T443) — scripts/research 에서 옮겨 왔고
+#   성격도 같다(2026-10-09 분리). 패키지 코드(src/whalesurfer)에는 면제가 없다.
+"whalesurfer/scripts/**" = ["D", "E501", "C408", "ARG001", "B023", "RUF002"]
 # 패키지 경계 표시용 __init__.py 는 모듈 docstring만 있으면 충분하다.
 "src/updown/**/__init__.py" = ["D104"]
 

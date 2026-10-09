@@ -1,21 +1,27 @@
-"""WhaleSurfer API — 유명 13F 보고자의 보유 지도 (T442 · 2026-10-08).
+"""WhaleSurfer API — 유명 13F 보고자의 보유 지도 (T442 · 2026-10-08 · 2026-10-09 본체에서 분리).
 
-    GET /whalesurfer/managers            추적 목록(설정 표) · 사진 자리
+    GET /whalesurfer/managers            추적 목록(설정 표) · 사진(위키백과 · 저작자 표시)
     GET /whalesurfer/managers/{cik}?n=4  최근 n 분기 — 보유 줄 · 비중 · 직전 분기 대비 변화
     GET /whalesurfer/consensus           추적 보고자 전부 — CUSIP 마다 보유 비율 · 늘림 · 줄임
-    GET /whalesurfer/stocks/{cusip}      한 종목 — 보유자 · 변화 · 바로가기 · 추정 손익 자리
+    GET /whalesurfer/stocks/{cusip}      한 종목 — 보유자 · 변화 · 바로가기 · 그때 샀다면(T443)
 
-라우터는 I/O · 모양 바꾸기 · 캐시만 한다. 13F 읽기는 `marketdata.fundamentals.thirteen_f`,
-클라이언트는 `marketdata.provider.edgar_client`(절대 규칙 #0).
+라우터는 I/O · 모양 바꾸기 · 캐시만 한다. 13F 읽기는 `whalesurfer.edgar.thirteen_f`,
+EDGAR 클라이언트는 본체의 획득 지점 `updown.marketdata.provider.edgar_client`(절대 규칙 #0).
 🔴 이 화면은 **분석 · 안내**다 — 주문 경로가 없다. 13F 는 롱 보유만 담고 분기 끝 45일 뒤에
 나오므로 "지금 들고 있다" 가 아니라 "그때 들고 있었다" 다.
 값은 6시간 기억한다(13F 는 분기마다 한 번 바뀐다). 못 받은 보고자는 `failures` 에 이유와 함께
 남는다 — 조용히 빼지 않는다(규칙 #8).
+
+2026-10-09 분리(T442 §1-1 ②): 본체 API 에 붙어 `WHALESURFER_ENABLED` 로 켜고 끄던 것을 걷어냈다 —
+이제 이 라우터는 `whalesurfer.api.app` 단독 앱에만 붙는다. 본체(실계좌 서버)는 이 패키지를 모른다
+(import-linter 계약 · 배포 이미지 제외).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import statistics
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,22 +30,28 @@ from typing import Any, cast
 import yaml
 from fastapi import APIRouter, HTTPException, Query
 
-from updown.apps.api.whalesurfer_images import PortraitSource
 from updown.common.cache import TtlCache
 from updown.common.config import ConfigurationError, Settings
 from updown.common.http.outbound import Outbound, OutboundError
 from updown.common.logging.setup import get_logger
 from updown.marketdata.fundamentals.client import EdgarClient, contact_of
-from updown.marketdata.fundamentals.figi import FigiClient
-from updown.marketdata.fundamentals.thirteen_f import Holding13F, Report13F, recent_reports
 from updown.marketdata.provider import edgar_client
+from whalesurfer.edgar.figi import FigiClient
+from whalesurfer.edgar.thirteen_f import Holding13F, Report13F, recent_reports
+from whalesurfer.portraits import PortraitSource
 
 router = APIRouter(prefix="/whalesurfer", tags=["whalesurfer"])
-_logger = get_logger("api.whalesurfer")
+_logger = get_logger("whalesurfer.api")
 
-CONFIG_PATH = Path(__file__).resolve().parents[4] / "config" / "whalesurfer" / "managers.yml"
-CACHE_DIR = Path(__file__).resolve().parents[4] / "cache" / "whalesurfer"
-"""파일 캐시(gitignore) — CUSIP → 티커(OpenFIGI) · 인물 사진(위키백과)."""
+ROOT = Path(__file__).resolve().parents[3]
+CONFIG_PATH = ROOT / "config" / "whalesurfer" / "managers.yml"
+CACHE_DIR = ROOT / "cache" / "whalesurfer"
+"""파일 캐시(gitignore) — CUSIP → 티커(OpenFIGI) · 인물 사진(위키백과) · T443 실현값."""
+REALIZED_PATH = CACHE_DIR / "buyq_realized.json"
+"""T443 BUY-Q 사건별 실현값 `{cik: {filed: {cusip: {ticker, entry, ret_q, ret_now, …}}}}`.
+
+`whalesurfer/scripts/t443_backtest.py` 가 쓴다 — 접수일 다음 거래일 시가 진입 · 비용 0.10% 뒤 ·
+ret_q = 다음 접수일까지 · ret_now = 백테스트를 돌린 날의 마지막 종가까지."""
 REPORT_TTL_S = 6 * 3600.0
 PERPS_TTL_S = 6 * 3600.0
 BINANCE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
@@ -50,15 +62,20 @@ CONSENSUS_QUARTERS = 2
 PARALLEL = 4
 DISCLAIMER = (
     "13F 는 롱 보유만 · 분기 끝 45일 뒤 공개 — 공매도는 보고 항목이 아니다. "
-    "추정 손익(얼마 벌었을지)은 백테스트 전이라 비어 있다(T442 §3)."
+    "공시 뒤에 따라 산 종목은 평균적으로 시장(SPY)과 같았다 — 산 종목과 판 종목의 다음 분기 수익이 "
+    "같았다(T443 · 2013 ~ 2026 · 104 보고자 · 사건 154만). 투자 권유가 아니다."
+)
+ESTIMATE_NOTE = (
+    "공시 다음 거래일 시가에 샀다면 — 다음 공시일까지(분기) · 비용 왕복 0.10% 뒤. "
+    "상장 폐지 종목은 빠져 있다(실제보다 좋게 보이는 쪽)."
 )
 
 _settings: Settings | None = None
-_enabled = False
 _client: EdgarClient | None = None
 _binance: Outbound | None = None
 _figi: FigiClient | None = None
 _portraits: PortraitSource | None = None
+_realized: dict[str, Any] | None = None
 _REPORTS = TtlCache[dict[str, Any]]("whalesurfer.reports", REPORT_TTL_S)
 _CONSENSUS = TtlCache[dict[str, Any]]("whalesurfer.consensus", REPORT_TTL_S)
 _PERPS = TtlCache[dict[str, Any]]("whalesurfer.perps", PERPS_TTL_S)
@@ -66,32 +83,61 @@ _PORTRAITS = TtlCache[dict[str, Any]]("whalesurfer.portraits", REPORT_TTL_S)
 
 
 def attach_whalesurfer(settings: Settings | None) -> None:
-    """설정을 붙인다 — API 기동 훅이 부른다. None 이면 뗀다.
-
-    🔴 `settings.whalesurfer_enabled` 가 꺼져 있으면(서버 환경 · D7) 모든 끝점이 404 다 —
-    EDGAR · 위키백과 · OpenFIGI 를 한 번도 부르지 않는다.
-    """
-    global _settings, _enabled, _client, _figi, _portraits
+    """설정을 붙인다 — 단독 앱(`whalesurfer.api.app`)의 기동 훅이 부른다. None 이면 뗀다."""
+    global _settings, _client, _figi, _portraits, _realized
     _settings = settings
-    _enabled = bool(settings is not None and settings.whalesurfer_enabled)
     _client = None
     _figi = None
     _portraits = None
+    _realized = None
     _REPORTS.forget()
     _CONSENSUS.forget()
     _PORTRAITS.forget()
 
 
-def _on_or_404() -> None:
-    if not _enabled:
-        raise HTTPException(
-            404, "WhaleSurfer 는 이 환경에서 꺼져 있다(WHALESURFER_ENABLED · 로컬 전용)"
-        )
+def _realized_table() -> dict[str, Any]:
+    """T443 실현값 표(파일) — 없으면 빈 표(화면은 "아직 없음" 이라고 말한다)."""
+    global _realized
+    if _realized is None:
+        try:
+            _realized = cast(
+                "dict[str, Any]", json.loads(REALIZED_PATH.read_text(encoding="utf-8"))
+            )
+        except (OSError, ValueError) as exc:
+            _logger.info("whalesurfer_realized_unavailable", payload={"detail": str(exc)[:80]})
+            _realized = {}
+    return _realized
+
+
+def estimate_for(cusip: str, realized: Mapping[str, Any]) -> dict[str, Any] | None:
+    """이 종목을 **누군가 사거나 늘린 공시** 뒤에 따라 샀다면 — 사건 전부의 분기 수익 요약(순수).
+
+    Returns:
+        ``{events, with_q, mean_q, median_q, win_q}`` 또는 사건이 없으면 None.
+        mean · median 은 %(비용 뒤) · win_q 는 0 ~ 1.
+    """
+    events: list[Mapping[str, Any]] = []
+    for by_filed in realized.values():
+        for by_cusip in cast("Mapping[str, Any]", by_filed).values():
+            ev = cast("Mapping[str, Any]", by_cusip).get(cusip)
+            if ev is not None:
+                events.append(cast("Mapping[str, Any]", ev))
+    if not events:
+        return None
+    qs = [float(e["ret_q"]) for e in events if e.get("ret_q") is not None]
+    if not qs:
+        return {"events": len(events), "with_q": 0, "mean_q": None, "median_q": None, "win_q": None}
+    return {
+        "events": len(events),
+        "with_q": len(qs),
+        "mean_q": round(statistics.fmean(qs), 2),
+        "median_q": round(statistics.median(qs), 2),
+        "win_q": round(sum(1 for q in qs if q > 0) / len(qs), 3),
+    }
 
 
 def _client_or_503() -> EdgarClient:
     global _client
-    _on_or_404()
     if _client is None:
         if _settings is None:
             raise HTTPException(503, "설정이 안 붙었다 — API 기동 뒤에 다시")
@@ -342,7 +388,6 @@ async def _with_portraits(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 @router.get("/managers")
 async def managers() -> dict[str, Any]:
     """추적 목록 — 설정 표 + 위키백과 초상(저작자 표시)."""
-    _on_or_404()
     rows, tickers = load_managers()
     rows = await _with_portraits(rows)
     return {
@@ -357,7 +402,6 @@ async def managers() -> dict[str, Any]:
 @router.get("/managers/{cik}")
 async def manager(cik: str, n: int = Query(4, ge=1, le=MAX_QUARTERS)) -> dict[str, Any]:
     """한 보고자의 최근 n 분기 — 보고마다 보유 줄 · 직전 분기 대비 변화."""
-    _on_or_404()
     rows, _tickers = load_managers()
     meta = next((m for m in rows if m["cik"] == cik.zfill(10)), None)
     if meta is None:
@@ -438,12 +482,12 @@ async def consensus() -> dict[str, Any]:
 
 @router.get("/stocks/{cusip}")
 async def stock(cusip: str) -> dict[str, Any]:
-    """한 종목 — 누가 들고 있고 누가 늘리고 줄였나 · 바로가기 · 추정 손익 자리."""
-    _on_or_404()
+    """한 종목 — 누가 들고 있고 누가 늘리고 줄였나 · 바로가기 · 그때 샀다면(T443 실현값)."""
     rows, tickers = load_managers()
     key = cusip.strip().upper()
     cons = await consensus()
     slot = cons["by_cusip"].get(key)
+    realized = _realized_table()
     holders: list[dict[str, Any]] = []
     for m in rows:
         try:
@@ -458,6 +502,15 @@ async def stock(cusip: str) -> dict[str, Any]:
         prev = reports[1] if len(reports) > 1 else None
         for ch in diff_holdings(reports[0], prev):
             if ch["cusip"] == key:
+                # 이번 공시가 현물 신규 · 늘림이면 — 그 공시 뒤에 따라 샀다면(T443 사건 실현값).
+                # T443 사건은 현물 줄만 셌다 — Put/Call 줄 · 줄임 줄에 붙이면 남의 값을 보인다.
+                since = None
+                if ch["kind"] in ("new", "added") and not ch.get("put_call"):
+                    since = (
+                        cast("Mapping[str, Any]", realized.get(m["cik"]) or {})
+                        .get(str(reports[0]["filed"]), {})
+                        .get(key)
+                    )
                 holders.append(
                     {
                         **ch,
@@ -465,6 +518,8 @@ async def stock(cusip: str) -> dict[str, Any]:
                         "label": m["label"],
                         "person": m["person"],
                         "period": reports[0]["period"],
+                        "filed": reports[0]["filed"],
+                        "since_filing": since,
                     }
                 )
     holders.sort(key=lambda r: r["value_usd"], reverse=True)
@@ -491,8 +546,10 @@ async def stock(cusip: str) -> dict[str, Any]:
         "holders": holders,
         "links": links_for(ticker, perps["symbols"]),
         "links_note": perps["failure"],
-        "estimate": None,
-        "estimate_note": "그때 샀다면 얼마를 벌었을지 — 백테스트(T442 §3) 전이라 비어 있다",
+        "estimate": estimate_for(key, realized),
+        "estimate_note": ESTIMATE_NOTE
+        if realized
+        else "T443 실현값 파일이 없다 — whalesurfer/scripts/t443_backtest.py 를 돌리면 채워진다",
         "failures": cons["failures"],
         "disclaimer": DISCLAIMER,
     }
@@ -501,6 +558,7 @@ async def stock(cusip: str) -> dict[str, Any]:
 __all__ = [
     "attach_whalesurfer",
     "diff_holdings",
+    "estimate_for",
     "links_for",
     "load_managers",
     "merge_rows",

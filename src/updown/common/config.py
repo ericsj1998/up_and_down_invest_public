@@ -219,13 +219,6 @@ class Settings(BaseSettings):
 
     dart_api_key: SecretStr | None = None
 
-    whalesurfer_enabled: bool = False
-    """WhaleSurfer(T442) 라우터를 켠다 — **로컬 전용**.
-
-    서버 환경에는 두지 않는다(사용자 2026-10-08 D7: "일단은 서버에는 아예 안 띄움"). 공개 트래픽이
-    생기면 별도 프로세스 · 별도 인스턴스로 뗀다.
-    """
-
     edgar_user_agent: str | None = None
     """SEC EDGAR 가 요구하는 User-Agent(`이름 이메일`) — 없으면 403 (T243).
 

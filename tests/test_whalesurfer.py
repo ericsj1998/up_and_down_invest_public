@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from updown.apps.api.whalesurfer import diff_holdings, links_for, load_managers, merge_rows
-from updown.marketdata.fundamentals.thirteen_f import (
+from whalesurfer.api.routes import diff_holdings, links_for, load_managers, merge_rows
+from whalesurfer.edgar.thirteen_f import (
     ThirteenFError,
     all_filings,
     infotable_name,
@@ -149,8 +149,8 @@ async def test_all_filings_appends_older_chunks() -> None:
 
 
 def test_figi_pick_prefers_us_composite_and_file_title() -> None:
-    from updown.apps.api.whalesurfer_images import file_title
-    from updown.marketdata.fundamentals.figi import pick
+    from whalesurfer.edgar.figi import pick
+    from whalesurfer.portraits import file_title
 
     rows = [{"ticker": "AAPL", "exchCode": "UA"}, {"ticker": "AAPL", "exchCode": "US"}]
     assert pick(rows) == {"ticker": "AAPL", "exchCode": "US"}
@@ -221,3 +221,24 @@ def test_links_for_only_binance_when_stock_perp_exists() -> None:
     }
     assert links_for("ZZZZ", ["AAPLUSDT"])["binance"] is None
     assert links_for(None, ["AAPLUSDT"])["binance"] is None
+
+
+def test_estimate_for_summarises_every_buy_event_of_the_cusip() -> None:
+    """그때 샀다면 — 보고자 · 접수일을 가로질러 그 CUSIP 사건만 모은다.
+
+    분기 수익이 아직 없는 사건(다음 공시 전)은 수만 센다.
+    """
+    from whalesurfer.api.routes import estimate_for
+
+    realized = {
+        "0000000001": {
+            "2025-02-14": {"AAA": {"ret_q": 4.0, "ret_now": 9.0}, "BBB": {"ret_q": -1.0}},
+            "2025-05-15": {"AAA": {"ret_q": -2.0, "ret_now": 1.0}},
+        },
+        "0000000002": {"2026-08-14": {"AAA": {"ret_q": None, "ret_now": 0.5}}},
+    }
+    got = estimate_for("AAA", realized)
+    assert got == {"events": 3, "with_q": 2, "mean_q": 1.0, "median_q": 1.0, "win_q": 0.5}
+    assert estimate_for("ZZZ", realized) is None
+    only_open = estimate_for("CCC", {"x": {"d": {"CCC": {"ret_q": None}}}})
+    assert only_open == {"events": 1, "with_q": 0, "mean_q": None, "median_q": None, "win_q": None}
