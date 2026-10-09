@@ -1251,6 +1251,8 @@ class TestRegimeParity:
             ),
         )
         ref_path = Path(__file__).resolve().parents[1] / "config" / "live_review_regime.yml"
+        if not ref_path.exists():  # 비공개 측정치 — 공개 저장소에는 없다
+            pytest.skip("config/live_review_regime.yml 없음(공개본)")
         ref = read_regime_reference(ref_path.read_text(encoding="utf-8"))
         assert set(ref.cells) == {"M", "X", "G"} and len(ref.leg_name) == 6 and ref.source
         text = render(
