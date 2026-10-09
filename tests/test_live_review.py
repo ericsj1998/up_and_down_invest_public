@@ -398,3 +398,43 @@ def test_gate_owners_names_the_leg_that_declares_each_gate() -> None:
     assert got["ref_sma"] == []
     assert gate_of("session_entry_ref_volpct_held") == "ref_volpct"
     assert gate_of("session_entry_gate_fit") == "session_entry_gate_fit"
+
+
+def test_fill_basis_uses_the_entry_fill_of_this_trade_only() -> None:
+    from updown.orchestration.live_review.attribution import fill_basis
+
+    t = _trade(trade_id="abcdef12-rest", symbol="SOL_USDT")
+    orders = [
+        {
+            "contract": "SOL_USDT",
+            "text": "t-13dcac-abcdef12-en-0",
+            "fill_price": "99.7",
+            "create_time": str((T0 + timedelta(minutes=10)).timestamp()),
+            "finish_as": "filled",
+        },
+        {
+            "contract": "SOL_USDT",
+            "text": "t-13dcac-abcdef12-cl-0",
+            "fill_price": "103",
+            "create_time": str((T0 + timedelta(hours=3)).timestamp()),
+            "finish_as": "filled",
+        },
+        {
+            "contract": "BTC_USDT",
+            "text": "t-13dcac-abcdef12-en-0",
+            "fill_price": "1",
+            "create_time": str(T0.timestamp()),
+            "finish_as": "filled",
+        },
+        {
+            "contract": "SOL_USDT",
+            "text": "web_p_1",
+            "fill_price": "50",
+            "create_time": str(T0.timestamp()),
+            "finish_as": "filled",
+        },
+    ]
+    got = fill_basis(t, orders)
+    assert got is not None
+    assert got[0] == Decimal("99.7") and got[1] == T0 + timedelta(minutes=10)
+    assert fill_basis(_trade(trade_id="zzzz0000"), orders) is None

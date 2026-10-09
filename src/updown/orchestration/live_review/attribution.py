@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -191,3 +191,38 @@ def mark_stale_open(rows: list[TradeMoney], closed_run_ids: frozenset[str]) -> l
         replace(r, source="stale") if r.source == "open" and r.trade.run_id in closed_run_ids else r
         for r in rows
     ]
+
+
+def fill_basis(
+    trade: Trade, finished_orders: list[dict[str, Any]]
+) -> tuple[Decimal, datetime] | None:
+    """진입 **체결가 · 체결 시각** — 거래소 끝난 주문 `t-<판6>-<매매8>-en-…`(T446 Q3 · 2026-10-09).
+
+    Args:
+        trade: 원장 매매.
+        finished_orders: 끝난 주문 목록(`contract` · `text` · `fill_price` · `create_time`).
+
+    Returns:
+        (체결가, 체결 시각). 없으면 None — 그러면 호출부는 원장 진입가 · opened_at 을 쓴다.
+
+    Note:
+        원장 `entry` · `opened_at` 은 낡은 5분봉 기준이라(T372) 체결보다 중앙 10분 이르고 10bp 안팎
+        다르다. 경로 셈은 체결 뒤 봉만 봐야 한다 — 체결 전 봉 저가를 물림으로 세면 한 건이 뒤집혔다.
+    """
+    prefix = trade.trade_id[:8]
+    best: tuple[datetime, Decimal] | None = None
+    for o in finished_orders:
+        if str(o.get("contract", "")) != trade.symbol:
+            continue
+        text = str(o.get("text", ""))
+        if not text.startswith("t-") or f"-{prefix}-en" not in text:
+            continue
+        if str(o.get("finish_as", "filled")) not in ("filled", ""):
+            continue
+        px = dec(o.get("fill_price"))
+        at = when(_epoch_iso(o.get("finish_time") or o.get("create_time")))
+        if px is None or px <= 0 or at is None:
+            continue
+        if best is None or at < best[0]:
+            best = (at, px)
+    return None if best is None else (best[1], best[0])
