@@ -24,6 +24,12 @@ from updown.orchestration.live_review.health import (
     LegFunnel,
     PlaybookSpan,
 )
+from updown.orchestration.live_review.regime import (
+    DEF_NAME,
+    LABEL_NAME,
+    RegimeReference,
+    RegimeView,
+)
 from updown.orchestration.live_review.snapshot import Snapshot
 from updown.orchestration.live_review.structure import (
     Num,
@@ -383,6 +389,87 @@ def structure_summary(view: StructureView | None) -> str:
     )
 
 
+def _lab(x: str | None) -> str:
+    return "—" if x is None else f"{x} {LABEL_NAME.get(x, '')}"
+
+
+def regime_summary(view: RegimeView | None) -> str:
+    """보고서 맨 위 요약 한 줄 — 국면(관찰용)."""
+    if view is None or view.skipped or not view.days:
+        reason = view.skipped if view is not None and view.skipped else "봉 없이 돌렸다"
+        return f"- 국면(관찰용 · 1-5): 생략 — {reason}"
+    last = view.days[-1]
+    runs = view.runs or {}
+    return (
+        f"- 국면(관찰용 · 판정 아님 · 1-5 · BTC 일봉 {last.day.isoformat()}): "
+        f"이평 {_lab(last.m)}({runs.get('M', 0)}일째) · "
+        f"구조 {_lab(last.x)}({runs.get('X', 0)}일째) · "
+        f"회귀 {_lab(last.g)}({runs.get('G', 0)}일째)"
+    )
+
+
+def _regime(view: RegimeView | None, ref: RegimeReference | None) -> list[str]:
+    out = [
+        "## 1-5. 국면 · 다리 그림자 성적 — 관찰용 · 판정 아님 "
+        "(T459 · Gate 공개 BTC 일봉 · 같은 정의)",
+        "",
+    ]
+    if view is None or view.skipped or not view.days:
+        reason = view.skipped if view is not None and view.skipped else "봉 없이 돌렸다"
+        out += [f"- 생략: {reason}.", ""]
+        return out
+    out += [
+        "> T459 결과: 세 판단기 모두 30일 앞 BTC 수익 순서를 2018 ~ 2026 네 창 중 "
+        "한 번도 못 맞췄고, 차트를 다 본 뒤의 국면과 위 · 횡보 · 아래 세 묶음으로도 "
+        "40 ~ 54% 만 같았다. 다리의 지난 30일 성적은 그 다리 · 다른 다리의 다음 매매를 "
+        "가르지 못했다. 국면별로 네 창 모두 건당이 다리 평균보다 높았던 것은 BTC 상승 "
+        "국면(이평 · 회귀)의 급락 되돌림 · 이평 약상승-횡보의 돌파 롱뿐이다.",
+        "",
+        "| 날(UTC) | 이평 M | 구조 X | 회귀 G |",
+        "|---|---|---|---|",
+    ]
+    for d in view.days:
+        out.append(f"| {d.day.isoformat()} | {_lab(d.m)} | {_lab(d.x)} | {_lab(d.g)} |")
+    out.append("")
+    last = view.days[-1]
+    if ref is not None and ref.cells:
+        out += [
+            "**지금 국면에서 다리별 백테스트 건당**"
+            "(net % · n · 다리 전체 건당과 나란히 · 네 창 합친 값 · 참고만):",
+            "",
+            "| 다리 | 전체 | "
+            + " | ".join(
+                f"{DEF_NAME[d]} {getattr(last, d.lower()) or '—'}" for d in ("M", "X", "G")
+            )
+            + " |",
+            "|---|---|---|---|---|",
+        ]
+        for leg, name in ref.leg_name.items():
+            cells: list[str] = []
+            for d in ("M", "X", "G"):
+                lab = cast(str | None, getattr(last, d.lower()))
+                v = ref.cells.get(d, {}).get(leg, {}).get(lab or "")
+                cells.append("—" if v is None else f"{v[0]:+.2f}%(n {v[1]})")
+            out.append(
+                f"| {name} | {ref.leg_all.get(leg, float('nan')):+.2f}% | "
+                + " | ".join(cells)
+                + " |"
+            )
+        out += ["", f"참고값 출처: {ref.source} (`config/live_review_regime.yml`)", ""]
+    out += [
+        "**다리 그림자 성적**(지난 30일 안 청산 · 실현 손익 USDT · R 합 · 이긴 수 / 매매 수):",
+        "",
+    ]
+    if not view.shadow:
+        out += ["- 지난 30일 청산된 매매가 없다.", ""]
+        return out
+    out += ["| 다리 | 매매 | 이김 | 실현 손익 | R 합 |", "|---|---|---|---|---|"]
+    for s in view.shadow:
+        out.append(f"| {s.leg} | {s.n} | {s.wins} | {num(s.pnl)} | {num(s.r_sum)} |")
+    out.append("")
+    return out
+
+
 def _structure(view: StructureView | None, ref: StructureReference | None) -> list[str]:
     out = ["## 1-4. 시장 구조 — 관찰용 · 판정 아님 (T454 수치 · Gate 공개 봉 · 같은 정의)", ""]
     if view is None or view.skipped or not view.rows:
@@ -677,16 +764,19 @@ def render(
     expect_source: str = "",
     structure: StructureView | None = None,
     structure_ref: StructureReference | None = None,
+    regime: RegimeView | None = None,
+    regime_ref: RegimeReference | None = None,
 ) -> str:
     """마크다운 한 장 — 절 순서는 사용자가 묻는 순서(왜 안 들어갔나 → 손실 몫 → 경로).
 
     1-2(지금 문 상태) · 1-3(돌파 롱 근접) · 2-1(라이브 대 재현)은 T451 G(T445 5단계) 절이다 —
     `conditions` · `replay` 가 없으면 "생략" · "재현 없음" 한 줄로 나온다.
     1-4(시장 구조)는 T454 관찰 절이다 — `structure` 가 없으면 "생략" 이고, 맨 위 요약에
-    한 줄을 더한다(판정 아님).
+    한 줄을 더한다(판정 아님). 1-5(국면 · 그림자 성적)는 T459 관찰 절이다 — 같은 꼴.
     """
     out = _head(snap, money, outside_pnl, days)
     out.append(structure_summary(structure))
+    out.append(regime_summary(regime))
     out += [f"- ⚠️ {note}" for note in notes]
     out.append("")
     out += _spans(spans)
@@ -694,6 +784,7 @@ def render(
     out += _gates(conditions, days)
     out += _probes(conditions)
     out += _structure(structure, structure_ref)
+    out += _regime(regime, regime_ref)
     out += _legs(legs, expectations, expect_source)
     out += _replay(replay, replay_command)
     out += _funnel(funnel, events)

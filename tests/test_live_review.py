@@ -1149,3 +1149,133 @@ class TestMarketStructureReport:
             read_structure_reference('years: ["a"]\nmetrics:\n  x: {values: [높음]}\n')
         with pytest.raises(ValueError, match="칸 1 이 연도 2"):
             read_structure_reference('years: ["a", "b"]\nmetrics:\n  x: {values: [1]}\n')
+
+
+# ------------------------------------------- T459 관찰 절 — 국면 · 그림자 성적(연구 정의와 같은 값)
+
+
+def _regime_walk(np: Any, seed: int, n: int = 760) -> tuple[Any, Any, Any]:
+    """상승 · 횡보 · 하락 구간을 번갈아 넣은 일봉(고가 · 저가 · 종가) — 다섯 국면이 다 나오게."""
+    rng = np.random.default_rng(seed)
+    drift = np.zeros(n)
+    for k, d in enumerate((0.006, 0.0, -0.006, 0.002, -0.002, 0.008, 0.0, -0.008)):
+        drift[k * (n // 8) : (k + 1) * (n // 8)] = d
+    c = 100.0 * np.exp(np.cumsum(drift + rng.normal(0.0, 0.02, n)))
+    h = c * (1 + np.abs(rng.normal(0.0, 0.01, n)))
+    lo = c * (1 - np.abs(rng.normal(0.0, 0.01, n)))
+    return h, lo, c
+
+
+class TestRegimeParity:
+    def test_labels_match_the_research_labeler(self) -> None:
+        np = _mod("numpy")
+        rm = _mod("t459_regime_map")
+        from updown.orchestration.live_review.regime import labels as live_labels
+
+        for seed in (459, 4590, 45900):
+            h, lo, c = _regime_walk(np, seed)
+            want = rm.labels(h, lo, c)
+            got = live_labels(_col(h), _col(lo), _col(c))
+            for d in ("M", "X", "G"):
+                assert got[d] == list(want[d]), (seed, d)
+                assert len({x for x in got[d] if x is not None}) >= 3, (seed, d)
+
+    def test_shadow_counts_only_closed_trades_in_the_last_30_days(self) -> None:
+        from updown.orchestration.live_review.attribution import TradeMoney
+        from updown.orchestration.live_review.regime import leg_shadow
+
+        now = T0 + timedelta(days=40)
+        rows = [
+            TradeMoney(
+                _trade(trade_id="a", closed=now - timedelta(days=10)),
+                Decimal("5"),
+                "exchange",
+                Decimal("1.5"),
+            ),
+            TradeMoney(
+                _trade(trade_id="b", closed=now - timedelta(days=2)),
+                Decimal("-2"),
+                "ledger",
+                Decimal("-1"),
+            ),
+            TradeMoney(
+                _trade(trade_id="c", closed=now - timedelta(days=40)),
+                Decimal("9"),
+                "exchange",
+                None,
+            ),
+            TradeMoney(_trade(trade_id="d", closed=None, exit_price=None), None, "none", None),
+            TradeMoney(
+                _trade(trade_id="e", leg="private_strategy", closed=now - timedelta(days=1)),
+                None,
+                "none",
+                None,
+            ),
+        ]
+        got = leg_shadow(rows, now)
+        assert len(got) == 1
+        s = got[0]
+        assert s.leg == "private_strategy" and s.n == 2 and s.wins == 1
+        assert s.pnl == Decimal("3") and s.r_sum == Decimal("0.5")
+
+    def test_render_has_the_regime_section_and_summary(self) -> None:
+        from pathlib import Path
+
+        from updown.orchestration.live_review.regime import (
+            LegShadow,
+            RegimeDay,
+            RegimeView,
+            read_regime_reference,
+        )
+        from updown.orchestration.live_review.report import regime_summary
+
+        snap = Snapshot(
+            path=Path("snap"),
+            taken_at=T0,
+            runs=[],
+            trades=[],
+            orders=[],
+            fund={},
+            events=[],
+            exchange={},
+        )
+        events = summarize_events([])
+        view = RegimeView(
+            days=(
+                RegimeDay(date(2026, 10, 9), "WU", "S", "U"),
+                RegimeDay(date(2026, 10, 10), "U", "WU", "U"),
+            ),
+            runs={"M": 1, "X": 1, "G": 12},
+            shadow=(
+                LegShadow("private_strategy", 3, Decimal("-4.5"), Decimal("-1.2"), 1),
+            ),
+        )
+        ref_path = Path(__file__).resolve().parents[1] / "config" / "live_review_regime.yml"
+        ref = read_regime_reference(ref_path.read_text(encoding="utf-8"))
+        assert set(ref.cells) == {"M", "X", "G"} and len(ref.leg_name) == 6 and ref.source
+        text = render(
+            snap,
+            [],
+            [],
+            {},
+            [],
+            {},
+            events,
+            {},
+            {},
+            {},
+            {},
+            None,
+            30,
+            [],
+            regime=view,
+            regime_ref=ref,
+        )
+        assert "## 1-5. 국면 · 다리 그림자 성적 — 관찰용 · 판정 아님" in text
+        assert "| 2026-10-10 | U 상승 | WU 약상승-횡보 | U 상승 |" in text
+        assert "| private_strategy | 3 | 1 | -4.50 | -1.20 |" in text
+        assert "| 급락 되돌림 |" in text
+        summary = regime_summary(view)
+        assert summary in text and "회귀 U 상승(12일째)" in summary
+        skipped = render(snap, [], [], {}, [], {}, events, {}, {}, {}, {}, None, 30, [])
+        assert "- 국면(관찰용 · 1-5): 생략" in skipped
