@@ -384,6 +384,36 @@ class EdgarClient:
             )
         return response.text
 
+    async def get_bytes(self, url: str) -> bytes:
+        """GET 하고 본문 바이트를 돌려준다 — 저장소의 묶음 파일(ZIP · gz)용 (T451 · 2026-10-10).
+
+        내부자 거래 자료 묶음(`form345.zip`) · 전체 색인(`master.gz`)처럼 글자가 아닌 파일을 받는다.
+        헤더 · 오류 처리는 `get_text` 와 같다.
+
+        Args:
+            url: 절대 URL.
+
+        Returns:
+            본문 바이트.
+
+        Raises:
+            UnknownEntityError: 404.
+            EdgarApiError: 재시도 뒤에도 실패, 또는 2xx 가 아니다.
+        """
+        try:
+            response = await self._http.request("GET", url, headers=ARCHIVE_HEADERS)
+        except OutboundError as exc:
+            if exc.status_code == HTTP_NOT_FOUND:
+                raise UnknownEntityError(f"EDGAR 에 없다({url})") from exc
+            raise EdgarApiError(str(exc), status_code=exc.status_code) from exc
+        if response.status_code == HTTP_NOT_FOUND:
+            raise UnknownEntityError(f"EDGAR 에 없다({url})")
+        if response.is_error:
+            raise EdgarApiError(
+                f"EDGAR 오류 응답({url}): {response.status_code}", status_code=response.status_code
+            )
+        return response.content
+
 
 __all__ = [
     "ARCHIVE_HEADERS",
