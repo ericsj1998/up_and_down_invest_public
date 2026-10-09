@@ -25,6 +25,12 @@ from updown.orchestration.live_review.health import (
     PlaybookSpan,
 )
 from updown.orchestration.live_review.snapshot import Snapshot
+from updown.orchestration.live_review.structure import (
+    Num,
+    StructureReference,
+    StructureRow,
+    StructureView,
+)
 
 KST = timedelta(hours=9)
 GridMean = dict[tuple[Decimal, Decimal], tuple[Decimal, int]]
@@ -309,6 +315,139 @@ def _probes(view: ConditionView | None) -> list[str]:
     return out
 
 
+def _sval(kind: str, v: Num) -> str:
+    """시장 구조 값 글꼴 — 줄의 `kind` 대로."""
+    if v is None:
+        return "—"
+    if kind == "corr":
+        return f"{v:.3f}"
+    if kind == "signed":
+        return f"{v:+.3f}"
+    if kind == "pct":
+        return f"{v:.0f}%"
+    if kind == "pctchg":
+        return f"{v:+.1f}%"
+    if kind == "share":
+        return f"{v:.2f}"
+    if kind == "bn":
+        return f"{v:.1f}"
+    if kind == "regime":
+        return f"{v * 100:.0f}%"
+    return f"{v:.0f}"
+
+
+def _scell(row: StructureRow, v: Num, denom: int | None, *, now: bool = False) -> str:
+    if now and row.kind == "regime":
+        return "—" if v is None else ("**되돌림**" if v >= 1 else "**이어짐**")
+    text = _sval(row.kind, v)
+    if row.kind == "count" and v is not None and denom is not None:
+        text += f"/{denom}"
+    return text
+
+
+def _ref_cell(row: StructureRow, ref: StructureReference, k: int) -> str:
+    vals = ref.values.get(row.key)
+    v = vals[k] if vals else None
+    text = _sval(row.kind, v)
+    shares = ref.values.get("up50_share") if row.key == "up50_n" else None
+    share = shares[k] if shares else None
+    if v is not None and share is not None:
+        text += f"({share * 100:.0f}%)"
+    return text
+
+
+def _span(values: tuple[Num, ...] | None, fmt: str) -> str:
+    got = [v for v in values or () if v is not None]
+    return "—" if not got else f"{fmt.format(min(got))} ~ {fmt.format(max(got))}"
+
+
+def structure_summary(view: StructureView | None) -> str:
+    """보고서 맨 위 요약 한 줄 — 시장 구조(관찰용)."""
+    if view is None or view.skipped:
+        reason = view.skipped if view is not None and view.skipped else "봉 없이 돌렸다"
+        return f"- 시장 구조(관찰용 · 1-4): 생략 — {reason}"
+    m = view.row("m_alt_corr")
+    ac = view.row("ac_mean")
+    vol = view.row("btc_vol30")
+    up = view.row("up50_n")
+    rb = view.row("rbig_n")
+    regime = "—"
+    if ac is not None and ac.now is not None:
+        regime = f"{'되돌림' if ac.now < 0 else '이어짐'}({ac.now:+.3f})"
+    events = _sval("count", rb.last30 if rb else None)
+    return (
+        f"- 시장 구조(관찰용 · 판정 아님 · 1-4): M {_sval('corr', m.now if m else None)} · "
+        f"AC {regime} · BTC 변동성 {_sval('pct', vol.now if vol else None)} · "
+        f"큰 알트 움직임 {_sval('count', up.now if up else None)}"
+        f"(30일 +50% 종목 · 지금) · 잔차 사건 {events}(최근 30일)"
+    )
+
+
+def _structure(view: StructureView | None, ref: StructureReference | None) -> list[str]:
+    out = ["## 1-4. 시장 구조 — 관찰용 · 판정 아님 (T454 수치 · Gate 공개 봉 · 같은 정의)", ""]
+    if view is None or view.skipped or not view.rows:
+        reason = view.skipped if view is not None and view.skipped else "봉 없이 돌렸다"
+        out += [f"- 생략: {reason}.", ""]
+        return out
+    gone = f" · 봉 못 받음: {' '.join(view.missing)}" if view.missing else ""
+    day = "—" if view.day is None else view.day.isoformat()
+    out += [
+        f"마지막 마감 일봉 **{day}**(UTC 날 · KST 09시 시작) · "
+        f"4H 마감 **{kst(view.slot_end)} KST** · "
+        f"우주 = 삼각 숏 범위 {len(view.symbols)}종(`config/baskets.yml` tri18 · "
+        f"M 은 BTC 뺀 알트) · 지금 M 알트 {view.alts_m} · AC 종목 {view.syms_ac}{gone}",
+        "",
+        "> T454 결론: 시장은 바뀌었다(큰 알트 움직임 감소 · 2025 ~ 4H 되돌림 · "
+        "ETH 가 BTC 거래대금 몫을 채움). 그러나 이 수치로 다리 비중을 미리 맞히지 못했다"
+        "(§5 · §6 ⛔ · PBO 0.518) — **값만 적는다. 매매 판단에 쓰지 않는다.**",
+        "",
+    ]
+    years = ref.years if ref is not None else ()
+    head = "| 수치 | 지금 | 최근 30일 | 최근 90일 |" + "".join(f" T454 {y} |" for y in years)
+    out += [head, "|---|---|---|---|" + "---|" * len(years)]
+    for row in view.rows:
+        cells = [
+            _scell(row, row.now, row.denoms[0], now=True),
+            _scell(row, row.last30, row.denoms[1]),
+            _scell(row, row.last90, row.denoms[2]),
+        ]
+        if ref is not None:
+            cells += [_ref_cell(row, ref, k) for k in range(len(years))]
+        out.append(f"| {row.what} | " + " | ".join(cells) + " |")
+    out.append("")
+    run_days = view.ac_run_bars * 4 / 24
+    if ref is not None:
+        out.append(
+            "⚠️ AC 국면은 짧다 — T454 연도별 국면 길이 중앙 되돌림 "
+            f"{_span(ref.values.get('ac_run_neg_med_days'), '{:.1f}')}일 · 이어짐 "
+            f"{_span(ref.values.get('ac_run_pos_med_days'), '{:.1f}')}일 · 4H 한 칸마다 부호가 "
+            f"{_span(ref.values.get('ac_flip_4h'), '{:.0%}')} 바뀐다(T454 §5). "
+            f"지금 부호는 4H {view.ac_run_bars}칸({run_days:.1f}일)째."
+        )
+    else:
+        out.append(
+            f"⚠️ AC 국면은 짧다(T454 §5). 지금 부호는 4H {view.ac_run_bars}칸({run_days:.1f}일)째."
+        )
+    out += [
+        "",
+        "읽는 법: **지금** = M 은 마지막 마감 날까지 90일 · AC 는 마지막 마감 4H · "
+        "나머지는 마지막 마감 일봉(거래대금 합 · 몫은 기간 값만). **최근 30 · 90일** = "
+        "그 기간 날(4H 칸)마다 값의 평균 · 몫은 기간 합의 비 · 종목 수와 잔차 사건 수는 "
+        "기간 안에서 센다(T454 연도 값은 1년 창이라 수가 더 크다 · +50% 칸 괄호는 그해 몫). "
+        "잔차 큰 움직임 '지금' = 30일 잔차 합이 ln 1.5 이상인 알트 / 잔차 합이 있는 알트. "
+        "T454 열은 바이낸스(2018 ~ 19 현물 · 2020 ~ 선물) — 정의는 같지만 거래소가 달라 "
+        "거래대금 수준 · 몫은 다를 수 있다(아래 대조). "
+        "거래대금 = 거래량(Gate 계약 수 x 공개 계약 명세 `quanto_multiplier` = 코인 수) x 종가.",
+    ]
+    if ref is not None:
+        if ref.notes:
+            out += ["", *(f"- ⚠️ {note}" for note in ref.notes), ""]
+        if ref.source:
+            out.append(f"T454 열 출처: {ref.source} (`config/live_review_market_structure.yml`)")
+    out.append("")
+    return out
+
+
 def _replay(gap: ReplayGap | None, command: str) -> list[str]:
     out = ["## 2-1. 라이브 대 재현 돈 차이 (T447 · 같은 매매의 라이브 손익 - 재현 손익)", ""]
     if gap is None:
@@ -536,19 +675,25 @@ def render(
     replay: ReplayGap | None = None,
     replay_command: str = "",
     expect_source: str = "",
+    structure: StructureView | None = None,
+    structure_ref: StructureReference | None = None,
 ) -> str:
     """마크다운 한 장 — 절 순서는 사용자가 묻는 순서(왜 안 들어갔나 → 손실 몫 → 경로).
 
     1-2(지금 문 상태) · 1-3(돌파 롱 근접) · 2-1(라이브 대 재현)은 T451 G(T445 5단계) 절이다 —
     `conditions` · `replay` 가 없으면 "생략" · "재현 없음" 한 줄로 나온다.
+    1-4(시장 구조)는 T454 관찰 절이다 — `structure` 가 없으면 "생략" 이고, 맨 위 요약에
+    한 줄을 더한다(판정 아님).
     """
     out = _head(snap, money, outside_pnl, days)
+    out.append(structure_summary(structure))
     out += [f"- ⚠️ {note}" for note in notes]
     out.append("")
     out += _spans(spans)
     out += _why(why, held, owners)
     out += _gates(conditions, days)
     out += _probes(conditions)
+    out += _structure(structure, structure_ref)
     out += _legs(legs, expectations, expect_source)
     out += _replay(replay, replay_command)
     out += _funnel(funnel, events)

@@ -9,13 +9,21 @@
 4. 손실 몫의 합이 100% 가 안 되는 것.
 5. (T451 G) 문 표가 세션과 다른 판정을 내는 것 · 문턱까지 거리 부호가 뒤집히는 것 ·
    근접 표가 탐지기와 다른 답을 내는 것 · 기대값 칸의 잘못된 값이 조용히 "—" 가 되는 것.
+6. (T454 관찰 절) 시장 구조 수치가 연구 스크립트와 **다른 정의**로 재지는 것 —
+   M · AC 는 연구 함수와, S5 · S6 · S8(연구 `main` 안 인라인 식)은 그 식을 그대로 옮긴
+   대조와 같은 입력에서 맞대어 본다.
 """
 
 from __future__ import annotations
 
+import importlib
+import math
+import sys
+import warnings
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -65,8 +73,23 @@ from updown.orchestration.live_review.conditions import (
 )
 from updown.orchestration.live_review.excursion import Bar, excursion, grid_outcome
 from updown.orchestration.live_review.health import funnel_totals, playbook_spans, summarize_events
-from updown.orchestration.live_review.report import render
+from updown.orchestration.live_review.report import render, structure_summary
 from updown.orchestration.live_review.snapshot import Run, Snapshot, Trade
+from updown.orchestration.live_review.structure import (
+    Num,
+    StructureView,
+    ac_at,
+    m_series,
+    read_structure_reference,
+    realized_vol,
+    residual_moves,
+    ret_n,
+    structure_view,
+    turnover,
+    tv_growth,
+    tv_window,
+    up_moves,
+)
 
 T0 = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
 
@@ -800,3 +823,329 @@ class TestReplayAndExpectations:
         full = page(replay=gap, replay_command="명령", expect_source="판 997")
         assert "**+1.50**" in full and "| 돌파 롱 | 8 | -0.60 |" in full
         assert "기대값 출처: 판 997" in full
+        assert "## 1-4. 시장 구조" in full and "- 시장 구조(관찰용 · 1-4): 생략" in full
+
+
+# ------------------------------------------- T454 관찰 절 — 시장 구조(연구 정의와 같은 값)
+
+RESEARCH = Path(__file__).resolve().parents[1] / "scripts" / "research"
+
+
+def _mod(name: str) -> Any:
+    """연구 스크립트 · numpy · pandas — 시험에서만 부른다.
+
+    src 는 scripts 를 import 하지 않는다(계층 규칙) — 대조는 시험 쪽에서만 한다.
+    """
+    if str(RESEARCH) not in sys.path:
+        sys.path.insert(0, str(RESEARCH))
+    try:
+        return importlib.import_module(name)
+    except ImportError as exc:  # numpy · pandas · scipy 는 dev 의존성
+        pytest.skip(f"{name} 를 못 불렀다: {exc}")
+
+
+def _col(x: Any) -> list[Num]:
+    return [None if math.isnan(float(v)) else float(v) for v in x]
+
+
+def _same(got: Num, want: Any, tol: float = 1e-9) -> bool:
+    w = float(want)
+    if got is None or math.isnan(w):
+        return got is None and math.isnan(w)
+    return abs(got - w) <= tol * max(1.0, abs(w))
+
+
+def _walk(np: Any, rng: Any, n: int, k: int, vol: float = 0.03, drift: Any = None) -> Any:
+    """공통 요인 + 종목 잡음 로그 수익의 누적 → 종가 [n, k].
+
+    `drift` = 종목 고유 상승(수익에 더함).
+    """
+    common = rng.normal(0.0, vol, n)
+    r = 0.7 * common[:, None] + rng.normal(0.0, vol, (n, k))
+    if drift is not None:
+        r = r + drift
+    return 100.0 * np.exp(np.cumsum(r, axis=0))
+
+
+def _research_s(np: Any, pd: Any, c: Any, v: Any, days: list[date], jb: int) -> dict[str, Any]:
+    """`t454_market_structure.main` 의 S5 · S6 · S8 식을 줄 그대로 옮긴 대조.
+
+    연구 쪽은 `main` 안 인라인이라 부를 함수가 없다. 우주 = 모든 열 ·
+    2020 이음매 가름은 뺐다(이 시험 날 밖).
+    """
+    t, s = c.shape
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rr = np.vstack([np.full(s, np.nan), np.diff(np.log(c), axis=0)])
+    rr_df = pd.DataFrame(rr)
+    vol30 = (rr_df.rolling(30, min_periods=30).std(ddof=1) * math.sqrt(365) * 100).to_numpy()
+    ret30 = np.full_like(c, np.nan)
+    ret30[30:] = c[30:] / c[:-30] - 1
+    tv = c * v
+    tv_df = pd.DataFrame(tv)
+    tv30 = tv_df.rolling(30, min_periods=30).sum().to_numpy()
+    tvok60 = (tv_df.notna().rolling(60, min_periods=60).sum() == 60).to_numpy()
+    tv30_prev = np.vstack([np.full((30, s), np.nan), tv30[:-30]])
+    with np.errstate(invalid="ignore", divide="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        tv_tot = np.nansum(tv, axis=1)
+        tv_tot = np.where(np.sum(~np.isnan(tv), axis=1) >= 1, tv_tot, np.nan)
+        g_num = np.nansum(np.where(tvok60, tv30, np.nan), axis=1)
+        g_den = np.nansum(np.where(tvok60, tv30_prev, np.nan), axis=1)
+        g30 = np.where((tvok60.sum(axis=1) >= 1) & (g_den > 0), g_num / g_den - 1, np.nan)
+
+    def regress(i0: int, i1: int, j: int) -> float | None:
+        x, y = rr[i0:i1, jb], rr[i0:i1, j]
+        ok = ~np.isnan(x) & ~np.isnan(y)
+        if ok.sum() < 60:
+            return None
+        x, y = x[ok], y[ok]
+        vx = np.var(x, ddof=1)
+        if vx <= 0 or np.var(y, ddof=1) <= 0:
+            return None
+        return float(np.cov(x, y, ddof=1)[0, 1] / vx)
+
+    dates = np.array(days)
+    e = np.full_like(rr, np.nan)
+    for y in sorted({d.year for d in days}):
+        for a, z in ((date(y, 1, 1), date(y, 7, 1)), (date(y, 7, 1), date(y + 1, 1, 1))):
+            i0, i1 = int(np.searchsorted(dates, a)), int(np.searchsorted(dates, z))
+            if i1 <= i0:
+                continue
+            for j in range(s):
+                if j == jb:
+                    continue
+                beta = regress(i0, i1, j)
+                if beta is not None:
+                    e[i0:i1, j] = rr[i0:i1, j] - beta * rr[i0:i1, jb]
+    e30 = pd.DataFrame(e).rolling(30, min_periods=30).sum().to_numpy()
+    events: list[tuple[int, int]] = []
+    for j in range(s):
+        nxt = -1
+        for i in np.where(e30[:, j] >= math.log(1.5))[0]:
+            if i >= nxt:
+                events.append((int(i), j))
+                nxt = i + 30
+
+    def period(i0: int, i1: int, je: int) -> dict[str, Any]:
+        sl = slice(i0, i1)
+        up_n = up_cap = 0
+        for j in range(s):
+            x = ret30[sl, j]
+            if np.any(~np.isnan(x)):
+                up_cap += 1
+                up_n += bool(np.nanmax(x) >= 0.5)
+        tot = tv_tot[sl]
+        tot_sum = float(np.nansum(tot))
+        btc_sum = float(np.nansum(tv[sl, jb]))
+        eth_sum = float(np.nansum(tv[sl, je]))
+        good = tot[~np.isnan(tot)]
+        return {
+            "up": (up_n, up_cap),
+            "total_bn": float(np.mean(good / 1e9)) if len(good) else math.nan,
+            "btc": btc_sum / tot_sum,
+            "eth": eth_sum / tot_sum,
+            "rest": (tot_sum - btc_sum - eth_sum) / tot_sum,
+        }
+
+    return {
+        "vol30": vol30,
+        "ret30": ret30,
+        "g30": g30,
+        "e30": e30,
+        "events": events,
+        "period": period,
+        "t": t,
+    }
+
+
+class TestMarketStructureParity:
+    def test_m_matches_research_m_series(self) -> None:
+        np = _mod("numpy")
+        wf = _mod("t454_wf_tilt")
+        rng = np.random.default_rng(454)
+        c = _walk(np, rng, 260, 6)
+        c[:70, 5] = np.nan  # 늦게 상장
+        c[rng.random(c.shape) < 0.01] = np.nan  # 빠진 날
+        c[120:, 4] = 50.0  # 멈춘 종목 — 90일 수익이 다 0 이면 상관이 없다(연구 NaN → M 없음)
+        with warnings.catch_warnings(), np.errstate(all="ignore"):
+            warnings.simplefilter("ignore")
+            want_m, want_n = wf.m_series(c)
+        got = m_series({f"A{j}": _col(c[:, j]) for j in range(c.shape[1])})
+        assert len(got) == len(want_m)
+        assert [n for _, n in got] == [int(v) for v in want_n]
+        assert all(_same(g, w) for (g, _), w in zip(got, want_m, strict=True))
+        assert sum(1 for g, _ in got if g is not None) > 50  # 값이 있는 칸을 견줬다
+        assert any(g is None and n >= 3 for g, n in got)  # 멈춘 종목 칸도 같이 비었다
+
+    def test_ac_matches_research_ac_series(self) -> None:
+        np = _mod("numpy")
+        acr = _mod("t454_ac_regime")
+        rng = np.random.default_rng(4540)
+        k = 1400
+        c = _walk(np, rng, k, 5, vol=0.01)
+        c[:400, 4] = np.nan  # 늦게 상장 — 쌍 10 미만인 동안 빠진다
+        c[rng.random(c.shape) < 0.02] = np.nan  # 끝점 빠짐 — 그 블록이 든 쌍만 빠진다
+        with warnings.catch_warnings(), np.errstate(all="ignore"):
+            warnings.simplefilter("ignore")
+            want_r, want_s, want_n = acr.ac_series(c.T.copy())
+        closes = {f"S{j}": _col(c[:, j]) for j in range(c.shape[1])}
+        hit = 0
+        for i in sorted({*range(0, k, 7), *range(k - 25, k)}):
+            r, nsym, npair = ac_at(closes, i)
+            assert (nsym, npair) == (int(want_s[i]), int(want_n[i])), i
+            assert _same(r, want_r[i]), (i, r, want_r[i])
+            hit += r is not None
+        assert hit > 50
+
+    def test_s5_s6_s8_match_the_research_formulas(self) -> None:
+        np = _mod("numpy")
+        pd = _mod("pandas")
+        rng = np.random.default_rng(45408)
+        t, s = 400, 6
+        drift = np.zeros((t, s))
+        drift[200:240, 2] = 0.03  # 알트 고유 상승 — 잔차 큰 움직임 · 30일 +50%
+        drift[300:330, 3] = 0.035
+        c = _walk(np, rng, t, s, drift=drift)
+        c[:50, 5] = np.nan
+        c[rng.random(c.shape) < 0.01] = np.nan
+        v = rng.lognormal(10.0, 0.5, (t, s))
+        v[rng.random(v.shape) < 0.01] = np.nan
+        days = [date(2025, 1, 1) + timedelta(days=i) for i in range(t)]
+        names = [f"A{j}" for j in range(s)]
+        btc, eth = names[0], names[1]
+        want = _research_s(np, pd, c, v, days, 0)
+        closes = {n: _col(c[:, j]) for j, n in enumerate(names)}
+        vols = {n: _col(v[:, j]) for j, n in enumerate(names)}
+
+        assert all(
+            _same(g, w) for g, w in zip(realized_vol(closes[btc]), want["vol30"][:, 0], strict=True)
+        )
+        for j, n in enumerate(names):
+            assert all(
+                _same(g, w) for g, w in zip(ret_n(closes[n]), want["ret30"][:, j], strict=True)
+            )
+        res = residual_moves(days, closes, btc)
+        assert res.events == [(i, names[j]) for i, j in want["events"]]
+        assert len(res.events) >= 2  # 심은 고유 상승이 사건이 됐다
+        for j, n in enumerate(names[1:], start=1):
+            assert all(_same(g, w) for g, w in zip(res.e30[n], want["e30"][:, j], strict=True))
+        tv = {n: turnover(closes[n], vols[n]) for n in names}
+        assert all(_same(g, w) for g, w in zip(tv_growth(tv), want["g30"], strict=True))
+        r30 = {n: ret_n(closes[n]) for n in names}
+        for days_back in (30, 90, 250):
+            i0 = t - days_back
+            p = want["period"](i0, t, 1)
+            assert up_moves(r30, i0, t) == p["up"]
+            w = tv_window(tv, i0, t, btc, eth)
+            assert _same(w.total_bn, p["total_bn"])
+            assert _same(w.btc_share, p["btc"]) and _same(w.eth_share, p["eth"])
+            assert _same(w.rest_share, p["rest"])
+
+
+def _view() -> StructureView:
+    """합성 18종 아닌 4종 — 표 줄 · 요약 · 절이 나오는지만 본다(값 정의는 위 대조가 맡는다)."""
+    import random
+
+    rng = random.Random(7)
+    t, k = 300, 300 * 6
+    names = ("BTC_USDT", "ETH_USDT", "XRP_USDT", "SOL_USDT")
+    days = [date(2026, 1, 1) + timedelta(days=i) for i in range(t)]
+    slots = [datetime(2026, 1, 1, 4, tzinfo=UTC) + timedelta(hours=4 * i) for i in range(k)]
+
+    def path(n: int, vol: float) -> list[Num]:
+        out: list[Num] = []
+        x = 100.0
+        for _ in range(n):
+            x *= math.exp(rng.gauss(0.0, vol))
+            out.append(x)
+        return out
+
+    return structure_view(
+        days=days,
+        closes={s: path(t, 0.03) for s in names},
+        volumes={s: [1000.0] * t for s in names},
+        slots=slots,
+        closes_4h={s: path(k, 0.01) for s in names},
+        btc="BTC_USDT",
+        eth="ETH_USDT",
+        missing=("ONE_USDT",),
+    )
+
+
+class TestMarketStructureReport:
+    def test_view_rows_and_section(self) -> None:
+        view = _view()
+        keys = [r.key for r in view.rows]
+        assert keys[:3] == ["m_alt_corr", "ac_mean", "ac_neg_share"]
+        assert {"btc_vol30", "up50_n", "rbig_n", "btc_share", "g30_alt"} <= set(keys)
+        m = view.row("m_alt_corr")
+        assert m is not None and m.now is not None and view.alts_m == 3
+        ac = view.row("ac_mean")
+        assert ac is not None and ac.now is not None and view.ac_run_bars >= 1
+        share = view.row("btc_share")
+        assert share is not None and share.last30 is not None and 0 < share.last30 < 1
+        rest = view.row("rest_share")
+        eth = view.row("eth_share")
+        assert rest is not None and eth is not None and rest.last30 is not None
+        assert eth.last30 is not None
+        assert abs(share.last30 + eth.last30 + rest.last30 - 1) < 1e-12
+
+        ref = read_structure_reference(
+            'source: "T454"\nyears: ["2025", "2026"]\nnotes: ["거래소 대조 주의"]\nmetrics:\n'
+            "  m_alt_corr: {values: [0.781, 0.718]}\n  ac_neg_share: {values: [0.81, null]}\n"
+            "  ac_run_neg_med_days: {values: [1.4, 1.2]}\n"
+            "  ac_run_pos_med_days: {values: [0.3, 0.2]}\n"
+            "  ac_flip_4h: {values: [0.143, 0.169]}\n"
+            "  up50_n: {values: [13, 6]}\n  up50_share: {values: [0.72, 0.33]}\n"
+        )
+        snap = Snapshot(
+            path=Path("snap"),
+            taken_at=T0,
+            runs=[],
+            trades=[],
+            orders=[],
+            fund={},
+            events=[],
+            exchange={},
+        )
+        events = summarize_events([])
+        text = render(
+            snap,
+            [],
+            [],
+            {},
+            [],
+            {},
+            events,
+            {},
+            {},
+            {},
+            {},
+            None,
+            30,
+            [],
+            structure=view,
+            structure_ref=ref,
+        )
+        assert "## 1-4. 시장 구조 — 관찰용 · 판정 아님" in text
+        assert "| T454 2025 | T454 2026 |" in text
+        assert "| 0.781 | 0.718 |" in text and "| 81% | — |" in text and "13(72%)" in text
+        assert "봉 못 받음: ONE_USDT" in text and "1.2 ~ 1.4일" in text
+        assert "- ⚠️ 거래소 대조 주의" in text
+        summary = structure_summary(view)
+        assert (
+            summary.startswith("- 시장 구조(관찰용 · 판정 아님 · 1-4): M ")
+            and "BTC 변동성" in summary
+        )
+        assert summary in text
+
+    def test_reference_file_parses_and_rejects_bad_values(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "config" / "live_review_market_structure.yml"
+        ref = read_structure_reference(path.read_text(encoding="utf-8"))
+        assert len(ref.years) == 9 and ref.source and len(ref.notes) == 2
+        assert ref.values["ac_mean"][-2] == -0.068 and ref.values["m_alt_corr"][-2] == 0.781
+        assert all(len(v) == 9 for v in ref.values.values())
+        with pytest.raises(ValueError, match="숫자 또는 null"):
+            read_structure_reference('years: ["a"]\nmetrics:\n  x: {values: [높음]}\n')
+        with pytest.raises(ValueError, match="칸 1 이 연도 2"):
+            read_structure_reference('years: ["a", "b"]\nmetrics:\n  x: {values: [1]}\n')
