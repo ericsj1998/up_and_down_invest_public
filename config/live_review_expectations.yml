@@ -2,38 +2,48 @@
 #
 # 키 = 다리 귀속 키의 `@` 앞 (`private_strategy`). 값은 비워 두면(`null`) 보고서에 "—" 로 나온다 —
 # 모르는 값을 지어내지 않는다. 채울 때는 출처(판 번호 · 문서 절)를 주석으로 남긴다.
-#   win_rate_pct     기대 승률 %
+#   win_rate_pct     기대 승률 %(순 손익 > 0 인 매매 비율)
 #   mean_r           기대 평균 실현 R
 #   loss_share_pct   전체 손실 중 이 다리 몫 %(연구 창 · 전 다리 합 = 100)
 #   note             출처
+#
+# ⭐ 2026-10-10 T451 G — 연구 판 997(혼합 3.4 = C0DB 바탕 · 연구 창 2022-03-02 ~ 2026-08-21) 덤프 `logs/t279/dump997.jsonl`
+#    칸 `C0DB_100`(브레이크 10%) · scale 1.0 · 씨앗 10 중앙에서 낸 값이다(도구 `scripts/research/live_review_expect.py`).
+#    - 확인: 돌파 롱 n 832 · 승률 41.3% = T406 최고 판 표 "연구 · C0DB 832 · 41.4%"(scale 0.5 · 문턱 평균)와 같은 자리.
+#    - 평균 R = 순 % ÷ 손절 거리 % → **비용 포함**이다. 라이브 보고서 R 은 비용 전 가격 R 이라 라이브가 (왕복 비용 ÷ 손절 거리)만큼
+#      높게 나온다(손절 거리 2 ~ 3% 인 돌파 롱이면 약 +0.05 ~ 0.08R · 손절 10% 인 급락 되돌림은 +0.02R 안).
+#    - 손실 몫 = 지는 매매의 (손익 ÷ 진입 때 잔고) 합 몫 — 연구 엔진은 복리라 USDT 그대로 더하지 않았다.
+#    - 창 밖(판 998 · 2020-01-10 ~ 2021-12-27) 값은 각 다리 note 에 적었다. 연구 창이 기대값이다(채택 판정 창).
+#    ⚠️ 연구 엔진은 체결 · 펀드 문 일부가 실계좌와 다르다(T411 재현이 건당 1 ~ 3bp 낙관). 표본 30 미만 라이브 칸은 판정하지 않는다.
+source: "연구 판 997 C0DB_100 · scale 1.0 · 씨앗 10 중앙 · 2022-03-02 ~ 2026-08-21 · R 은 비용 포함(live_review_expect.py)"
 legs:
   private_strategy:
-    win_rate_pct: null
-    mean_r: null
-    loss_share_pct: null
-    note: "돌파 롱 — 연구 판 C0DB(38.60) · T425 최근 2년 분해에서 채운다"
+    win_rate_pct: 41.3   # 판 997 C0DB_100 · n 832
+    mean_r: 0.340        # 판 997 · 비용 포함
+    loss_share_pct: 49.0 # 판 997
+    note: "돌파 롱 — 판 997 n 832 · 창 밖 998 n 452 · 39.2% · +0.454R · 몫 60.5%"
   private_strategy:
-    win_rate_pct: null
-    mean_r: null
-    loss_share_pct: null
-    note: "삼각 숏"
+    win_rate_pct: 35.1   # 판 997 C0DB_100 · n 641
+    mean_r: 0.182
+    loss_share_pct: 22.1
+    note: "삼각 숏 — 판 997 n 641 · 창 밖 998 n 89 · 29.2% · -0.142R · 몫 14.0%(장세 다리 · 창마다 반대)"
   private_strategy:
-    win_rate_pct: null
-    mean_r: null
-    loss_share_pct: null
-    note: "MACD 숏"
+    win_rate_pct: 41.0   # 판 997 C0DB_100 · n 351
+    mean_r: 0.157
+    loss_share_pct: 10.3
+    note: "MACD 숏 — 판 997 n 351 · 창 밖 998 n 76 · 35.5% · +0.012R · 몫 8.1%"
   private_strategy:
-    win_rate_pct: null
-    mean_r: null
-    loss_share_pct: null
-    note: "MACD 롱(브레이크 제외 다리)"
+    win_rate_pct: 37.7   # 판 997 C0DB_100 · n 204
+    mean_r: 0.062
+    loss_share_pct: 7.4
+    note: "MACD 롱(브레이크 제외 다리) — 판 997 n 204 · 창 밖 998 n 89 · 38.2% · +0.060R · 몫 6.4%"
   private_strategy:
-    win_rate_pct: null
-    mean_r: null
-    loss_share_pct: null
-    note: "일봉 채널"
+    win_rate_pct: 27.1   # 판 997 C0DB_100 · n 255
+    mean_r: 0.827
+    loss_share_pct: 6.5
+    note: "일봉 채널 — 판 997 n 255 · 창 밖 998 n 48 · 43.8% · +1.392R · 몫 3.4%"
   private_strategy:
-    win_rate_pct: null
-    mean_r: null
-    loss_share_pct: null
-    note: "급락 되돌림"
+    win_rate_pct: 53.3   # 판 997 C0DB_100 · n 492(B12S10R)
+    mean_r: 0.083
+    loss_share_pct: 4.6
+    note: "급락 되돌림 — 판 997 n 492 · 창 밖 998 n 298 · 48.7% · +0.236R · 몫 7.7%"

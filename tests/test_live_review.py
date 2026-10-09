@@ -7,6 +7,8 @@
 2. 같은 봉에 익절 · 손절이 둘 다 닿았을 때 익절로 세는 것(낙관) — 손절 먼저.
 3. 숏 매매의 R 부호가 뒤집히는 것.
 4. 손실 몫의 합이 100% 가 안 되는 것.
+5. (T451 G) 문 표가 세션과 다른 판정을 내는 것 · 문턱까지 거리 부호가 뒤집히는 것 ·
+   근접 표가 탐지기와 다른 답을 내는 것 · 기대값 칸의 잘못된 값이 조용히 "—" 가 되는 것.
 """
 
 from __future__ import annotations
@@ -16,15 +18,55 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import pytest
+
+from updown.analysis.detectors.base import ParamValue, RuleParams
+from updown.analysis.indicators.bands import bollinger
+from updown.analysis.indicators.reference import RefRegime
+from updown.analysis.playbook.types import (
+    Family,
+    Playbook,
+    RefReturnBand,
+    RefSurgeCap,
+    RefVolPct,
+    SmaTilt,
+)
+from updown.common.domain.candle import Candle
+from updown.common.domain.instrument import (
+    AssetType,
+    Currency,
+    Instrument,
+    Market,
+    MarketGroup,
+    Timeframe,
+)
 from updown.orchestration.live_review.attribution import (
     leg_table,
     money_of,
     outside_money,
     trade_prefix_of_text,
 )
+from updown.orchestration.live_review.conditions import (
+    BreakoutRule,
+    ConditionView,
+    RefExtras,
+    gate_rows,
+    gate_series,
+    gate_spans,
+    leg_table_lines,
+    need_close,
+    next_bar_need,
+    probe_bar,
+    read_expectations,
+    replay_gap,
+    session_hold,
+    spans_by_gate,
+    tilt_rows,
+)
 from updown.orchestration.live_review.excursion import Bar, excursion, grid_outcome
 from updown.orchestration.live_review.health import funnel_totals, playbook_spans, summarize_events
-from updown.orchestration.live_review.snapshot import Run, Trade
+from updown.orchestration.live_review.report import render
+from updown.orchestration.live_review.snapshot import Run, Snapshot, Trade
 
 T0 = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
 
@@ -438,3 +480,323 @@ def test_fill_basis_uses_the_entry_fill_of_this_trade_only() -> None:
     assert got is not None
     assert got[0] == Decimal("99.7") and got[1] == T0 + timedelta(minutes=10)
     assert fill_basis(_trade(trade_id="zzzz0000"), orders) is None
+
+
+# ------------------------------------------- T451 G (T445 5단계) — 조건 · 근접 · 재현 · 기대값
+
+
+def _book(
+    pid: str,
+    label: str,
+    *,
+    band: bool = False,
+    surge: bool = False,
+    vpct: bool = False,
+) -> Playbook:
+    return Playbook(
+        playbook_id=pid,
+        version="0.1.0",
+        market_groups=(MarketGroup.COIN,),
+        timeframe=Timeframe.H4,
+        regimes=(),
+        primary_family=Family.TREND,
+        short_label=label,
+        entry_ref_return_band=(
+            RefReturnBand(bars=3, low=Decimal("-0.15"), high=Decimal("0.15")) if band else None
+        ),
+        entry_ref_surge_cap=(
+            RefSurgeCap(days=7, high=Decimal("0.08204173132170967")) if surge else None
+        ),
+        entry_ref_vol_pct=(RefVolPct(bars=120, rank=500, low=Decimal("0.816")) if vpct else None),
+    )
+
+
+def _legs3() -> list[Playbook]:
+    return [
+        _book("tri", "삼각 숏", band=True, surge=True),
+        _book("crash", "급락 되돌림", vpct=True),
+        _book("brk", "돌파 롱"),
+    ]
+
+
+class TestGateTable:
+    def test_value_threshold_pass_and_distance(self) -> None:
+        regime = RefRegime(
+            above=None,
+            ret=Decimal("0.2684"),
+            surge=Decimal("0.03"),
+            sma_down=None,
+            vol=(),
+            vol_pct=Decimal("0.416"),
+        )
+        rows = gate_rows(_legs3(), regime, RefExtras())
+        by = {(r.leg_id, r.gate): r for r in rows}
+        band = by[("tri", "ref_band")]
+        assert band.passed is False and band.margin == Decimal("0.15") - Decimal("0.2684")
+        surge = by[("tri", "ref_surge")]
+        assert surge.passed is True
+        assert surge.margin == Decimal("0.08204173132170967") - Decimal("0.03")
+        vol = by[("crash", "ref_volpct")]
+        assert vol.passed is False and vol.margin == Decimal("0.416") - Decimal("0.816")
+        assert vol.percent is False
+        assert by[("brk", "")].passed is True  # 기준 문 없는 다리도 한 줄
+        # 세션 `entry_hold` 그대로 — 띠가 먼저 · 문 없는 다리는 None
+        legs = _legs3()
+        assert session_hold(legs[0], regime) == "ref_band"
+        assert session_hold(legs[1], regime) == "ref_volpct"
+        assert session_hold(legs[2], regime) is None
+
+    def test_unknown_regime_holds_like_the_runner_fallback(self) -> None:
+        rows = gate_rows(_legs3(), None, RefExtras())
+        assert [r.passed for r in rows if r.gate] == [False, False, False]
+        assert all(r.margin is None for r in rows if r.gate)
+        assert session_hold(_legs3()[0], None) == "ref_band"
+
+    def test_spans_group_runs_of_the_same_state(self) -> None:
+        states: list[bool | None] = [True, True, False, None, None]
+        pts = [(T0 + timedelta(hours=4 * k), s) for k, s in enumerate(states)]
+        got = gate_spans(pts)
+        assert [(s.state, s.bars) for s in got] == [(True, 2), (False, 1), (None, 2)]
+        assert got[0].first_end == T0 and got[0].last_end == T0 + timedelta(hours=4)
+
+    def test_series_uses_reference_regime_bar_by_bar(self) -> None:
+        inst = Instrument(Market.GATE, "BTC_USDT", "BTC", AssetType.COIN, Currency.USD)
+        closes = [Decimal(100)] * 40 + [Decimal(130)] * 2  # 마지막 둘: 3봉 수익률 +30% → 띠 밖
+        start = datetime(2026, 9, 1, tzinfo=UTC)
+        bars = [
+            Candle(
+                instrument=inst,
+                timeframe=Timeframe.H4,
+                ts=start + timedelta(hours=4 * k),
+                open=c,
+                high=c,
+                low=c,
+                close=c,
+                volume=Decimal(1),
+            )
+            for k, c in enumerate(closes)
+        ]
+        legs = [_book("tri", "삼각 숏", band=True)]
+        since = bars[-4].ts + timedelta(hours=4)
+        series = gate_series(bars, legs, since)
+        assert [m.end for m in series] == [b.ts + timedelta(hours=4) for b in bars[-4:]]
+        assert [m.rows[0].passed for m in series] == [True, True, False, False]
+        assert series[-1].regime is not None and series[-1].regime.ret == Decimal("0.3")
+        spans = spans_by_gate(series)[("tri", "ref_band")]
+        assert [(s.state, s.bars) for s in spans] == [(True, 2), (False, 2)]
+
+
+RULE_VALUES: dict[str, ParamValue] = {
+    "bb_period": 20,
+    "bb_k": Decimal("2"),
+    "vol_period": 20,
+    "vol_multiple": Decimal("2.0"),
+    "sl_atr": Decimal("0"),
+    "floor_sl_atr": Decimal("0.2"),
+    "dir_period": 20,
+    "dir_bars": 5,
+    "entry_stop_floor_pct": Decimal("1.4"),
+    "pen_min_atr": Decimal("0.75"),
+}
+"""`config/rules/private_strategy.yml` 0.5 의 진입 조건 값 — 시험은 설정 파일 대신 고정 입력."""
+
+
+def _params() -> RuleParams:
+    return RuleParams(rule_id="private_strategy", version="0.5", values=RULE_VALUES)
+
+
+def _hours(last_close: str | None, last_volume: str = "50", n: int = 80) -> list[Candle]:
+    """평평한 1H 봉(종가 100 · 고저 ±0.5 · 거래량 10) — 마지막 봉만 바꿔 돌파를 만든다."""
+    inst = Instrument(Market.GATE, "BTC_USDT", "BTC", AssetType.COIN, Currency.USD)
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    out = [
+        Candle(
+            instrument=inst,
+            timeframe=Timeframe.H1,
+            ts=start + timedelta(hours=k),
+            open=Decimal(100),
+            high=Decimal("100.5"),
+            low=Decimal("99.5"),
+            close=Decimal(100),
+            volume=Decimal(10),
+        )
+        for k in range(n)
+    ]
+    if last_close is not None:
+        out.append(
+            Candle(
+                instrument=inst,
+                timeframe=Timeframe.H1,
+                ts=start + timedelta(hours=n),
+                open=Decimal(100),
+                high=Decimal(last_close) + Decimal("0.5"),
+                low=Decimal(101),
+                close=Decimal(last_close),
+                volume=Decimal(last_volume),
+            )
+        )
+    return out
+
+
+class TestBreakoutProximity:
+    def test_need_close_solves_band_plus_penetration(self) -> None:
+        rule = BreakoutRule.of(_params())
+        prev = [Decimal(100)] * 19
+        got = need_close(prev, Decimal(2), rule)
+        assert got is not None
+        # 앞 19봉이 100 이면 상단 = 100 + (c - 100) x (1 + 2 sqrt 19) / 20
+        # → c - 상단 = 1.5 에서 c ≈ 102.9177
+        assert abs(float(got) - 102.9177) < 1e-3
+        upper = bollinger([*prev, got], period=20, multiple=Decimal(2)).upper[-1]
+        assert upper is not None and got - upper >= Decimal("1.5") - Decimal("1e-6")
+        below = got - Decimal("0.01")
+        upper2 = bollinger([*prev, below], period=20, multiple=Decimal(2)).upper[-1]
+        assert upper2 is not None and below - upper2 < Decimal("1.5")
+
+    def test_probe_matches_the_detector(self) -> None:
+        hit = probe_bar(_hours("105"), _params())
+        assert hit is not None and hit.fired and hit.missing == ()
+        assert hit.vol_ratio == Decimal(5) and hit.direction == 0
+        assert hit.need is not None and hit.need_pct is not None and hit.need_pct < 0
+        thin = probe_bar(_hours("105", last_volume="15"), _params())
+        assert thin is not None and not thin.fired and thin.missing == ("거래량",)
+        # 종가 101.6 은 가격(≥ 101.4588)은 넘지만 저가 101 이라 손절폭 0.79% < 1.4%
+        narrow = probe_bar(_hours("101.6"), _params())
+        assert narrow is not None and not narrow.fired and narrow.missing == ("손절폭",)
+        low = probe_bar(_hours("101.2"), _params())
+        assert low is not None and not low.fired and low.missing == ("가격", "손절폭")
+        assert low.need_pct is not None and low.need_pct > 0
+
+    def test_next_bar_thresholds(self) -> None:
+        got = next_bar_need(_hours(None), _params())
+        assert got is not None
+        # ATR = 1(고저 1 · 평평) → 상단 + 0.75 = c 에서 c ≈ 100 + 0.75 / 0.51411
+        assert got.need is not None and abs(float(got.need) - 101.4588) < 1e-3
+        assert got.need_volume is not None and abs(float(got.need_volume) - 20) < 1e-9
+        assert got.low_drop_pct is not None
+        assert abs(float(got.low_drop_pct) - (1.4 - 0.2 / float(got.need) * 100)) < 1e-6
+        assert got.bar_ts == datetime(2026, 9, 1, tzinfo=UTC) + timedelta(hours=80)
+
+    def test_tilt_rows_use_the_declaration(self) -> None:
+        tilt = SmaTilt(
+            timeframe=Timeframe.D1,
+            period=2,
+            mult=Decimal(0),
+            back=1,
+            low=Decimal("-2"),
+            high=Decimal("-0.5"),
+        )
+        book = replace(_book("brk", "돌파 롱"), sma_tilts=(tilt,))
+        # SMA2 100 → 99.5 = -0.5% → 띠 밖(위 끝 제외)
+        got = tilt_rows(book, {Timeframe.D1: [Decimal(100), Decimal(100), Decimal(99)]})
+        assert got[0].value == Decimal("-0.5") and got[0].inside is False
+        got2 = tilt_rows(book, {Timeframe.D1: [Decimal(100), Decimal(100), Decimal(98)]})
+        assert got2[0].inside is True and got2[0].mult == 0
+        assert tilt_rows(book, {})[0].value is None
+
+
+GAP_MD = """<!-- 재현 JSON 40 / 40 -->
+
+## 다리별 합계 (짝 · 명목 대비 %)
+
+| 다리 | 짝 n | 차이 % 합 |
+|---|---|---|
+| 돌파 롱 | 8 | -0.60 |
+
+## 원인 묶음별 합계 (짝)
+
+| 묶음 | 짝 n |
+|---|---|
+"""
+
+
+class TestReplayAndExpectations:
+    def test_replay_gap_summary(self) -> None:
+        summary: dict[str, object] = {
+            "pairs": 19,
+            "pairs_strict": 15,
+            "rep_only": 15,
+            "live_only": 3,
+            "live_system": 22,
+            "rep_trades": 34,
+            "gap_sum": "10.05",
+            "parts": {"entry_part": "-5.54", "exit_part": "14.26"},
+            "live_usdt": "-104.05",
+            "orphan_funding": 23,
+        }
+        got = replay_gap(summary, GAP_MD, T0)
+        assert got.pairs == 19 and got.pairs_strict == 15 and got.gap_sum == Decimal("10.05")
+        assert got.parts["exit_part"] == Decimal("14.26")
+        assert got.leg_table == (
+            "| 다리 | 짝 n | 차이 % 합 |",
+            "|---|---|---|",
+            "| 돌파 롱 | 8 | -0.60 |",
+        )
+        assert leg_table_lines("표 없음") == ()
+
+    def test_read_expectations(self) -> None:
+        text = (
+            'source: "판 997"\n'
+            "legs:\n"
+            "  a:\n"
+            "    win_rate_pct: 41.3\n"
+            "    mean_r: 0.34\n"
+            "    loss_share_pct: null\n"
+            '    note: "돌파 롱"\n'
+            "  b: {}\n"
+        )
+        legs, source = read_expectations(text)
+        assert source == "판 997"
+        assert legs["a"] == {
+            "note": "돌파 롱",
+            "win_rate_pct": 41.3,
+            "mean_r": 0.34,
+            "loss_share_pct": None,
+        }
+        assert legs["b"]["win_rate_pct"] is None
+        with pytest.raises(ValueError, match="숫자 또는 null"):
+            read_expectations("legs:\n  a:\n    mean_r: 높음\n")
+
+    def test_the_shipped_expectations_file_parses(self) -> None:
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[1] / "config" / "live_review_expectations.yml"
+        legs, source = read_expectations(path.read_text(encoding="utf-8"))
+        assert source
+        assert set(legs) == {
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+            "private_strategy",
+        }
+
+    def test_render_has_the_new_sections(self) -> None:
+        from pathlib import Path
+
+        snap = Snapshot(
+            path=Path("snap"),
+            taken_at=T0,
+            runs=[],
+            trades=[],
+            orders=[],
+            fund={},
+            events=[],
+            exchange={},
+        )
+        events = summarize_events([])
+
+        def page(**kw: Any) -> str:
+            return render(snap, [], [], {}, [], {}, events, {}, {}, {}, {}, None, 30, [], **kw)
+
+        skipped = page(
+            conditions=ConditionView(fund_id="f", skipped="봉 없음"), replay_command="명령"
+        )
+        assert "## 1-2. 지금 문 상태" in skipped and "생략: 봉 없음" in skipped
+        assert "## 1-3. 돌파 롱 근접" in skipped
+        assert "## 2-1. 라이브 대 재현" in skipped and "재현 없음 — `명령`" in skipped
+        gap = replay_gap({"pairs": 2, "pairs_strict": 1, "gap_sum": "1.5"}, GAP_MD, T0)
+        full = page(replay=gap, replay_command="명령", expect_source="판 997")
+        assert "**+1.50**" in full and "| 돌파 롱 | 8 | -0.60 |" in full
+        assert "기대값 출처: 판 997" in full

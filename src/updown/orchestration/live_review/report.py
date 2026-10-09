@@ -7,6 +7,15 @@ from decimal import Decimal
 from typing import Any, cast
 
 from updown.orchestration.live_review.attribution import LegRow, TradeMoney
+from updown.orchestration.live_review.conditions import (
+    BreakoutProbe,
+    ConditionView,
+    GateRow,
+    GateSpan,
+    NextBarNeed,
+    ReplayGap,
+    TiltRow,
+)
 from updown.orchestration.live_review.excursion import Excursion
 from updown.orchestration.live_review.health import (
     FUNNEL_GLOSSARY,
@@ -139,7 +148,195 @@ def _why(
     return out
 
 
-def _legs(legs: list[LegRow], expectations: dict[str, dict[str, Any]]) -> list[str]:
+def px(v: Decimal | None) -> str:
+    """가격 — 크기에 맞춘 자릿수. None 은 em dash."""
+    if v is None:
+        return "—"
+    f = float(v)
+    if abs(f) >= 1000:
+        return f"{f:,.1f}"
+    if abs(f) >= 1:
+        return f"{f:.4f}"
+    return f"{f:.6f}"
+
+
+def _gate_value(row: GateRow, v: Decimal | None, *, margin: bool = False) -> str:
+    if v is None:
+        return "모름"
+    if row.percent:
+        return f"{float(v) * 100:+.2f}%" + ("p" if margin else "")
+    return f"{float(v):+.3f}" if margin else f"{float(v):.3f}"
+
+
+def _span_text(span: GateSpan) -> str:
+    state = "열림" if span.state else ("닫힘" if span.state is False else "모름")
+    if span.bars == 1:
+        return f"{state} {kst(span.last_end)}(1봉)"
+    return f"{state} {kst(span.first_end)} ~ {kst(span.last_end)}({span.bars}봉)"
+
+
+def _gates(view: ConditionView | None, days: int) -> list[str]:
+    out = ["## 1-2. 지금 문 상태 — 펀드 다리 기준(BTC) 문 · 지금 값 · 문턱까지", ""]
+    if view is None or not view.series:
+        reason = view.skipped if view is not None and view.skipped else "봉 없이 돌렸다"
+        out += [f"- 생략: {reason}.", ""]
+        return out
+    now = view.series[-1]
+    out += [
+        f"BTC 4H 마감 봉 끝 **{kst(now.end)} KST** 기준 · 묶음 `{view.fund_id}` · "
+        "값 = 러너와 같은 `reference_regime` · 판정 = 선언의 `holds` + 세션 `entry_hold` 그대로.",
+        "",
+        "| 다리 | 문 | 무엇 | 지금 값 | 문턱 | 통과 | 문턱까지(+ 여유 · - 모자람) | "
+        "세션 판정(기준 문) |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    seen: set[str] = set()
+    for row in now.rows:
+        verdict = ""
+        if row.leg_id not in seen:
+            seen.add(row.leg_id)
+            hold = view.holds.get(row.leg_id)
+            verdict = f"보류 `{hold}`" if hold else "통과"
+        passed = "통과" if row.passed else ("**막힘**" if row.passed is False else "모름")
+        if not row.gate:
+            out.append(f"| {row.leg} | — | {row.what} | | | | | {verdict} |")
+            continue
+        out.append(
+            f"| {row.leg} | `{row.gate}` | {row.what} | {_gate_value(row, row.value)} | "
+            f"{row.rule} | {passed} | {_gate_value(row, row.margin, margin=True)} | {verdict} |"
+        )
+    out += ["", f"최근 {days}일 열림 · 닫힘 (BTC 4H 봉 · 시각은 봉 끝 KST · 최근 8 구간):", ""]
+    labels = {(r.leg_id, r.gate): r.leg for r in now.rows if r.gate}
+    for (leg_id, gate), spans in view.spans.items():
+        opened = sum(s.bars for s in spans if s.state)
+        total = sum(s.bars for s in spans)
+        tail = spans[-8:]
+        head = f"앞 {len(spans) - len(tail)} 구간 생략 · " if len(spans) > len(tail) else ""
+        out.append(
+            f"- {labels.get((leg_id, gate), leg_id)} `{gate}`: 열린 봉 {opened}/{total} — "
+            + head
+            + " → ".join(_span_text(s) for s in tail)
+        )
+    out += [
+        "",
+        "읽는 법: 기준 문은 BTC 4H 봉이 닫힐 때(KST 01 · 05 · 09 · 13 · 17 · 21시)만 바뀐다. "
+        "**문턱까지** 가 - 면 그만큼 움직여야 열린다(띠 · 급등은 %p · 백분위는 0 ~ 1). "
+        "기준 문이 없는 다리는 종목 탐지기 · 종목 문(이평 띠 · 봉 기울기) · "
+        "펀드 문(자리 · 브레이크 · 폭 · 명목 상한)만 본다 — 돌파 롱은 아래 1-3, "
+        "문이 막은 사건은 1-1 사건 표.",
+        "",
+    ]
+    return out
+
+
+def _tilt_text(rows: tuple[TiltRow, ...]) -> str:
+    if not rows:
+        return "—"
+    cells: list[str] = []
+    for t in rows:
+        value = "모름" if t.value is None else f"{float(t.value):+.2f}%"
+        state = "모름" if t.inside is None else ("안" if t.inside else "밖")
+        effect = ""
+        if t.inside:
+            effect = " → **건너뜀**" if t.mult == 0 else f" → x{t.mult}"
+        cells.append(f"{t.what} {value} {t.band} {state}{effect}")
+    return " · ".join(cells)
+
+
+def _probe_row(p: BreakoutProbe) -> str:
+    gap = (
+        "—" if p.upper is None or p.upper == 0 else f"{float((p.close / p.upper - 1) * 100):+.2f}%"
+    )
+    need = (
+        "—" if p.need is None or p.need_pct is None else f"{px(p.need)}({float(p.need_pct):+.2f}%)"
+    )
+    return (
+        f"| {p.symbol.removesuffix('_USDT')} | {kst(p.bar_ts)} | {px(p.close)} | {px(p.upper)} | "
+        f"{gap} | {num(p.pen_atr)} | "
+        f"{'—' if p.vol_ratio is None else f'{float(p.vol_ratio):.2f}'} | {p.direction:+d} | "
+        f"{'—' if p.stop_pct is None else f'{float(p.stop_pct):.2f}'} | "
+        f"{'**든다**' if p.fired else '—'} | {' · '.join(p.missing) or '—'} | {need} |"
+    )
+
+
+def _need_row(n: NextBarNeed, tilts: tuple[TiltRow, ...]) -> str:
+    need = (
+        "—" if n.need is None or n.need_pct is None else f"{px(n.need)}({float(n.need_pct):+.2f}%)"
+    )
+    vol = "—" if n.need_volume is None else f"{float(n.need_volume):,.1f}"
+    four = f"{n.direction:+d}" + (" · 이 봉이 4H 를 닫음" if n.closes_4h else "")
+    drop = "—" if n.low_drop_pct is None else f"{float(n.low_drop_pct):.2f}%"
+    return (
+        f"| {n.symbol.removesuffix('_USDT')} | {kst(n.bar_ts)} | {need} | {vol} | {four} | "
+        f"{drop} | {_tilt_text(tilts)} |"
+    )
+
+
+def _probes(view: ConditionView | None) -> list[str]:
+    out = ["## 1-3. 돌파 롱 근접 — 핵심 6종 1H 마지막 마감 봉 (탐지기 그대로 · Gate 공개 봉)", ""]
+    if view is None or not view.probes:
+        reason = view.skipped if view is not None and view.skipped else "봉 없이 돌렸다"
+        out += [f"- 생략: {reason}.", ""]
+        return out
+    out += [
+        f"조건(룰 설정 그대로): {view.rule_text}",
+        "",
+        "| 종목 | 봉 시작 KST | 종가 | BB 상단 | 상단 대비 | 관통 ATR | 거래량 배 | 4H | "
+        "손절폭 % | 탐지기 | 모자란 것 | 가격 조건 종가(그 봉) |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    out += [_probe_row(p) for p in view.probes]
+    out += [
+        "",
+        "다음 봉(진행 중)이 들려면 — 다른 값이 그대로일 때의 문턱:",
+        "",
+        "| 종목 | 다음 봉 시작 KST | 종가 ≥ (마지막 종가 대비) | 거래량 ≥ | 4H 지금 | "
+        "저가가 종가보다 ≥ 이만큼 아래 | 이평 띠(돌파 롱 선언 · 닫힌 봉) |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for n in view.next_needs:
+        out.append(_need_row(n, view.tilts.get(n.symbol, ())))
+    out += [
+        "",
+        "읽는 법: **탐지기** 열은 탐지기를 그 봉에 그대로 부른 결과다(표의 다른 열은 설명). "
+        "**가격 조건 종가** = 그 봉의 다른 값(거래량 · 4H · 손절폭)은 그대로 두고 종가만 올렸을 때 "
+        "`BB 상단 밖 + 관통 하한` 을 채우는 최소 종가 — BB 상단도 그 종가를 품고 같이 오른다. "
+        "4H 는 -1(하락)만 막는다. "
+        "이평 띠가 **건너뜀**이면 탐지기가 울려도 세션이 그 진입을 건너뛴다. "
+        "펀드 문(자리 · 브레이크 · 폭 · 명목 상한)과 같은 종목 보유는 이 표 밖이다.",
+        "",
+    ]
+    return out
+
+
+def _replay(gap: ReplayGap | None, command: str) -> list[str]:
+    out = ["## 2-1. 라이브 대 재현 돈 차이 (T447 · 같은 매매의 라이브 손익 - 재현 손익)", ""]
+    if gap is None:
+        out += [f"- 재현 없음 — `{command}`", ""]
+        return out
+    p = gap.parts
+    out += [
+        f"- 결과 파일 `logs/t279/t447_replay/gap.json` · 만든 시각 {kst(gap.made_at)} KST — "
+        "재현 걷기의 스냅샷 · 구간은 그 도구 기본값이라 이 보고서의 스냅샷과 다를 수 있다.",
+        f"- 짝 {gap.pairs}(같은 봉 {gap.pairs_strict} · 느슨 {gap.pairs - gap.pairs_strict}) · "
+        f"재현만 {gap.rep_only} · 라이브만 {gap.live_only} · "
+        f"라이브 시스템 진입 {gap.live_system} · 재현 진입 {gap.rep_trades}",
+        f"- 차이 합(명목 대비 %) **{num(gap.gap_sum)}** = 진입 {num(p.get('entry_part'))} · "
+        f"청산 {num(p.get('exit_part'))} · 수수료 {num(p.get('fee_part'))} · "
+        f"펀딩 {num(p.get('fund_part'))} · 나머지 {num(p.get('rest_part'))} · "
+        f"라이브 명목으로 {num(p.get('gap_usdt'))} USDT · 차이 R {num(p.get('gap_r'))}",
+        f"- 짝의 라이브 손익 합 {num(gap.live_usdt)} USDT · 주인 없는 펀딩 줄 {gap.orphan_funding}",
+        "",
+    ]
+    if gap.leg_table:
+        out += [*gap.leg_table, ""]
+    out += [f"다시 재기: `{command}`", ""]
+    return out
+
+
+def _legs(
+    legs: list[LegRow], expectations: dict[str, dict[str, Any]], source: str = ""
+) -> list[str]:
     out = [
         "## 2. 다리별 손익 · 손실 몫 (닫힌 매매 · 수수료 · 펀딩 포함) · 기대값",
         "",
@@ -159,8 +356,10 @@ def _legs(legs: list[LegRow], expectations: dict[str, dict[str, Any]]) -> list[s
         "",
         "기대값은 `config/live_review_expectations.yml`(연구 · 펀드 재현에서 적어 둔 값). "
         "비어 있으면 아직 안 적은 것이다. 표본 30 미만 칸은 분포만 읽고 판정하지 않는다.",
-        "",
     ]
+    if source:
+        out.append(f"기대값 출처: {source}")
+    out.append("")
     return out
 
 
@@ -333,14 +532,25 @@ def render(
     why: dict[str, tuple[list[LegFunnel], dict[str, int]]] | None = None,
     held: list[HeldEvent] | None = None,
     owners: dict[str, list[str]] | None = None,
+    conditions: ConditionView | None = None,
+    replay: ReplayGap | None = None,
+    replay_command: str = "",
+    expect_source: str = "",
 ) -> str:
-    """마크다운 한 장 — 절 순서는 사용자가 묻는 순서(왜 안 들어갔나 → 손실 몫 → 경로)."""
+    """마크다운 한 장 — 절 순서는 사용자가 묻는 순서(왜 안 들어갔나 → 손실 몫 → 경로).
+
+    1-2(지금 문 상태) · 1-3(돌파 롱 근접) · 2-1(라이브 대 재현)은 T451 G(T445 5단계) 절이다 —
+    `conditions` · `replay` 가 없으면 "생략" · "재현 없음" 한 줄로 나온다.
+    """
     out = _head(snap, money, outside_pnl, days)
     out += [f"- ⚠️ {note}" for note in notes]
     out.append("")
     out += _spans(spans)
     out += _why(why, held, owners)
-    out += _legs(legs, expectations)
+    out += _gates(conditions, days)
+    out += _probes(conditions)
+    out += _legs(legs, expectations, expect_source)
+    out += _replay(replay, replay_command)
     out += _funnel(funnel, events)
     out += _events(events)
     out += _flow(money, flow)
