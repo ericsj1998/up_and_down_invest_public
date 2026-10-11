@@ -84,11 +84,37 @@ async def main() -> None:
     out["account_book"] = await req("GET", f"/futures/{SETTLE}/account_book", params={"limit": "1000"})
     out["finished_orders"] = await req("GET", f"/futures/{SETTLE}/orders", params={"status": "finished", "limit": "1000"})
     out["position_close"] = await req("GET", f"/futures/{SETTLE}/position_close", params={"limit": "1000", "from": str(since)})
+    # 라이브 점검(live-check · 2026-10-11) — 걸린 손절(조건부) · 대기 주문. 실패해도 나머지는 낸다.
+    try:
+        out["price_orders"] = await req("GET", f"/futures/{SETTLE}/price_orders", params={"status": "open"})
+    except Exception as exc:
+        out["price_orders_error"] = type(exc).__name__
+    try:
+        out["open_orders"] = await req("GET", f"/futures/{SETTLE}/orders", params={"status": "open"})
+    except Exception as exc:
+        out["open_orders_error"] = type(exc).__name__
     print(json.dumps(out, default=str))
 asyncio.run(main())
 PY
 docker cp /tmp/live_review_exchange.py "$API":/tmp/live_review_exchange.py
 docker exec -e LR_DAYS="$DAYS" "$API" python /tmp/live_review_exchange.py 2>/dev/null | grep -v '^{"module' | grep -v '^20' > "$OUT/exchange.json" || echo '{}' > "$OUT/exchange.json"
+
+# 7) 지금 상태(라이브 점검 live-check · 2026-10-11) — 컨테이너 · 스위치 · 리더 · 정지 스위치 · 서버 자원.
+#    값은 상태 · 숫자 · 스위치(0/1) · 태그만. 키 · 비밀값 · 주소는 안 찍는다. API 는 /health 한 번만 부른다(가볍다).
+H="$OUT/health.txt"
+{
+  echo "at|$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "api|$API"
+  docker ps -a --format "{{.Names}}|{{.Status}}|{{.Image}}" | grep -E "^updown_live-" | sed 's/^/container|/'
+  grep -E "^(IMAGE_TAG|LIVE_ORDERS|UPDOWN_MARKETS)=" ~/updown/.env.live 2>/dev/null | sed 's/=/|/; s/^/env|/'
+  echo "leader_pttl|$(docker exec updown_live-redis-1 redis-cli pttl updown:api:trader 2>/dev/null)"
+  echo "leader_health|$(docker exec "$API" python -c "import urllib.request,json;print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=20)).get('trading_leader'))" 2>/dev/null | tail -1)"
+  echo "api_started|$(docker inspect -f '{{.State.StartedAt}}' "$API" 2>/dev/null)"
+  echo "halt|$("${PSQL[@]}" -c "select coalesce(max(value),'') || '|' || coalesce(to_char(max(updated_at) at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),'') from app_settings where key='live_entries_halted'")"
+  free -m | awk '/^Mem:/ {print "mem|"$2"|"$3"|"$7} /^Swap:/ {print "swap|"$2"|"$3}'
+  vmstat 1 2 | tail -1 | awk '{print "cpu|"$13"|"$15"|"$17}'
+  df -P / | awk 'NR==2 {print "disk|"$5}'
+} > "$H" 2>/dev/null
 
 wc -l "$OUT"/*.tsv "$OUT"/events.jsonl | sed 's|/tmp/live_review/||' >> "$OUT/meta.txt"
 tar -C /tmp -czf /tmp/live_review.tgz live_review

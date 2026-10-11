@@ -105,6 +105,7 @@ bash scripts/ops/pull_logs.sh --delete   # 받고 · 파일마다 sha256 이 서
 
 | 증상 | 먼저 볼 것 | 오늘의 원인 |
 |---|---|---|
+| "라이브 정상이야?" · 최근 매매 · 왜 안 들어갔나 · 왜 손실 | 로컬에서 `make live-check` → `logs/live_review/check.md` 0절부터(서버 읽기만 · T472) | 프로브를 하나씩 돌리던 것을 한 장으로 — 리더 · 판 · 자가 점검 · 거래소 대조 · 7일 매매 · 막힌 문 |
 | 화면 카드가 "—" · 20초 오류 | `status.sh` 의 **browser traffic** — 브라우저 요청의 상태 코드와 **빈도** | 폴링 무한 루프(초당 3~5회 · 499) · 프론트 회귀(`bodies[전체]`) · 서버는 200 이었다 |
 | 콘솔 500/503 | `console_state.py` | 테스트넷 키 화이트리스트에 서버 IP 없음 · Gate 양방향 모드(응답이 list) |
 | 구글 로그인 Internal Server Error | api 로그의 `/auth/callback` 500 · `UndefinedColumn` | 새 revision 이 라이브 DB 에 안 들어감(블루그린 `--no-deps`) → `migrate_live.sh` |

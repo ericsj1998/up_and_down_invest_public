@@ -185,3 +185,14 @@ live-review: ## 라이브 매매 분석 — 끌어오기 + 보고서 (logs/live_
 
 live-review-report: ## 라이브 매매 분석 — 마지막 스냅샷으로 보고서만
 	uv run python scripts/research/live_review.py --days $(DAYS)
+
+# ── 라이브 점검 (live-check · 2026-10-11) ──────────────────────────────
+# "라이브 정상이야? · 최근 매매 · 예비 신호 · 왜 안 들어갔나 · 왜 손실" 을 물을 때 — 판단 재료를 한 장으로.
+#   make live-check             서버 읽기만(7일) + 보고서 logs/live_review/check.md · check.json
+#   make live-check-report      끌어오지 않고 마지막 스냅샷으로
+live-check: ## 라이브 점검 — 지금 · 최근 7일 · 신호 · 이유(판단 재료 · logs/live_review/check.md)
+	DAYS=7 bash scripts/ops/pull_live_review.sh
+	uv run python scripts/research/live_check.py --days 7
+
+live-check-report: ## 라이브 점검 — 마지막 스냅샷으로 보고서만
+	uv run python scripts/research/live_check.py --days 7
