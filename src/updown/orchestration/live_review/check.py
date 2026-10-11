@@ -527,6 +527,61 @@ def now_rows(
     return rows
 
 
+def trend_supply(
+    closes: Mapping[str, Sequence[Decimal]],
+    lookback: int,
+    up_ratio: Decimal,
+    back: int = 0,
+    min_symbols: int = 5,
+) -> tuple[float | None, int]:
+    """+100% 알트 몫 — 알트마다 닫힌 일봉 종가 `lookback` 일 수익 ≥ `up_ratio` 인 비율.
+
+    Args:
+        closes: 종목 → 닫힌 일봉 종가(시각 순 · 마지막이 가장 최근 닫힌 봉). BTC 는 호출부가 뺀다.
+        lookback: 수익을 재는 일 수(90).
+        up_ratio: 문턱(1.0 = +100%).
+        back: 마지막 봉에서 이만큼 앞의 날로 잰다("30일 전" 값).
+        min_symbols: 잴 수 있는 종목이 이보다 적으면 None.
+
+    Returns:
+        (몫, 잰 종목 수). 상장한 지 `lookback + back` 일이 안 된 종목은 뺀다.
+    """
+    hit = n = 0
+    for cs in closes.values():
+        if len(cs) < lookback + back + 1:
+            continue
+        end = cs[len(cs) - 1 - back]
+        start = cs[len(cs) - 1 - back - lookback]
+        if not start:
+            continue
+        n += 1
+        hit += end / start - 1 >= up_ratio
+    return (hit / n if n >= min_symbols else None), n
+
+
+def supply_row(
+    now_share: float | None,
+    prev_share: float | None,
+    n: int,
+    reference: Mapping[str, float],
+    lookback: int,
+    back: int,
+) -> Row:
+    """1절 관찰 줄 — 지금 · `back` 일 전 몫과 해마다 참고 값(판정 아님 · 상태는 항상 참고)."""
+    ref = " · ".join(f"{k} {v:.0%}" for k, v in reference.items())
+
+    def pct(v: float | None) -> str:
+        return "—" if v is None else f"{v:.1%}"
+
+    return Row(
+        "now",
+        f"+100% 알트 몫({lookback}일)",
+        "info",
+        f"지금 {pct(now_share)} · {back}일 전 {pct(prev_share)} · 알트 {n}종",
+        f"참고(해 평균) {ref} — 낮으면 일봉 채널 · MACD 롱이 쉬는 장(관찰 · 판정 아님)",
+    )
+
+
 # ── 2. 최근 7일 매매 ──────────────────────────────────────────────────────
 
 

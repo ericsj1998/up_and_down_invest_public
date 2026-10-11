@@ -1,0 +1,23 @@
+# 라이브 점검(T472 · `make live-check`) 관찰 줄 설정 — 판정 · 진입 문에 쓰지 않는다.
+#
+# alt_trend_supply = "+100% 알트 몫": 우주 알트(BTC 뺌) 중 닫힌 일봉 기준 lookback_days 일 수익 ≥ up_ratio 인 종목 비율.
+#   일봉 채널 · MACD 롱이 돈을 벌 "큰 알트 추세" 가 시장에 있는지 본다(T475 — 일봉 채널 해마다 큰 승자 비율과 상관 +0.83).
+#   reference = T475 해부 §3 의 해 평균(바이낸스 봉 · 우주 18 · 날마다 몫의 평균 · 2026 = 1 ~ 9월) — 측정 문서 숫자를 그대로 옮겼다.
+#   라이브 값은 Gate 공개 일봉(같은 정의 · 다른 거래소)이다.
+alt_trend_supply:
+  basket: private_strategy   # config/baskets.yml 의 우주(tri18) — BTC_USDT 는 뺀다
+  lookback_days: 90
+  up_ratio: "1.0"                      # +100%
+  compare_back_days: 30                # "30일 전" 값도 같이 적는다(오르는 중인지)
+  min_symbols: 5
+  source: "docs/planning/tasks/T475_keep_macd_long_and_dch.md · logs/t279/t475/anatomy.md §3(2026-10-11)"
+  reference:
+    "2018": 0.000
+    "2019": 0.164
+    "2020": 0.117
+    "2021": 0.433
+    "2022": 0.021
+    "2023": 0.043
+    "2024": 0.131
+    "2025": 0.034
+    "2026(1 ~ 9월)": 0.006

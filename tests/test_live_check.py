@@ -195,6 +195,21 @@ def test_story_r_and_btc_relative() -> None:
     assert st.mae_pct is not None and st.mae_pct < 0 < (st.mfe_pct or 0)
 
 
+def test_trend_supply_counts_doublers_and_needs_history() -> None:
+    from updown.orchestration.live_review.check import trend_supply
+
+    up = [Decimal(1)] * 91 + [Decimal("2.5")]  # 90일 전 1 → 지금 2.5 = +150%
+    flat = [Decimal(1)] * 92
+    young = [Decimal(1)] * 30  # 상장 30일 — 못 잰다
+    closes = {"A": up, "B": flat, "C": flat, "D": flat, "E": flat, "F": young}
+    share, n = trend_supply(closes, 90, Decimal("1.0"), 0, 5)
+    assert n == 5 and share == 0.2
+    # 하루 전으로 재면 A 도 아직 안 올랐다
+    assert trend_supply(closes, 90, Decimal("1.0"), 1, 5)[0] == 0.0
+    # 잴 종목이 모자라면 None
+    assert trend_supply({"A": up}, 90, Decimal("1.0"), 0, 5)[0] is None
+
+
 def test_macd_hist_needs_enough_bars() -> None:
     assert macd_hist([Decimal(1)] * 10) is None
     got = macd_hist([Decimal(100 + i) for i in range(60)])
