@@ -13,6 +13,13 @@ from updown.orchestration.live_review.snapshot import Trade, dec, when
 MATCH_WINDOW = timedelta(hours=36)
 """닫힌 포지션 기록과 원장 매매를 잇는 시각 창 — id 앞자리(8자)만 맞추므로 시각으로 한 번 더."""
 
+AUTO_ORDER_WINDOW = timedelta(minutes=5)
+"""거래소가 발동한 조건부 손절(`ao-…`)은 text 에 매매 id 가 없다(2026-10-12 XRP · DOGE).
+
+같은 계약 · 원장 청산 시각 이 창 안에 그런 줄이 **하나뿐**일 때만 붙인다 — 라이브 점검이
+"거래소 기록과 못 맞춤" 으로 잘못 표시하던 것.
+"""
+
 
 def trade_prefix_of_text(text: str) -> str:
     """거래소 text 의 매매 id 앞자리 — `t-<판6>-<매매8>-…` · 옛 `t-<매매12>-…`. 아니면 빈 문자열."""
@@ -81,8 +88,28 @@ def money_of(trade: Trade, closes: list[dict[str, Any]]) -> TradeMoney:
             hits.append(pnl)
     if hits:
         return TradeMoney(trade, sum(hits, Decimal(0)), "exchange", r)
+    auto = _auto_order_close(trade, closes)
+    if auto is not None:
+        return TradeMoney(trade, auto, "exchange", r)
     est = _ledger_pnl(trade)
     return TradeMoney(trade, est, "ledger" if est is not None else "none", r)
+
+
+def _auto_order_close(trade: Trade, closes: list[dict[str, Any]]) -> Decimal | None:
+    """매매 id 없는 조건부 손절 닫힘(`ao-…`) — 같은 계약 · 5분 안 한 줄뿐이면 그 pnl."""
+    if trade.closed_at is None:
+        return None
+    found: list[Decimal] = []
+    for row in closes:
+        if str(row.get("contract", "")) != trade.symbol:
+            continue
+        if trade_prefix_of_text(str(row.get("text", ""))):
+            continue  # 매매 id 가 있는 줄은 위 짝 규칙이 맡는다
+        at = when(_epoch_iso(row.get("time")))
+        pnl = dec(row.get("pnl"))
+        if at is not None and pnl is not None and abs(at - trade.closed_at) <= AUTO_ORDER_WINDOW:
+            found.append(pnl)
+    return found[0] if len(found) == 1 else None
 
 
 def _epoch_iso(v: object) -> str:

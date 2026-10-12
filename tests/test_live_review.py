@@ -164,6 +164,23 @@ class TestMoney:
         assert got.pnl == Decimal("11.5")
         assert got.r == Decimal("1.5")  # (103 - 100) ÷ (100 - 98)
 
+    def test_auto_stop_close_without_trade_id_matches_by_symbol_and_time(self) -> None:
+        """조건부 손절(`ao-…`)은 매매 id 가 없다 — 같은 계약 · 5분 안 한 줄이면 붙인다."""
+        t = _trade()
+        assert t.closed_at is not None
+        row = {
+            "contract": "BTC_USDT",
+            "time": str((t.closed_at - timedelta(seconds=40)).timestamp()),
+            "pnl": "-2.5",
+            "text": "ao-2109313145548832768",
+        }
+        got = money_of(t, [row])
+        assert got.source == "exchange" and got.pnl == Decimal("-2.5")
+        # 10분 떨어졌거나 같은 창에 둘이면 붙이지 않는다(원장 추정)
+        far = dict(row, time=str((t.closed_at + timedelta(minutes=10)).timestamp()))
+        assert money_of(t, [far]).source == "ledger"
+        assert money_of(t, [row, dict(row, pnl="-1")]).source == "ledger"
+
     def test_ledger_estimate_when_no_exchange_row(self) -> None:
         got = money_of(_trade(), [])
         assert got.source == "ledger"
