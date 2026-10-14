@@ -3,6 +3,10 @@
 #
 #   bash scripts/deploy/ship.sh                 # main 에서 · 태그 = v<pyproject 버전> (예: v1.0.0)
 #   bash scripts/deploy/ship.sh v1.0.1-rc1      # 태그 지정 (드물게)
+#   SWAP=stop_first bash scripts/deploy/ship.sh # 블루그린 대신 옛 슬롯 먼저 내리고 바꾸기(1 GB · 2026-10-15)
+#
+# ⭐ 4단계(교체)는 **봉 마감 근처를 피해** 시작한다 — 매시 :05 ~ :45 UTC 사이가 아니면 기다린다(SAFE_WINDOW=0 이면 끔).
+#    교체에 걸린 마감 봉은 아무도 판정하지 않을 수 있다(1.27.0 · 2026-09-30 실측 · 1H · 4H 마감은 모두 정시).
 #
 # 왜 레지스트리 없이: 1 GB 서버는 빌드가 안 되고(T47), GHCR 는 private 라 서버에 PAT 가 필요하다.
 # `docker save | ssh docker load` 는 둘 다 필요 없다 — 3분쯤 걸리고, 이미지가 서버에 있으면
@@ -72,8 +76,29 @@ rsync -az -e "ssh -i $KEY -o BatchMode=yes" Makefile "$HOST:$REMOTE_DIR/"
 echo "=== 3) 이미지 전송"
 docker save "$IMG/app:$TAG" "$IMG/web:$TAG" | gzip -1 | $SSH "nice -n 19 gunzip | nice -n 19 docker load" | tail -2
 
-echo "=== 4) IMAGE_TAG 갱신 · 블루그린"
-$SSH "cd $REMOTE_DIR && sed -i \"s/^IMAGE_TAG=.*/IMAGE_TAG=$TAG/\" .env.live && ENV=live IMAGE_TAG=$TAG bash scripts/deploy/bluegreen.sh" 2>&1 | grep -vE "variable is not set|^#[0-9]+ "
+if [ "${SAFE_WINDOW:-1}" = "1" ]; then
+  while :; do
+    m=$((10#$(date -u +%M)))
+    if [ "$m" -ge 5 ] && [ "$m" -le 45 ]; then break; fi
+    echo "   봉 마감 근처(:$(date -u +%M) UTC) — 교체는 :05 ~ :45 에만 · 30초 뒤 다시 본다"
+    sleep 30
+  done
+fi
+
+if [ "${SWAP:-bluegreen}" = "stop_first" ]; then
+  # 🔴 마이그레이션을 안 돈다 — 새 revision 이 없는 배포에만 쓴다(swap_stop_first.sh 머리말).
+  #    포지션이 있으면 내려가 있는 몇 분 동안 손절은 거래소 조건부 주문만 지킨다(사람이 알고 고른 것).
+  echo "=== 4) IMAGE_TAG 갱신 · 멈추고 바꾸기(옛 슬롯 먼저) · $(date -u +%H:%M:%SZ)"
+  OLD_TAG=$($SSH "grep -E '^IMAGE_TAG=' $REMOTE_DIR/.env.live | cut -d= -f2-")
+  echo "   이전 IMAGE_TAG=$OLD_TAG (되돌림: 이 값으로 .env.live 를 고치고 swap_stop_first.sh)"
+  scp -q -i "$KEY" scripts/ops/swap_stop_first.sh "$HOST:/tmp/swap_stop_first.sh"
+  if ! $SSH "cd $REMOTE_DIR && sed -i \"s/^IMAGE_TAG=.*/IMAGE_TAG=$TAG/\" .env.live && bash /tmp/swap_stop_first.sh" 2>&1 | grep -vE "variable is not set|^#[0-9]+ "; then
+    echo "ERROR: 멈추고 바꾸기 실패 — 서버 상태를 보고(status.sh) 이전 태그 $OLD_TAG 로 되돌린다"; exit 1
+  fi
+else
+  echo "=== 4) IMAGE_TAG 갱신 · 블루그린"
+  $SSH "cd $REMOTE_DIR && sed -i \"s/^IMAGE_TAG=.*/IMAGE_TAG=$TAG/\" .env.live && ENV=live IMAGE_TAG=$TAG bash scripts/deploy/bluegreen.sh" 2>&1 | grep -vE "variable is not set|^#[0-9]+ "
+fi
 
 echo "=== 5) 태그를 git 에 남긴다 (무엇이 떠 있는지 = 태그)"
 git tag "$TAG" >/dev/null && git push -q origin "$TAG" && echo "tag $TAG pushed"
