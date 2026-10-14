@@ -28,6 +28,7 @@ Gate 는 **진행 중인 봉도** `update` 로 계속 보낸다. 그것을 확�
    않으므로 시각으로 판정한다.
 """
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime, timedelta
@@ -62,6 +63,15 @@ TESTNET_WS_URL: Final = "wss://fx-ws-testnet.gateio.ws/v4/ws/usdt"
 
 CANDLE_CHANNEL: Final = "futures.candlesticks"
 
+IDLE_TIMEOUT_S: Final = 900.0
+"""캔들 채널에서 이만큼(초) 아무 갱신이 없으면 구독이 죽은 것으로 보고 다시 붙는다 (2026-10-14).
+
+🔴 핑(20초)은 **연결**이 살았는지만 본다. 2026-10-14 XLM 판은 연결이 산 채로 4h 캔들 갱신만
+끊겨 14시간 넘게 같은 봉을 봤다(재연결 · 예외 기록 0 · `frame_frozen` 경보만).
+실측(공개 4h 채널 2분): 활발한 종목은 2 ~ 6초마다 · 한산한 종목(ONE · TRB)은 1분 넘게 빌 때도 있다 —
+15분 무소식이면 한산함이 아니라 끊김으로 본다. 잘못 다시 붙어도 비용은 재연결 한 번이다.
+"""
+
 _logger = get_logger("marketdata.gate.ws")
 
 
@@ -71,6 +81,14 @@ class GateWebSocketError(RuntimeError):
     Note:
         조용히 넘기지 않는다 (절대 규칙 #8). 프레임 하나를 버리면 그 봉이 없는 것과
         구별되지 않고, 라이브에서 봉 하나가 비면 지표가 조용히 틀린다.
+    """
+
+
+class GateStreamIdleError(RuntimeError):
+    """연결은 살았는데 정해진 시간 동안 갱신이 하나도 안 왔다 — 다시 붙을 일이다.
+
+    Note:
+        `GateWebSocketError`(규격이 바뀜 · 던진다)와 다르다 — 이것은 재연결로 고쳐지는 끊김이다.
     """
 
 
@@ -460,6 +478,7 @@ class GateCandleStream:
         *,
         url: str = LIVE_WS_URL,
         ping_interval: float = 20.0,
+        idle_timeout: float | None = IDLE_TIMEOUT_S,
     ) -> None:
         """스트림을 만든다.
 
@@ -469,6 +488,8 @@ class GateCandleStream:
             multiplier: 계약 승로 (`Decimal`) — 어댑터가 계약 명세에서 읽어 넘긴다.
             url: 웹소켓 URL. testnet 은 `TESTNET_WS_URL`.
             ping_interval: 핑 간격(초).
+            idle_timeout: 이만큼(초) 갱신이 없으면 다시 붙는다(`IDLE_TIMEOUT_S`).
+                None 이면 끝없이 기다린다.
 
         Raises:
             GateWebSocketError: 종목이 없는 경우.
@@ -481,6 +502,7 @@ class GateCandleStream:
         self._multiplier = multiplier
         self._url = url
         self._ping_interval = ping_interval
+        self._idle_timeout = idle_timeout
         self.reconnects = 0
         """재연결 횟수 — **0 이 아니면 봉에 구멍이 있을 수 있다.**"""
 
@@ -513,6 +535,10 @@ class GateCandleStream:
 
             안쪽 제너레이터가 `send` 중일 때 바깥이 닫히면서 난 것이다. 종료는
             **실제로 쓰이는 경로**이므로(재생 중지·앱 종료) 한 겹으로 펴서 없앴다.
+
+            🔴 **갱신이 끊겨도 다시 붙는다** (2026-10-14 · `IDLE_TIMEOUT_S`). 기다리는 것은
+            `socket.recv()` 하나뿐이라(취소해도 데이터를 잃지 않는다) 제너레이터를 겹치지 않는다.
+            정상 종료(서버가 닫음)도 이제 `gate_ws_reconnect` 로 남는다 — 예전엔 조용히 다시 붙었다.
         """
         while True:
             try:
@@ -530,7 +556,13 @@ class GateCandleStream:
                             "contracts": self.contracts,
                         },
                     )
-                    async for raw in socket:
+                    while True:
+                        try:
+                            raw = await asyncio.wait_for(socket.recv(), timeout=self._idle_timeout)
+                        except TimeoutError as exc:
+                            raise GateStreamIdleError(
+                                f"{int(self._idle_timeout or 0)}초 동안 갱신 없음 — 구독이 끊겼다"
+                            ) from exc
                         for item in frame_to_candles(
                             decode_frame(raw),
                             self._by_contract,
@@ -538,7 +570,7 @@ class GateCandleStream:
                             self._multiplier,
                         ):
                             yield item
-            except (OSError, websockets.WebSocketException) as exc:
+            except (OSError, websockets.WebSocketException, GateStreamIdleError) as exc:
                 self.reconnects += 1
                 _logger.warning(
                     "gate_ws_reconnect",

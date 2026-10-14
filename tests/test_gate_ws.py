@@ -10,6 +10,8 @@
 ⛔ 네트워크를 쓰지 않는다 — 실제 연결 확인은 손으로 하는 연기 테스트의 일이다.
 """
 
+import asyncio
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -23,6 +25,7 @@ from updown.common.domain.instrument import (
     Market,
     Timeframe,
 )
+from updown.marketdata.gate import ws as ws_mod
 from updown.marketdata.gate.ws import (
     CANDLE_CHANNEL,
     TESTNET_WS_URL,
@@ -212,3 +215,75 @@ class TestStreamSetup:
     def test_reconnects_start_at_zero(self) -> None:
         """0 이 아니면 봉에 구멍이 있을 수 있다 — 소비처가 이 값을 본다."""
         assert GateCandleStream([BTC], Timeframe.M15, MULT).reconnects == 0
+
+
+class _QuietSocket:
+    """연결은 살았는데 `frames` 를 다 내면 그 뒤로는 아무것도 안 오는 소켓(2026-10-14 XLM 꼴)."""
+
+    def __init__(self, frames: list[str]) -> None:
+        self._frames = list(frames)
+        self.sent: list[str] = []
+
+    async def send(self, payload: str) -> None:
+        self.sent.append(payload)
+
+    async def recv(self) -> str:
+        if self._frames:
+            return self._frames.pop(0)
+        await asyncio.Event().wait()
+        raise AssertionError("닿지 않는다")
+
+    async def __aenter__(self) -> "_QuietSocket":
+        return self
+
+    async def __aexit__(self, *_: object) -> bool:
+        return False
+
+
+class TestIdleReconnect:
+    """🔴 갱신이 끊긴 구독은 다시 붙는다 — 핑만으로는 연결이 살아 보인다 (2026-10-14)."""
+
+    def _first(self, stream: GateCandleStream) -> Any:
+        async def go() -> Any:
+            agen = stream.stream()
+            try:
+                return await asyncio.wait_for(agen.__anext__(), timeout=2)
+            finally:
+                await agen.aclose()
+
+        return asyncio.run(go())
+
+    def test_a_silent_subscription_reconnects_and_keeps_yielding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sockets = [_QuietSocket([]), _QuietSocket([json.dumps(UPDATE)])]
+        opened: list[_QuietSocket] = []
+
+        def fake_connect(*_: object, **__: object) -> _QuietSocket:
+            sock = sockets[len(opened)]
+            opened.append(sock)
+            return sock
+
+        monkeypatch.setattr(ws_mod.websockets, "connect", fake_connect)
+        stream = GateCandleStream([BTC], Timeframe.M15, MULT, idle_timeout=0.05)
+        got = self._first(stream)
+        assert len(opened) == 2  # 첫 연결이 조용해서 다시 붙었다
+        assert stream.reconnects == 1  # 재연결은 센다(조용하면 안 된다)
+        assert got.candle.close == Decimal("63502.6")
+        assert all(sock.sent for sock in opened)  # 다시 붙을 때 구독도 다시 보낸다
+
+    def test_no_timeout_means_it_keeps_waiting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """None 이면 예전처럼 끝없이 기다린다 — 재연결 없음."""
+        opened: list[_QuietSocket] = []
+
+        def fake_connect(*_: object, **__: object) -> _QuietSocket:
+            sock = _QuietSocket([])
+            opened.append(sock)
+            return sock
+
+        monkeypatch.setattr(ws_mod.websockets, "connect", fake_connect)
+        stream = GateCandleStream([BTC], Timeframe.M15, MULT, idle_timeout=None)
+        with pytest.raises(TimeoutError):
+            self._first(stream)
+        assert len(opened) == 1
+        assert stream.reconnects == 0
