@@ -29,7 +29,34 @@ ALERT_EVERY = timedelta(hours=6)
 QUIET_CODES = frozenset({"awaiting_fund"})
 """알리지 않는 감사 코드 — 배포 · 재시작 직후 1 ~ 2분은 늘 뜨는 정상 잡음이다."""
 
+ACCOUNT_CODES = frozenset(
+    {"wallet_drift", "wallet_unattributable", "underfunded", "balance_unreadable"}
+)
+"""**계좌 하나의 사실**인 감사 코드 — 판마다 같은 계좌를 보고 같은 값을 낸다.
+
+사용자 2026-10-15: *"경고는 괜찮은데, 그게 모든 종목에서 한번씩 뜨니까 문제였던 거야"* — 판 40개가
+`wallet_drift` 를 6시간마다 저마다 보내 24시간 알림 264통 중 241통이었다. 이 코드들은 판 알림에서
+빼고 거래소(계좌)마다 한 통으로 묶는다(`split_account_findings`)."""
+
 _LIVE = frozenset({Outcome.PENDING, Outcome.OPEN})
+
+
+def split_account_findings(
+    findings: Sequence[Mapping[str, str]],
+) -> tuple[list[Mapping[str, str]], list[Mapping[str, str]]]:
+    """감사 결과를 (그 판의 것, 계좌의 것)으로 가른다 (순수).
+
+    Args:
+        findings: 판 하나의 감사 결과(`{code, level, detail}`).
+
+    Returns:
+        `(판 알림에 쓸 것, 계좌 알림으로 모을 것)` — 계좌 것은 `ACCOUNT_CODES`.
+    """
+    own: list[Mapping[str, str]] = []
+    shared: list[Mapping[str, str]] = []
+    for item in findings:
+        (shared if str(item.get("code", "")) in ACCOUNT_CODES else own).append(item)
+    return own, shared
 
 
 @dataclass(frozen=True, slots=True)

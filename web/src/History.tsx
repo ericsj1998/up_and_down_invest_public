@@ -198,6 +198,22 @@ function Detail({ plan }: { plan: TradePlan | undefined }) {
   );
 }
 
+/**
+ * **사람이 낸 주문인가** (사용자 2026-10-15 *"수동으로 이것저것 했는데 그거 다 빼고싶어"*).
+ *
+ * - `t-…` = 매매법(우리 주문) → 아니다.
+ * - `ao-{조건부 id}` = 거래소가 조건부를 발동시킨 주문 — 서버가 우리 손절이면 `plans` 에 그 이름으로
+ *   이어 준다(`stop_owners`). 이어진 것은 매매법 · 안 이어진 것은 사람 손절이다. 단 서버가 잇기를 못
+ *   했을 때(`plans` 가 비었다)는 감추지 않는다 — 우리 손절 기록을 숨기지 않는다.
+ * - `web…` · `app…` · `api…` · 빈 이름 = 사람.
+ * - 그 밖(`liq` 강제청산 · `close_all` 등)은 누구 것인지 모른다 → 감추지 않는다.
+ */
+export function isManualOrder(text: string, plans: Record<string, unknown>): boolean {
+  if (text.startsWith("t-")) return false;
+  if (text.startsWith("ao-")) return Object.keys(plans).length > 0 && !(text in plans);
+  return text === "" || /^(web|app|api)/.test(text);
+}
+
 export function History({
   rows,
   plans,
@@ -211,12 +227,25 @@ export function History({
   positions?: Exchange["positions"];
 }) {
   const [open, setOpen] = useState("");
+  const [showManual, setShowManual] = useState(false);
   // ⭐ 종목 → 지금 열린 포지션. 미실현은 포지션에만 있고 주문 이력엔 없다.
   const held: Record<string, Exchange["positions"][number]> = {};
   for (const pos of positions) held[pos.symbol] = pos;
 
   if (!rows.length) return <p className="empty">체결 이력이 없다</p>;
+  // ⭐ 사람이 낸 주문은 기본으로 감춘다 (사용자 2026-10-15) — 매매법 기록만 보이게.
+  const manual = rows.filter((r) => isManualOrder(r.text || "", plans)).length;
+  const visible = showManual ? rows : rows.filter((r) => !isManualOrder(r.text || "", plans));
   return (
+    <>
+    {manual > 0 && (
+      <p className="faint" style={{ margin: "4px 0" }}>
+        수동 주문 {manual}건 {showManual ? "함께 보는 중" : "숨김"} ·{" "}
+        <button type="button" onClick={() => setShowManual((v) => !v)}>
+          {showManual ? "숨기기" : "보기"}
+        </button>
+      </p>
+    )}
     <table>
       <thead>
         <tr>
@@ -253,7 +282,7 @@ export function History({
         </tr>
       </thead>
       <tbody>
-        {rows.map((row) => {
+        {visible.map((row) => {
           const qty = Number(row.size);
           const left = Number(row.left);
           const partial = Number.isFinite(left) && left !== 0;
@@ -426,5 +455,6 @@ export function History({
         })}
       </tbody>
     </table>
+    </>
   );
 }

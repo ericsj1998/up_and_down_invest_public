@@ -78,6 +78,7 @@ from updown.orchestration.rebalancer.anchor import (
     dnw_since,
     initial_state,
     manual_flow,
+    outside_since,
 )
 from updown.orchestration.rebalancer.coordinator import (
     TickReport,
@@ -3471,13 +3472,15 @@ async def _anchor_for(fund: Fund) -> Anchored | None:
     try:
         from updown.apps.api.exchange import _orders_adapter  # pyright: ignore[reportPrivateUsage]
 
-        rows: list[dict[str, Any]] = await _orders_adapter(market).account_book(limit=100)
+        orders = _orders_adapter(market)
+        rows: list[dict[str, Any]] = await orders.account_book(limit=ANCHOR_BOOK_ROWS)
     except Exception as exc:
         fund.anchor_skipped = f"자금 원장을 읽을 수 없음: {str(exc)[:60]}"
         return None
     now = datetime.now(UTC)
     ledger = fund.coordinator.engine.ledger
     state = fund.anchor
+    outside = Decimal(0)
     if state is None:
         state = initial_state(total, ledger.contributed, ledger.balance)
         _, seen = dnw_since(rows, None, ())  # 지금까지의 입출금은 열쇠만 기억 — 다시 안 센다
@@ -3486,18 +3489,61 @@ async def _anchor_for(fund: Fund) -> Anchored | None:
     else:
         dnw, seen = dnw_since(rows, state.at, state.seen)
         state = replace(state, seen=seen)
-    result = anchored(state, total, dnw, now)
+        outside = await _outside_pnl(fund, orders, rows, state.at)
+    result = anchored(state, total, dnw, now, outside)
     fund.anchor_skipped = None
     _logger.info(
-        "fund_anchored: %s mode=%s total=%s before=%s dnw=%s idle=%s",
+        "fund_anchored: %s mode=%s total=%s before=%s dnw=%s outside=%s idle=%s",
         fund.fund_id,
         result.state.mode,
         f"{total:.2f}",
         f"{result.equity_before_flow:.2f}",
         f"{dnw:.2f}",
+        f"{outside:.2f}",
         f"{result.state.idle:.2f}",
     )
     return result
+
+
+ANCHOR_BOOK_ROWS = 300
+"""앵커가 읽는 자금 원장 줄 수 — 한 시간에 사람 매매가 몰려도(10-08 BTC 7회전 ≈ 50줄) 넉넉하게."""
+
+
+async def _outside_pnl(
+    fund: Fund, orders: Any, rows: list[dict[str, Any]], after: datetime | None
+) -> Decimal:
+    """마지막 앵커 뒤 매매법 밖 주문(사람)의 손익 · 수수료 — 흐름으로 뺄 몫 (사용자 2026-10-15).
+
+    Args:
+        fund: 펀드(종목 = 매매법이 도는 계약).
+        orders: 주문 어댑터(`finished_orders` · `finished_stops`).
+        rows: 자금 원장 행들.
+        after: 마지막 앵커 시각.
+
+    Returns:
+        사람 몫 합. 이름 표를 못 읽으면 0 — 앵커는 그대로 하고(성과에 섞이는 쪽) 경고만 남긴다.
+    """
+    if after is None:
+        return Decimal(0)
+    read_orders = getattr(orders, "finished_orders", None)
+    read_stops = getattr(orders, "finished_stops", None)
+    if read_orders is None or read_stops is None:
+        return Decimal(0)
+    try:
+        found = cast("list[dict[str, str]]", await read_orders(limit=1000))
+        stop_texts = cast("dict[str, str]", await read_stops(limit=ANCHOR_BOOK_ROWS))
+    except Exception as exc:
+        _logger.warning("fund_outside_unreadable: %s %s", fund.fund_id, str(exc)[:120])
+        return Decimal(0)
+    texts = {str(o.get("id", "")): str(o.get("text", "")) for o in found if o.get("id")}
+    if len(rows) >= ANCHOR_BOOK_ROWS:
+        _logger.warning(
+            "fund_outside_rows_capped: %s — 자금 원장 %d줄을 다 읽었다(앞은 못 봤다)",
+            fund.fund_id,
+            len(rows),
+        )
+    members = frozenset(fund.coordinator.engine.basket.symbols)
+    return outside_since(rows, after, members, texts, stop_texts)
 
 
 async def _tick(fund: Fund, flow: CashFlow | None = None) -> TickReport:
@@ -3522,9 +3568,14 @@ async def _tick(fund: Fund, flow: CashFlow | None = None) -> TickReport:
         anchor_value = found.equity_before_flow
         state = found.state
         if found.flow != 0:
-            auto_flow = CashFlow(
-                at=state.at or datetime.now(UTC), amount=found.flow, note="거래소 입출금 자동 반영"
-            )
+            note = "거래소 입출금 자동 반영"
+            if found.outside != 0:
+                note = (
+                    "매매법 밖 주문(수동) 손익 — 성과가 아니라 입출금으로(사용자 2026-10-15)"
+                    if found.flow == found.outside
+                    else "거래소 입출금 · 매매법 밖 주문(수동) 손익 자동 반영"
+                )
+            auto_flow = CashFlow(at=state.at or datetime.now(UTC), amount=found.flow, note=note)
         if flow is not None:
             state = manual_flow(state, flow.amount)
         fund.anchor = state

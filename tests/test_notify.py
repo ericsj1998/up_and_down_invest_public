@@ -19,7 +19,13 @@ from typing import Any
 
 import pytest
 
-from updown.orchestration.notify import ALERT_EVERY, RunState, diff_run
+from updown.orchestration.notify import (
+    ACCOUNT_CODES,
+    ALERT_EVERY,
+    RunState,
+    diff_run,
+    split_account_findings,
+)
 from updown.orchestration.walkforward.ledger import Actor, Direction, Outcome, TradeRecord
 
 T0 = datetime(2026, 9, 27, tzinfo=UTC)
@@ -221,3 +227,47 @@ class TestKeyAndSubs:
         monkeypatch.setattr(mod, "_send_one", boom)
         got = await mod.push(Note(kind="test", title="t", body="b", tag="x"))
         assert got["sent"] == 0
+
+
+class TestAccountAlertsOncePerAccount:
+    """사용자 2026-10-15 — 계좌 하나의 경보(지갑 대조)가 판 40개에서 한 통씩 날아왔다."""
+
+    def test_split_moves_account_codes_out_of_run_alerts(self) -> None:
+        found = [
+            {"code": "wallet_drift", "level": "error", "detail": "원장 합 > 계정 총액"},
+            {"code": "stop_missing", "level": "error", "detail": "손절 없음"},
+            {"code": "underfunded", "level": "error", "detail": "예산 합 > 계좌"},
+        ]
+        own, shared = split_account_findings(found)
+        assert [f["code"] for f in own] == ["stop_missing"]
+        assert {f["code"] for f in shared} == {"wallet_drift", "underfunded"}
+        assert {"wallet_drift", "wallet_unattributable", "underfunded"} <= ACCOUNT_CODES
+
+    def test_forty_runs_with_wallet_drift_send_one_alert(self) -> None:
+        t0 = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
+        drift = {"code": "wallet_drift", "level": "error", "detail": "원장 합 > 계정 총액"}
+        runs: dict[str, RunState | None] = {f"run{k}": None for k in range(40)}
+        account: RunState | None = None
+        sent: list[str] = []
+        for now in (t0, t0 + ALERT_EVERY + timedelta(seconds=1)):
+            shared: dict[str, Any] = {}
+            for run_id in runs:
+                own, acc = split_account_findings([drift])
+                for item in acc:
+                    shared.setdefault(item["code"], item)
+                notes, runs[run_id] = diff_run(
+                    run_id, "BTC", [], Decimal(0), own, runs[run_id], now, label_of=str
+                )
+                sent += [n.tag for n in notes]
+            notes, account = diff_run(
+                "account:GATE",
+                "GATE 계좌",
+                [],
+                Decimal(0),
+                list(shared.values()),
+                account,
+                now,
+                label_of=str,
+            )
+            sent += [n.tag for n in notes]
+        assert sent == ["account:GATE:alert:wallet_drift"]  # 처음 본 날은 조용 · 6시간 뒤 한 통

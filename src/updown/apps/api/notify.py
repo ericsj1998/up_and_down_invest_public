@@ -21,7 +21,9 @@ import contextlib
 import json
 import os
 from base64 import urlsafe_b64encode
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -33,7 +35,7 @@ from updown.analysis.playbook.select import load_playbooks
 from updown.common import paths
 from updown.common.logging.setup import get_logger
 from updown.orchestration import leg_engines
-from updown.orchestration.notify import Note, RunState, diff_run
+from updown.orchestration.notify import Note, RunState, diff_run, split_account_findings
 
 router = APIRouter(prefix="/notify", tags=["notify"])
 _logger = get_logger("api.notify")
@@ -340,15 +342,36 @@ async def notify_loop() -> None:
                 loaded_at = now
             names = dict(labels)
             live = dict(LIVE_RUNNERS)
+            # 🔴 계좌 하나의 사실(`ACCOUNT_CODES` · 지갑 대조 등)은 판마다 같은 값이다 — 판 알림에서
+            #    빼고 거래소마다 한 통으로 묶는다(사용자 2026-10-15).
+            shared: dict[str, dict[str, Mapping[str, str]]] = {}
             for run_id, runner in live.items():
                 symbol = runner.instrument.symbol
+                own, account = split_account_findings(list(runner.findings))
+                bucket = shared.setdefault(runner.instrument.market.value, {})
+                for item in account:
+                    bucket.setdefault(str(item.get("code", "")), item)
                 notes, states[run_id] = diff_run(
                     run_id,
                     symbol.replace("_USDT", "").replace("USDT", ""),
                     list(runner.ledger.records),
                     runner.ledger.realized_cash,
-                    list(runner.findings),
+                    own,
                     states.get(run_id),
+                    now,
+                    label_of=lambda attr, names=names: _label_of(names, attr),
+                )
+                for note in notes:
+                    await push(note)
+            accounts = {f"account:{market}": found for market, found in shared.items()}
+            for key, found in accounts.items():
+                notes, states[key] = diff_run(
+                    key,
+                    f"{key.split(':', 1)[1]} 계좌",
+                    [],
+                    Decimal(0),
+                    list(found.values()),
+                    states.get(key),
                     now,
                     label_of=lambda attr, names=names: _label_of(names, attr),
                 )
@@ -376,7 +399,7 @@ async def notify_loop() -> None:
                 )
                 for note in notes:
                     await push(note)
-            for gone in set(states) - set(live) - set(engines):
+            for gone in set(states) - set(live) - set(engines) - set(accounts):
                 states.pop(gone, None)
         except Exception as exc:  # 알림은 매매를 막지 않는다
             _logger.warning("notify_loop_failed", payload={"error": str(exc)[:200]})

@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { costBite, shownPct, sideOf, unrealizedOf } from "./History";
+import { costBite, isManualOrder, shownPct, sideOf, unrealizedOf } from "./History";
 import { verdictOf } from "./verdict";
 import { tradeOf } from "./ui";
 
@@ -161,5 +161,25 @@ describe("verdictOf — 결말은 매매의 결과다 (주문의 수명이 아�
 
   it("근거가 없으면 빈칸이다", () => {
     expect(verdictOf(base).label).toBe("—");
+  });
+});
+
+describe("isManualOrder — 사람이 낸 주문인가 (사용자 2026-10-15)", () => {
+  const plans = { "ao-900": { trade_id: "abc" } };
+  it("우리 주문 · 우리 손절 발동은 아니다", () => {
+    expect(isManualOrder("t-1d86d3-2ef695ba-sl-0", plans)).toBe(false);
+    expect(isManualOrder("ao-900", plans)).toBe(false);
+  });
+  it("웹 · 앱 주문과 우리 매매에 안 이어진 손절 발동은 사람이다", () => {
+    expect(isManualOrder("web", plans)).toBe(true);
+    expect(isManualOrder("web_p_2359.12_0", plans)).toBe(true);
+    expect(isManualOrder("app", plans)).toBe(true);
+    expect(isManualOrder("ao-901", plans)).toBe(true);
+  });
+  it("서버가 손절을 못 이었으면(계획 표 빔) 손절 발동을 감추지 않는다", () => {
+    expect(isManualOrder("ao-901", {})).toBe(false);
+  });
+  it("누구 것인지 모르는 강제청산은 감추지 않는다", () => {
+    expect(isManualOrder("liq", plans)).toBe(false);
   });
 });

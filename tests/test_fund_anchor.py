@@ -23,6 +23,7 @@ from updown.orchestration.rebalancer.anchor import (
     dnw_since,
     initial_state,
     manual_flow,
+    outside_since,
     row_time,
 )
 from updown.portfolio.performance import CashFlow, TwrLedger
@@ -139,3 +140,60 @@ class TestCoordinatorWithAnchor:
     def test_no_anchor_falls_back_to_increments(self) -> None:
         coord = self._coord("300", "1")
         assert coord.tick().balance == Decimal(300)
+
+
+ORDERS = {"1": "t-abc123-deadbeef-en-0", "2": "web", "3": "ao-900", "4": "ao-901", "5": "app_x"}
+STOPS = {"900": "t-abc123-deadbeef-sl-0", "901": "web_stop"}
+
+
+class TestOutsideOrdersAreFlows:
+    """사용자 2026-10-15 — 같은 계좌의 수동 매매 손익을 성과에서 뺀다(매 틱 자동)."""
+
+    MEMBERS = frozenset({"BTC_USDT", "ETH_USDT"})
+
+    @staticmethod
+    def row(kind: str, change: str, at: datetime, contract: str, oid: str) -> dict[str, object]:
+        return {
+            "type": kind,
+            "change": change,
+            "time": str(at.timestamp()),
+            "contract": contract,
+            "text": f"{contract}:{oid}",
+        }
+
+    def test_classifies_by_order_name_and_contract(self) -> None:
+        r = self.row
+        rows = [
+            r("pnl", "-5", T0 + timedelta(minutes=1), "BTC_USDT", "1"),  # 매매법 진입 · 청산
+            r("pnl", "-7", T0 + timedelta(minutes=2), "ETH_USDT", "2"),  # 웹 주문 = 사람
+            r("fee", "-1", T0 + timedelta(minutes=2), "ETH_USDT", "2"),
+            r("pnl", "-3", T0 + timedelta(minutes=3), "BTC_USDT", "3"),  # 우리 손절 발동 = 매매법
+            r("pnl", "-2", T0 + timedelta(minutes=4), "BTC_USDT", "4"),  # 사람 손절 발동 = 사람
+            r("pnl", "-9", T0 + timedelta(minutes=5), "IREN_USDT", "77"),  # 펀드 밖 계약 = 사람
+            r("fund", "-0.5", T0 + timedelta(minutes=6), "IREN_USDT", "0"),
+            r(
+                "fund", "-0.2", T0 + timedelta(minutes=6), "BTC_USDT", "0"
+            ),  # 펀드 종목 펀딩 = 매매법
+            r("pnl", "-4", T0 + timedelta(minutes=7), "BTC_USDT", "999"),  # 모름 = 숨기지 않는다
+            r("pnl", "-8", T0 - timedelta(minutes=1), "ETH_USDT", "2"),  # 지난 앵커 앞 = 안 셈
+        ]
+        got = outside_since(rows, T0, self.MEMBERS, ORDERS, STOPS)
+        assert got == Decimal("-19.5")  # -7 -1 -2 -9 -0.5
+
+    def test_first_anchor_counts_nothing(self) -> None:
+        rows = [self.row("pnl", "-9", T0, "IREN_USDT", "1")]
+        assert outside_since(rows, None, self.MEMBERS, {}, {}) == 0
+
+    def test_manual_loss_does_not_move_twr(self) -> None:
+        state = AnchorState(mode=MODE_ACCOUNT, idle=Decimal(0), at=T0, seen=())
+        got = anchored(state, Decimal(250), Decimal(0), T0 + timedelta(hours=1), Decimal(-50))
+        assert got.equity_before_flow == Decimal(300)  # 사람 손실 50 을 빼기 전 = 성과 0
+        assert got.flow == Decimal(-50) and got.outside == Decimal(-50)
+        ledger = TwrLedger(equity=Decimal(300), contributed=Decimal(300))
+        basket = Basket(as_members([("BTC_USDT", Decimal(1))]))
+        coord = Coordinator(engine=RebalanceEngine(basket=basket, ledger=ledger), ports={})
+        report = coord.tick(
+            CashFlow(at=T0, amount=got.flow, note="수동"), anchor=got.equity_before_flow
+        )
+        assert report.balance == Decimal(250)
+        assert report.twr_return == 0

@@ -1079,6 +1079,26 @@ class GatePaperAdapter:
         cancelled = await self._trade.cancel_order(broker_order_id)
         return self._to_result(cancelled, str(cancelled.get("text", "")))
 
+    async def finished_stops(self, limit: int = 300) -> dict[str, str]:
+        """끝난(발동 · 취소된) 조건부 주문 — `{조건부 id: 원래 주문 이름}`.
+
+        Args:
+            limit: 가져올 줄 수(거래소 최대 1000).
+
+        Returns:
+            조건부 id → `initial.text`. 거래소가 조건부를 발동시키면 그 주문 이름은
+            `ao-{조건부 id}` 라 우리 것인지 알 수 없다 — 원래 이름(`t-…` = 우리 손절)으로
+            가른다(펀드 앵커 · 2026-10-15).
+        """
+        rows = await self._trade.list_stops(None, status="finished", limit=limit)
+        out: dict[str, str] = {}
+        for row in rows:
+            initial = cast("dict[str, Any]", row.get("initial") or {})
+            sid = str(row.get("id_string") or row.get("id") or "")
+            if sid:
+                out[sid] = str(initial.get("text") or "")
+        return out
+
     async def order_detail(self, broker_order_id: str) -> dict[str, str] | None:
         """주문 하나의 **체결 사실** — 체결가 · 남은 수량 · 끝난 방식 · 수수료율.
 

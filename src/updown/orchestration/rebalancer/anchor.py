@@ -36,6 +36,7 @@ drift    계좌 안에 펀드 밖 유휴 현금(idle)이 있다. 총자본 = 계
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -110,6 +111,8 @@ class Anchored:
     equity_before_flow: Decimal
     flow: Decimal
     state: AnchorState
+    outside: Decimal = Decimal(0)
+    """`flow` 중 **매매법 밖 주문**(사람)의 손익 · 수수료 몫 — 기록 메모를 가르는 데만 쓴다."""
 
 
 def choose_mode(account_total: Decimal, contributed: Decimal) -> str:
@@ -197,7 +200,75 @@ def dnw_since(
     return total, tuple(keys[-200:])
 
 
-def anchored(state: AnchorState, account_total: Decimal, dnw: Decimal, now: datetime) -> Anchored:
+def outside_since(
+    rows: list[dict[str, Any]],
+    after: datetime | None,
+    members: frozenset[str],
+    order_texts: Mapping[str, str],
+    stop_texts: Mapping[str, str],
+) -> Decimal:
+    """마지막 앵커 뒤 **매매법 밖 주문**(사람)의 손익 · 수수료 합 (순수).
+
+    사용자 2026-10-15: *"내가 수동으로 이것저것 했는데 그거 다 빼고싶어"* — 같은 계좌의 사람 매매
+    손익을 성과가 아니라 입출금으로 본다(10-09 · 10-15 에 손으로 하던 재분류를 매 틱 자동으로).
+
+    Args:
+        rows: `account_book` 행들(`type` · `change` · `time` · `contract` ·
+            `text` = `계약:주문번호`).
+        after: 이 시각 뒤의 행만. None 이면 0(첫 앵커는 과거를 세지 않는다).
+        members: 펀드 종목 — 아닌 계약의 손익 · 수수료 · 펀딩은 전부 사람 몫이다.
+        order_texts: 끝난 주문 `{번호: text}`.
+        stop_texts: 끝난 조건부 `{조건부 id: 원래 주문 text}` — 거래소가 발동시킨 `ao-{id}`
+            를 가른다.
+
+    Returns:
+        사람 몫 합(손실 음수 · 이익 양수). 주문을 못 찾은 줄은 **매매법 몫으로 둔다** — 모르는
+        손실을 흐름으로 숨기지 않는다.
+
+    Note:
+        펀드 종목 계약에서 `t-` 이름 주문 = 매매법 · `ao-{id}` 는 그 조건부의 원래 이름이 `t-` 면
+        우리 손절(매매법) · 그 밖 이름(`web…` · `app…`)은 사람. 펀드 종목의 펀딩 줄은 매매법이다.
+    """
+    if after is None:
+        return Decimal(0)
+    total = Decimal(0)
+    for row in rows:
+        kind = str(row.get("type", ""))
+        if kind not in ("pnl", "fee", "fund"):
+            continue
+        at = row_time(row.get("time"))
+        if at is None or at <= after:
+            continue
+        text = str(row.get("text") or "")
+        contract = str(row.get("contract") or text.split(":")[0])
+        try:
+            change = Decimal(str(row.get("change", "0") or "0"))
+        except (InvalidOperation, ValueError):
+            continue
+        if contract and contract not in members:
+            total += change
+            continue
+        if kind == "fund":
+            continue
+        _, sep, order_id = text.partition(":")
+        name = order_texts.get(order_id.strip()) if sep else None
+        if name is None or name.startswith("t-"):
+            continue
+        if name.startswith("ao-"):
+            origin = stop_texts.get(name[3:])
+            if origin is None or origin.startswith("t-"):
+                continue
+        total += change
+    return total
+
+
+def anchored(
+    state: AnchorState,
+    account_total: Decimal,
+    dnw: Decimal,
+    now: datetime,
+    outside: Decimal = Decimal(0),
+) -> Anchored:
     """이번 틱의 앵커값 — 모드에 따라 거래소 입출금을 펀드 입출금으로 보거나 유휴 현금으로 보낸다.
 
     Args:
@@ -205,20 +276,24 @@ def anchored(state: AnchorState, account_total: Decimal, dnw: Decimal, now: date
         account_total: 계좌 총액(현금 + 증거금 · 미실현 제외).
         dnw: 마지막 앵커 뒤 거래소 입출금 합(+입금 -출금).
         now: 앵커 시각.
+        outside: 마지막 앵커 뒤 매매법 밖 주문(사람)의 손익 · 수수료(`outside_since`) —
+            입출금처럼 다룬다.
 
     Returns:
         `Anchored` — 입출금 직전 평가금액 · 자동 기록할 입출금 · 새 상태.
 
     Note:
-        account: 계좌 총액에서 방금 들어온 입출금을 빼면 그 직전의 평가금액이고, 입출금은 흐름으로
-            적는다.
-        drift:   입출금은 유휴 현금으로 가고(펀드 몫 아님) 총자본 = 계좌 - 유휴. 흐름은 0.
+        account: 계좌 총액에서 방금 들어온 입출금(과 사람 매매 손익)을 빼면 그 직전의 평가금액이고,
+            그 합은 흐름으로 적는다 — 사람 손익은 성과(TWR · 낙폭)에 안 든다.
+        drift:   입출금 · 사람 손익은 유휴 현금으로 가고(펀드 몫 아님) 총자본 = 계좌 - 유휴.
+            흐름은 0.
     """
     if state.mode == MODE_ACCOUNT:
-        before = account_total - dnw
-        return Anchored(before, dnw, replace(state, at=now))
-    idle = max(state.idle + dnw, Decimal(0))
-    return Anchored(account_total - idle, Decimal(0), replace(state, idle=idle, at=now))
+        flow = dnw + outside
+        before = account_total - flow
+        return Anchored(before, flow, replace(state, at=now), outside)
+    idle = max(state.idle + dnw + outside, Decimal(0))
+    return Anchored(account_total - idle, Decimal(0), replace(state, idle=idle, at=now), outside)
 
 
 def manual_flow(state: AnchorState, amount: Decimal) -> AnchorState:
