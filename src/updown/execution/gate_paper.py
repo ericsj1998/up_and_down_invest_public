@@ -119,6 +119,8 @@ FINISHED_KEEP: Final = (
     "create_time",
     "finish_time",
 )
+DETAIL_KEEP: Final = (*FINISHED_KEEP, "tkfr", "mkfr")
+"""`order_detail` 이 내는 칸 — 끝난 주문 칸 + 수수료율(체결 몫의 수수료를 셀 때)."""
 RECENT_LIMIT: Final = 40
 """`recent_orders` 가 종목마다 내는 최대 줄 수 — 전 종목 한 벌도 종목마다 같은 수로 자른다."""
 
@@ -1076,6 +1078,24 @@ class GatePaperAdapter:
         """
         cancelled = await self._trade.cancel_order(broker_order_id)
         return self._to_result(cancelled, str(cancelled.get("text", "")))
+
+    async def order_detail(self, broker_order_id: str) -> dict[str, str] | None:
+        """주문 하나의 **체결 사실** — 체결가 · 남은 수량 · 끝난 방식 · 수수료율.
+
+        Args:
+            broker_order_id: Gate 주문 id, 또는 `t-` 로 시작하는 멱등키.
+
+        Returns:
+            `FINISHED_KEEP` 칸 + `tkfr` · `mkfr`(테이커 · 메이커 요율). 없으면 None.
+
+        Note:
+            `get_order_status` 는 상태만 내고 `recent_orders` 는 최근 40줄만 낸다 — 며칠 걸린
+            지정가(계단 매매)의 체결가를 잃지 않으려고 주문 하나를 직접 묻는다.
+        """
+        found = await self._trade.find_order(broker_order_id)
+        if found is None:
+            return None
+        return order_row(found, DETAIL_KEEP)
 
     async def get_order_status(self, broker_order_id: str) -> OrderStatus:
         """주문 상태 — **재시도 전에 부른다** (절대 규칙 #6).

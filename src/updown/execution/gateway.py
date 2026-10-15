@@ -29,10 +29,17 @@
 """
 
 import os
+from collections.abc import Mapping
+from decimal import Decimal
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from updown.common.config import AppEnv
 from updown.common.security.live_gate import RoutingTarget, UserLiveToggle, decide_routing
 from updown.marketdata.adapter import BrokerAdapter
+
+if TYPE_CHECKING:
+    from updown.execution.gate_sim import GateSimAdapter
 
 
 class OrderGatewayError(RuntimeError):
@@ -248,6 +255,41 @@ def paper_adapter(quotes: object) -> BrokerAdapter:
     # ⛔ base_url 을 넘기지 않는다 — `GateTradeClient` 기본값이 testnet 이고,
     #    `GatePaperAdapter` 가 testnet 아닌 클라이언트를 거부한다 (이중 잠금).
     return GatePaperAdapter(GateTradeClient(key, secret), quotes)
+
+
+def sim_adapter(
+    specs: object,
+    cash: Decimal,
+    *,
+    touch: Decimal = Decimal(0),
+    state_path: Path | None = None,
+    spec_override: Mapping[str, object] | None = None,
+) -> "GateSimAdapter":
+    """Gate **로컬 모의 체결** 어댑터를 만든다 — 거래소에 주문이 안 나간다 (T532 D4).
+
+    Args:
+        specs: 계약 명세를 내는 공개 조회 어댑터(`contract_spec`).
+        cash: 시작 현금(USDT).
+        touch: 지정가를 넘어야 하는 여유 비율.
+        state_path: 상태 파일(여러 날 이어 돌리기).
+        spec_override: 명세 덮어쓰기(시험).
+
+    Returns:
+        모의 어댑터.
+
+    Note:
+        테스트넷에 없는 계약(지수 무기한)의 주문 흐름을 실계좌 전에 보려고 둔다. 자격증명을
+        읽지 않는다 — 주문이 어디에도 나가지 않으므로.
+    """
+    from updown.execution.gate_sim import GateSimAdapter, SpecSource
+
+    return GateSimAdapter(
+        cast("SpecSource", specs),
+        cash,
+        touch=touch,
+        state_path=state_path,
+        spec_override=spec_override,
+    )
 
 
 class LiveCredentialsError(OrderGatewayError):

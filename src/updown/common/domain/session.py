@@ -249,6 +249,41 @@ class MarketCalendar:
             )
         return moment.astimezone(self.hours_for(market).zone)
 
+    def regular_session(self, market: Market, day: date) -> tuple[datetime, datetime] | None:
+        """그 현지 날짜의 정규장 `(개장, 마감)` (UTC) — 조기마감일은 당겨진 마감.
+
+        Args:
+            market: 시장.
+            day: 현지 날짜.
+
+        Returns:
+            거래일이면 `(개장, 마감)`, 주말 · 휴장일이면 None.
+
+        Raises:
+            SessionConfigError: 24시간 장(정규장 개념이 없다)이거나 `day` 가 휴장일 정보
+                구간(`known_range`) 밖일 때 — 모르는 날을 영업일로 답하지 않는다 (절대 규칙 #8).
+        """
+        hours = self.hours_for(market)
+        regular = hours.regular
+        if hours.always_open or regular is None:
+            raise SessionConfigError(f"{market} 는 정규장이 없다 — 하루 봉을 장 시각으로 못 묶는다")
+        known = self.known_range.get(market)
+        if known is None or not known[0] <= day <= known[1]:
+            raise SessionConfigError(
+                f"{market} {day} 는 휴장일 정보 밖이다 — "
+                "config/market_sessions.yml 에 그해 표를 더하라"
+            )
+        if day.weekday() not in hours.trading_weekdays or day in self.holidays.get(
+            market, frozenset()
+        ):
+            return None
+        end_at = regular.end
+        if day in self.early_closes.get(market, frozenset()) and hours.early_regular_end:
+            end_at = hours.early_regular_end
+        opens = datetime.combine(day, regular.start, tzinfo=hours.zone)
+        closes = datetime.combine(day, end_at, tzinfo=hours.zone)
+        return opens.astimezone(UTC), closes.astimezone(UTC)
+
     def trading_date(self, market: Market, moment: datetime) -> date:
         """이 시각이 속한 **현지 달력 날짜**.
 
