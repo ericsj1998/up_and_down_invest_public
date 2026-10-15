@@ -28,7 +28,7 @@ def test_holiday_is_closed_and_says_why() -> None:
 
 def test_outside_coverage_is_unknown_not_open() -> None:
     got = market_status_payload(
-        load_calendar(), Market.NASDAQ, datetime(2027, 3, 1, 15, 0, tzinfo=UTC)
+        load_calendar(), Market.NASDAQ, datetime(2028, 3, 1, 15, 0, tzinfo=UTC)
     )
     assert got["state"] == "unknown" and got["next_open"] is None
 

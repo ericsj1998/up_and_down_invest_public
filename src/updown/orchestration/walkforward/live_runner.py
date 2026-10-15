@@ -55,6 +55,7 @@ from updown.decision.risk.policy import load_settings as load_risk_settings
 from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter, RequestCounting
 from updown.marketdata.ingest.timeframes import interval_seconds
 from updown.marketdata.stream import CandleStream
+from updown.orchestration import leg_engines
 from updown.orchestration.leftovers import held_size, sweep
 from updown.orchestration.liquidity import probe_book
 from updown.orchestration.playbook_run import TF_LADDER
@@ -5839,7 +5840,7 @@ class LiveRunner:
         multiplier = Decimal(str(spec["quanto_multiplier"]))
         # 🔴 **시장가와 같은 계산을 쓴다** (2026-08-20 사고 ⓕ). 여기만 `sizing_base` 를
         #    날것으로 써서, 다른 판이 지갑을 먹은 상태에도 예산 전액으로 주문을 냈다.
-        equity = await self._usable_equity(waiting.trade_id)
+        equity = await self._usable_equity(waiting.trade_id, waiting.leverage)
         for want in wants:
             try:
                 contracts = contracts_for(
@@ -7707,11 +7708,45 @@ class LiveRunner:
             )
         return self._spec
 
-    async def _usable_equity(self, trade_id: str) -> Decimal:
+    async def _ask_yield(self, budget: Decimal, exposure: Decimal, trade_id: str) -> None:
+        """같은 계좌의 엔진 다리에게 이 진입의 증거금을 비켜 달라고 묻는다 (T533 양보).
+
+        Args:
+            budget: 이 진입의 예산(`sizing_base`).
+            exposure: 이 진입의 노출 배수(기록의 `leverage`).
+            trade_id: 흔적에 남길 매매 id.
+
+        Note:
+            목표 가용 = max(예산, 이 진입 증거금) — 쓸 돈이 `min(예산, 가용)` 이라 가용이 예산보다
+            작으면 진입이 줄어든다. 엔진 다리는 계좌 가용이 목표 이상이 될 때까지 늦게
+            든 몫부터 닫는다. 도는 엔진이 없으면 아무것도 안 한다(지금까지와 같다).
+        """
+        market = self.instrument.market.value
+        if not leg_engines.running_on(market):
+            return
+        lev = self._session.ledger.leverage
+        want = max(budget, budget * exposure / lev) if lev > 0 else budget
+        spare = await self._spare_margin()
+        if spare is None or spare >= want:
+            return
+        freed = await leg_engines.request_margin(market, want)
+        self._log.info(
+            "live_margin_yield",
+            payload={
+                "trade_id": trade_id,
+                "want": str(want),
+                "spare": str(spare),
+                "freed": str(freed),
+                "note": "엔진 다리가 늦게 든 몫부터 닫아 증거금을 비켰다(T533)",
+            },
+        )
+
+    async def _usable_equity(self, trade_id: str, exposure: Decimal | None = None) -> Decimal:
         """이 주문에 **실제로 쓸 수 있는 돈** — 예산과 계좌 가용의 작은 쪽.
 
         Args:
             trade_id: 흔적에 남길 매매 id.
+            exposure: 이 진입의 노출 배수. 주면 가용이 모자랄 때 엔진 다리에 먼저 양보를 묻는다.
 
         Returns:
             여유를 뺀 금액.
@@ -7726,6 +7761,8 @@ class LiveRunner:
               언젠가 다른 쪽에서 사고가 난다.
         """
         budget = self._session.ledger.sizing_base
+        if exposure is not None:
+            await self._ask_yield(budget, exposure, trade_id)
         spare = await self._spare_margin()
         self._entry_spare = spare
         equity = (budget if spare is None else min(budget, spare)) * MARGIN_HEADROOM
@@ -7893,7 +7930,7 @@ class LiveRunner:
         #    (`budget` 필드).
         #
         # ⛔ 백테스트 원장은 손대지 않는다 — 여기(라이브 경로)에만 있다 (규칙 #5).
-        equity = await self._usable_equity(record.trade_id)
+        equity = await self._usable_equity(record.trade_id, record.leverage)
         # 🔴 방향별 사이징 (T59): 세션이 계산한 방향 스케일 노출(record.leverage — 롱3/숏1.02)을
         #    쓴다. ledger.leverage(플랫 3)를 쓰면 숏도 3x 로 나가 검증된 롱3/숏1 이 깨진다.
         leverage = record.leverage

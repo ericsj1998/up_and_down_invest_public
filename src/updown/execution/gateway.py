@@ -414,5 +414,39 @@ def order_adapter(quotes: object, *, user_id: str) -> BrokerAdapter:
     return cached
 
 
+def engine_order_adapter(
+    quotes: object,
+    *,
+    user_id: str,
+    sim_state: Path,
+    sim_cash: Decimal = Decimal(1_000_000),
+) -> object:
+    """엔진 다리의 주문 어댑터 — 실계좌 문이 열렸으면 실계좌 · 아니면 로컬 모의.
+
+    엔진 다리 = `orchestration.leg_engines`.
+
+    Args:
+        quotes: 공개 조회 어댑터.
+        user_id: 이중 게이트의 사용자 식별자.
+        sim_state: 모의 계좌 상태 파일(문이 닫혔을 때).
+        sim_cash: 모의 시작 현금 — 크게 두어 모의 증거금이 양보를 일으키지 않게 한다(양보는 실계좌
+            계좌 하나를 나눠 쓸 때만 뜻이 있다).
+
+    Returns:
+        실계좌면 `order_adapter` 와 같은 어댑터, 아니면 `sim_adapter`.
+
+    Note:
+        테스트넷에 없는 계약(지수 무기한)이 있다 — 문이 닫힌 환경(dev · demo · 실계좌 서버의
+        LIVE_ORDERS 꺼짐)에서 테스트넷으로 보내면 계약이 없어 다리가 못 뜬다. 그래서 그때는 이
+        프로세스가 체결을 흉내 낸다. 문 판정은 `order_adapter` 와 같다(APP_ENV=live + LIVE_ORDERS).
+    """
+    from updown.common.config import load_settings
+
+    settings = load_settings()
+    if settings.app_env is AppEnv.LIVE and settings.live_orders:
+        return order_adapter(quotes, user_id=user_id)
+    return sim_adapter(quotes, sim_cash, state_path=sim_state)
+
+
 _ORDER_ADAPTERS: dict[tuple[str, bool, str], BrokerAdapter] = {}
 """`order_adapter` 의 프로세스 수명 캐시 — 같은 환경·스위치·거래소면 같은 어댑터(연결 풀)를 준다."""

@@ -279,7 +279,11 @@ class TestLegsAndDeclaration:
 
     def test_only_the_long_leg_is_isolated(self) -> None:
         on = {b.playbook_id for b in load_playbooks() if b.drawdown_isolated}
-        assert on == {"private_strategy", "private_strategy"}  # K05B25 복사
+        assert on == {
+            "private_strategy",
+            "private_strategy",  # K05B25 복사
+            "private_strategy",  # T532 혼합 4.0 엔진 다리(브레이크 계산 제외)
+        }
         below = {b.playbook_id for b in load_playbooks() if b.macd_exit_below_long}
         assert below == {
             "private_strategy",

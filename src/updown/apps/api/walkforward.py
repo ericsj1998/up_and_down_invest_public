@@ -98,6 +98,7 @@ from updown.marketdata.adapter import Capability, QuoteAdapter, RequestBudgetExc
 from updown.marketdata.ingest.repository import CandleRepository
 from updown.marketdata.ingest.timeframes import interval, interval_seconds
 from updown.marketdata.provider import MarketDataProvider
+from updown.orchestration import leg_engines
 from updown.orchestration.inspection import setups as setup_layers
 from updown.orchestration.inspection.catalog import available_flags, expand
 from updown.orchestration.inspection.overlays import (
@@ -2886,6 +2887,9 @@ async def _venue_snapshot(
         for runner in LIVE_RUNNERS.values()
         if runner.instrument.market.value == market
     }
+    # ⭐ 엔진 다리(세션 꼴이 아닌 펀드 다리)가 맡은 종목도 주인이 있다 — 안 세면 그 포지션이
+    #    120초마다 고아로 올라가고 진입 차단 표에 든다.
+    owned |= set(leg_engines.running_on(market))
     positions = {
         str(row.get("symbol", "")): row
         for row in cast("list[dict[str, str]]", body.get("positions", []))
@@ -3102,6 +3106,12 @@ async def reconcile_once() -> list[Finding]:
             and (live := SESSIONS.get(handle)) is not None
             and live.session.waiting_trade is not None
         }
+        # ⭐ 엔진 다리 — 장부가 아는 계약이 있으면 보유 중 · 진입 지정가를 걸었으면 반영 대기
+        for symbol, engine in leg_engines.running_on(market).items():
+            if engine.held_contracts() > 0:
+                on_book.add(symbol)
+            if engine.waiting_entry():
+                pending.add(symbol)
         for symbol in sorted({*positions, *resting, *owned} - {""}):
             row = positions.get(symbol)
             held = int(Decimal(str(row.get("size", "0") or "0"))) if row else 0

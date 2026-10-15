@@ -1014,6 +1014,7 @@ def _parse_declared(declared: object) -> list[Playbook]:
                     split_legs=_split_legs(body, f"playbooks.{name}"),
                     share_same_side=bool(body.get("share_same_side", False)),
                     drawdown_isolated=bool(body.get("drawdown_isolated", False)),
+                    engine=None if body.get("engine") is None else str(body["engine"]),
                     legs_revision=_positive_int(body, "legs_revision", f"playbooks.{name}"),
                     superseded_by=(
                         None if body.get("superseded_by") is None else str(body["superseded_by"])

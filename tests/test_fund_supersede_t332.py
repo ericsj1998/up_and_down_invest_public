@@ -18,6 +18,11 @@ class TestDeclaration:
         assert books["private_strategy"].superseded_by == "private_strategy"
         # 2.5.0 K05B25 (1.29.0 · 2026-10-02)
         assert books["private_strategy"].superseded_by == "private_strategy"
+        # 혼합 4.0 (T532 · 2026-10-15)
+        assert (
+            books["private_strategy"].superseded_by == "private_strategy"
+        )
+        assert books["private_strategy"].listed is False
         assert books["private_strategy"].superseded_by is None
         assert books["private_strategy"].listed is True
         assert books["private_strategy"].listed is False
@@ -26,6 +31,7 @@ class TestDeclaration:
     def test_only_the_live_bundle_declares_it(self) -> None:
         declared = {b.playbook_id for b in load_playbooks() if b.superseded_by}
         assert declared == {
+            "private_strategy",
             "private_strategy",
             "private_strategy",
             "private_strategy",
@@ -41,6 +47,10 @@ class TestSupersedingPlaybook:
         )
         nxt = mod.superseding_playbook("private_strategy", books)
         assert nxt == "private_strategy"
+        assert (
+            mod.superseding_playbook("private_strategy", books)
+            == "private_strategy"
+        )
         assert (
             mod.superseding_playbook("private_strategy", books)
             == "private_strategy"

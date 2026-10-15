@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -128,11 +128,20 @@ class TestHolidays2026:
         assert opens == datetime(2026, 7, 6, 13, 30, tzinfo=UTC)
         assert closes == datetime(2026, 7, 6, 20, 0, tzinfo=UTC)
         assert calendar.next_events(Market.GATE, datetime(2026, 7, 3, tzinfo=UTC)) == (None, None)
-        assert calendar.next_events(Market.NASDAQ, datetime(2027, 3, 1, tzinfo=UTC)) == (None, None)
+        assert calendar.next_events(Market.NASDAQ, datetime(2028, 3, 1, tzinfo=UTC)) == (None, None)
 
     def test_outside_coverage_is_unknown_not_open(self, calendar: MarketCalendar) -> None:
-        state, why = calendar.tradability(Market.NASDAQ, datetime(2027, 3, 1, 15, 0, tzinfo=UTC))
-        assert state is Tradability.UNKNOWN and "2026-12-31" in why
+        state, why = calendar.tradability(Market.NASDAQ, datetime(2028, 3, 1, 15, 0, tzinfo=UTC))
+        assert state is Tradability.UNKNOWN and "2027-12-31" in why
+
+    def test_2027_us_table(self, calendar: MarketCalendar) -> None:
+        """2027 (NYSE Group 2025-12-23 발표) — 대체 휴장 셋 · 조기마감은 11/26 하루."""
+        for day in (date(2027, 6, 18), date(2027, 7, 5), date(2027, 12, 24)):
+            assert calendar.regular_session(Market.NASDAQ, day) is None
+        early = calendar.regular_session(Market.NASDAQ, date(2027, 11, 26))
+        assert early is not None and early[1] == datetime(2027, 11, 26, 18, 0, tzinfo=UTC)
+        full = calendar.regular_session(Market.NASDAQ, date(2027, 7, 2))
+        assert full is not None and full[1] == datetime(2027, 7, 2, 20, 0, tzinfo=UTC)
 
     def test_holidays_without_coverage_are_rejected(self) -> None:
         raw = {

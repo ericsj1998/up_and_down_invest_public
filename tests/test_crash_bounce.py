@@ -144,6 +144,11 @@ class TestDeclaration:
         #    다리 id 는 `_k05` 가 붙은 새 선언(귀속 키 보존) · 선택창엔 2.5.0 만
         assert r5.listed is False and r5.superseded_by == "private_strategy"
         new = books["private_strategy"]
-        assert new.listed is True and new.recommended is True
         assert new.bundle == tuple(f"{leg}_k05" for leg in bundle.bundle)
+        # T532(2026-10-15): 2.5.0(혼합 3.4)은 혼합 4.0(`_nx_k05` · 여섯 다리 + 엔진 다리)으로
+        #    자동 전환
+        assert new.listed is False and new.superseded_by == "private_strategy"
+        mix40 = books["private_strategy"]
+        assert mix40.listed is True and mix40.recommended is True
+        assert mix40.bundle == (*new.bundle, "private_strategy")
         assert books["private_strategy"].listed is False  # 2.2.0 은 내렸다(귀속 보존)

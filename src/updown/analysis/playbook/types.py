@@ -1221,6 +1221,14 @@ class Playbook:
     저장본 그대로다. 🔴 다리 값을 돌던 펀드에 넣고 싶을 때만 올린다 — 저장본이 이기는
     원칙의 명시적 예외다. ⛔ None 이면 동결(0 과 같다)이다.
     """
+    engine: str | None = None
+    """이 다리를 돌리는 **외부 엔진** 이름 (`orchestration.leg_engines` · entry point
+    `updown.leg_engines`).
+
+    None(기본)이면 지금까지처럼 세션(`Session` + 탐지기)이 돈다. 있으면 묶음의 이 다리는 세션 대신
+    그 엔진이 자기 러너로 돈다 — 하루 한 번 걷고 한 포지션 안에 몫을 여럿 두는 다리처럼 세션 꼴에
+    안 맞는 매매법을 위한 길이다. 그때 `setups` 는 비워 둔다(탐지기가 없다).
+    """
     superseded_by: str | None = None
     """이 매매법을 **대체하는** 매매법 id (T332 · 2026-09-30).
 

@@ -347,6 +347,7 @@ markets:
       TQQQX_USDT: 0.01
       SQQQ_USDT: 0.01
       TZA_USDT: 0.01
+      NAS100_USDT: 0.01   # 2026-10-15 공개 계약 명세 실측(order_price_round 0.01 · quanto 0.0001 · T532)
 
     # 🔴 **호가 눈금** (2026-08-18 실측 · 사용자 승인).
     #

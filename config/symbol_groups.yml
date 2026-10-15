@@ -68,3 +68,4 @@ markets:
       TQQQX_USDT: { name: 나스닥100 3배, tags: [leveraged] }
       SQQQ_USDT: { name: 나스닥100 3배 역방향, tags: [inverse, leveraged] }
       TZA_USDT: { name: 소형주 3배 역방향, tags: [inverse, leveraged] }
+      NAS100_USDT: { name: 나스닥100 지수 }

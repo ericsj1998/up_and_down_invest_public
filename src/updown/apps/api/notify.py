@@ -32,6 +32,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from updown.analysis.playbook.select import load_playbooks
 from updown.common import paths
 from updown.common.logging.setup import get_logger
+from updown.orchestration import leg_engines
 from updown.orchestration.notify import Note, RunState, diff_run
 
 router = APIRouter(prefix="/notify", tags=["notify"])
@@ -353,7 +354,29 @@ async def notify_loop() -> None:
                 )
                 for note in notes:
                     await push(note)
-            for gone in set(states) - set(live):
+            # ⭐ 엔진 다리(`orchestration.leg_engines`) — 판이 아니라 경보만 견준다(재난 손절 발동 ·
+            #    포지션 어긋남 · 하루 처리 실패 등 엔진이 적은 문제 코드).
+            engines = {
+                f"engine:{market}:{symbol}": engine
+                for (market, symbol), engine in leg_engines.RUNNING.items()
+            }
+            for key, engine in engines.items():
+                notes, states[key] = diff_run(
+                    key,
+                    engine.symbol.replace("_USDT", "").replace("USDT", ""),
+                    [],
+                    engine.realized(),
+                    [
+                        {"code": code, "level": "error", "detail": f"엔진 다리 {engine.symbol}"}
+                        for code in engine.findings
+                    ],
+                    states.get(key),
+                    now,
+                    label_of=lambda attr, names=names: _label_of(names, attr),
+                )
+                for note in notes:
+                    await push(note)
+            for gone in set(states) - set(live) - set(engines):
                 states.pop(gone, None)
         except Exception as exc:  # 알림은 매매를 막지 않는다
             _logger.warning("notify_loop_failed", payload={"error": str(exc)[:200]})

@@ -48,6 +48,10 @@ sample_ma_cross = "updown.analysis.detectors.sample_ma_cross:register"
 # 일봉 채널 돌파 롱 (T319 새 다리 DCH · T320 P7 · 2026-09-28) — 채널 v2.1 · 세션 엔진 재현용.
 # 급락 되돌림 롱 (T329 · 바텀업 방향 센서스 574 ~ 577차 · 2026-09-30) — 4H · 세션 재현용.
 
+# 외부 다리 엔진 (T532 · `orchestration.leg_engines`) — 세션 꼴이 아닌 펀드 다리. 공개 내보내기는
+# 내보내지 않은 모듈을 가리키는 줄을 지운다(`export_public._prune_entry_points`).
+[project.entry-points."updown.leg_engines"]
+
 [dependency-groups]
 dev = [
     "ruff>=0.9",

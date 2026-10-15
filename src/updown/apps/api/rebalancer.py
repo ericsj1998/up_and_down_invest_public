@@ -25,7 +25,7 @@ import json
 import logging
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
@@ -56,10 +56,13 @@ from updown.apps.api.walkforward import (
 from updown.common.cache import TtlCache
 from updown.common.domain.capabilities import capabilities_of
 from updown.common.domain.instrument import Market, MarketGroup, Timeframe
+from updown.common.domain.session import load_calendar
 from updown.common.logging.setup import get_logger
 from updown.decision.allocation import Basket, BasketError, BasketMember, as_members, rank_members
+from updown.execution.gateway import engine_order_adapter
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider
+from updown.orchestration import leg_engines
 from updown.orchestration.rebalancer import (
     Coordinator,
     PositionPort,
@@ -162,6 +165,12 @@ class Fund:
     """마지막 틱에서 앵커를 못 한 이유(다른 펀드·단독 판·계좌 못 읽음).
 
     None = 앵커됨. 화면에 그대로 보여 준다.
+    """
+    engines: dict[str, Any] = field(default_factory=dict[str, Any])
+    """`{종목: 엔진}` — 세션 대신 외부 엔진이 도는 다리의 종목(`FundLeg.engine` · `leg_engines`).
+
+    엔진은 조정자 포트로도 끼어 실현이 총자본에 든다. 펀드 파일에는 안 적는다 — 엔진이 자기
+    상태 파일(`ENGINES_ROOT`)을 들고, 되살릴 때 다리 선언으로 다시 띄운다.
     """
 
 
@@ -1035,9 +1044,27 @@ async def _restore_one(data: dict[str, Any]) -> None:
     saved_marks = cast("dict[str, Any]", data.get("marks") or {})
     corrected: dict[str, tuple[Decimal, Decimal]] = {}
     handles: dict[str, str] = {}
-    ports: dict[str, SessionBridge] = {}
+    ports: dict[str, Any] = {}
+    engines: dict[str, Any] = {}
     kept: list[BasketMember] = []
     for member in basket.members:
+        engine_leg = _engine_leg(legs, member.symbol)
+        if engine_leg is not None:  # 엔진 다리 — 자기 상태 파일에서 이어 받는다
+            try:
+                engines[member.symbol] = await _spawn_engine(
+                    str(data["fund_id"]), engine_leg, member.symbol, fund_market
+                )
+            except Exception as exc:
+                _logger.warning(
+                    "fund_member_skipped: %s %s — %s",
+                    data.get("fund_id"),
+                    member.symbol,
+                    str(exc)[:160],
+                )
+                continue
+            ports[member.symbol] = engines[member.symbol]
+            kept.append(member)
+            continue
         share = total / Decimal(slots) if slots > 0 else total * member.weight / wsum
         capital = total * member.weight / wsum
         seed = Decimal(str(seeds[member.symbol])) if member.symbol in seeds else capital
@@ -1156,6 +1183,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
         label=str(data["label"]),
         coordinator=coordinator,
         handles=handles,
+        engines=engines,
         leverage=leverage,
         playbook=playbook,
         market=fund_market,
@@ -1236,6 +1264,102 @@ async def _spawn_session(
     session.ledger.seed_cash = share if capital is None else capital
     session.ledger.margin_budget = share  # 예산 — 다음 틱 전까지의 사이징 기준
     return handle, SessionBridge(session)
+
+
+ENGINES_ROOT = FUNDS_ROOT / "engines"
+"""엔진 다리 상태 파일(장부 · 모의 계좌)을 두는 곳 — 펀드 파일과 같은 마운트된 볼륨."""
+
+_ENGINE_TASKS: dict[tuple[str, str], asyncio.Task[None]] = {}
+"""`(펀드, 종목)` → 엔진 러너 태스크(멈출 때 거둔다)."""
+
+
+def _engine_leg(legs: Sequence[FundLeg], symbol: str) -> FundLeg | None:
+    """그 종목을 맡은 엔진 다리 — 없으면 None(세션 다리)."""
+    return next((leg for leg in legs if leg.engine and symbol in leg.symbols), None)
+
+
+def _fund_capital(fund_id: str) -> Decimal:
+    """펀드 총자본(엔진 몫 크기의 바탕) — 펀드가 아직 등록 전이면 0(진입 안 함)."""
+    fund = FUNDS.get(fund_id)
+    return Decimal(0) if fund is None else fund.coordinator.engine.balance
+
+
+async def _spawn_engine(fund_id: str, leg: FundLeg, symbol: str, market: str) -> Any:
+    """엔진 다리 하나를 띄운다 — 엔진은 자기 상태 파일에서 이어 받는다.
+
+    Args:
+        fund_id: 펀드 id.
+        leg: 엔진 다리.
+        symbol: 종목.
+        market: 거래소.
+
+    Returns:
+        도는 엔진(`leg_engines.LegEngine`).
+
+    Raises:
+        RuntimeError: 그 이름의 엔진이 설치돼 있지 않다(조용히 빼지 않는다 · 규칙 #8).
+    """
+    factory = leg_engines.discovered_leg_engines().get(str(leg.engine))
+    if factory is None:
+        raise RuntimeError(
+            f"다리 엔진 {leg.engine!r} 이 설치되지 않았다 — "
+            "entry point updown.leg_engines 를 확인하라"
+        )
+    venue = Market(market)
+    quotes = MarketDataProvider().adapter_for(venue)
+    orders = engine_order_adapter(
+        quotes, user_id="fund", sim_state=ENGINES_ROOT / f"{fund_id}_{symbol}_sim.json"
+    )
+    engine = factory(
+        leg_engines.LegEngineContext(
+            fund_id=fund_id,
+            attribution=leg.attribution,
+            instrument=instrument_of(symbol, venue),
+            orders=orders,
+            quotes=quotes,
+            calendar=load_calendar(),
+            capital=lambda: _fund_capital(fund_id),
+            state_dir=ENGINES_ROOT,
+            leverage=leg.leverage,
+        )
+    )
+    leg_engines.register_running(market, engine)
+    _ENGINE_TASKS[(fund_id, symbol)] = asyncio.create_task(
+        engine.run(), name=f"engine:{fund_id}:{symbol}"
+    )
+    _events.info(
+        "fund_engine_started",
+        payload={
+            "fund_id": fund_id,
+            "symbol": symbol,
+            "engine": leg.engine,
+            "leg": leg.attribution,
+        },
+    )
+    return engine
+
+
+async def _stop_engine(fund_id: str, market: str, symbol: str, engine: Any, *, close: bool) -> None:
+    """엔진을 멈춘다 — `close` 면 포지션을 닫고 주문 · 손절을 거둔 뒤(다리를 뺄 때).
+
+    Note:
+        닫지 않고 멈추면 포지션 · 손절은 거래소에 그대로 남는다(재기동 · 무중단 전환용 — 다음
+        엔진이 장부 파일에서 이어 받는다).
+    """
+    try:
+        if close:
+            await engine.wind_down()
+        else:
+            engine.stop()
+    finally:
+        leg_engines.unregister_running(market, symbol)
+        task = _ENGINE_TASKS.pop((fund_id, symbol), None)
+        if task is not None and close:
+            task.cancel()
+        _events.info(
+            "fund_engine_stopped",
+            payload={"fund_id": fund_id, "symbol": symbol, "closed": close},
+        )
 
 
 def _orders_go_live() -> bool:
@@ -1346,10 +1470,19 @@ async def _create_fund(
         이 예산을 다시 나눈다.
     """
     wsum = basket.weight_sum
+    fund_id = f"fund{uuid4().hex[:8]}"
     handles: dict[str, str] = {}
-    ports: dict[str, SessionBridge] = {}
+    ports: dict[str, Any] = {}
+    engines: dict[str, Any] = {}
     try:
         for member in basket.members:
+            engine_leg = _engine_leg(legs, member.symbol)
+            if engine_leg is not None:  # 세션 대신 엔진 다리(`leg_engines`)
+                engines[member.symbol] = await _spawn_engine(
+                    fund_id, engine_leg, member.symbol, market
+                )
+                ports[member.symbol] = engines[member.symbol]
+                continue
             # 몫(capital · 원장 걷기 시작점)은 비중대로, 예산(share · 사이징)은
             # 자리 배분이면 총자본 ÷ 자리. 자리 배분에서 예산 합은 총자본을 넘는 것이
             # 의도다(동시 보유만 자리 수로 막는다) — 총자본은
@@ -1376,6 +1509,8 @@ async def _create_fund(
         for handle in handles.values():
             await _close_live_position(handle)
             await _drop_one(handle)
+        for sym, made in engines.items():
+            await _stop_engine(fund_id, market, sym, made, close=True)
         raise
 
     engine = RebalanceEngine(basket=basket, ledger=TwrLedger(equity=total_cash), slots=slots)
@@ -1399,10 +1534,11 @@ async def _create_fund(
     fund = Fund(
         legs=tuple(legs),
         legs_revision=_declared_legs_revision(playbook) if legs else 0,
-        fund_id=f"fund{uuid4().hex[:8]}",
+        fund_id=fund_id,
         label=label,
         coordinator=coordinator,
         handles=handles,
+        engines=engines,
         leverage=leverage,
         playbook=playbook,
         market=market,
@@ -1548,8 +1684,81 @@ def _member_share_now(fund: Fund, sym: str) -> Decimal:
     return base + port.realized() - mark
 
 
+def engine_row(status: Mapping[str, Any], weight: str, name: str, leg: str) -> dict[str, Any]:
+    """엔진 다리 종목 줄 — 세션 종목 줄과 같은 칸(화면이 같은 표에 그린다 · 순수).
+
+    Args:
+        status: 엔진 `status()`.
+        weight: 바스켓 비중.
+        name: 다리 짧은 이름.
+        leg: 다리 매매법 id.
+
+    Returns:
+        `_per_symbol` 과 같은 꼴 + `engine`(엔진 요약 그대로).
+    """
+    units = [
+        u for u in cast("list[dict[str, Any]]", status.get("units") or []) if not u.get("ghost")
+    ]
+    contracts = sum(int(u.get("contracts") or 0) for u in units)
+    cost = sum(
+        (Decimal(str(u.get("fill") or 0)) * int(u.get("contracts") or 0) for u in units),
+        Decimal(0),
+    )
+    row: dict[str, Any] = {
+        "handle": "",
+        "weight": weight,
+        "equity": "",
+        "margin": str(status.get("margin") or ""),
+        "realized": str(status.get("realized") or "0"),
+        "unrealized": str(status.get("unrealized") or ""),
+        "holding": contracts > 0,
+        "preview": None,
+        "reconciled": not status.get("findings"),
+        "accounting_ok": True,
+        "verified_realized": None,
+        "engine": dict(status),
+    }
+    if contracts > 0:
+        row["position"] = {
+            "side": "롱",
+            "leg": leg,
+            "name": name,
+            "entry": str((cost / contracts).quantize(Decimal("0.01"))),
+            "target": "",
+            "stop": str(min(Decimal(str(u.get("stop") or 0)) for u in units)),
+            "opened_at": None,
+            "full_ride": True,
+        }
+        row["shares"] = [
+            {
+                "leg": leg,
+                "name": f"{name} {u.get('key')}",
+                "side": "롱",
+                "entry": str(u.get("fill")),
+                "stop": str(u.get("stop") or ""),
+                "contracts": int(u.get("contracts") or 0),
+                "opened_at": u.get("opened"),
+                "unrealized": None,
+                "margin": None,
+            }
+            for u in units
+        ]
+    return row
+
+
 async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
     """한 종목의 상세 — 평가금액·비중·실현손익·미실현손익·현재 포지션."""
+    weight_of = next(
+        (str(m.weight) for m in fund.coordinator.engine.basket.members if m.symbol == sym), ""
+    )
+    if sym in fund.engines:
+        leg = _engine_leg(fund.legs, sym)
+        books = {b.playbook_id: b for b in load_playbooks()}
+        book = books.get(leg.playbook) if leg is not None else None
+        name = (book.short_label or book.label) if book is not None else ""
+        await fund.engines[sym].refresh()
+        status = fund.engines[sym].status()
+        return engine_row(status, weight_of, name or sym, "" if leg is None else leg.playbook)
     handle = fund.handles.get(sym, "")
     live = SESSIONS.get(handle)
     weight = next(
@@ -1864,6 +2073,22 @@ def leg_pnl(
 def _boards_pnl(fund: Fund, per_symbol: Mapping[str, Mapping[str, Any]]) -> list[BoardPnl]:
     """판마다 다리별 실현(원장 귀속 키 앞부분 = 매매법 id) · 보유 다리 · 미실현."""
     out: list[BoardPnl] = []
+    for sym, engine in fund.engines.items():  # 엔진 다리 — 엔진이 실현 누계를 안다
+        leg = _engine_leg(fund.legs, sym)
+        if leg is None:
+            continue
+        raw = per_symbol.get(sym, {}).get("unrealized")
+        try:
+            unreal_e = Decimal(str(raw)) if raw not in (None, "") else None
+        except ArithmeticError:
+            unreal_e = None
+        out.append(
+            BoardPnl(
+                realized={leg.playbook: engine.realized()},
+                held=leg.playbook if engine.held_contracts() > 0 else None,
+                unrealized=unreal_e,
+            )
+        )
     for sym, handle in fund.handles.items():
         live = SESSIONS.get(handle)
         if live is None:
@@ -2546,6 +2771,8 @@ async def drop(fund_id: str) -> dict[str, Any]:
     for handle in fund.handles.values():
         await _close_live_position(handle)
         await _drop_one(handle)
+    for sym, engine in list(fund.engines.items()):
+        await _stop_engine(fund_id, fund.market, sym, engine, close=True)
     _archive_fund_file(fund_id)
     return {"dropped": fund_id, "sessions": list(fund.handles.values())}
 
@@ -2619,6 +2846,14 @@ async def _edit_basket(fund_id: str, payload: Mapping[str, Any]) -> dict[str, An
         for member in new_basket.members:
             if member.symbol in old:
                 continue
+            engine_leg = _engine_leg(fund.legs, member.symbol)
+            if engine_leg is not None:
+                fund.engines[member.symbol] = await _spawn_engine(
+                    fund.fund_id, engine_leg, member.symbol, fund.market
+                )
+                fund.coordinator.ports[member.symbol] = fund.engines[member.symbol]
+                added.append(member.symbol)
+                continue
             share = report.budgets.get(member.symbol, Decimal(0))
             # 🔴 몫(capital · 원장 걷기 시작점)은 생성 · 전환과 같게 넘긴다 (1.17.1) —
             #    빠뜨리면 원장이 예산에서 시작해 원장 합이 계좌보다 커 보인다(`wallet_drift`).
@@ -2646,6 +2881,9 @@ async def _edit_basket(fund_id: str, payload: Mapping[str, Any]) -> dict[str, An
             if handle:
                 await _close_live_position(handle)
                 await _drop_one(handle)
+            made = fund.engines.pop(sym, None)
+            if made is not None:
+                await _stop_engine(fund.fund_id, fund.market, sym, made, close=True)
         engine.basket = old_basket  # 바스켓·예산도 원상 복구
         fund.legs = old_legs
         _reattach_gate(fund)
@@ -2852,12 +3090,30 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
     basket = fund.coordinator.engine.basket
     wsum = basket.weight_sum
     new_handles: dict[str, str] = {}
-    new_ports: dict[str, SessionBridge] = {}
+    new_ports: dict[str, Any] = {}
+    new_engines: dict[str, Any] = {}
     # 🔴 감시자가 거둔 옛 판을 옛 매매법으로 되살리지 않게 한다 (1.17.1 · `REPLACING`).
     replacing = set(fund.handles.values())
     REPLACING.update(replacing)
     try:
         for member in basket.members:
+            engine_leg = _engine_leg(new_legs, member.symbol)
+            if engine_leg is not None:
+                running = fund.engines.get(member.symbol)
+                same = _engine_leg(fund.legs, member.symbol)
+                if (
+                    running is not None
+                    and same is not None
+                    and (same.engine, same.attribution)
+                    == (engine_leg.engine, engine_leg.attribution)
+                ):
+                    new_engines[member.symbol] = running  # 같은 엔진 다리 — 그대로 돈다
+                else:
+                    new_engines[member.symbol] = await _spawn_engine(
+                        fund.fund_id, engine_leg, member.symbol, fund.market
+                    )
+                new_ports[member.symbol] = new_engines[member.symbol]
+                continue
             old = fund.handles.get(member.symbol)
             # ⭐ T333 — 거두기 **전에** 앞 세션의 열린 기록을 챙긴다. 새 세션이 이것을 물려받아
             #    거래소 되읽기(입양)를 안 한다 — 매매 id · 진입 시각 · 계약이 그대로라 손절 겹침 ·
@@ -2903,8 +3159,12 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
     finally:
         REPLACING.difference_update(replacing)
 
+    for sym, gone in list(fund.engines.items()):  # 새 매매법에 없는 엔진 다리는 닫는다
+        if new_engines.get(sym) is not gone:
+            await _stop_engine(fund.fund_id, fund.market, sym, gone, close=True)
+    fund.engines = new_engines
     fund.handles = new_handles
-    fund.coordinator.ports = new_ports  # type: ignore[assignment]
+    fund.coordinator.ports = new_ports
     # 새 세션의 원장은 0 부터 — 옛 정산 mark 를 물려주면 증분이 틀린다 (T285)
     fund.coordinator.marks = {}
     fund.coordinator.leg_marks = {}  # 420차 — 뺀 다리 증분도 같다

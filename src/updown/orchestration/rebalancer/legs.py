@@ -51,6 +51,7 @@ class FundLeg:
             (512차 N4). None = 없음.
         peer_open_boost: (짝 다리 귀속 키들, 문턱, 배수) — 짝 다리들 보유(이 진입 앞서 연 것)가 문턱
             이상이면 신규 진입 x 배수(T400 · 혼합 3.3). None = 없음.
+        engine: 이 다리를 돌리는 외부 엔진 이름(`orchestration.leg_engines`). None = 세션 다리.
     """
 
     playbook: str
@@ -71,6 +72,7 @@ class FundLeg:
     entry_cap: Decimal | None = None
     peer_open_max: tuple[str, int] | None = None
     peer_open_boost: tuple[tuple[str, ...], int, Decimal] | None = None
+    engine: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """저장용 딕셔너리 — 돌던 펀드의 다리는 선언이 바뀌어도 안 바뀐다(저장본이 이긴다)."""
@@ -121,6 +123,7 @@ class FundLeg:
                     "mult": str(self.peer_open_boost[2]),
                 }
             ),
+            "engine": self.engine,
         }
 
     @classmethod
@@ -186,6 +189,8 @@ class FundLeg:
             entry_cap=None if raw_entry_cap in (None, "") else Decimal(str(raw_entry_cap)),
             peer_open_max=peer,
             peer_open_boost=boost,
+            # 엔진 다리 앞 저장본엔 없다 — 없으면 세션 다리(그때 돌던 그대로)
+            engine=None if data.get("engine") in (None, "") else str(data["engine"]),
         )
 
 
@@ -276,6 +281,7 @@ def declared_legs(
                 entry_cap=book.entry_exposure_cap,
                 peer_open_max=peer,
                 peer_open_boost=boost,
+                engine=book.engine,
             )
         )
     covered = {symbol for leg in out for symbol in leg.symbols}
