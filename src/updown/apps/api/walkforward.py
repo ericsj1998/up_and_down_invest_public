@@ -1596,8 +1596,14 @@ async def _live_start(
     # ⚠️ 값이 아니라 **함수**를 꽂는다 — 판은 도는 중에도 뜨고 죽는다.
     # T62 P3b — **같은 거래소의 판만** 센다. Gate 와 Binance 는 계좌가 달라, 섞어 세면
     #   바이낸스 판 하나가 Gate 판 넷 때문에 "잔액 대조 불가" 로 침묵한다.
-    runner.peers = lambda: max(
-        sum(1 for item in LIVE_RUNNERS.values() if item.instrument.market is market) - 1, 0
+    # 🔴 **펀드 판은 세지 않는다** (2026-10-15). 펀드 판의 원장은 펀드가 나눠 준 몫 + 그 종목
+    #    매매법 손익이라 매매법 밖으로 빠진 돈을 모른다 — 그 합을 지갑과 대면 늘 넘친다(실측 판
+    #    40개 144.30 > 계정 74.09). 펀드 판의 돈은 펀드 앵커가 지갑에 맞춘다. 여기 합은 **단독
+    #    판들의 몫**이다.
+    runner.peers = lambda: sum(
+        1
+        for item in LIVE_RUNNERS.values()
+        if item.instrument.market is market and item is not runner and not item.fund_member
     )
     # 🔴 **합계도 꽂는다** (2026-08-30). 위의 `peers` 만 있을 때 감사는 판이 여럿이면
     #    *"가를 수 없다"* 며 물러섰고, 판을 여럿 띄우는 것이 상시라 **원장-사실 대조가
@@ -1605,7 +1611,11 @@ async def _live_start(
     #
     # ⚠️ 이것도 함수다 — 판은 도는 중에도 뜨고 죽는다.
     runner.account_modelled = lambda: sum(
-        (item.ledger.equity for item in LIVE_RUNNERS.values() if item.instrument.market is market),
+        (
+            item.ledger.equity
+            for item in LIVE_RUNNERS.values()
+            if item.instrument.market is market and not item.fund_member
+        ),
         Decimal(0),
     )
     # 🔴 T293 — **합계를 믿어도 되는가.** 펀드를 기다리는 판의 원장은 아직 격리 전이라 저마다

@@ -4932,6 +4932,19 @@ class LiveRunner:
                 pooled = self.account_modelled() if others > 0 else modelled
                 if not settled:
                     pass
+                elif self.fund_member:
+                    # 🔴 **펀드 판은 이 대조를 안 쓴다** (2026-10-15 · 사용자 "판 장부 합이 지갑보다
+                    #    큰게 문제야?"). 펀드 판의 원장은 펀드가 처음 나눠 준 몫에서 그 종목 매매법
+                    #    손익만 더하고 뺀 숫자라, 매매법 밖으로 빠진 돈(수동 매매 손익 — 1.40.2 부터
+                    #    펀드 입출금 흐름)을 일부러 모른다. 실측 10-15 23:17 KST: *"판 40개 원장 합
+                    #    144.30 > 계정 총액 74.09 (48.7% 초과)"* 가 6시간마다 울렸고, 늘 켜진 경보는
+                    #    진짜 이상을 가린다.
+                    #    "그만큼의 주문이 거절된다" 는 판이 자기 원장으로 크기를 정하던 때의
+                    #    말이다 — 펀드 판은 펀드 예산(매시 지갑 총액에 앵커)으로 정하고
+                    #    (`sizing_base`) 진입 직전에 거래소 가용을 본다(`_usable_equity`). 계좌
+                    #    예산 검사(`check_funding`)와 같은 면제다. 단독 판은 그대로 잰다(합계에서
+                    #    펀드 판을 뺀다 — API).
+                    pass
                 elif pooled is None:
                     found.append(
                         {
@@ -5570,6 +5583,16 @@ class LiveRunner:
     def fund_ready(self) -> bool:
         """이 판의 세션이 신규 진입을 받을 준비가 됐나 — 펀드 멤버가 아니면 늘 참 (T293)."""
         return bool(getattr(self._session, "fund_ready", True))
+
+    @property
+    def fund_member(self) -> bool:
+        """펀드가 띄운 판인가 — 단독 판이면 거짓 (`session.fund_name` · 2026-09-26).
+
+        Note:
+            `fund_ready` 는 펀드가 문을 붙이면 참으로 돌아가 흔적이 사라진다 — 지갑 대조처럼
+            "이 원장이 계좌의 몫을 말하나" 를 물을 때는 이것을 본다 (2026-10-15).
+        """
+        return getattr(self._session, "fund_name", None) is not None
 
     def _account_settled(self) -> bool:
         """같은 계좌의 판들이 전부 격리를 마쳤나 — 꽂힌 함수가 없으면 참."""
