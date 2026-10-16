@@ -1628,7 +1628,7 @@ wheels = [
 
 [[package]]
 name = "updown"
-version = "1.40.2"
+version = "1.41.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
