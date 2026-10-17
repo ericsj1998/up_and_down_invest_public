@@ -554,8 +554,9 @@ class NewHighTilt:
             raise ValueError(f"배수는 0 보다 커야 한다: on {self.on} · off {self.off}")
 
 
-BAR_TILT_FEATURES = ("atr_pct", "body_ratio")
-"""`BarTilt.feature` 가 받는 이름 — 연구 `t401_entry_census.feats` 의 "ATR%" · "몸통 비율"."""
+BAR_TILT_FEATURES = ("atr_pct", "body_ratio", "sma_slope5_pct")
+"""`BarTilt.feature` 가 받는 이름 — 연구 `t401_entry_census.feats` 의
+"ATR%" · "몸통 비율" · "4H SMA20 기울기"."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -567,13 +568,17 @@ class BarTilt:
 
     - CL0 = 급락 되돌림 · 신호봉(4H) ATR% < 3.1252 건너뜀(x0)
     - DB = 일봉 채널 · 일봉 마감 직전 4H 봉 몸통 비율 < 0.3092 x0.5
+    - 세 번째 특징(이평 기울기 띠)은 선언이 정한다 — 값 식만 여기, 띠 끝은 `playbooks.yml`.
 
     Attributes:
         timeframe: 잴 봉 — 신호봉이 닫힌 순간까지 **닫힌 마지막 봉** 하나(상위 TF 문 규약).
         feature: `atr_pct` = TR 의 단순 평균(`period` 봉) ÷ 그 봉 종가 x 100 ·
-            `body_ratio` = |종가 - 시가| ÷ (고가 - 저가).
+            `body_ratio` = |종가 - 시가| ÷ (고가 - 저가) ·
+            `sma_slope5_pct` = (SMA(`period`) 마지막 봉 ÷ 5 봉 전 SMA - 1) x 100
+            (연구 `4H SMA20 기울기`).
         mult: 띠 안일 때 크기 배수. 0 이면 그 진입을 건너뛴다(한 건만 — 정지가 아니다).
-        period: `atr_pct` 의 TR 평균 봉 수(연구 14 · `body_ratio` 는 안 쓴다).
+        period: `atr_pct` 의 TR 평균 봉 수(연구 14) · `sma_slope5_pct` 의 SMA 길이(연구 20) ·
+            `body_ratio` 는 안 쓴다.
         low: 띠 아래 끝(포함) · None 이면 아래 끝 없음.
         high: 띠 위 끝(제외) · None 이면 위 끝 없음.
 
@@ -616,6 +621,15 @@ class BarTilt:
             if rng <= 0:
                 return Decimal(0)
             return abs(last.close - last.open) / rng
+        if self.feature == "sma_slope5_pct":
+            # 연구 `feats["4H SMA20 기울기"]` = (s20[i] / s20[i-5] - 1) x 100 · SMA 는 단순 평균
+            if len(bars) < self.period + 5:
+                return None
+            now = sum((c.close for c in bars[-self.period :]), Decimal(0)) / self.period
+            then = sum((c.close for c in bars[-self.period - 5 : -5]), Decimal(0)) / self.period
+            if then <= 0:
+                return None
+            return (now / then - 1) * 100
         if len(bars) < self.period + 1 or last.close <= 0:
             return None
         trs = [

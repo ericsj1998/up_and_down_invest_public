@@ -75,6 +75,44 @@ def test_body_ratio_matches_research() -> None:
     assert rule.value(flat) == Decimal(0)
 
 
+def _research_sma_slope5(bars: list[Candle], period: int = 20) -> float:
+    """연구 `feats["4H SMA20 기울기"]` 그대로 — (s20[i] / s20[i-5] - 1) x 100 · 단순 평균."""
+    c = [float(b.close) for b in bars]
+    now = sum(c[-period:]) / period
+    then = sum(c[-period - 5 : -5]) / period
+    return (now / then - 1) * 100
+
+
+def test_sma_slope5_matches_research() -> None:
+    bars = _series(40)
+    rule = BarTilt(
+        timeframe=Timeframe.H4,
+        feature="sma_slope5_pct",
+        period=20,
+        mult=Decimal(0),
+        low=Decimal("-0.89"),
+    )
+    got = rule.value(bars)
+    assert got is not None
+    assert float(got) == pytest.approx(_research_sma_slope5(bars), rel=1e-12)
+    # 띠 [low, ∞) = 완만하면 건너뜀 · 가파르게 내리면 밖(1 배)
+    assert rule.holds(Decimal("-0.5"))
+    assert rule.holds(Decimal("-0.89"))
+    assert not rule.holds(Decimal("-0.9"))
+
+
+def test_sma_slope5_unknown_when_short() -> None:
+    rule = BarTilt(
+        timeframe=Timeframe.H4,
+        feature="sma_slope5_pct",
+        period=20,
+        mult=Decimal(0),
+        low=Decimal(-1),
+    )
+    assert rule.value(_series(24)) is None
+    assert rule.value(_series(25)) is not None
+
+
 def test_atr_unknown_when_short() -> None:
     rule = BarTilt(timeframe=Timeframe.H4, feature="atr_pct", mult=Decimal(0), high=Decimal(3))
     assert rule.value(_series(14)) is None
@@ -135,6 +173,13 @@ def test_live_declarations() -> None:
             high=Decimal("3.1252"),
             mult=Decimal(0),
         ),
+        BarTilt(
+            timeframe=Timeframe.H4,
+            feature="sma_slope5_pct",
+            period=20,
+            low=Decimal("-0.89"),
+            mult=Decimal(0),
+        ),
     )
     assert books["private_strategy"].bar_tilts == (
         BarTilt(
@@ -177,9 +222,16 @@ def test_session_private_strategy() -> None:
     fake = _fake(calm)
     got = Session._bar_tilt_mult(fake, book, sig)  # type: ignore[arg-type]
     atr = _research_atr_pct(calm)
-    assert got == (Decimal(0) if atr < 3.1252 else Decimal(1))
-    wild = [_bar(k, 100, 110, 90, 100) for k in range(30)]  # ATR% 20 → 1 배
-    assert Session._bar_tilt_mult(_fake(wild), book, wild[-1]) == Decimal(1)  # type: ignore[arg-type]
+    # 오르는 열 = SMA20 기울기 > 0 ≥ -0.89 → 둘째 띠가 건너뜀 · ATR 띠와 무관하게 0
+    assert atr > 0
+    assert got == Decimal(0)
+    # 둘째 띠(SMA20 5 봉 기울기 >= -0.89% 면 건너뜀) — 가파르게 내리는 봉 = 1 배 · 옆 봉 = 0
+    falling = [_bar(k, 200 - 3 * k, 215 - 3 * k, 180 - 3 * k, 198 - 3 * k) for k in range(30)]
+    fk = _fake(falling)
+    assert Session._bar_tilt_mult(fk, book, falling[-1]) == Decimal(1)  # type: ignore[arg-type]
+    wild = [_bar(k, 100, 110, 90, 100) for k in range(30)]  # ATR% 20 · 기울기 0 → 건너뜀
+    wk = _fake(wild)
+    assert Session._bar_tilt_mult(wk, book, wild[-1]) == Decimal(0)  # type: ignore[arg-type]
     tight = [_bar(k, 100, 101, 99.5, 100) for k in range(30)]  # ATR% 1.5 → 건너뜀
     assert Session._bar_tilt_mult(_fake(tight), book, tight[-1]) == Decimal(0)  # type: ignore[arg-type]
 

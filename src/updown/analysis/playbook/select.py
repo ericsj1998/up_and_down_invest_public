@@ -584,9 +584,11 @@ def sma_tilts(raw: object, name: str) -> tuple[SmaTilt, ...]:
 
 
 def bar_tilts(raw: object, name: str) -> tuple[BarTilt, ...]:
-    """닫힌 상위 봉 하나의 ATR% · 몸통 비율 띠 크기 목록 (T406 · CL0 · DB).
+    """닫힌 상위 봉 하나의 ATR% · 몸통 비율 · SMA 기울기 띠 크기 목록 (T406 · CL0 · DB · T551 CDe).
 
-    예: `[{timeframe: 4h, feature: atr_pct, period: 14, high: "3.1252", mult: "0"}]`.
+    예: `[{timeframe: 4h, feature: atr_pct, period: 14, high: "3.1252", mult: "0"}]` ·
+    `[{timeframe: 4h, feature: sma_slope5_pct, period: 20, low: "<값>", mult: "0"}]`
+    (기울기가 띠 안이면 건너뜀).
 
     Args:
         raw: 선언 값(목록).
