@@ -916,22 +916,34 @@ async def restore_funds() -> int:
         ⭐ **실패한 것은 버리지 않고 `PENDING_FUNDS` 에 남긴다** — `fund_retry_loop` 가
         다시 붙인다. 예전에는 여기서 끝이라, 기동 순간의 요율 제한 한 번이 그 펀드를
         **다음 재기동까지** 없는 것으로 만들었다.
+
+        🔴 펀드마다 **펀드 락 안에서** 되살린다 (T563 두 번째 리뷰 §4). 리더를 잃은 같은 프로세스가
+        다시 리더가 되면 이 함수가 도는데, 그때 앞선 자동 대체(shield 안 · 수 분)가 아직 돌 수 있다.
+        락이 없으면 여기서 `FUNDS[id]` 를 새 객체로 바꾸고 판을 띄우거나 빼는 동안 그 전환은 옛
+        객체로 판을 바꾸고 파일을 덮어쓴다(같은 펀드를 두 곳에서 바꿈). 파일은 락을 잡은 **뒤에**
+        다시 읽는다 — 기다리는 사이 전환이 새로 썼을 수 있다. 기다리는 사이 접혔으면(보관) 건너뛴다.
+        ⚠️ 락 안의 `_restore_one` · `_tick` 은 락을 잡지 않는 몸통이다(다시 들어가면 교착).
     """
     if not FUNDS_ROOT.exists():
         return 0
     restored = 0
     for path in sorted(FUNDS_ROOT.glob("*.json")):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            await _restore_one(data)
-            restored += 1
-            PENDING_FUNDS.discard(path.name)
-            # ⭐ 복원 직후 한 번 틱 — 거래소 계좌에 총자본을 맞추고(자동 앵커 · T285) 예산을 준다.
-            #    실패해도 복원은 된 것이다 — 다음 4h 경계가 다시 시도한다.
-            try:
-                await _tick(FUNDS[str(data["fund_id"])])
-            except Exception as exc:
-                _logger.warning("fund_restore_tick_failed: %s %s", data.get("fund_id"), exc)
+            fund_id = str(json.loads(path.read_text(encoding="utf-8"))["fund_id"])
+            async with _fund_lock(fund_id):
+                if not path.exists():  # 기다리는 사이 접혔다(`drop` 이 보관) — 되살릴 것이 없다
+                    PENDING_FUNDS.discard(path.name)
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+                await _restore_one(data)
+                restored += 1
+                PENDING_FUNDS.discard(path.name)
+                # ⭐ 복원 직후 한 번 틱 — 거래소 계좌에 총자본을 맞추고(자동 앵커 · T285) 예산을
+                #    준다. 실패해도 복원은 된 것이다 — 다음 4h 경계가 다시 시도한다.
+                try:
+                    await _tick(FUNDS[fund_id])
+                except Exception as exc:
+                    _logger.warning("fund_restore_tick_failed: %s %s", fund_id, exc)
         except Exception as exc:
             PENDING_FUNDS.add(path.name)
             _logger.warning("fund_restore_failed: %s %s", path.name, exc)
@@ -4142,20 +4154,56 @@ def _still_leader() -> bool:
         return False
 
 
-async def stop_supersede() -> None:
+SUPERSEDE_STOP_WAIT_S = 480.0
+"""리더를 놓을 때 도는 자동 대체 시도를 기다리는 시한(초) (T563 두 번째 리뷰 §4).
+
+리더 정지 시한(`leader.STOP_TIMEOUT_S` 600초) 안이어야 한다 — 넘기면 정지 전체가 그 시한에 걸린다.
+가장 긴 전환(약 2.5분 + 되돌리기 재시도 155초 + 다시 띄우기)이 들어가게 잡았다.
+"""
+
+
+async def stop_supersede(*, wait: bool = True, timeout: float | None = None) -> None:
     """자동 대체 고리를 거둔다 — 리더를 놓을 때(`main._stop_trading`) 부른다 (T563).
+
+    Args:
+        wait: 참이면 도는 전환(`_SUPERSEDE_INFLIGHT`)이 끝날 때까지 기다린다(리더 상실). 종료 때는
+            거짓 — 락을 이미 놓아 새 리더가 뜨는 중이므로 이 프로세스가 전환을 더 끌면 안 된다.
+        timeout: 기다리는 시한(초). None 이면 `SUPERSEDE_STOP_WAIT_S`.
 
     Note:
         기다리는 중이면 바로 멈춘다. 전환이 도는 중이면 **그 전환은 끝까지 간다** — 몸통을
         `asyncio.shield` 로 감쌌다(중간에 끊으면 옛 판만 거둔 반쪽 전환이 남는다). 다음 시도는 없다.
+
+        🔴 두 번째 리뷰 §4 — 예전에는 고리만 거두고 바로 끝나, 같은 프로세스가 약 5초 뒤 다시 리더가
+        되면(`leader._await_promotion` 은 정지만 기다린다) 복원이 도는 전환과 겹쳤다. 이제 정지가 그
+        전환을 기다린다. 시한을 넘기면 끊지 않고 경고만 남긴다 — 그 뒤 복원은 펀드 락을 기다린다
+        (`restore_funds`). 기다림이 취소돼도(리더 정지 시한) 전환은 끊기지 않는다(`asyncio.wait`).
     """
     global _supersede_task
     task, _supersede_task = _supersede_task, None
-    if task is None or task.done():
+    if task is not None and not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+    inflight = set(_SUPERSEDE_INFLIGHT)
+    if not wait or not inflight:
         return
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await task
+    limit = SUPERSEDE_STOP_WAIT_S if timeout is None else timeout
+    _events.info(
+        "fund_supersede_stop_waiting",
+        payload={"inflight": len(inflight), "timeout_s": limit},
+    )
+    _, pending = await asyncio.wait(inflight, timeout=limit)
+    if pending:
+        _events.warning(
+            "fund_supersede_stop_timeout",
+            payload={
+                "inflight": len(pending),
+                "timeout_s": limit,
+                "note": "도는 전환이 시한 안에 안 끝났다 — 끊지 않는다(반쪽 전환 방지). "
+                "다시 리더가 되면 복원이 펀드 락을 기다린다",
+            },
+        )
 
 
 def _schedule_supersede() -> None:

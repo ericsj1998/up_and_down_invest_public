@@ -13,6 +13,8 @@
 - 미리 재기의 예산 합은 띄우는 순서대로 걷는다 — 옛 판의 낡은 저장 예산이 새 종목을 막지 않게 ·
   1계약 바닥에는 여유를 둔다.
 - 같은 펀드의 전환 · 편집 · 틱은 겹치지 않는다(펀드 락) · 리더가 아니면 자동 대체를 시도하지 않는다.
+- 리더를 놓으면 정지가 도는 전환을 기다린다(시한 · 경고) · 다시 리더가 되어 도는 복원도 펀드 락
+  안에서 파일을 다시 읽는다 — 같은 프로세스 재승격이 전환과 겹쳐도 같은 펀드를 두 곳에서 안 바꾼다.
 - 되살려 다시 묶는 판의 매매법이 펀드 선언과 다르면 경고한다(반쪽 전환의 흔적).
 """
 
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -758,6 +761,7 @@ class TestFundLock:
             "drop",
             "rebalance_loop",
             "_anchor_on_close",
+            "restore_funds",
         ):
             assert "_fund_lock" in inspect.getsource(getattr(mod, name)), name
 
@@ -851,7 +855,7 @@ class TestLeader:
         task = asyncio.create_task(mod._supersede_funds())
         monkeypatch.setattr(mod, "_supersede_task", task)
         await entered.wait()
-        await mod.stop_supersede()
+        await mod.stop_supersede(wait=False)  # 종료 경로 — 고리만 거두고 바로 돌아온다
         assert task.cancelled()
         release.set()
         for _ in range(10):
@@ -864,7 +868,121 @@ class TestLeader:
         start = source.split("async def _start_trading")[1].split("async def _stop_trading")[0]
         stop = source.split("async def _stop_trading")[1].split("# ⚠️ redis")[0]
         assert "bind_fund_leader(" in start
-        assert "await stop_supersede()" in stop
+        assert "await stop_supersede(wait=not _closing" in stop
+        assert stop.index("task.cancel()") < stop.index("await stop_supersede("), (
+            "관리 루프를 먼저 거둔다 — 전환을 기다리는 동안 강등된 프로세스가 루프를 안 돌리게"
+        )
+        tail = source.split('_logger.info("api_stopping"')[1]
+        assert tail.index('_closing["on"] = True') < tail.index("leader.shutdown()"), (
+            "종료는 기다리지 않는다 — 락을 놓아 새 리더가 뜨는 중이다"
+        )
+
+
+class TestSameProcessRepromotion:
+    """두 번째 리뷰 §4 — 전환이 도는 중 리더 정지 → 같은 프로세스 재승격 · 복원이 겹쳐도 같은
+    펀드를 동시에 바꾸지 않는다(정지가 전환을 기다리고 · 복원은 펀드 락 안에서 파일을 다시
+    읽는다)."""
+
+    def _setup(
+        self, monkeypatch: pytest.MonkeyPatch, root: Path
+    ) -> tuple[_World, mod.Fund, list[str], asyncio.Event, asyncio.Event]:
+        world = _World(monkeypatch)
+        fund = _fund(SYMBOLS, OLD)
+        monkeypatch.setattr(mod, "FUNDS", {"f1": fund})
+        monkeypatch.setattr(mod, "SUPERSEDE_DEFERRED", {})
+        monkeypatch.setattr(mod, "PENDING_FUNDS", set[str]())
+        monkeypatch.setattr(mod, "FUNDS_ROOT", root)
+        monkeypatch.setattr(mod, "_schedule_supersede", lambda: None)
+        saved = root / "f1.json"
+        saved.write_text(json.dumps({"fund_id": "f1", "playbook": "old_pb"}), encoding="utf-8")
+        order: list[str] = []
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def held_switch(target: mod.Fund, new_pb: str, payload: Any) -> None:
+            _ = payload
+            order.append("switch:in")
+            entered.set()
+            await release.wait()
+            target.playbook = new_pb
+            saved.write_text(  # 전환 끝의 틱이 파일을 쓴다
+                json.dumps({"fund_id": "f1", "playbook": new_pb}), encoding="utf-8"
+            )
+            order.append("switch:out")
+
+        async def restore_one(data: dict[str, Any]) -> None:
+            order.append(f"restore:{data['playbook']}")
+            again = _fund(SYMBOLS, OLD)
+            again.playbook = str(data["playbook"])
+            mod.FUNDS["f1"] = again
+
+        def supersede(now: str, books: Any) -> str | None:
+            _ = books
+            return "new_pb" if now == "old_pb" else None
+
+        monkeypatch.setattr(mod, "_switch_playbook", held_switch)
+        monkeypatch.setattr(mod, "_restore_one", restore_one)
+        monkeypatch.setattr(mod, "superseding_playbook", supersede)
+        return world, fund, order, entered, release
+
+    async def test_stop_waits_and_restore_does_not_overlap(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _, fund, order, entered, release = self._setup(monkeypatch, tmp_path)
+        loop_task = asyncio.create_task(mod._supersede_funds())
+        monkeypatch.setattr(mod, "_supersede_task", loop_task)
+        await entered.wait()
+        stopper = asyncio.create_task(mod.stop_supersede())  # 리더 상실 → 정지
+        restorer = asyncio.create_task(mod.restore_funds())  # 재승격 → 복원(겹치게 일부러 바로)
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert loop_task.cancelled(), "고리는 바로 거둔다"
+        assert not stopper.done(), "정지는 도는 전환을 기다린다"
+        assert order == ["switch:in"], "복원은 펀드 락을 기다린다 — 전환 중에 펀드를 안 바꾼다"
+        assert mod.FUNDS["f1"] is fund
+        release.set()
+        await asyncio.wait_for(stopper, timeout=2.0)
+        assert await asyncio.wait_for(restorer, timeout=2.0) == 1
+        assert order == ["switch:in", "switch:out", "restore:new_pb"], (
+            "복원은 전환이 끝난 뒤 락 안에서 파일을 다시 읽는다"
+        )
+        assert mod.FUNDS["f1"].playbook == "new_pb" and mod.FUNDS["f1"] is not fund
+        assert not mod._SUPERSEDE_INFLIGHT and not mod.PENDING_FUNDS
+
+    async def test_a_late_switch_warns_and_is_not_cut(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        world, fund, order, entered, release = self._setup(monkeypatch, tmp_path)
+        loop_task = asyncio.create_task(mod._supersede_funds())
+        monkeypatch.setattr(mod, "_supersede_task", loop_task)
+        await entered.wait()
+        await mod.stop_supersede(timeout=0.01)
+        late = world.events.named("fund_supersede_stop_timeout")
+        assert late and late[0][0] == "warning" and late[0][2]["inflight"] == 1
+        assert order == ["switch:in"] and mod._SUPERSEDE_INFLIGHT, "시한이 지나도 끊지 않는다"
+        restorer = asyncio.create_task(mod.restore_funds())
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert order == ["switch:in"], "시한 뒤에는 펀드 락이 복원을 막는다"
+        release.set()
+        assert await asyncio.wait_for(restorer, timeout=2.0) == 1
+        assert order == ["switch:in", "switch:out", "restore:new_pb"]
+        assert fund.playbook == "new_pb"
+
+    async def test_restore_skips_a_fund_dropped_while_waiting(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _, _, order, _, _ = self._setup(monkeypatch, tmp_path)
+        lock = mod._fund_lock("f1")
+        await lock.acquire()  # 접기(`drop`)가 락을 쥐고 있다
+        restorer = asyncio.create_task(mod.restore_funds())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        mod._archive_fund_file("f1", root=tmp_path)
+        lock.release()
+        assert await asyncio.wait_for(restorer, timeout=2.0) == 0
+        assert order == [] and not mod.PENDING_FUNDS, (
+            "접힌 펀드는 되살리지도 · 못 붙인 것으로 치지도 않는다"
+        )
 
 
 class _Margin:

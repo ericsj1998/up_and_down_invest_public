@@ -290,20 +290,26 @@ def create_app(state: ApiState | None = None) -> FastAPI:
             bind_fund_leader(lambda: _leading(app))
             await _autostart_and_loops(_trade_tasks)
 
+        _closing = {"on": False}  # 종료 중이면 참 — 도는 자동 대체를 기다리지 않는다
+
         async def _stop_trading() -> None:
             """팔로워로 내려갈 때 — 관리 루프들을 거둔다 (포지션은 브로커 손절이 지킨다)."""
             if _inproc is not None:
                 _inproc.stop()
-            # ⭐ T563 — 펀드 자동 대체 고리도 거둔다(`_trade_tasks` 밖에서 산다 ·
-            #    도는 전환은 끝까지 간다).
-            with contextlib.suppress(Exception):
-                await stop_supersede()
             for task in _trade_tasks:
                 task.cancel()
             for task in _trade_tasks:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
             _trade_tasks.clear()
+            # ⭐ T563 — 펀드 자동 대체 고리도 거둔다(`_trade_tasks` 밖에서 산다 · 도는 전환은 끝까지
+            #    간다). 🔴 두 번째 리뷰 §4: 리더 상실이면 그 전환이 끝날 때까지 기다린다 — 안
+            #    기다리면 같은 프로세스가 곧 다시 리더가 되어 복원이 그 전환과 겹친다. 관리 루프를
+            #    **먼저** 거두는 것은 기다리는 몇 분 동안 강등된 프로세스가 루프를 돌리지 않게
+            #    하려는 것이다. 종료 때는 락을 이미 놓았으므로 기다리지 않는다(새 리더와 겹치지
+            #    않게).
+            with contextlib.suppress(Exception):
+                await stop_supersede(wait=not _closing["on"])
 
         # ⚠️ redis 가 없는 상태(테스트 대역)면 게이트를 건너뛴다 — 거래도 시작하지 않는다.
         #    락 없이 거래하면 이중매매 방지가 무의미하므로 **없으면 안 한다**(fail-safe).
@@ -337,6 +343,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
                 yield
         finally:
             _logger.info("api_stopping", payload={})
+            _closing["on"] = True
             if leader is not None:
                 with contextlib.suppress(Exception):
                     await leader.shutdown()
