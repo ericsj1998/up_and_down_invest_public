@@ -186,6 +186,15 @@ live-review: ## 라이브 매매 분석 — 끌어오기 + 보고서 (logs/live_
 live-review-report: ## 라이브 매매 분석 — 마지막 스냅샷으로 보고서만
 	uv run python scripts/research/live_review.py --days $(DAYS)
 
+# ── 월 재검 (2026-10-17) — live-review 위에 한 장 요약(다리별 기대값 대비 · 재현 차이 · 깔때기 · 사건) · 판정 없음
+#   make recheck                끌어오기 + 보고서 + 요약 → logs/live_review/recheck_<YYYYMM>.md
+#   make recheck-report         마지막 스냅샷으로 요약만
+recheck: live-review ## 월 재검 — 끌어오기 + 보고서 + 요약
+	uv run python scripts/research/monthly_recheck.py
+
+recheck-report: live-review-report ## 월 재검 — 마지막 스냅샷으로 요약만
+	uv run python scripts/research/monthly_recheck.py
+
 # ── 라이브 점검 (live-check · 2026-10-11) ──────────────────────────────
 # "라이브 정상이야? · 최근 매매 · 예비 신호 · 왜 안 들어갔나 · 왜 손실" 을 물을 때 — 판단 재료를 한 장으로.
 #   make live-check             서버 읽기만(7일) + 보고서 logs/live_review/check.md · check.json
