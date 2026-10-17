@@ -571,6 +571,13 @@ class Session:
     """
     ref_vol_pct_held: int = 0
     """변동성 백분위 문(`entry_ref_vol_pct`)이 보류시킨 진입 수 — 관측용 (§1-0s)."""
+    ref_pivot_s1: str | None = None
+    """기준 종목(BTC) 일봉 전고점 국면 S1(안착 · 되밀림 · 없음) — 러너가 주입한다 (T436 · 혼합 4.3).
+
+    None = 모름 → 배수 1(크기를 키우지도 줄이지도 않는다 · 연구 "안 씀").
+    """
+    ref_pivot_s4: str | None = None
+    """기준 종목(BTC) 일봉 전고점 국면 S4(hold_up · fail_up · hold_dn · fail_dn) — 러너 주입."""
     ref_vol: tuple[tuple[datetime, Decimal], ...] = ()
     """기준 종목(BTC) 연율 변동성 — `(그 UTC 일봉이 끝난 시각, 변동성)` 오름차순.
 
@@ -1926,6 +1933,31 @@ class Session:
                 mult *= rule.mult
             else:
                 self._count(f"bar_tilt:{k}:out")
+        return mult
+
+    def _ref_regime_tilt_mult(self, book: Playbook) -> Decimal:
+        """기준 종목(BTC) 일봉 전고점 국면 배수(T436 · T557 · 혼합 4.3) — 선언한 상태면 그 배수.
+
+        Args:
+            book: 후보를 낸 매매법.
+
+        Returns:
+            노출 배수. 선언이 없으면 1(동결 · §5.6.2) · 모름이면 1(연구 "안 씀").
+
+        Note:
+            연구 판 `t3mul=t436_wf_t3mul.json:U150:1.5 …`(옆 다리 줄 x 배수)와 같은 자리다 —
+            값은 러너가 4H 마감마다 주입한다(`ref_pivot_s1` · `ref_pivot_s4`). 깔때기에
+            `ref_regime_tilt:<상태>:x<배수>` · `unknown` 을 센다(§1-0s).
+        """
+        rule = book.entry_ref_regime_tilt
+        if rule is None:
+            return Decimal(1)
+        state = self.ref_pivot_s1 if rule.state == "s1" else self.ref_pivot_s4
+        if state is None:
+            self._count("ref_regime_tilt:unknown")
+            return Decimal(1)
+        mult = rule.mult_of(state)
+        self._count(f"ref_regime_tilt:{state}:x{mult}")
         return mult
 
     def _window_mult(self, book: Playbook, bar: Candle) -> Decimal:
@@ -4780,7 +4812,13 @@ class Session:
         if bar_tilt <= 0:
             self._count("gate:bar_tilt")
             return None
-        exposure *= tilt * bar_tilt * self._window_mult(chosen.playbook, sig)
+        # ⭐ T436 · T557 · 혼합 4.3 — BTC 일봉 전고점 국면 배수(급락 되돌림 S1 · MACD 숏 S4 ·
+        #    모름 1).
+        regime_tilt = self._ref_regime_tilt_mult(chosen.playbook)
+        if regime_tilt <= 0:
+            self._count("gate:ref_regime_tilt")
+            return None
+        exposure *= tilt * bar_tilt * regime_tilt * self._window_mult(chosen.playbook, sig)
         if not self._fresh_close(chosen.playbook):
             self._count("gate:fresh_close")
             return None

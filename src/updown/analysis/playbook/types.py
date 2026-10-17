@@ -28,7 +28,7 @@ order_block + UPTREND    →  눌림목 매매
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
@@ -329,6 +329,66 @@ class RefSmaDown:
         """값이 문으로서 말이 되는지."""
         if self.bars < 1 or self.lag < 1:
             raise ValueError(f"SMA 길이·비교 봉 수는 1 이상이다: {self.bars} · {self.lag}")
+
+
+REF_REGIME_STATES = ("s1", "s4")
+"""`RefRegimeTilt.state` — s1 = 60 일 안 마지막 전고점 **돌파** 사건(안착 · 되밀림 · 없음) ·
+s4 = 마지막 사건 넷 중 하나(hold_up · fail_up · hold_dn · fail_dn · 모름)."""
+
+
+@dataclass(frozen=True, slots=True)
+class RefRegimeTilt:
+    """기준 종목(BTC) 일봉 전고점 국면이 정하는 다리 크기 배수 (T436 · T557 · 혼합 4.3).
+
+    연구(`t380_structure_census.events` · `t436_regime_wf.states_n`)와 같은 식:
+    UTC 일봉에서 양옆 `pivot` 일 피벗 고점 · 저점을 잡고, 종가가 그 값을 넘으면 `confirm_days` 일
+    안에 되마감하는지로 사건을 넷으로 나눈다(hold_up · fail_up · hold_dn · fail_dn ·
+    사건 날 = 결과가 난 다음 날).
+    - s1(급락 되돌림): 최근 `lookback_days` 일 안 마지막 "_up" 사건이 fail_up 이면 "되밀림" ·
+      hold_up 이면 "안착" · 없으면 "없음".
+    - s4(MACD 숏): 마지막 사건 이름 그대로.
+    `mults` 에 적힌 상태면 그 배수 · 없는 상태(또는 모름)면 1 배 — 연구 "안 씀 = 1" 과 같다.
+
+    Attributes:
+        state: `s1` 또는 `s4`.
+        mults: 상태 이름 → 배수(예: `{"안착": 1.5, "되밀림": 0.5}` ·
+            `{"fail_up": 1.5, "hold_dn": 0.5}`).
+        pivot: 피벗 양옆 일수(연구 3).
+        confirm_days: 되마감 일수 N(걸어가며 고른 값 · 지금 5).
+        lookback_days: s1 이 보는 창(연구 60).
+
+    Raises:
+        ValueError: 상태 이름 · 일수 · 배수가 말이 안 되는 경우.
+
+    Note:
+        반년(1 · 7 월)마다 `scripts/research/t436_regime_wf.py` 로 다시 고른다 — 바뀌면 선언 값만
+        갱신한다. 값은 러너가 주입한다(`Session.ref_pivot_s1` · `ref_pivot_s4`) · 모르면 1 배
+        (크기를 키우지도 줄이지도 않음).
+    """
+
+    state: str
+    mults: Mapping[str, Decimal]
+    pivot: int = 3
+    confirm_days: int = 5
+    lookback_days: int = 60
+
+    def __post_init__(self) -> None:
+        """값이 국면 배수로서 말이 되는지."""
+        if self.state not in REF_REGIME_STATES:
+            raise ValueError(f"상태는 {REF_REGIME_STATES} 중 하나: {self.state}")
+        if self.pivot < 1 or self.confirm_days < 1 or self.lookback_days < 1:
+            raise ValueError(
+                "피벗 · 되마감 · 창 일수는 1 이상: "
+                f"{self.pivot} · {self.confirm_days} · {self.lookback_days}"
+            )
+        if not self.mults or any(m < 0 for m in self.mults.values()):
+            raise ValueError(f"배수는 하나 이상 · 0 이상이다: {dict(self.mults)}")
+
+    def mult_of(self, state: str | None) -> Decimal:
+        """주입된 상태 → 배수. 모름(None)이거나 표에 없으면 1."""
+        if state is None:
+            return Decimal(1)
+        return self.mults.get(state, Decimal(1))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1339,6 +1399,12 @@ class Playbook:
 
     값은 러너가 주입한다(`Session.ref_vol_pct`). 🔴 **None(모름)이면 진입을 보류한다**(규칙 #8-1).
     ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_ref_regime_tilt: RefRegimeTilt | None = None
+    """기준 종목(BTC) 일봉 전고점 국면이 정하는 **크기 배수** (T436 · T557 · 혼합 4.3).
+
+    문이 아니라 배수다 — 값은 러너가 주입한다(`Session.ref_pivot_s1` · `ref_pivot_s4`) ·
+    모름이면 1 배(지금과 같음). ⛔ 선언이 None 이면 동결이다 (§5.6.2).
     """
     add_on: AddOn | None = None
     """불타기(T308) — 확인된 강한 돌파에 한 번 더. 세션은 판정만 기록한다.

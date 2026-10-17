@@ -44,6 +44,7 @@ from updown.analysis.playbook.types import (
     Playbook,
     PlaybookRegime,
     QuietAdd,
+    RefRegimeTilt,
     RefReturnBand,
     RefSmaDown,
     RefSurgeCap,
@@ -431,6 +432,29 @@ def _ref_sma_down(raw: object, name: str) -> RefSmaDown:
         return RefSmaDown(bars=int(str(body["bars"])), lag=int(str(body["lag"])))
     except (ArithmeticError, KeyError, ValueError) as exc:
         raise PlaybookConfigError(f"{name}.entry_ref_sma_down — {exc}") from exc
+
+
+def _ref_regime_tilt(raw: object, name: str) -> RefRegimeTilt:
+    """기준 종목 전고점 국면 배수 한 줄 (T436 · T557 · 혼합 4.3).
+
+    예: `{state: s1, pivot: 3, confirm_days: 5, lookback_days: 60,
+    mults: {안착: "1.5", 되밀림: "0.5"}}`.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_ref_regime_tilt")
+    try:
+        mults = _mapping(body["mults"], f"{name}.entry_ref_regime_tilt.mults")
+        return RefRegimeTilt(
+            state=str(body["state"]),
+            mults={str(k): Decimal(str(v)) for k, v in mults.items()},
+            pivot=int(str(body.get("pivot", 3))),
+            confirm_days=int(str(body.get("confirm_days", 5))),
+            lookback_days=int(str(body.get("lookback_days", 60))),
+        )
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_ref_regime_tilt — {exc}") from exc
 
 
 def _early_entry(raw: object, name: str) -> EarlyEntry:
@@ -933,6 +957,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         None
                         if body.get("entry_ref_vol_pct") is None
                         else _ref_vol_pct(body["entry_ref_vol_pct"], f"playbooks.{name}")
+                    ),
+                    entry_ref_regime_tilt=(
+                        None
+                        if body.get("entry_ref_regime_tilt") is None
+                        else _ref_regime_tilt(body["entry_ref_regime_tilt"], f"playbooks.{name}")
                     ),
                     early_entry=(
                         None

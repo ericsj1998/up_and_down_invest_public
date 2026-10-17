@@ -5718,6 +5718,9 @@ class LiveRunner:
                 self._session.ref_vol = got.vol
             if needs.vol_pct_bars is not None:
                 self._session.ref_vol_pct = got.vol_pct
+            if needs.pivot_k is not None:
+                self._session.ref_pivot_s1 = got.pivot_s1
+                self._session.ref_pivot_s4 = got.pivot_s4
             self._ref_regime_at = last_ts
         except Exception as exc:
             self._session.ref_above = None  # 모름 = 게이트 잠듦 (0.2.0 동작 폴백)
@@ -5726,6 +5729,7 @@ class LiveRunner:
             self._session.ref_sma_down = None  # 모름 = 하락 문 보류 (T304 #2)
             self._session.ref_vol = ()  # 모름 = 변동성 목표 크기 보류 (T304)
             self._session.ref_vol_pct = None  # 모름 = 변동성 백분위 문 보류 (T329)
+            self._session.ref_pivot_s1 = self._session.ref_pivot_s4 = None  # 모름 = 배수 1 (T436)
             self._ref_regime_at = None
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
 
