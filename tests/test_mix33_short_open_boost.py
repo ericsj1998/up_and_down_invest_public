@@ -91,7 +91,7 @@ class TestDeclaration:
         ):
             assert books[name].entry_peer_open_boost is None, name
         wrapper = books["private_strategy"]
-        assert wrapper.legs_revision == 7  # 7 = T558 · 6 = T551 · 5 = 혼합 3.3(T400)
+        assert wrapper.legs_revision == 8  # 8 = T561 · 7 = T558 · 6 = T551 · 5 = 혼합 3.3(T400)
         # 혼합 3.4 = 혼합 3.3 + CL0 · DB(1.37.0) — 이름표가 3.4 로 시작해도 3.3 위에 선 것이다.
         assert wrapper.label is not None and "혼합 3.3" in wrapper.label
 
