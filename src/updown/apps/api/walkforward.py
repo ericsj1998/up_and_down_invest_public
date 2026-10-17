@@ -601,6 +601,39 @@ def _playbook(name: str) -> Playbook:
     return found
 
 
+def start_books(payload: Mapping[str, Any]) -> tuple[Playbook, ...]:
+    """판 시작 요청이 실을 매매법들 — 세트(`a+b` · `playbooks`)를 풀고 번들을 구성원으로 펼친다.
+
+    Args:
+        payload: 판 시작 요청. `playbooks: [..]` 가 있으면 그것, 없으면 `playbook` 을 `+` 로 가른다.
+
+    Returns:
+        세션에 실을 매매법들(첫 자리가 집행 플래그를 정한다).
+
+    Raises:
+        HTTPException: 404 — 선언에 없는 이름.
+
+    Note:
+        `_live_start` 와 미리 재기(`start_blockers` · 펀드 매매법 전환)가 **같은 해석**을 쓰려고
+        뗐다 — 둘이 다른 책을 보면 미리 잰 문이 실제 시작과 다른 말을 한다.
+    """
+    listed = payload.get("playbooks")
+    names = (
+        [str(name) for name in cast("list[object]", listed)]
+        if isinstance(listed, list) and listed
+        else [
+            name.strip() for name in str(payload.get("playbook") or default_playbook()).split("+")
+        ]
+    )
+    books = tuple(_playbook(name) for name in names if name)
+    # T68 — 번들은 구성원으로 펼친다 (묶음 항목 자체는 세션에 안 들어간다).
+    return tuple(
+        member
+        for item in books
+        for member in (tuple(_playbook(m) for m in item.bundle) if item.bundle else (item,))
+    )
+
+
 def playbooks_outside(books: Sequence[Playbook], market: Market) -> list[str]:
     """이 시장의 갈래를 선언하지 않은 매매법 id — 비면 통과다 (순수).
 
@@ -890,21 +923,7 @@ async def _live_start(
     #
     # ⚠️ 집행 플래그(방아쇠·지정가·사다리)는 세션 전역이라 **첫 플레이북** 것을 쓴다.
     #    세트의 첫 자리에는 박스를 둔다 — 돌파·눌림목은 즉시 진입이라 덜 민감하다.
-    listed = payload.get("playbooks")
-    names = (
-        [str(name) for name in cast("list[object]", listed)]
-        if isinstance(listed, list) and listed
-        else [
-            name.strip() for name in str(payload.get("playbook") or default_playbook()).split("+")
-        ]
-    )
-    books = tuple(_playbook(name) for name in names if name)
-    # T68 — 번들은 구성원으로 펼친다 (묶음 항목 자체는 세션에 안 들어간다).
-    books = tuple(
-        member
-        for item in books
-        for member in (tuple(_playbook(m) for m in item.bundle) if item.bundle else (item,))
-    )
+    books = start_books(payload)
     # 🔴 이 매매법을 쓸 권한 (T230) — 서버 축(demo/live_trade)은 미들웨어가 봤다.
     #    되살리기(request 없음)는 통과.
     if request is not None:
@@ -4296,6 +4315,252 @@ async def budget_facts(paper: object, market: Market) -> tuple[Decimal, Decimal]
     return total, taken
 
 
+def room_exceeded(total: Decimal, taken: Decimal, wanted: Decimal) -> bool:
+    """판 예산 합(`taken + wanted`)이 계좌 총액을 넘나 — 판 예산 문의 비교 (순수).
+
+    Args:
+        total: 같은 거래소 계좌 총액.
+        taken: 이미 열린 판들의 예산 합.
+        wanted: 새 판의 예산.
+
+    Returns:
+        넘으면 참.
+
+    Note:
+        ⚠️ 센트 아래 잔재는 넘김이 아니다 — 1/7 같은 비중의 Decimal 반올림 꼬리(10^-19)가 "300 을
+        넘는다" 로 펀드 생성을 막았다 (2026-09-05). 비교는 센트 단위로 한다. 판 예산 문
+        (`_budget_room`)과 미리 재기(`start_blockers`)가 같은 비교를 쓴다.
+    """
+    return (taken + wanted).quantize(Decimal("0.01")) > total.quantize(Decimal("0.01"))
+
+
+async def run_margins(market: Market) -> dict[str, Decimal]:
+    """같은 거래소의 **열린 실계좌 판** → 저장된 예산(`margin`) — 판 예산 문이 합하는 값들.
+
+    Args:
+        market: 거래소.
+
+    Returns:
+        `{판 key: 예산}`. 저장소가 없거나 못 읽으면 빈 사전(⛔ 조회 실패가 길을 막지 않는다).
+
+    Note:
+        펀드 매매법 전환이 미리 잴 때 쓴다 — 옛 판을 거두면 그 판의 예산이 합에서 빠지고 새 판의
+        예산이 들어간다(`start_blockers`). 되돌릴 때는 옛 판을 **저장돼 있던 예산 그대로** 다시
+        띄운다(되살리기 `autostart_live` 가 넘기는 값과 같다).
+    """
+    found: dict[str, Decimal] = {}
+    if _store is None:
+        return found
+    with contextlib.suppress(Exception):
+        for row in await _store.open_runs(live=True):
+            if str(row.get("market", "")) != market.value:
+                continue
+            key, margin = row.get("key"), row.get("margin")
+            if key and margin:
+                found[str(key)] = Decimal(str(margin))
+    return found
+
+
+@dataclass(frozen=True, slots=True)
+class StartBlock:
+    """판을 띄우면 **막힐 문** 하나 — 미리 잰 결과 (`start_blockers`).
+
+    Attributes:
+        gate: 문 이름 — `playbook` · `market` · `margin` · `risk` · `tick` · `quote` · `adapter` ·
+            `liquidity` · `sizing` · `held` · `store` · `account` · `cash` · `budget`.
+        why: `_live_start` 가 낼 이유 문구(같은 뜻).
+        floor: 1계약 문(`sizing`)이면 그 판 예산의 바닥 — 얼마가 모자라는지 알린다. 그 밖은 None.
+    """
+
+    gate: str
+    why: str
+    floor: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedStart:
+    """미리 잴 판 시작 하나 — `_live_start` 에 넘길 요청과 그 직전에 거둘 판.
+
+    Attributes:
+        payload: `_live_start` 에 넘길 요청 그대로(`playbook` · `symbol` · `market` · `margin` ·
+            `leverage` …).
+        replacing: 이 판을 띄우기 **직전에 거둘 판** key(매매법 전환의 옛 판). 있으면 되살리기
+            (`reviving=True`)라 잔액 · 예산 합 문을 안 지난다 — `_live_start` 와 같은 규칙이다.
+    """
+
+    payload: Mapping[str, Any]
+    replacing: str | None = None
+
+
+async def _start_blocker(payload: Mapping[str, Any], replacing: str | None) -> StartBlock | None:
+    """`_live_start` 의 시작 문 가운데 **순서와 무관한 것**을 판을 띄우지 않고 잰다.
+
+    Args:
+        payload: `_live_start` 에 넘길 요청.
+        replacing: 시작 직전에 거둘 판 — 한 종목 한 판 문에서 그 판은 빼고 본다(거둔 뒤에 뜬다).
+
+    Returns:
+        막을 문. 다 지나면 None.
+
+    Note:
+        같은 함수 · 같은 인자로 잰다(`sizing_of` · `liquidity_of` · `thinnest_leg` ·
+        `resolve_tick` · `require_stop_cap` · 닻). 봉 시드 · 잔재 청소처럼 비싸거나 거래소를 바꾸는
+        단계는 안 한다.
+        ⛔ 조회 자체가 실패하면 막는다 — `_live_start` 도 그 자리에서 실패해 옛 판만 거둔 꼴이 된다.
+    """
+    from updown.apps.api.exchange import liquidity_of, sizing_of
+
+    try:
+        books = start_books(payload)
+    except HTTPException as exc:
+        return StartBlock("playbook", str(exc.detail))
+    if not books:
+        return StartBlock("playbook", "실을 매매법이 없다")
+    book = books[0]
+    symbol = str(payload.get("symbol", "BTC_USDT"))
+    try:
+        market = Market(str(payload.get("market", Market.GATE.value)))
+    except ValueError:
+        return StartBlock("market", f"모르는 거래소다: {payload.get('market')}")
+    outsiders = playbooks_outside(books, market)
+    if outsiders:
+        return StartBlock(
+            "playbook", f"{', '.join(outsiders)} 는 {market.value} 에서 도는 매매법이 아니다"
+        )
+    provider = MarketDataProvider()
+    if market.value not in provider.live_markets():
+        return StartBlock("market", f"{market.value} 는 이 API 가 연결하지 않은 거래소다")
+    raw_margin = payload.get("margin")
+    if raw_margin in (None, ""):
+        return StartBlock("margin", "예산이 없다 — 펀드 멤버는 예산을 넘긴다")
+    margin = Decimal(str(raw_margin))
+    if margin <= 0:
+        return StartBlock("margin", f"증거금이 0 이하다 ({margin})")
+    lever = Decimal(str(payload.get("leverage", 1)))
+    try:
+        risk = load_risk_settings()
+        require_stop_cap(risk, lever)
+        if risk.stop_protect_ratio is None and any(item.stop_mode == "close" for item in books):
+            return StartBlock("risk", "stop_mode: close 매매법인데 stop_protect_ratio 가 없다")
+    except RiskConfigError as exc:
+        return StartBlock("risk", str(exc))
+    instrument = instrument_of(symbol, market)
+    try:
+        quotes = provider.adapter_for(market)
+        resolve_tick(
+            load_cost_table(DEFAULT_CONFIG_PATH).for_market(market),
+            symbol,
+            (await quotes.get_quote(instrument)).last_price,
+            krw=instrument.currency is Currency.KRW,
+        )
+    except TickUnknownError as exc:
+        return StartBlock("tick", str(exc))
+    except Exception as exc:
+        return StartBlock("quote", f"시세를 못 읽었다: {str(exc)[:120]}")
+    try:
+        depth = await liquidity_of(symbol, margin * lever, market=market.value)
+        if not depth.ok:
+            return StartBlock("liquidity", f"호가가 이 규모를 못 받는다 — {depth.why}")
+        catalog = load_rules()
+        fit = await sizing_of(
+            symbol, margin, lever, leg=thinnest_leg(catalog, book), market=market.value
+        )
+    except HTTPException as exc:
+        return StartBlock("adapter", str(exc.detail))
+    if not fit.ok:
+        return StartBlock("sizing", f"이 예산으로 주문이 안 나간다 — {fit.why} USDT", fit.floor)
+    for other, live in SESSIONS.items():
+        if (
+            other != replacing
+            and other in LIVE_RUNNERS
+            and live.session.instrument.symbol == symbol
+            and live.session.instrument.market is market
+        ):
+            return StartBlock("held", f"{symbol} 는 판 {other} 가 지금 돌리고 있다")
+    if _store is None:
+        return StartBlock("store", "판 저장소가 없다")
+    try:
+        holder = await _store.holder_of(market.value, symbol, live=True)
+    except RunStoreError as exc:
+        return StartBlock("store", str(exc))
+    attribution = "+".join(item.attribution for item in books)
+    if (
+        holder is not None
+        and holder[0] != replacing
+        and holder[1] != anchor_of(market.value, symbol, attribution, live=True)
+    ):
+        return StartBlock("held", f"{symbol} 는 이미 판 {holder[0]} 가 잡고 있다")
+    return None
+
+
+async def start_blockers(
+    plans: Sequence[PlannedStart], market: Market
+) -> list[tuple[str, StartBlock]]:
+    """판 여럿을 **띄우기 전에** 시작 문을 전부 잰다 — 펀드 매매법 전환의 원자성 (T563).
+
+    Args:
+        plans: 띄울 순서대로의 판 시작들. 순서가 예산 합 문의 값을 정한다 — 앞의 판이 옛 판을
+            거두고 새 예산으로 열린 뒤에 다음 판이 잰다.
+        market: 거래소(계좌 하나).
+
+    Returns:
+        `(종목, 막을 문)` — 막히는 판 **전부**(하나만 보고 멈추지 않는다 · 사람이 무엇이 모자란지
+        한 번에 본다). 비면 다 뜬다.
+
+    Note:
+        🔴 펀드 전환은 종목마다 옛 판을 거두고 새 판을 띄운다. 중간 종목 하나가 문에 막히면 앞
+        종목만 바뀐 **반쪽 전환**이 남았다(앞 종목은 새 판이 떴으나 펀드에 안 묶여 신규 진입이
+        영영 보류 · 막힌 종목은 판이 없음). 그래서 아무것도 거두기 전에 여기서 다 잰다.
+
+        잔액(`margin > free`)과 예산 합(`_budget_room`)은 되살리기(`replacing` 있음)면 안 본다 —
+        `_live_start` 와 같다. 예산 합은 순서대로 걸으며 거둘 판의 저장 예산을 빼고 새 예산을
+        더한다.
+    """
+    from updown.apps.api.exchange import _orders_adapter  # pyright: ignore[reportPrivateUsage]
+
+    if not plans:
+        return []
+    first = str(plans[0].payload.get("symbol", ""))
+    try:
+        orders: Any = _orders_adapter(market.value)
+        free = Decimal(str((await orders.get_balance()).cash))
+    except Exception as exc:
+        detail = getattr(exc, "detail", exc)
+        return [(first, StartBlock("account", f"계좌를 못 읽었다: {str(detail)[:120]}"))]
+    facts = await budget_facts(orders, market)
+    margins = await run_margins(market)
+    taken = None if facts is None else facts[1]
+    blocked: list[tuple[str, StartBlock]] = []
+    for plan in plans:
+        symbol = str(plan.payload.get("symbol", ""))
+        try:
+            found = await _start_blocker(plan.payload, plan.replacing)
+        except Exception as exc:  # 못 재면 지난다고 말하지 않는다 — 미룬다
+            found = StartBlock("check", f"미리 재지 못했다: {str(exc)[:120]}")
+        try:
+            margin = Decimal(str(plan.payload.get("margin")))
+        except (ArithmeticError, ValueError):
+            margin = Decimal(0)
+        if found is None and not plan.replacing:
+            if margin > free:
+                found = StartBlock(
+                    "cash", f"증거금 {margin} 이 지금 쓸 수 있는 돈 {free} 보다 크다"
+                )
+            elif facts is not None and taken is not None and room_exceeded(facts[0], taken, margin):
+                found = StartBlock(
+                    "budget",
+                    f"예산 {margin} 를 더하면 판들의 예산 합이 {taken + margin} 로 계좌 총액 "
+                    f"{facts[0]} 을 넘는다",
+                )
+        if found is not None:
+            blocked.append((symbol, found))
+        if taken is not None:  # 이 판이 뜬 뒤의 합 — 옛 판은 닫히고 새 판이 이 예산으로 열린다
+            if plan.replacing:
+                taken -= margins.get(plan.replacing, Decimal(0))
+            taken += margin
+    return blocked
+
+
 async def _budget_room(paper: object, wanted: Decimal, symbol: str, market: Market) -> None:
     """이 판의 예산이 **같은 거래소 계좌의 총액 안에 들어가나** (T21 ⑨).
 
@@ -4324,9 +4589,7 @@ async def _budget_room(paper: object, wanted: Decimal, symbol: str, market: Mark
     if facts is None:
         return
     total, taken = facts
-    # ⚠️ 센트 아래 잔재는 넘김이 아니다 — 1/7 같은 비중의 Decimal 반올림 꼬리(10^-19)가 "300 을
-    #    넘는다" 로 펀드 생성을 막았다 (2026-09-05). 비교는 센트 단위로 한다.
-    if (taken + wanted).quantize(Decimal("0.01")) > total.quantize(Decimal("0.01")):
+    if room_exceeded(total, taken, wanted):
         raise HTTPException(
             400,
             f"{symbol} 예산 {wanted} 를 더하면 {market.value} 판들의 예산 합이 "
