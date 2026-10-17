@@ -24,7 +24,7 @@ import contextlib
 import json
 import logging
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -201,6 +201,54 @@ def _fund_or_404(fund_id: str, *, pop: bool = False) -> Fund:
     if fund is None:
         raise HTTPException(404, f"{fund_id} 펀드가 없다")
     return fund
+
+
+_FUND_LOCKS: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+"""펀드 id → (이벤트 루프, 락) — `_fund_lock` 이 만든다 (T563)."""
+
+
+def _fund_lock(fund_id: str) -> asyncio.Lock:
+    """그 펀드의 락 — 판 묶음 · 바스켓 · 계좌 층 · 장부를 바꾸는 일은 한 번에 하나다 (T563).
+
+    Args:
+        fund_id: 펀드 id.
+
+    Returns:
+        그 펀드의 `asyncio.Lock` (지금 이벤트 루프에 묶인 것).
+
+    Note:
+        🔴 전에는 락이 없어 화면 전환(`PUT /playbook`) · 바스켓 편집 · 재정렬 · 자동 대체(미룬 동안
+        매시) · 틱이 같은 펀드에 겹칠 수 있었다 — `_switch_playbook` 두 벌이 같이 돌면 서로의 판을
+        거두고 띄운다. 매매법 전환 · 바스켓 편집 · 재정렬 · 입출금 · 수동 틱 · 4h 틱 · 닫힘 앵커가
+        이 락을 같이 쓴다. ⚠️ 다시 들어갈 수 없다 — 락 안에서 부르는 몸통(`_switch_playbook` ·
+        `_tick`)은 락을 잡지 않는다. 루프가 바뀌면(시험) 새로 만든다 — 다른 루프에 묶인 락을
+        기다리면 예외가 난다.
+    """
+    loop = asyncio.get_running_loop()
+    found = _FUND_LOCKS.get(fund_id)
+    if found is None or found[0] is not loop:
+        found = (loop, asyncio.Lock())
+        _FUND_LOCKS[fund_id] = found
+    return found[1]
+
+
+@contextlib.asynccontextmanager
+async def _fund_locked(fund_id: str, *, pop: bool = False) -> AsyncGenerator[Fund]:
+    """펀드 락을 잡고 그 펀드를 준다 — 기다리는 사이 접혔으면 404 (T563).
+
+    Args:
+        fund_id: 펀드 id.
+        pop: 참이면 락 안에서 저장소에서 **빼면서** 준다(접기).
+
+    Yields:
+        펀드.
+
+    Raises:
+        HTTPException: 404 — 펀드가 없다(기다리기 전이든 뒤든).
+    """
+    _fund_or_404(fund_id)  # 없는 펀드는 기다리지 않는다
+    async with _fund_lock(fund_id):
+        yield _fund_or_404(fund_id, pop=pop)
 
 
 _logger = logging.getLogger("rebalancer")
@@ -654,16 +702,18 @@ async def _anchor_on_close(fund_id: str) -> None:
     """닫힘 표시가 있는 동안 펀드를 앵커한다 — 도는 중에 새 표시가 오면 끝난 뒤 한 번 더."""
     while fund_id in _ANCHOR_DIRTY:
         _ANCHOR_DIRTY.discard(fund_id)
-        fund = FUNDS.get(fund_id)
-        if fund is None:
-            return
-        before = fund.coordinator.engine.balance
-        try:
-            report = await _tick(fund)
-        except Exception as exc:
-            # 다음 4h 경계가 어차피 앵커한다 — 여기서 영원히 재시도하지 않는다.
-            _logger.warning("fund_close_anchor_failed: %s %s", fund_id, exc)
-            return
+        # T563 — 전환 · 편집이 도는 동안은 기다린다(판 묶음이 바뀌는 중에 틱하지 않는다).
+        async with _fund_lock(fund_id):
+            fund = FUNDS.get(fund_id)
+            if fund is None:
+                return
+            before = fund.coordinator.engine.balance
+            try:
+                report = await _tick(fund)
+            except Exception as exc:
+                # 다음 4h 경계가 어차피 앵커한다 — 여기서 영원히 재시도하지 않는다.
+                _logger.warning("fund_close_anchor_failed: %s %s", fund_id, exc)
+                return
         _logger.info(
             "fund_close_anchored: %s balance=%s -> %s budget=%s",
             fund_id,
@@ -694,10 +744,13 @@ async def rebalance_loop() -> None:
         await asyncio.sleep(max((_next_tick_at - now).total_seconds(), 1.0))
         for fund in list(FUNDS.values()):
             try:
-                # rank60 — 하루 한 번(00 UTC 경계) 비중을 랭크로 갱신 (측정과 같은 일 리밸)
-                if fund.weight_mode == "rank60" and _next_tick_at.hour == 0:
-                    await _refresh_rank(fund)
-                await _tick(fund)
+                async with _fund_lock(fund.fund_id):  # T563 — 전환 · 편집과 겹치지 않게
+                    if FUNDS.get(fund.fund_id) is not fund:
+                        continue  # 기다리는 사이 접혔다
+                    # rank60 — 하루 한 번(00 UTC 경계) 비중을 랭크로 갱신 (측정과 같은 일 리밸)
+                    if fund.weight_mode == "rank60" and _next_tick_at.hour == 0:
+                        await _refresh_rank(fund)
+                    await _tick(fund)
             except Exception as exc:
                 _logger.warning("fund_auto_tick_failed: %s %s", fund.fund_id, exc)
         if FUNDS:
@@ -1238,12 +1291,26 @@ def _note_mismatch(
         신규 진입은 문이 막고(`LegGate` "leg") 청산은 돈다(안전한 쪽). 그래도 조용히 두지 않는다
         (규칙 #8). 대체 선언이 있으면 다음 전환이 모든 판을 새로 띄워 맞춘다. 묶는 동작은 안 바꾼다.
         ⛔ 관측이 복원(= 열린 포지션 관리)을 막으면 안 된다 — 못 재면 흔적만 남기고 지나간다(#8-1).
+        펀드 다리에 이 종목이 없으면(`LegError`) 다리 펀드에서 이 판의 신규 진입이 **전부** 막힌다 —
+        오히려 알려야 하는 경우라 같은 경고에 이유(`no_leg`)를 붙인다(리뷰 T563 ④).
     """
     try:
+        running = {item.playbook_id for item in session.playbooks}
         book, _ = _member_terms(playbook, leverage, alt_leverage, legs, symbol)
         expected = {item.playbook_id for item in start_books({"playbook": book})}
-        running = {item.playbook_id for item in session.playbooks}
-    except (LegError, HTTPException):
+    except (LegError, HTTPException) as exc:
+        _events.warning(
+            "fund_member_playbook_mismatch",
+            payload={
+                "fund_id": fund_id,
+                "symbol": symbol,
+                "fund": [],
+                "reason": "no_leg" if isinstance(exc, LegError) else "unknown_playbook",
+                "error": str(getattr(exc, "detail", exc))[:200],
+                "note": "펀드 선언에서 이 종목의 매매법을 못 낸다 — 다리 펀드면 이 판의 "
+                "신규 진입이 다 막힌다(청산은 돈다). 반쪽 전환의 흔적일 수 있다",
+            },
+        )
         return
     except Exception as exc:
         _logger.warning("fund_mismatch_unchecked: %s %s %s", fund_id, symbol, str(exc)[:160])
@@ -1273,6 +1340,7 @@ async def _spawn_session(
     inherit: Sequence[TradeRecord] = (),
     capital: Decimal | None = None,
     booked: Decimal | None = None,
+    keep_managing: bool = False,
 ) -> tuple[str, SessionBridge]:
     """종목 하나에 펀드 멤버 세션을 띄운다 — 생성·바스켓 추가·전략 전환이 공유한다.
 
@@ -1296,6 +1364,8 @@ async def _spawn_session(
             계좌 예산 검사(`_budget_room`)가 생성을 막고 러너의 `check_funding` 이 전 종목의 진입을
             막는다. 펀드가 계좌에서 실제로 가진 돈은 몫의 합(= 총자본)이므로 그것을 적는다 —
             사이징 예산은 아래에서 `share` 로 되돌린다.
+        keep_managing: 포지션을 관리 밖에 두지 않으려고 띄우는가 — 전환 되돌리기만 넘긴다(T563).
+            열린 기록을 물려받으면 유동성 · 1계약 문을 경고로 낮춘다(`_live_start`).
 
     Note:
         🔴 예산 파라미터는 `margin` 이다 (없으면 계좌 전액). 그리고 펀드 멤버는 **자기 몫**만
@@ -1309,7 +1379,9 @@ async def _spawn_session(
     #    띄운 뒤에야 붙는데(`_attach_gate`), 러너는 `_live_start` 안에서 바로 돌기 시작한다 —
     #    18종을 띄우는 동안 먼저 뜬 판이 문 없이 걷는 창이 생성 때도 똑같이 있다.
     payload["fund_member"] = "fund"
-    result = await _live_start(payload, reviving=bool(adopt_from), inherit=inherit)
+    result = await _live_start(
+        payload, reviving=bool(adopt_from), inherit=inherit, keep_managing=keep_managing
+    )
     handle = str(result["session_id"])
     session = SESSIONS[handle].session
     session.ledger.wallet_start = Decimal(0)
@@ -2828,8 +2900,8 @@ async def tick(fund_id: str) -> dict[str, Any]:
     Note:
         자동 4h 루프는 testnet 검증 뒤에 켠다. 그전엔 이 수동 틱으로 동작을 확인한다.
     """
-    fund = _fund_or_404(fund_id)
-    report = await _tick(fund)
+    async with _fund_locked(fund_id) as fund:  # T563 — 전환 · 편집과 겹치지 않게
+        report = await _tick(fund)
     return {
         "budgets": {s: str(b) for s, b in report.budgets.items()},
         "balance": str(report.balance),
@@ -2856,13 +2928,14 @@ async def drop(fund_id: str) -> dict[str, Any]:
         🔴 세션의 열린 포지션까지 닫는다 (`_close_live_position`) — 러너만 죽이면 거래소에
         관리자 없는 포지션이 남는다.
     """
-    fund = _fund_or_404(fund_id, pop=True)
-    for handle in fund.handles.values():
-        await _close_live_position(handle)
-        await _drop_one(handle)
-    for sym, engine in list(fund.engines.items()):
-        await _stop_engine(fund_id, fund.market, sym, engine, close=True)
-    _archive_fund_file(fund_id)
+    # T563 — 도는 전환 · 편집이 끝난 뒤에 접는다(락 안에서 저장소에서 뺀다).
+    async with _fund_locked(fund_id, pop=True) as fund:
+        for handle in fund.handles.values():
+            await _close_live_position(handle)
+            await _drop_one(handle)
+        for sym, engine in list(fund.engines.items()):
+            await _stop_engine(fund_id, fund.market, sym, engine, close=True)
+        _archive_fund_file(fund_id)
     return {"dropped": fund_id, "sessions": list(fund.handles.values())}
 
 
@@ -2878,6 +2951,13 @@ async def edit_basket(fund_id: str, payload: Annotated[dict[str, Any], Body()]) 
 
 
 async def _edit_basket(fund_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """바스켓을 바꾼다 — 펀드 락 안에서 `_edit_basket_locked` (T563 · 전환 · 틱과 겹치지 않게)."""
+    _fund_or_404(fund_id)  # 없는 펀드는 기다리지 않는다
+    async with _fund_lock(fund_id):
+        return await _edit_basket_locked(fund_id, payload)
+
+
+async def _edit_basket_locked(fund_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """바스켓을 바꾼다 — 종목 추가/제거 + 비중 조절 (동적, 무중단).
 
     Args:
@@ -3098,13 +3178,16 @@ async def _change_playbook(
         raise HTTPException(400, f"모르는 전략: {new_pb!r}")
     require_playbook_trade(request, (new_pb,))  # T230
     require_market_trade(request, Market(fund.market))  # T242
-    if new_pb == fund.playbook:
-        return await _status(fund)
-    try:
-        await _switch_playbook(fund, new_pb, payload)
-    except SwitchDeferredError as exc:  # T563 — 아무것도 안 바꿨다 · 409 로 이유를 돌려준다
-        _events.warning("fund_playbook_switch_deferred", payload=exc.payload)
-        raise
+    # T563 — 같은 펀드의 자동 대체 · 바스켓 편집 · 틱과 겹치지 않게 락 안에서 · 같은 매매법인지도
+    #    락 안에서 본다(기다리는 사이 자동 대체가 이미 바꿨을 수 있다).
+    async with _fund_locked(fund_id) as fund:
+        if new_pb == fund.playbook:
+            return await _status(fund)
+        try:
+            await _switch_playbook(fund, new_pb, payload)
+        except SwitchDeferredError as exc:  # T563 — 아무것도 안 바꿨다 · 409 로 이유를 돌려준다
+            _events.warning("fund_playbook_switch_deferred", payload=exc.payload)
+            raise
     return await _status(fund)
 
 
@@ -3127,9 +3210,14 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
         되풀이됐다.
         이제 ① 아무것도 바꾸기 전에 모든 멤버의 시작 문을 잰다(`start_blockers` · 부작용 없음 ·
         틱도 안 한다) — 하나라도 막히면 `SwitchDeferredError`(옛 매매법 · 옛 판 · 옛 묶음 그대로).
-        ② 그래도 중간에 실패하면(일시 오류) 이미 바꾼 종목을 옛 매매법으로 되돌린다(`_undo_switch`).
+        ② 다 지나면 **옛 계좌 층 · 옛 바스켓 그대로** 틱을 한 번 해 총자본을 맞춘다(보통의 앵커
+        틱이다). 총자본이 바뀌었으면(오르든 내리든) 새 총자본으로 한 번 더 잰다 — 막히면 그대로
+        미룬다(이 틱 말고는 바꾼 것이 없다). ③ 그 뒤에야 계좌 층 · 바스켓을 바꾸고 판을 갈아 끼운다.
+        ④ 그래도 중간에 실패하면(일시 오류) 이미 바꾼 종목을 옛 매매법으로 되돌린다(`_undo_switch` ·
+        못 되돌리면 방금 돌던 새 매매법 판으로 대피 — 포지션을 든 종목을 관리 밖에 두지 않는다).
         판은 **옛 판이 있는 종목 먼저 · 새 종목 나중**에 띄운다 — 예산 합 문이 옛 판의 낡은 저장
         예산이 아니라 전환 뒤의 예산으로 새 종목을 재게 하려는 순서다(매매 크기와는 무관).
+        부르는 쪽(화면 · 자동 대체)이 펀드 락(`_fund_lock`)을 쥔다 — 여기서는 안 잡는다.
     """
     # 🔴 **계좌 층도 새 매매법의 것으로 바꾼다** (T286 · 2026-09-19). 전에는 진입·청산만 갈아
     #    끼우고 자리·상한·줄여서 진입·낙폭 브레이크는 **옛 매매법의 값이 그대로 남았다**.
@@ -3155,15 +3243,36 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
     #    (미룬 시도가 예산 갱신 주기를 바꾸면 매매 크기가 달라진다).
     planned_total = fund.coordinator.engine.balance
     new_slots = declared_new.slots if declared_new is not None else fund.slots
+    basket = widened or old_basket
     try:
         sessions, engine_starts = _switch_starts(
-            fund, widened or old_basket, new_pb, new_legs, planned_total, new_slots
+            fund, basket, new_pb, new_legs, planned_total, new_slots
         )
     except LegError as exc:
         raise HTTPException(400, f"다리 선언이 맞지 않는다: {exc}") from exc
     blocked = await _switch_blockers(fund, sessions, engine_starts)
     if blocked:
         raise _deferral(fund, new_pb, blocked, sessions, planned_total)
+    # ⭐ T563 ② — 총자본 갱신(앵커)은 **옛 계좌 층 · 옛 바스켓 그대로** 한 번 한다. 보통의 앵커
+    #    틱(4h · 닫힘)과 같은 일이라 여기서 미뤄도 되돌릴 것이 없다 — 전에는 계좌 층 · 바스켓을 먼저
+    #    바꾸고 틱해 그 구성이 펀드 파일에 저장됐고, 다시 재서 미루면 되돌리느라 틱을 한 번 더 했다.
+    #    새 판의 예산은 아래 `_switch_starts` 가 총자본에서 바로 내고, 끝의 틱이 새 구성으로 나눈다.
+    try:
+        await _tick(fund)
+    except Exception as exc:  # 아무것도 안 바꿨다
+        raise HTTPException(400, f"전략 전환 실패 (판은 그대로): {exc}") from exc
+    total = fund.coordinator.engine.balance
+    if total != planned_total:
+        # 틱이 총자본을 바꿨다 — 예산이 달라져 미리 잰 문의 답이 달라질 수 있다(줄면 1계약 문 ·
+        #    늘면 유동성 · 잔액 · 예산 합 문). 판을 건드리기 전에 새 총자본으로 다시 잰다. 막히면
+        #    그대로 미룬다(이 틱 말고는 바꾼 것이 없다).
+        # 자리 배분이면 `총자본 ÷ 자리`(합이 총자본을 넘는 것이 의도) · 아니면 비중대로 — 생성·복원
+        #    경로와 같은 식(T286). 몫(capital · 원장 걷기 시작점)도 생성과 같게 넘긴다(1.17.1 ·
+        #    빠뜨리면 원장 합이 계좌의 몇 배로 잡힌다 `wallet_drift`). 식은 `_switch_starts` 하나다.
+        sessions, engine_starts = _switch_starts(fund, basket, new_pb, new_legs, total, new_slots)
+        blocked = await _switch_blockers(fund, sessions, engine_starts)
+        if blocked:
+            raise _deferral(fund, new_pb, blocked, sessions, total)
     rules_before = _rules_of(fund)
     if declared_new is not None:
         fund.weight_mode = declared_new.weight_mode or fund.weight_mode
@@ -3191,7 +3300,7 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
         )
 
     if widened is not None:
-        # 바스켓 편집과 같은 순서 — 바스켓을 먼저 바꾸고 틱이 새 구성으로 예산을 낸다.
+        # 새 종목의 예산은 끝의 틱이 새 구성으로 낸다(띄울 때는 `_switch_starts` 의 몫).
         fund.coordinator.engine.basket = widened
         _events.info(
             "fund_members_widened",
@@ -3204,28 +3313,6 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
                 "note": "매매법 전환 — 새 다리의 종목을 더했다(빼지 않는다 · T304)",
             },
         )
-    try:
-        await _tick(fund)  # 총자본 갱신 (청산 전 값으로 재배분 · 앵커 포함)
-    except Exception as exc:  # 판은 아직 안 건드렸다 — 계좌 층 · 바스켓만 되돌리면 된다
-        fund.coordinator.engine.basket = old_basket
-        _put_rules(fund, rules_before)
-        raise HTTPException(400, f"전략 전환 실패 (판은 그대로): {exc}") from exc
-    total = fund.coordinator.engine.balance
-    basket = fund.coordinator.engine.basket
-    # 자리 배분이면 `총자본 ÷ 자리`(합이 총자본을 넘는 것이 의도) · 아니면 비중대로 — 생성·복원
-    #    경로와 같은 식(T286). 몫(capital · 원장 걷기 시작점)도 생성과 같게 넘긴다(1.17.1 ·
-    #    빠뜨리면 원장 합이 계좌의 몇 배로 잡힌다 `wallet_drift`). 식은 `_switch_starts` 하나다.
-    sessions, engine_starts = _switch_starts(fund, basket, new_pb, new_legs, total, fund.slots)
-    if total < planned_total:
-        # 틱이 총자본을 낮췄다 — 예산이 줄어 미리 잰 문의 답이 달라질 수 있다. 판을 건드리기 전에
-        #    새 예산으로 다시 잰다. 막히면 계좌 층 · 바스켓을 되돌리고(틱이 옛 구성으로 다시
-        #    저장한다) 미룬다.
-        blocked = await _switch_blockers(fund, sessions, engine_starts)
-        if blocked:
-            fund.coordinator.engine.basket = old_basket
-            _put_rules(fund, rules_before)
-            await _tick(fund)
-            raise _deferral(fund, new_pb, blocked, sessions, total)
     # 되돌릴 때 옛 판을 **저장돼 있던 예산 그대로** 다시 띄운다(되살리기와 같은 값).
     margins = await run_margins(Market(fund.market))
     new_handles: dict[str, str] = {}
@@ -3275,12 +3362,9 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
             new_ports[start.symbol] = port
             swapped.append((start.symbol, old, handle))
             # ⭐ 물려준 열린 기록은 옛 판 쪽에서 이관으로 닫는다(2026-10-01) — 안 하면 "보유중"
-            #    유령이 남는다.
-            store = run_store()
-            if old and inherited and store is not None:
-                await store.transfer_open_trades(
-                    old, [item.trade_id for item in inherited], to_key=handle
-                )
+            #    유령이 남는다. 실패해도 판은 이미 떠서 포지션을 맡았다 — 경고만
+            #    (`_transfer_records`).
+            await _transfer_records(old, inherited, handle)
     except Exception as exc:
         # ⭐ T563 ② — 이미 바꾼 종목을 옛 매매법으로 되돌린다(바스켓 · 계좌 층 포함). 전에는
         #    바스켓만 되돌려 앞 종목이 묶이지 않은 새 판으로 남았다.
@@ -3295,6 +3379,7 @@ async def _switch_playbook(fund: Fund, new_pb: str, payload: Mapping[str, Any]) 
                 hanging=hanging,
                 spawned={symbol: new_engines[symbol] for symbol in spawned},
                 margins=margins,
+                starts={item.symbol: item for item in sessions},
             )
         except Exception as undo_exc:  # 되돌리기의 결함이 원래 실패를 가리지 않게
             _events.error(
@@ -3538,57 +3623,237 @@ def _put_rules(fund: Fund, rules: tuple[tuple[Any, ...], int]) -> None:
     fund.coordinator.engine.slots = slots
 
 
-async def _respawn_old(
+UNDO_RETRY_WAITS_S: tuple[float, ...] = (5.0, 30.0, 120.0)
+"""전환 되돌리기에서 판을 못 띄운 종목을 다시 시도하기 전에 기다리는 초 (T563 · 바퀴마다 하나).
+
+처음 실패가 요율 제한 · 네트워크였다면 같은 순간에 다시 띄우면 같이 실패한다. 종목마다 기다리지
+않고 **한 바퀴씩** 기다린다(못 띄운 것만 모아 다시) — 기다림 합이 종목 수에 비례하지 않는다.
+마지막 120초는 실측 요율 제한 밴(약 2분 · `RETRY_EVERY`)을 넘긴다. 결정적 실패(400 · 404 · 409)는
+다시 하지 않는다.
+"""
+
+
+@dataclass(slots=True)
+class _PutBack:
+    """전환 되돌리기가 다시 띄울 종목 하나 (T563).
+
+    Attributes:
+        symbol: 종목.
+        old: 전환 전의 판 — 그 판의 저장 예산으로 옛 매매법 판을 띄운다.
+        source: 이어받을 판(새 판이 떴으면 그것 · 아니면 옛 판).
+        inherited: 물려줄 열린 기록(T333). 있으면 포지션을 든 종목이다.
+        dropped: 새 판(`source`)을 이미 거뒀나 — 다시 시도할 때 또 거두지 않는다.
+        transient: 이번 시도의 실패 가운데 잠시 뒤 다시 하면 될 수 있는 것이 있었나.
+        error: 이번 시도의 실패 이유(단계별).
+    """
+
+    symbol: str
+    old: str
+    source: str
+    inherited: tuple[TradeRecord, ...]
+    dropped: bool = False
+    transient: bool = False
+    error: str = ""
+
+    def failed(self, step: str, exc: BaseException) -> None:
+        """한 단계의 실패를 적는다 — 하나라도 일시 실패면 다시 시도할 거리다."""
+        self.transient = self.transient or _transient(exc)
+        detail = f"{step}: {str(getattr(exc, 'detail', exc))[:200]}"
+        self.error = f"{self.error} · {detail}" if self.error else detail
+
+
+def _transient(exc: BaseException) -> bool:
+    """잠시 뒤 다시 하면 될 수 있는 실패인가 — 되돌리기의 재시도 판정 (T563).
+
+    Note:
+        사람이 읽을 이유가 있는 결정적 거절(400 · 404 · 409 — 시작 문 · 선언)은 기다려도 같다.
+        5xx(저장소 · 자격증명 · 요청 상한) · 429 · 그 밖의 예외(네트워크 · 시간 초과 · 거래소
+        오류)는 잠시 뒤 다시 한다.
+    """
+    if isinstance(exc, HTTPException):
+        return exc.status_code >= 500 or exc.status_code == 429
+    return True
+
+
+async def _transfer_records(
+    source: str | None, inherited: Sequence[TradeRecord], to_key: str
+) -> None:
+    """물려준 열린 기록을 앞 판 행에서 이관으로 닫는다 — 실패해도 판은 그대로 둔다 (T333 · T563).
+
+    Args:
+        source: 기록을 물려준 앞 판.
+        inherited: 물려준 열린 기록.
+        to_key: 물려받은 판.
+
+    Note:
+        안 하면 앞 판 행에 "보유중" 유령이 남는다(2026-10-01). 그러나 이것은 장부 표시의 일이고 판은
+        이미 떠서 포지션을 맡았다 — 여기서 던지면 되돌리기는 떠 있는 판을 거두지도 묶지도 않은 채
+        "러너 없음" 으로 적고, 전환은 잘 뜬 판들을 통째로 되돌린다(리뷰 T563 ①-d). 경고만 남긴다.
+    """
+    store = run_store()
+    if not source or not inherited or store is None or source == to_key:
+        return
+    trades = [item.trade_id for item in inherited]
+    try:
+        await store.transfer_open_trades(source, trades, to_key=to_key)
+    except Exception as exc:
+        _events.warning(
+            "fund_trade_transfer_failed",
+            payload={
+                "from": source,
+                "to": to_key,
+                "trades": trades,
+                "error": str(exc)[:200],
+                "note": "판은 떠서 포지션을 맡았다 — 앞 판 행에 열린 기록이 남는다(표시 유령)",
+            },
+        )
+
+
+async def _respawn(
     fund: Fund,
-    symbol: str,
+    job: _PutBack,
     *,
-    old: str,
-    source: str,
-    inherited: Sequence[TradeRecord],
+    book: str,
+    leverage: Decimal,
     total: Decimal,
-    margins: Mapping[str, Decimal],
+    booked: Decimal | None,
 ) -> tuple[str, SessionBridge]:
-    """그 종목의 판을 **옛 매매법 조건으로** 다시 띄운다 — 전환 되돌리기 (T563).
+    """그 종목의 판을 **지금 펀드 몫**(옛 계좌 층 · 옛 바스켓)으로 다시 띄운다 — 되돌리기 (T563).
 
     Args:
         fund: 펀드(매매법 · 다리 · 바스켓 · 계좌 층은 이미 옛 것이다).
-        symbol: 종목.
-        old: 전환 전의 판 — 그 판의 저장 예산을 그대로 쓴다.
-        source: 이어받을 판(새 판이 떴으면 그것 · 아니면 옛 판).
-        inherited: 물려줄 열린 기록(T333).
+        job: 되돌릴 종목.
+        book: 세션 매매법 — 옛 매매법(대피면 방금 돌던 새 매매법).
+        leverage: 세션 배율.
         total: 총자본.
-        margins: `{판: 저장 예산}` — 전환 전에 읽은 것.
+        booked: 판 저장소에 적을 예산. 옛 판이면 전환 전 저장 예산 그대로(되살리기
+            `autostart_live` 가 넘기는 값과 같아 시작 문이 전환 전과 같은 답을 낸다). None 이면
+            생성 · 복원과 같은 식.
 
     Returns:
         `(새 핸들, 포트)`.
 
     Note:
-        저장 예산을 그대로 넘긴다 — 되살리기(`autostart_live`)가 넘기는 값과 같아 시작 문이
-        전환 전과 같은 답을 낸다. 없으면 생성 · 복원과 같은 식으로 낸다.
+        `keep_managing` 으로 띄운다 — 열린 기록을 물려받으면(포지션을 든 종목) 유동성 · 1계약 문이
+        막지 않고 경고만 한다(#8-1 · `_live_start`). 이관 실패는 경고만 한다(`_transfer_records`).
     """
     basket = fund.coordinator.engine.basket
-    weight = next((m.weight for m in basket.members if m.symbol == symbol), Decimal(1))
+    weight = next((m.weight for m in basket.members if m.symbol == job.symbol), Decimal(1))
     capital = member_share(total, weight, basket.weight_sum)
     share = total / Decimal(fund.slots) if fund.slots > 0 else capital
-    book, lev = _member_terms(fund.playbook, fund.leverage, fund.alt_leverage, fund.legs, symbol)
-    booked = margins.get(old) or (min(share, capital) if fund.legs else None)
+    if booked is None and fund.legs:
+        booked = min(share, capital)
     handle, port = await _spawn_session(
-        symbol,
+        job.symbol,
         share,
-        lev,
+        leverage,
         book,
         market=fund.market,
-        adopt_from=source,
-        inherit=inherited,
+        adopt_from=job.source,
+        inherit=job.inherited,
         capital=capital,
         booked=booked,
+        keep_managing=True,
     )
-    store = run_store()
-    if inherited and store is not None:
-        await store.transfer_open_trades(
-            source, [item.trade_id for item in inherited], to_key=handle
-        )
+    await _transfer_records(job.source, job.inherited, handle)
     return handle, port
+
+
+async def _put_back(
+    fund: Fund,
+    job: _PutBack,
+    start: _MemberStart | None,
+    *,
+    total: Decimal,
+    margins: Mapping[str, Decimal],
+) -> tuple[str, str, SessionBridge] | None:
+    """한 종목의 판을 되돌린다 — 옛 매매법으로 · 안 되면 방금 돌던 새 매매법으로 대피 (T563).
+
+    Args:
+        fund: 펀드(이미 옛 계좌 층 · 옛 바스켓).
+        job: 되돌릴 종목.
+        start: 그 종목의 새 매매법 시작값(대피용). None 이면 대피하지 않는다.
+        total: 총자본.
+        margins: `{옛 판: 저장 예산}` — 전환 전에 읽은 것.
+
+    Returns:
+        `("old" | "new", 핸들, 포트)` — 묶을 판. 둘 다 못 띄우면 None
+        (`job.error` · `job.transient` 에 이유).
+
+    Note:
+        🔴 리뷰(T563 ①): 되돌리기는 잘 돌던 새 판을 **먼저** 거두고 옛 판을 띄운다(한 종목에 러너
+        둘은 안 된다). 옛 판이 시작 문(옛 저장 예산 기준 1계약 · 유동성 · 요율 · 네트워크)에
+        막히면 그 종목은 러너가 없다 — 고치기 전이라면 "러너는 살아 있고 진입만 보류" 였을
+        종목이다. 그래서
+        ① 옛 판이 안 뜨면 방금 돌던 새 매매법 판을 다시 띄워 펀드에 묶는다(펀드 선언과 어긋나는 것은
+        경고 · 다리 펀드면 다리에 없는 다리의 신규 진입은 문이 막고 청산은 돈다) ② 새 판을 거두지도
+        못했으면(러너가 그대로 돈다) 그 판을 그대로 묶는다.
+    """
+    job.transient = False
+    job.error = ""
+    if not job.dropped and job.source != job.old:
+        try:
+            await _drop_one(job.source)
+        except Exception as exc:
+            job.failed("거두기", exc)
+            live = SESSIONS.get(job.source)
+            if job.source in LIVE_RUNNERS and live is not None:
+                # 거두지도 못했다 — 새 판이 그대로 포지션을 맡고 있다. 그 판을 묶는다.
+                return "new", job.source, SessionBridge(live.session)
+            # 메모리에서는 빠졌다(행 닫기 · 저널만 실패) — 다시 띄운다
+    job.dropped = True
+    try:
+        book, lev = _member_terms(
+            fund.playbook, fund.leverage, fund.alt_leverage, fund.legs, job.symbol
+        )
+        handle, port = await _respawn(
+            fund, job, book=book, leverage=lev, total=total, booked=margins.get(job.old)
+        )
+        return "old", handle, port
+    except Exception as exc:
+        job.failed("옛 매매법", exc)
+    if start is not None:
+        try:
+            handle, port = await _respawn(
+                fund,
+                job,
+                book=start.book,
+                leverage=start.leverage,
+                total=total,
+                booked=start.booked,
+            )
+            return "new", handle, port
+        except Exception as exc:
+            job.failed("새 매매법(대피)", exc)
+    return None
+
+
+def _lost(fund: Fund, job: _PutBack) -> None:
+    """끝까지 못 띄운 종목을 펀드에서 떼고 오류로 알린다 — 사람이 볼 일이다 (T563)."""
+    fund.handles.pop(job.symbol, None)
+    fund.coordinator.release(job.symbol)
+    holding = bool(job.inherited)
+    running: str | None = None
+    with contextlib.suppress(Exception):  # 알림이 나머지 되돌리기를 막지 않게
+        running = _running_handle(job.symbol, fund.market)
+    _events.error(
+        "fund_member_unmanaged",
+        payload={
+            "fund_id": fund.fund_id,
+            "symbol": job.symbol,
+            "holding": holding,
+            "running": running,
+            "error": job.error[:300],
+            "note": (
+                "전환 되돌리기에서 이 종목의 판을 옛 매매법으로도 새 매매법으로도 못 띄웠다 — "
+                "러너가 없다. 거래소 포지션 · 손절은 그대로 있다(본절 · 추적 · 익절 · 신호 청산은 "
+                "멈춤). 사람이 콘솔에서 확인한다"
+                if holding
+                else "전환 되돌리기에서 이 종목의 판을 못 띄웠다 — 열린 기록은 없었다. "
+                "펀드에서 빠진 채 돈다. 사람이 확인한다"
+            ),
+        },
+    )
 
 
 async def _undo_switch(
@@ -3602,6 +3867,7 @@ async def _undo_switch(
     hanging: tuple[str, str | None, tuple[TradeRecord, ...]] | None,
     spawned: Mapping[str, Any],
     margins: Mapping[str, Decimal],
+    starts: Mapping[str, _MemberStart] | None = None,
 ) -> None:
     """반쯤 간 매매법 전환을 **옛 매매법으로 되돌린다** (T563 ②).
 
@@ -3615,12 +3881,18 @@ async def _undo_switch(
         hanging: 옛 판을 거뒀는데 새 판이 안 뜬 종목 `(종목, 옛 판, 물려줄 기록)`.
         spawned: 이번에 새로 띄운 엔진 `{종목: 엔진}`.
         margins: `{옛 판: 저장 예산}`.
+        starts: 새 매매법 멤버 시작값 `{종목: _MemberStart}` — 옛 판을 못 띄우면 이것으로 대피한다.
 
     Note:
-        로그를 먼저 남긴다(P5). 되돌리기도 판을 거두고 띄우는 일이라 실패할 수 있다 — 그 종목은
-        `fund_member_unmanaged`(오류)로 남기고 나머지를 계속 되돌린다(하나 때문에 다른 종목을
-        관리 밖에 두지 않는다 · #8-1). 거래소 포지션 · 손절은 판을 거둬도 그대로다.
-        이번 전환이 더한 종목(옛 판 없음)은 새 판만 거둔다 — 펀드 문이 안 붙어 신규 진입을 못 했다.
+        로그를 먼저 남긴다(P5). 종목마다 `_put_back` — 옛 매매법으로 · 안 되면 방금 돌던 새 매매법
+        판으로 대피(`fund_member_kept_new` 경고). 열린 기록을 물려받는 판은 유동성 · 1계약 문이
+        막지 않는다(`keep_managing`). 둘 다 못 띄운 종목은 일시 실패(요율 · 네트워크)면 한 바퀴씩
+        기다렸다(`UNDO_RETRY_WAITS_S`) 다시 한다. 끝까지 못 띄운 종목만
+        `fund_member_unmanaged`(오류)로 남기고 나머지를 계속 되돌린다(하나 때문에 다른 종목을 관리
+        밖에 두지 않는다 · #8-1). 거래소 포지션 · 손절은 판을 거둬도 그대로다.
+        이번 전환이 더한 종목(옛 판 없음)은 새 판만 거둔다 — 펀드 문이 안 붙어 신규 진입을 못
+        했다. 그 판이 열린 기록을 들고 있으면 거두지 않는다(펀드 밖 판으로 손절 · 청산을 잇는다 ·
+        오류로 알린다).
     """
     _events.warning(
         "fund_playbook_switch_rolling_back",
@@ -3633,8 +3905,11 @@ async def _undo_switch(
             "error": str(getattr(error, "detail", error))[:300],
         },
     )
+    starts = starts or {}
     restored: list[str] = []
+    kept_new: list[str] = []
     unmanaged: list[str] = []
+    left: list[str] = []
     dropping = {new for _, _, new in swapped}
     REPLACING.update(dropping)  # 거두는 새 판을 감시자가 새 매매법으로 되살리지 않게
     try:
@@ -3646,51 +3921,80 @@ async def _undo_switch(
         fund.coordinator.engine.basket = old_basket
         _put_rules(fund, rules)
         total = fund.coordinator.engine.balance
-        todo: list[tuple[str, str, str, tuple[TradeRecord, ...]]] = []
+        jobs: list[_PutBack] = []
         for symbol, was, new in reversed(swapped):
             if was is None:
+                if open_records_of(new):  # 포지션을 들었다 — 거두면 관리 밖이 된다
+                    left.append(symbol)
+                    continue
                 with contextlib.suppress(Exception):
                     await _drop_one(new)
                 continue
-            todo.append((symbol, was, new, open_records_of(new)))
+            jobs.append(_PutBack(symbol, was, new, open_records_of(new)))
         if hanging is not None:
             symbol, was, inherited = hanging
             if was and was in SESSIONS:  # 거두기 전에 멈췄다 — 옛 판이 그대로 돈다
                 restored.append(symbol)
             elif was:
-                todo.append((symbol, was, was, inherited))
-        for symbol, old, source, inherited in todo:
-            try:
-                if source != old:
-                    await _drop_one(source)
-                handle, port = await _respawn_old(
-                    fund,
-                    symbol,
-                    old=old,
-                    source=source,
-                    inherited=inherited,
-                    total=total,
-                    margins=margins,
+                jobs.append(_PutBack(symbol, was, was, tuple(inherited), dropped=True))
+        waits = (0.0, *UNDO_RETRY_WAITS_S)
+        for turn, wait in enumerate(waits):
+            if not jobs:
+                break
+            if wait > 0:
+                _logger.warning(
+                    "fund_undo_retry_wait: %s %.0fs %s",
+                    fund.fund_id,
+                    wait,
+                    ", ".join(job.symbol for job in jobs),
                 )
-            except Exception as exc:
-                unmanaged.append(symbol)
-                fund.handles.pop(symbol, None)
-                fund.coordinator.release(symbol)
-                _events.error(
-                    "fund_member_unmanaged",
+                await asyncio.sleep(wait)
+            last = turn == len(waits) - 1
+            again: list[_PutBack] = []
+            for job in jobs:
+                got = await _put_back(
+                    fund, job, starts.get(job.symbol), total=total, margins=margins
+                )
+                if got is None:
+                    if job.transient and not last:
+                        again.append(job)  # 요율 · 네트워크 — 다음 바퀴에 다시
+                    else:
+                        unmanaged.append(job.symbol)
+                        _lost(fund, job)
+                    continue
+                kind, handle, port = got
+                fund.coordinator.release(job.symbol)  # 거둔 판의 미정산 실현은 다음 틱이 흡수
+                fund.handles[job.symbol] = handle
+                fund.coordinator.ports[job.symbol] = port  # type: ignore[index]
+                if kind == "old":
+                    restored.append(job.symbol)
+                    continue
+                kept_new.append(job.symbol)
+                _events.warning(
+                    "fund_member_kept_new",
                     payload={
                         "fund_id": fund.fund_id,
-                        "symbol": symbol,
-                        "error": str(getattr(exc, "detail", exc))[:300],
-                        "note": "전환 되돌리기에서 이 종목의 판을 못 띄웠다 — 러너가 없다. "
-                        "거래소 포지션 · 손절은 그대로 있다. 사람이 콘솔에서 확인한다",
+                        "symbol": job.symbol,
+                        "session": handle,
+                        "fund_playbook": fund.playbook,
+                        "holding": bool(job.inherited),
+                        "error": job.error[:300],
+                        "note": "옛 매매법 판을 못 띄워 방금 돌던 새 매매법 판을 펀드에 묶었다 — "
+                        "펀드 선언과 어긋난다(다리 펀드면 다리에 없는 다리의 신규 진입은 문이 막고 "
+                        "청산은 돈다). 다음 전환(재기동 자동 대체 · 화면)이 맞춘다",
                     },
                 )
-                continue
-            fund.coordinator.release(symbol)  # 거둔 판의 미정산 실현은 다음 틱이 흡수한다
-            fund.handles[symbol] = handle
-            fund.coordinator.ports[symbol] = port  # type: ignore[index]
-            restored.append(symbol)
+            jobs = again
+        for symbol in left:
+            _events.error(
+                "fund_member_left_running",
+                payload={
+                    "fund_id": fund.fund_id,
+                    "symbol": symbol,
+                    "note": "이번 전환이 더한 종목인데 열린 기록을 들고 있어 거두지 않았다 — "
+                    "펀드 밖 판으로 손절 · 청산을 잇는다(신규 진입은 보류). 사람이 확인한다",
+                },
+            )
         _reattach_gate(fund)  # 되살린 판에 옛 문을 끼우고 신규 진입을 푼다(T293)
         try:
             await _tick(fund)
@@ -3698,7 +4002,15 @@ async def _undo_switch(
             _logger.warning("fund_undo_tick_failed: %s %s", fund.fund_id, str(exc)[:160])
     finally:
         REPLACING.difference_update(dropping)
-    result = _events.error if unmanaged else _events.warning
+    result = _events.error if unmanaged or left else _events.warning
+    if unmanaged:
+        note = "옛 매매법으로 되돌렸으나 러너 없는 종목이 있다 — 사람이 확인한다"
+    elif left:
+        note = "옛 매매법으로 되돌렸으나 펀드 밖에 남긴 판이 있다 — 사람이 확인한다"
+    elif kept_new:
+        note = "옛 매매법으로 되돌렸다 — 일부 종목은 새 매매법 판으로 대피했다(어긋남)"
+    else:
+        note = "옛 매매법으로 되돌렸다"
     result(
         "fund_playbook_switch_rolled_back",
         payload={
@@ -3706,10 +4018,10 @@ async def _undo_switch(
             "playbook": fund.playbook,
             "to": new_pb,
             "restored": sorted(restored),
+            "kept_new": sorted(kept_new),
             "unmanaged": sorted(unmanaged),
-            "note": "옛 매매법으로 되돌렸다"
-            if not unmanaged
-            else "옛 매매법으로 되돌렸으나 러너 없는 종목이 있다 — 사람이 확인한다",
+            "left_running": sorted(left),
+            "note": note,
         },
     )
 
@@ -3799,6 +4111,52 @@ SUPERSEDE_DEFERRED: dict[str, dict[str, Any]] = {}
 
 _supersede_task: asyncio.Task[None] | None = None
 
+_leader_check: Callable[[], bool] | None = None
+"""이 프로세스가 지금 **거래 리더**인가 — `main` 이 리더가 될 때 꽂는다 (T563). None 이면 묻지
+않는다(리더 게이트가 없는 단일 인스턴스 · 시험)."""
+
+
+def bind_leader(check: Callable[[], bool] | None) -> None:
+    """자동 대체가 시도마다 물을 리더 판정을 꽂는다 (T563 · `main._start_trading`).
+
+    Args:
+        check: 지금 리더면 참을 내는 함수. None 이면 묻지 않는다.
+
+    Note:
+        🔴 자동 대체 고리는 `_trade_tasks` 밖에서 산다 — 리더를 잃어도(2026-09-29 락 상실 같은 때)
+        고리가 멈추지 않으면 강등된 프로세스가 판을 거두고 띄운다. 시도마다 이 판정을 보고, 리더를
+        놓을 때는 `stop_supersede` 가 고리를 거둔다.
+    """
+    global _leader_check
+    _leader_check = check
+
+
+def _still_leader() -> bool:
+    """지금 리더인가 — 못 읽으면 아니라고 본다(전환은 미뤄도 되는 일이다)."""
+    check = _leader_check
+    if check is None:
+        return True
+    try:
+        return bool(check())
+    except Exception:
+        return False
+
+
+async def stop_supersede() -> None:
+    """자동 대체 고리를 거둔다 — 리더를 놓을 때(`main._stop_trading`) 부른다 (T563).
+
+    Note:
+        기다리는 중이면 바로 멈춘다. 전환이 도는 중이면 **그 전환은 끝까지 간다** — 몸통을
+        `asyncio.shield` 로 감쌌다(중간에 끊으면 옛 판만 거둔 반쪽 전환이 남는다). 다음 시도는 없다.
+    """
+    global _supersede_task
+    task, _supersede_task = _supersede_task, None
+    if task is None or task.done():
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+
 
 def _schedule_supersede() -> None:
     """되살린 펀드 중 대체 선언이 있는 것을 뒤에 전환한다 — 한 번에 하나만 걸어 둔다."""
@@ -3811,17 +4169,37 @@ def _schedule_supersede() -> None:
 
 
 async def _supersede_later() -> None:
+    """기동 뒤 마감 밖 창에서 자동 대체 · 미룬 동안은 한 시간마다 다시 잰다 (T332 · T563).
+
+    Note:
+        리더가 아니면 시도하지 않고 고리를 끝낸다(`_still_leader` · 새 리더가 기동 뒤에 한다). 한
+        바퀴가 예외로 끝나도(선언 읽기 등) 고리는 죽지 않는다 — 오류를 남기고 다음 창에 다시.
+    """
     wait = supersede_delay_s(datetime.now(UTC))
     _logger.info("fund_supersede_scheduled: %.0fs", wait)
     await asyncio.sleep(wait)
-    await _supersede_funds()
+    await _supersede_round()
     # ⭐ T563 — 미룬 펀드가 있으면 다음 마감 밖 창에 다시 잰다(입금 · 가격 변화로 문이 열린다).
     #    실패(되돌림)는 다시 시도하지 않는다 — 다음 재기동이 한다(예전과 같다).
-    while SUPERSEDE_DEFERRED:
+    while SUPERSEDE_DEFERRED and _still_leader():
         wait = supersede_delay_s(datetime.now(UTC), base=SUPERSEDE_RETRY_S)
         _logger.info("fund_supersede_retry_scheduled: %.0fs", wait)
         await asyncio.sleep(wait)
+        await _supersede_round()
+
+
+async def _supersede_round() -> None:
+    """자동 대체 한 바퀴 — 예외가 고리를 조용히 죽이지 않게 (T563)."""
+    try:
         await _supersede_funds()
+    except Exception as exc:
+        _events.error(
+            "fund_supersede_round_failed",
+            payload={
+                "error": str(exc)[:300],
+                "note": "자동 대체 한 바퀴가 예외로 끝났다 — 미룬 펀드가 있으면 다음 창에 다시",
+            },
+        )
 
 
 async def _supersede_funds() -> int:
@@ -3838,15 +4216,52 @@ async def _supersede_funds() -> int:
         ⭐ T563 — 시작 문에 막힌 판이 있으면 전환이 **아무것도 안 바꾸고** 미룬다
         (`SwitchDeferredError`). 그때는 경고 `fund_supersede_deferred`(막힌 종목 · 이유 · 필요
         총자본)를 남기고 `SUPERSEDE_DEFERRED` 에 적어 다음 창에 다시 잰다.
+        펀드마다 시도 전에 리더인지 본다(아니면 멈춘다). 한 펀드의 시도는 펀드 락 안에서 돌고
+        (`_supersede_one`) `asyncio.shield` 로 감싼다 — 고리가 취소돼도(리더 상실 · 종료) 도는
+        전환은 끝까지 간다(중간에 끊으면 반쪽 전환).
     """
     done = 0
     for gone in [fund_id for fund_id in SUPERSEDE_DEFERRED if fund_id not in FUNDS]:
         SUPERSEDE_DEFERRED.pop(gone, None)  # 접힌 펀드 — 다시 잴 것이 없다
     for fund in list(FUNDS.values()):
+        if not _still_leader():
+            _events.warning(
+                "fund_supersede_not_leader",
+                payload={
+                    "fund_id": fund.fund_id,
+                    "note": "거래 리더가 아니다 — 전환을 시도하지 않는다(새 리더가 기동 뒤에 한다)",
+                },
+            )
+            break
+        attempt = asyncio.ensure_future(_supersede_one(fund))
+        _SUPERSEDE_INFLIGHT.add(attempt)  # 고리가 취소돼도 끝까지 가도록 참조를 쥔다
+        attempt.add_done_callback(_SUPERSEDE_INFLIGHT.discard)
+        if await asyncio.shield(attempt):
+            done += 1
+    return done
+
+
+_SUPERSEDE_INFLIGHT: set[asyncio.Future[bool]] = set()
+"""도는 자동 대체 시도 — `asyncio.shield` 안쪽 태스크의 참조(루프는 태스크를 약하게만 쥔다)."""
+
+
+async def _supersede_one(fund: Fund) -> bool:
+    """펀드 하나를 대체 매매법으로 바꾼다 — 펀드 락 안에서 (T332 · T563).
+
+    Returns:
+        바꿨으면 참. 대체 선언이 없거나 · 미뤘거나 · 실패(되돌림)했거나 · 기다리는 사이
+        접혔으면 거짓.
+
+    Note:
+        대체 대상은 락 안에서 다시 낸다 — 기다리는 사이 화면 전환이 이미 바꿨을 수 있다.
+    """
+    async with _fund_lock(fund.fund_id):
+        if FUNDS.get(fund.fund_id) is not fund:
+            return False  # 기다리는 사이 접혔다
         target = superseding_playbook(fund.playbook, load_playbooks())
         if target is None:
             SUPERSEDE_DEFERRED.pop(fund.fund_id, None)
-            continue
+            return False
         before = fund.playbook
         _events.info(
             "fund_playbook_superseding",
@@ -3865,7 +4280,7 @@ async def _supersede_funds() -> int:
                     "다음 마감 밖 창(또는 다음 재기동)에 다시 잰다",
                 },
             )
-            continue
+            return False
         except Exception as exc:
             SUPERSEDE_DEFERRED.pop(fund.fund_id, None)
             _events.error(
@@ -3878,9 +4293,8 @@ async def _supersede_funds() -> int:
                     "note": "옛 매매법으로 계속 돈다 — 다음 재기동이 다시 시도한다",
                 },
             )
-            continue
+            return False
         SUPERSEDE_DEFERRED.pop(fund.fund_id, None)
-        done += 1
         _events.info(
             "fund_playbook_superseded",
             payload={
@@ -3891,7 +4305,7 @@ async def _supersede_funds() -> int:
                 "legs": [leg.attribution for leg in fund.legs],
             },
         )
-    return done
+        return True
 
 
 @router.post("/{fund_id}/resync")
@@ -3920,20 +4334,20 @@ async def resync(fund_id: str) -> dict[str, Any]:
         유지한다(라이브 전용 계정이면 진짜 잔고로 앵커 가능). 지금은 표시 실현·감사
         기준점만 옮긴다 — 그래도 허구 손익이 화면·대조에서 사라진다.
     """
-    fund = _fund_or_404(fund_id)
     resynced: list[str] = []
-    for sym, handle in fund.handles.items():
-        live = SESSIONS.get(handle)
-        runner = LIVE_RUNNERS.get(handle)
-        if live is None or runner is None:
-            continue
-        # 🔴 **갈린 세션만** — 깨끗한 세션의 정상 실적을 안 지운다.
-        if live.session.reconciled and live.session.accounting_ok:
-            continue
-        with contextlib.suppress(Exception):
-            await runner.resync_ledger()
-            resynced.append(sym)
-    await _tick(fund)  # 재정렬된 실현으로 총자본·TWR 갱신 (앵커 포함)
+    async with _fund_locked(fund_id) as fund:  # T563 — 전환 · 편집과 겹치지 않게
+        for sym, handle in fund.handles.items():
+            live = SESSIONS.get(handle)
+            runner = LIVE_RUNNERS.get(handle)
+            if live is None or runner is None:
+                continue
+            # 🔴 **갈린 세션만** — 깨끗한 세션의 정상 실적을 안 지운다.
+            if live.session.reconciled and live.session.accounting_ok:
+                continue
+            with contextlib.suppress(Exception):
+                await runner.resync_ledger()
+                resynced.append(sym)
+        await _tick(fund)  # 재정렬된 실현으로 총자본·TWR 갱신 (앵커 포함)
     status = await _status(fund)
     status["resynced"] = resynced
     return status
@@ -4178,13 +4592,21 @@ async def deposit(fund_id: str, payload: Annotated[dict[str, Any], Body()]) -> d
         **조용히** 잘라 펀드가 빈 채로 돌았다 — 조용한 실패는 금지다 (절대 규칙 #8).
         ⛔ 거래소 이체는 여기서 하지 않는다 — 이것은 원장 사건이고 돈은 사람이 옮긴다.
     """
-    fund = _fund_or_404(fund_id)
+    _fund_or_404(fund_id)
     try:
         amount = Decimal(str(payload["amount"]))
     except (KeyError, ArithmeticError, ValueError) as exc:
         raise HTTPException(400, f"금액을 못 읽었다: {payload.get('amount')!r}") from exc
     if amount == 0:
         raise HTTPException(400, "금액이 0 이다 — 입금은 양수, 출금은 음수")
+    async with _fund_lock(fund_id):  # T563 — 전환 · 편집 · 틱과 겹치지 않게
+        return await _deposit_locked(_fund_or_404(fund_id), amount, payload)
+
+
+async def _deposit_locked(
+    fund: Fund, amount: Decimal, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    """입출금 몸통 — 펀드 락 안에서 (`deposit` · T563)."""
     balance = fund.coordinator.engine.balance
     if amount < 0 and -amount > balance:
         raise HTTPException(400, f"출금 {-amount} 이 펀드 잔고 {balance} 를 넘는다")

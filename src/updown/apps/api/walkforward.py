@@ -874,12 +874,38 @@ def _awaited_fund(
         return None
 
 
+def _gate_softened(symbol: str, gate: str, why: str) -> None:
+    """포지션을 든 판을 띄우느라 시작 문 하나를 **막지 않고 지나갔다**는 경고 (T563).
+
+    Args:
+        symbol: 종목.
+        gate: 지나간 문(`liquidity` · `sizing`).
+        why: 그 문이 막았을 이유.
+
+    Note:
+        펀드 전환 되돌리기는 거둔 판의 포지션을 다시 맡을 판을 띄운다. 그때 저장 예산이 가격
+        상승으로 1계약 바닥 아래가 됐다고 판을 안 띄우면 거래소 손절만 남고 본절 · 추적 상향 ·
+        익절 · 신호 청산이 멈춘다(#8-1). 그래서 문은 지나가되 조용히 넘기지 않는다(#8) — 그 판의
+        새 진입은 주문 순간의 수량 계산이 막는다.
+    """
+    _logger.warning(
+        "live_start_gate_softened",
+        payload={
+            "symbol": symbol,
+            "gate": gate,
+            "why": why[:200],
+            "note": "포지션을 든 판의 관리를 잇는다 — 이 문은 경고만 하고 지나갔다",
+        },
+    )
+
+
 async def _live_start(
     payload: dict[str, Any],
     *,
     reviving: bool = False,
     request: Request | None = None,
     inherit: Sequence[TradeRecord] = (),
+    keep_managing: bool = False,
 ) -> dict[str, Any]:
     """**라이브 페이퍼 세션**을 띄운다 — Gate testnet 페이크머니 (T13).
 
@@ -889,6 +915,10 @@ async def _live_start(
             이 기록을 그대로 잇는다(매매 id · 진입 시각 · 계약 · 몫 · 불타기 상태 보존). 러너는
             이 기록을 "이미 열려 있던 것"(`_revived_open`)으로 보고 진입을 다시 보내지 않는다.
             `symbol` 기본값은 `BTC_USDT`, `market` 은 `GATE` 다.
+        keep_managing: **포지션을 관리 밖에 두지 않으려고** 띄우는가 (T563 · 펀드 전환 되돌리기).
+            참이고 `inherit` 에 열린 기록이 있으면 유동성 문 · 1계약 문을 막지 않고 경고로 낮춘다 —
+            포지션을 든 판을 다시 띄우는 것은 리스크 감소 행동이라 관리를 잇는 것이 먼저다(#8-1).
+            그 판의 **새 진입**은 주문 순간의 수량 계산이 그대로 막는다(0계약이면 거절).
         reviving: **이미 있던 판을 되살리는 중**인가 (2026-08-19 사고 ⑤). 참이면
             증거금 검사를 건너뛴다 — 그 판의 돈은 이미 자기 포지션에 들어가 있어서
             `available` 이 비어 있는 것이 정상이기 때문이다. 새로 만들 때는 거짓이며,
@@ -1151,15 +1181,19 @@ async def _live_start(
     from updown.apps.api.exchange import liquidity_of, sizing_of
 
     lever = Decimal(str(payload.get("leverage", 1)))
+    # ⭐ T563 — 포지션을 든 판을 관리 밖에 두지 않으려고 띄우는 중이면 아래 두 문은 경고만 한다.
+    holding = keep_managing and any(item.outcome is Outcome.OPEN for item in inherit)
     # 🔴 **그 판의 거래소로** 본다 (2026-09-06) — 없으면 Gate 호가창으로 바이낸스 판을 판정한다.
     depth = await liquidity_of(symbol, margin * lever, market=market.value)
     if not depth.ok:
-        raise HTTPException(
-            409,
-            f"{symbol} 는 지금 호가가 이 규모를 못 받는다 — {depth.why}. "
-            "들어가면 나올 때 값이 없다 (2026-08-20 에 SPCX 로 증거금 420 이 묶였다). "
-            "다른 종목을 고르거나 증거금을 줄인다",
-        )
+        if not holding:
+            raise HTTPException(
+                409,
+                f"{symbol} 는 지금 호가가 이 규모를 못 받는다 — {depth.why}. "
+                "들어가면 나올 때 값이 없다 (2026-08-20 에 SPCX 로 증거금 420 이 묶였다). "
+                "다른 종목을 고르거나 증거금을 줄인다",
+            )
+        _gate_softened(symbol, "liquidity", depth.why)
 
     # 🔴 **예산이 1계약을 살 수 있나** (사용자 신고 2026-08-20: *"이거는 왜 주문이 한번도
     #    없었어? 말이 안되는데."*). SOL·ETH 판이 7시간 돌면서 한 건도 못 냈다 — 자리는
@@ -1177,7 +1211,9 @@ async def _live_start(
         symbol, margin, lever, leg=thinnest_leg(catalog, book), market=market.value
     )
     if not fit.ok:
-        raise HTTPException(409, f"{symbol} 는 이 예산으로 주문이 안 나간다 — {fit.why} USDT")
+        if not holding:
+            raise HTTPException(409, f"{symbol} 는 이 예산으로 주문이 안 나간다 — {fit.why} USDT")
+        _gate_softened(symbol, "sizing", fit.why)
 
     # 🔴 **이 종목에 주인 없는 잔재가 있으면 치우고 시작한다** (사용자 요구 2026-08-21:
     #    *"run 을 띄울 때 선택할 수 있어야 할 것 같은데"*).
@@ -1433,6 +1469,11 @@ async def _live_start(
             "같은 포지션의 손익을 각각 센다 (양쪽 성적이 다 틀린다). "
             "다른 종목을 고르거나 그 판을 먼저 지운다",
         )
+    # ⭐ T563 — 판 행을 열기 **전에** 읽을 것을 읽는다(계약 명세 · 전 판 진입 정지 스위치). 행을 연
+    #    뒤에 이 조회가 실패하면 러너 없는 열린 행이 남는다 — 감시견이 그 행을 되살리고, 같은 종목을
+    #    다시 띄우는 쪽(펀드 전환 되돌리기)은 그 행 때문에 409 를 받는다.
+    spec = await quotes.contract_spec(instrument)
+    halted = _settings is not None and await _settings.get(HALT_KEY) == "1"
     try:
         opened = await _store.open(
             key=handle,
@@ -1553,8 +1594,8 @@ async def _live_start(
         )
     # 🔴 전 판 진입 정지 스위치(DB · 2026-10-01) — 새로 뜨는 판 · 되살아나는 판 · 전환된 판도
     #    따른다. `auto` 는 메모리뿐이라 재시작 · 리더 교체 · 자동 전환 되살리기에서 진입이
-    #    되살아났다.
-    if _settings is not None and await _settings.get(HALT_KEY) == "1":
+    #    되살아났다. 스위치는 행을 열기 전에 읽었다(`halted`).
+    if halted:
         session.auto = False
         _logger.warning(
             "live_start_entries_halted",
@@ -1590,7 +1631,6 @@ async def _live_start(
         "resumed": opened.resumed,
     }
 
-    spec = await quotes.contract_spec(instrument)
     # 어느 스트림인지는 어댑터가 안다 (T63 §2b — candle_stream 팩토리). 계약은 같다
     # (LiveCandle · reconnects · is_testnet).
     stream = quotes.candle_stream(
@@ -1671,7 +1711,15 @@ async def _live_start(
             )
     # 🔴 좀비 진입 지정가 (2026-08-25 ADA 고아 사건): 주인 없는 진입 지정가는 채워지기 전에
     #    거둔다. 포지션이 있어도 거둔다 (부활은 보호만 걸기 때문). 되살린 표는 `keep` 으로 뺀다.
-    swept += await sweep_zombie_entries(orders, instrument, why="판 시작", keep=kept_ids)
+    try:
+        swept += await sweep_zombie_entries(orders, instrument, why="판 시작", keep=kept_ids)
+    except Exception:
+        # ⭐ T563 — 새로 연 행이면 닫고 던진다(러너 없는 열린 행을 남기지 않는다). 이어받은 행은
+        #    그 판의 것이라 그대로 둔다 — 감시견 · 재기동이 다시 되살린다.
+        if not opened.resumed:
+            with contextlib.suppress(Exception):
+                await _store.close(handle, reason="판 시작이 중간에 실패했다")
+        raise
     runner.swept = [f"{item.kind} {item.at}" for item in swept]
 
     # 🔴 T293 — **펀드 멤버는 펀드가 문을 붙일 때까지 신규 진입을 안 받는다.** 러너를 띄우기
@@ -4361,6 +4409,16 @@ async def run_margins(market: Market) -> dict[str, Decimal]:
     return found
 
 
+PREFLIGHT_FLOOR_HEADROOM = Decimal("0.05")
+"""미리 재기(`_start_blocker`)가 1계약 바닥에 더하는 여유 비율 (T563).
+
+펀드 전환은 판 40개를 띄우는 데 2 ~ 3분이 걸린다 — 마지막 판은 잰 뒤 그만큼 지나서 뜬다. 바닥에 1%
+안팎으로 붙은 종목은 그 사이 가격이 조금만 올라도 실제 시작의 같은 문에서 막히고, 그러면 미룸이
+아니라 되돌림(판을 거두고 다시 띄우기)으로 간다. 여유만큼 더 기다리는(미루는) 쪽이 안전하다.
+실제 시작 문(`_live_start`)은 여유 없이 그대로다 — 여기는 "지금 바꿔도 되나" 의 문턱이다.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class StartBlock:
     """판을 띄우면 **막힐 문** 하나 — 미리 잰 결과 (`start_blockers`).
@@ -4369,7 +4427,8 @@ class StartBlock:
         gate: 문 이름 — `playbook` · `market` · `margin` · `risk` · `tick` · `quote` · `adapter` ·
             `liquidity` · `sizing` · `held` · `store` · `account` · `cash` · `budget`.
         why: `_live_start` 가 낼 이유 문구(같은 뜻).
-        floor: 1계약 문(`sizing`)이면 그 판 예산의 바닥 — 얼마가 모자라는지 알린다. 그 밖은 None.
+        floor: 1계약 문(`sizing`)이면 그 판 예산이 넘어야 할 값(바닥 + 미리 재기 여유
+            `PREFLIGHT_FLOOR_HEADROOM`) — 얼마가 모자라는지 알린다. 그 밖은 None.
     """
 
     gate: str
@@ -4467,8 +4526,19 @@ async def _start_blocker(payload: Mapping[str, Any], replacing: str | None) -> S
         )
     except HTTPException as exc:
         return StartBlock("adapter", str(exc.detail))
+    # ⭐ 미리 재기는 바닥에 여유(`PREFLIGHT_FLOOR_HEADROOM`)를 둔다 — 잰 뒤 판이 뜨기까지 수 분이라
+    #    바닥에 1% 안팎으로 붙은 종목은 그 사이 값이 조금만 올라도 실제 시작에서 막힌다.
+    need = fit.floor * (1 + PREFLIGHT_FLOOR_HEADROOM)
     if not fit.ok:
-        return StartBlock("sizing", f"이 예산으로 주문이 안 나간다 — {fit.why} USDT", fit.floor)
+        return StartBlock("sizing", f"이 예산으로 주문이 안 나간다 — {fit.why} USDT", need)
+    if margin < need:
+        return StartBlock(
+            "sizing",
+            f"예산 {margin:.2f} 이 1계약 바닥 {fit.floor:.2f} 에 여유 "
+            f"{PREFLIGHT_FLOOR_HEADROOM:.0%} 를 더한 {need:.2f} 보다 작다 — 미리 잰 뒤 판이 "
+            "뜨기까지 값이 움직이면 실제 시작에서 막힌다",
+            need,
+        )
     for other, live in SESSIONS.items():
         if (
             other != replacing

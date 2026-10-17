@@ -65,7 +65,9 @@ from updown.apps.api.mcp_server import McpEndpoint, build_manager, build_server
 from updown.apps.api.middleware import trace_id_middleware
 from updown.apps.api.notify import router as notify_router
 from updown.apps.api.quotes import attach_candles
+from updown.apps.api.rebalancer import bind_leader as bind_fund_leader
 from updown.apps.api.rebalancer import router as rebalancer_router
+from updown.apps.api.rebalancer import stop_supersede
 from updown.apps.api.report import router as report_router
 from updown.apps.api.resources_admin import router as resources_admin_router
 from updown.apps.api.toss_proxy import router as toss_proxy_router
@@ -162,6 +164,19 @@ class ApiState:
                 "dependencies": report.to_json_dict()["dependencies"],
             },
         )
+
+
+def _leading(app: FastAPI) -> bool:
+    """이 프로세스가 지금 거래 리더인가 — 문(auth.guard) · /health 가 읽는 것과 같은 값 (T563).
+
+    Args:
+        app: 앱 — `app.state.trading_leader` 를 읽는다.
+
+    Returns:
+        리더면 참. 게이트가 없으면 거짓(리더 게이트 없이는 거래를 시작하지 않는다).
+    """
+    gate = getattr(app.state, "trading_leader", None)
+    return gate is not None and bool(gate.is_leader)
 
 
 def create_app(state: ApiState | None = None) -> FastAPI:
@@ -271,12 +286,18 @@ def create_app(state: ApiState | None = None) -> FastAPI:
             """리더가 될 때 — 라이브 복구 + 펀드 + 관리 루프들을 띄운다."""
             if _inproc is not None:
                 _inproc.start()
+            # ⭐ T563 — 펀드 자동 대체는 시도마다 지금 리더인지 묻는다(리더를 잃으면 전환 안 함).
+            bind_fund_leader(lambda: _leading(app))
             await _autostart_and_loops(_trade_tasks)
 
         async def _stop_trading() -> None:
             """팔로워로 내려갈 때 — 관리 루프들을 거둔다 (포지션은 브로커 손절이 지킨다)."""
             if _inproc is not None:
                 _inproc.stop()
+            # ⭐ T563 — 펀드 자동 대체 고리도 거둔다(`_trade_tasks` 밖에서 산다 ·
+            #    도는 전환은 끝까지 간다).
+            with contextlib.suppress(Exception):
+                await stop_supersede()
             for task in _trade_tasks:
                 task.cancel()
             for task in _trade_tasks:
