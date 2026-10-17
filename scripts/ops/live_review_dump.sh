@@ -3,7 +3,7 @@
 #   사용: pull_live_review.sh 가 올려서 `bash /tmp/live_review_dump.sh <DAYS>` 로 부른다. 사람이 직접 부를 일은 없다.
 #
 # 🔴 전제(사용자 2026-10-09): 라이브에는 부하가 거의 없어야 한다.
-#   - psql 읽기 4번(실계좌 판 · 매매 · 주문 · 수십 ~ 수백 줄)
+#   - psql 읽기 5번(실계좌 판 · 매매 · 주문 · 막힌 후보 event_logs(T562) · 수십 ~ 수백 줄)
 #   - 앱 로그 회전 파일(runlogs/app/*.jsonl · 최근 DAYS 일) 을 잡음 줄(HTTP · 봉 적재 · 아웃바운드) 빼고 복사
 #   - 거래소 조회 3 ~ 4번(자금 원장 · 끝난 주문 · 닫힌 포지션 · 포지션) — api 컨테이너 안 파이썬 한 번
 #   - 펀드 파일 읽기
@@ -115,6 +115,13 @@ H="$OUT/health.txt"
   vmstat 1 2 | tail -1 | awk '{print "cpu|"$13"|"$15"|"$17}'
   df -P / | awk 'NR==2 {print "disk|"$5}'
 } > "$H" 2>/dev/null
+
+# 8) 막힌 후보(T562 · event_logs 의 session_candidate_blocked · 최근 DAYS 일) — 적힌 시각 · payload 한 줄.
+#    읽기만 한다(event_logs 는 append-only · 규칙 8-2). ts · event_type 에 인덱스가 있어 가볍다.
+"${PSQL[@]}" -c "select to_char(e.ts at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
+   replace(replace(e.payload_json::text, E'\t',' '), E'\n',' ')
+   from event_logs e where e.event_type = 'session_candidate_blocked' and e.ts >= $SINCE
+   order by e.ts" > "$OUT/blocked.tsv"
 
 wc -l "$OUT"/*.tsv "$OUT"/events.jsonl | sed 's|/tmp/live_review/||' >> "$OUT/meta.txt"
 tar -C /tmp -czf /tmp/live_review.tgz live_review

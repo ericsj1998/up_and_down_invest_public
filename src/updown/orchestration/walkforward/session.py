@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -306,6 +307,82 @@ class Snapshot:
     closed: tuple[TradeRecord, ...] = ()
     declared: tuple[TrendDirection, Decimal] | None = None
     """박스의 반응으로 선언된 국면 (방향, 해제 레벨) — `regime_source: box` 일 때만 (T46)."""
+
+
+BLOCKED_RECENT_LIMIT = 50
+"""저널 `blocked_recent` 가 들고 있는 막힌 후보 수 — 오래된 것부터 버리는 순환이다 (T562).
+
+저널은 *"최근 무엇이 막혔나"* 를 바로 보는 창이고, 기간 집계는 라이브 러너가 옮겨 적는
+`event_logs`(`session_candidate_blocked`)가 한다. 러너는 걸음마다 새로 생긴 것만 옮기고
+(`blocked_since`) 한 걸음에 막히는 후보는 다리 수만큼이라, 이 창이 넘쳐 잃는 일은 DB 가
+오래 안 될 때뿐이다 — 그때는 러너가 잃은 수를 경고로 남긴다.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedCandidate:
+    """진입이 막힌 후보 하나 — **읽기 전용 기록** (T562).
+
+    Attributes:
+        seq: 세션 안 일련번호(1부터) — 러너가 `event_logs` 로 어디까지 옮겼는지 재는 열쇠.
+        at: 막힌 봉 시각(UTC · 세션 커서).
+        symbol: 종목.
+        leg: 후보를 낸 매매법의 귀속 키(`id@version`).
+        direction: 계획 기하가 말한 방향. 모르면 None.
+        code: 막힌 코드 — `awaiting_fund` · `unreconciled` · `share_opposite` · `marubozu` ·
+            `spinning` · `short_blocked` · `gate:<사유>`.
+        entry: 계획 진입가. 모르면 None.
+        stop: 계획 손절가. 계산 전에 막혔으면 None.
+        exposure: 그 자리에 쓰려던 노출(명목/증거금). 크기를 재기 전에 막혔으면 None.
+        size_mult: 탐지기 크기 승수(배수). 모르면 None.
+
+    Note:
+        🔴 **왜 남기나**: 깔때기(`blocked:<코드>`)는 개수만 올려서, 사후 분석(T444 · T477)이
+        *"재현은 들어가고 라이브는 못 들어간 자리"* 를 못 찾았다 — 들어간 매매만 보는 대조는
+        생존자 편향을 안는다 (T561 §9).
+
+        ⛔ 값을 **읽기만** 한다. 이 기록이 진입 여부 · 크기를 바꾸면 관측이 매매가 된다.
+    """
+
+    seq: int
+    at: datetime
+    symbol: str
+    leg: str
+    direction: Direction | None
+    code: str
+    entry: Decimal | None = None
+    stop: Decimal | None = None
+    exposure: Decimal | None = None
+    size_mult: Decimal | None = None
+
+    @property
+    def playbook_id(self) -> str:
+        """매매법 id = 귀속 키의 `@` 앞."""
+        return self.leg.split("@", 1)[0]
+
+    def as_row(self) -> dict[str, Any]:
+        """저널 · `event_logs` 에 싣는 꼴 — 값은 문자열(Decimal 정밀도를 잃지 않게).
+
+        Returns:
+            JSON 으로 바로 쓸 수 있는 사전.
+
+        Note:
+            직렬화는 저널을 쓰거나 러너가 옮길 때만 한다 — 펀드 재현 · 연구 경로는 이 함수를
+            안 부른다(기록 자체는 작은 불변 객체 하나라 걸음 비용에 안 잡힌다).
+        """
+        return {
+            "seq": self.seq,
+            "at": self.at.isoformat(),
+            "symbol": self.symbol,
+            "leg": self.leg,
+            "playbook_id": self.playbook_id,
+            "direction": None if self.direction is None else self.direction.value,
+            "code": self.code,
+            "entry": None if self.entry is None else str(self.entry),
+            "stop": None if self.stop is None else str(self.stop),
+            "exposure": None if self.exposure is None else str(self.exposure),
+            "size_mult": None if self.size_mult is None else str(self.size_mult),
+        }
 
 
 def funding_blocks(direction: Direction, rate: Decimal | None, cap: Decimal | None) -> bool:
@@ -1077,6 +1154,23 @@ class Session:
     "기회가 어디서 죽나" 를 추측하지 않으려고 센다. 키: `bars:<국면>` · `cand:<플레이북>` ·
     `blocked:<플레이북>` · `entered:<플레이북>`. 놓친 돌파는 `missed_breakouts` 그대로.
     """
+    blocked_recent: deque[BlockedCandidate] = field(
+        default_factory=lambda: deque[BlockedCandidate](maxlen=BLOCKED_RECENT_LIMIT)
+    )
+    """막힌 후보의 최근 기록 (T562) — 어느 봉 · 다리 · 계획값이 무엇 때문에 막혔나.
+
+    깔때기는 개수, 이것은 **무엇이었나**다. 저널(`blocked_recent`)에 실리고, 라이브 러너가
+    `blocked_since` 로 새것만 `event_logs` 에 옮긴다.
+    """
+    blocked_seq: int = 0
+    """지금까지 남긴 막힌 후보 수 = 마지막 기록의 `seq` (T562)."""
+    _blocked_bar: datetime | None = None
+    """`_blocked_keys` 가 가리키는 봉(커서) — 봉이 바뀌면 중복 거르기를 새로 시작한다."""
+    _blocked_keys: set[tuple[str, str, str, str]] = field(
+        default_factory=lambda: set[tuple[str, str, str, str]]()
+    )
+    """이 봉에서 이미 남긴 (종목, 다리, 방향, 코드) — 같은 봉의 재호출(마감 · 조기 진입이 같은
+    후보로 같은 문을 두 번 묻는 경우 등)을 한 건으로 센다 (T562)."""
     _add_seen: dict[str, datetime] = field(default_factory=lambda: dict[str, datetime]())
     """불타기 판정이 이미 본 마지막 판정 TF 봉(매매별 · T308). 다시 훑지 않으려는 표시일 뿐 —
     판정 결과(`add_at` · `add_broken`)는 기록에 있어 재시작해도 같은 답이 나온다."""
@@ -2062,6 +2156,101 @@ class Session:
         """깔때기 칸 하나를 센다 (T50 ③)."""
         self.funnel[key] = self.funnel.get(key, 0) + 1
 
+    def _note_blocked(
+        self,
+        code: str,
+        leg: str,
+        direction: Direction | None,
+        *,
+        entry: Decimal | None = None,
+        stop: Decimal | None = None,
+        exposure: Decimal | None = None,
+        size_mult: Decimal | None = None,
+    ) -> None:
+        """막힌 후보 하나를 **읽기만 해서** 남긴다 (T562).
+
+        Args:
+            code: 막힌 코드(`BlockedCandidate.code`).
+            leg: 후보를 낸 매매법의 귀속 키.
+            direction: 계획 방향. 모르면 None.
+            entry: 계획 진입가.
+            stop: 계획 손절가.
+            exposure: 쓰려던 노출(명목/증거금).
+            size_mult: 탐지기 크기 승수.
+
+        Note:
+            같은 봉에서 (종목, 다리, 방향, 코드)가 같으면 한 번만 남긴다 — 마감 진입이 막힌 뒤
+            조기 진입이 같은 후보로 같은 문을 또 물으면 깔때기는 두 번 세지만 후보는 하나다.
+
+            ⛔ 아무것도 바꾸지 않는다 — 깔때기 · 진입 여부 · 크기는 부르는 쪽이 이미 정했다.
+            결정론도 그대로다(시각은 커서 · 벽시계를 안 본다 · 절대 규칙 #5).
+        """
+        at = self.cursor
+        if at != self._blocked_bar:
+            self._blocked_bar = at
+            self._blocked_keys.clear()
+        side = "" if direction is None else direction.value
+        key = (self.instrument.symbol, leg, side, code)
+        if key in self._blocked_keys:
+            return
+        self._blocked_keys.add(key)
+        self.blocked_seq += 1
+        self.blocked_recent.append(
+            BlockedCandidate(
+                seq=self.blocked_seq,
+                at=at,
+                symbol=self.instrument.symbol,
+                leg=leg,
+                direction=direction,
+                code=code,
+                entry=entry,
+                stop=stop,
+                exposure=exposure,
+                size_mult=size_mult,
+            )
+        )
+
+    def _note_proposal_blocked(
+        self,
+        code: str,
+        item: Proposal,
+        *,
+        entry: Decimal | None = None,
+        exposure: Decimal | None = None,
+    ) -> None:
+        """후보(`Proposal`)째로 막힌 기록을 남긴다 — 계획값은 셋업에서 읽는다 (T562).
+
+        Args:
+            code: 막힌 코드.
+            item: 막힌 후보.
+            entry: 진입가를 이미 정했으면 그 값(체결 봉 종가 등). 없으면 셋업의 계획 평단.
+            exposure: 쓰려던 노출. 크기를 재기 전이면 None.
+        """
+        setup = item.setup
+        self._note_blocked(
+            code,
+            item.playbook.attribution,
+            Direction.SHORT if setup.stop_loss > setup.avg_entry else Direction.LONG,
+            entry=setup.avg_entry if entry is None else entry,
+            stop=setup.stop_loss,
+            exposure=exposure,
+            size_mult=setup.size_mult,
+        )
+
+    def blocked_since(self, seq: int) -> tuple[BlockedCandidate, ...]:
+        """`seq` 뒤에 남긴 막힌 후보들 — 라이브 러너가 `event_logs` 로 옮길 몫 (T562).
+
+        Args:
+            seq: 이미 옮긴 마지막 일련번호. 처음이면 0.
+
+        Returns:
+            일련번호 순. 순환 창(`BLOCKED_RECENT_LIMIT`)에서 이미 밀려난 것은 없다 — 러너가
+            첫 `seq` 와 견주어 잃은 수를 안다.
+        """
+        if seq >= self.blocked_seq:
+            return ()
+        return tuple(item for item in self.blocked_recent if item.seq > seq)
+
     def step(self) -> Snapshot | None:
         """커서를 한 봉 앞으로 밀고, 그 봉에서 판단·집행한다.
 
@@ -2077,6 +2266,7 @@ class Session:
         """
         if self.paused or not self.feed.advance(self.step_frame):
             return None
+        noted = self.blocked_seq  # T562 — 이 걸음에 막힌 후보가 늘면 저널을 다시 쓴다
         self._sync_open()
         shot = self.look()
         # 🔴 **걸어 둔 것을 먼저 거둔다** (T19 ③). 채워진 뒤라야 같은 봉에서 청산
@@ -2118,8 +2308,16 @@ class Session:
         tripped = self.breaker_tripped_at is not None
         if not self.reconciled:
             self._count("blocked:unreconciled")
+            # ⭐ T562 — 개수만 세면 어느 후보였는지 사후에 못 찾는다. 진입에 나설 후보
+            #    (`Proposal.blocked` 가 빈 것)만 남긴다 — 룰이 막은 후보는 재현도 똑같이 막는다.
+            for item in shot.proposals:
+                if not item.blocked:
+                    self._note_proposal_blocked("unreconciled", item)
         if not self.fund_ready:
             self._count("blocked:awaiting_fund")
+            for item in shot.proposals:
+                if not item.blocked:
+                    self._note_proposal_blocked("awaiting_fund", item)
         opened = self._enter(shot) if self._may_enter(idle=idle, tripped=tripped) else None
         # ⭐ T345 조기 진입 — 마감 판정에서 못 샀고(보통 봉이 안 닫혔다) 지금이 선언한 분이면
         #    부분 봉으로 본다.
@@ -2138,7 +2336,9 @@ class Session:
         for item in shot.proposals:
             for evidence in item.setup.evidence:
                 self._seen[evidence.source] = self._seen.get(evidence.source, 0) + 1
-        if opened is not None or closed:
+        # ⭐ T562 — 막힌 후보가 새로 생겨도 저널을 다시 쓴다(`blocked_recent`). 저널이 없는
+        #    판(백테스트 · 펀드 재현 · 연구)은 `journal()` 이 바로 돌아간다.
+        if opened is not None or closed or self.blocked_seq != noted:
             self.journal()
         return Snapshot(
             at=shot.at,
@@ -2237,6 +2437,8 @@ class Session:
             },
             "detections": self.detections,
             "trades": rows,
+            # ⭐ T562 — 최근 막힌 후보(순환 · `BLOCKED_RECENT_LIMIT`). 개수는 깔때기에 있다.
+            "blocked_recent": [item.as_row() for item in self.blocked_recent],
         }
         self.journal_path.write_text(
             json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -2344,12 +2546,17 @@ class Session:
             그래서 펀드를 기다리는 동안(T293)은 여기서 따로 막는다 — 뒤집기도 **새 포지션**이고,
             문 없이 열리면 자리·명목 상한 밖이다. 청산 자체는 이미 끝났으므로 나가는 길은 안 막힌다.
         """
+        # T562 — 뒤집을 방향 · 진입가(지금 봉 종가)는 막히기 전에 이미 안다. 손절은 아래에서
+        #    재므로 막힌 기록에는 없다(None).
+        flip = Direction.LONG if closed.direction is Direction.SHORT else Direction.SHORT
         if not self.fund_ready:
             self._count("blocked:awaiting_fund")
+            self._note_blocked("awaiting_fund", closed.playbook, flip, entry=bar.close)
             return None
         if any(item.playbook != closed.playbook for item in self._held.values()):
             # T320 — 다른 다리 몫이 남아 있다. 뒤집으면 한 방향 포지션에 반대 방향이 든다.
             self._count("blocked:share_opposite")
+            self._note_blocked("share_opposite", closed.playbook, flip, entry=bar.close)
             return None
         rows = list(self.feed.judged(self.playbook.timeframe))
         pivot = rows[-1] if rows else bar
@@ -3281,28 +3488,48 @@ class Session:
         self.journal()
         return (done,)
 
-    def _candle_blocks(self, bar: Candle, direction: Direction, playbook_id: str) -> bool:
+    def _candle_blocks(
+        self,
+        bar: Candle,
+        direction: Direction,
+        playbook_id: str,
+        *,
+        leg: str | None = None,
+        setup: TradeSetup | None = None,
+    ) -> bool:
         """이 봉의 캔들 문법이 이 방향 진입을 막는가 (T54 C·D).
 
         Args:
             bar: 진입 축의 마지막 마감 봉(방아쇠 봉).
             direction: 계획 기하가 말한 방향.
             playbook_id: 후보를 낸 플레이북 id — 추격만 스피닝에 멈춘다.
+            leg: 후보를 낸 매매법의 귀속 키 — 주면 막힌 후보를 남긴다(T562 · 판정엔 안 쓴다).
+            setup: 그 후보의 셋업 — 막힌 기록의 손절 · 크기 승수를 읽는다(T562).
 
         Returns:
             막으면 True. 스위치가 다 꺼져 있으면 항상 False(동결 무변화).
         """
-        if self.no_counter_marubozu:
-            if marubozu(bar, up=True) and direction is Direction.SHORT:
-                self._count("blocked:marubozu")
-                return True
-            if marubozu(bar, up=False) and direction is Direction.LONG:
-                self._count("blocked:marubozu")
-                return True
-        if self.pause_on_spinning and "chase" in playbook_id and spinning(bar):
-            self._count("blocked:spinning")
-            return True
-        return False
+        code: str | None = None
+        if self.no_counter_marubozu and (
+            (marubozu(bar, up=True) and direction is Direction.SHORT)
+            or (marubozu(bar, up=False) and direction is Direction.LONG)
+        ):
+            code = "marubozu"
+        elif self.pause_on_spinning and "chase" in playbook_id and spinning(bar):
+            code = "spinning"
+        if code is None:
+            return False
+        self._count(f"blocked:{code}")
+        if leg is not None:
+            self._note_blocked(
+                code,
+                leg,
+                direction,
+                entry=bar.close,
+                stop=None if setup is None else setup.stop_loss,
+                size_mult=None if setup is None else setup.size_mult,
+            )
+        return True
 
     def stop_too_tight(self, record: TradeRecord) -> bool:
         """손절이 하한보다 **가까운가** — 참이면 그 자리는 안 간다 (T147~T150).
@@ -3656,13 +3883,25 @@ class Session:
             self._count("vol:up" if mult > 1 else "vol:down")
         return exposure * mult
 
-    def _gate(self, at: datetime, exposure: Decimal, leg: str | None = None) -> Decimal | None:
+    def _gate(
+        self,
+        at: datetime,
+        exposure: Decimal,
+        leg: str | None = None,
+        *,
+        side: Direction | None = None,
+        entry: Decimal | None = None,
+        setup: TradeSetup | None = None,
+    ) -> Decimal | None:
         """펀드 문에 **이 크기로 열어도 되는지** 묻고 허용 크기를 받는다 (T279 P3 · T286).
 
         Args:
             at: 진입하려는 봉의 시각(UTC).
             exposure: 이 자리에 쓰려는 실제 노출(명목/증거금).
             leg: 진입을 낸 매매법의 귀속 키 — 다리별 문(`LegAware` · T291)은 이것으로 문을 고른다.
+            side: 계획 방향 — 막혔을 때 기록용(T562 · 문은 안 본다).
+            entry: 계획 진입가 — 막혔을 때 기록용(T562).
+            setup: 그 후보의 셋업 — 막혔을 때 손절 · 크기 승수를 읽는다(T562).
 
         Returns:
             허용 크기(보통 요청값 이하 · 짝 다리 숏 열림 키우기(T400 · `boost`)면 요청값보다 크다).
@@ -3685,6 +3924,17 @@ class Session:
         if given.blocked is not None:
             self.gate_held += 1
             self._count(f"gate:{given.blocked}")
+            if leg is not None:
+                # T562 — 어느 다리의 어떤 계획이 어느 문(자리 · 명목 상한 · 브레이크 …)에 막혔나.
+                self._note_blocked(
+                    f"gate:{given.blocked}",
+                    leg,
+                    side,
+                    entry=entry,
+                    stop=None if setup is None else setup.stop_loss,
+                    exposure=exposure,
+                    size_mult=None if setup is None else setup.size_mult,
+                )
             _logger.info(
                 "session_entry_gate_held",
                 payload={
@@ -3954,7 +4204,7 @@ class Session:
         # 🔴 **펀드의 진입 문** (T279 P3 · T286) — 시장가 경로와 같은 자다. 예전에는 `_enter` 가
         #    문을 **선언 배율**로 한 번 물었고 여기서 계산한 실제 노출과 어긋났다(위험 기반
         #    사이징일 때). 이제 각 경로가 **자기가 쓸 크기**로 묻는다.
-        gated = self._gate(bar.ts, exposure, owner)
+        gated = self._gate(bar.ts, exposure, owner, side=direction, entry=average, setup=setup)
         if gated is None:
             return
         exposure = gated
@@ -4595,6 +4845,8 @@ class Session:
             # ⭐ T239 — 현물 시장: 숏 후보는 시장이 받지 않는다. 지우지 않고 센다 (§1-0s).
             shorts = [item for item in open_to_entry if item.setup.stop_loss > item.setup.avg_entry]
             self.short_blocked += len(shorts)
+            for item in shorts:
+                self._note_proposal_blocked("short_blocked", item)  # T562
             open_to_entry = [item for item in open_to_entry if item not in shorts]
         if self._held:
             # ⭐ T320 — 보유 중이면 **같은 방향 몫을 더할 수 있는 다리**의 후보만 남는다.
@@ -4650,7 +4902,7 @@ class Session:
         # ⭐ **방향은 계획 기하가 말한다.** 손절이 진입 위면 숏이다.
         direction = Direction.SHORT if setup.stop_loss > setup.avg_entry else Direction.LONG
         # ⭐ T54 C·D — 캔들 문법 진입 필터. 자리를 지우지 않고 **진입에서만** 거른다.
-        if self._candle_blocks(bar, direction, chosen.playbook.playbook_id):
+        if self._candle_blocks(bar, direction, chosen.playbook.playbook_id, leg=owner, setup=setup):
             return None
         # 🔴 **펀딩 극단 진입 보류** (0.8.1 · 격자 검증 §strategy_improvements §5).
         #    극단 양수 요율에 새 롱을 열면 보유 비용 최고점 + 쏠림 꼭짓점 근처를 사는
@@ -4831,7 +5083,7 @@ class Session:
         exposure = scaled
         # 🔴 **펀드의 진입 문** (T279 P3 · T286) — 자리 · 같은 날 연속 손절 정지 · 총 명목 상한 ·
         #    낙폭 브레이크. 자리를 지우지 않고 진입에서만 거르거나 **크기를 줄인다**.
-        gated = self._gate(bar.ts, exposure, owner)
+        gated = self._gate(bar.ts, exposure, owner, side=direction, entry=bar.close, setup=setup)
         if gated is None:
             return None
         exposure = gated

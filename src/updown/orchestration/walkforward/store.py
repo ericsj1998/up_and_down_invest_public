@@ -452,12 +452,16 @@ class RunStore:
         """
         self._factory = factory
 
-    async def note_event(self, event_type: str, payload: JsonDict) -> None:
+    async def note_event(
+        self, event_type: str, payload: JsonDict, *, level: LogLevel = LogLevel.ERROR
+    ) -> None:
         """사실 하나를 `event_logs` 에 남긴다 — **앱 로그가 사라져도 남는 자리** (2026-09-21).
 
         Args:
             event_type: 이벤트 이름 (검색 열쇠).
             payload: 함께 남길 사실. 시크릿을 넣지 않는다.
+            level: 이벤트 레벨. 기본은 예전 그대로 ERROR(건너뛴 봉) — 관측 기록(막힌 후보 ·
+                T562)은 INFO 로 남겨 오류 집계에 안 섞는다.
 
         Raises:
             RunStoreError: DB 에 닿을 수 없는 경우. 🔴 **부르는 쪽이 삼킨다** — 관측이
@@ -477,7 +481,7 @@ class RunStore:
                         trace_id=get_trace_id() or new_trace_id(),
                         actor="system",
                         module="orchestration.walkforward.live_runner",
-                        level=LogLevel.ERROR,
+                        level=level,
                         event_type=event_type,
                         payload_json=payload,
                     )

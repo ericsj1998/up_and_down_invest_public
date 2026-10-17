@@ -4,7 +4,7 @@
 #   bash scripts/ops/pull_live_review.sh            # 최근 30일
 #   DAYS=60 bash scripts/ops/pull_live_review.sh    # 최근 60일
 #
-# 받는 곳: logs/live_review/snapshots/<UTC 시각>/ (runs.tsv · trades.tsv · orders.tsv · fund.json · events.jsonl · exchange.json · meta.txt)
+# 받는 곳: logs/live_review/snapshots/<UTC 시각>/ (runs.tsv · trades.tsv · orders.tsv · blocked.tsv · fund.json · events.jsonl · exchange.json · meta.txt)
 #         + logs/live_review/snapshots/latest → 방금 받은 폴더(심볼릭 링크)
 # 서버 주소 · 키는 저장소에 두지 않는다 — scripts/ops/host.env (remote.sh 와 같다). 서버에는 읽기만 한다.
 set -euo pipefail

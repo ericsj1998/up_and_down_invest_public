@@ -195,6 +195,21 @@ class Snapshot:
     fund: dict[str, Any]
     events: list[dict[str, Any]]
     exchange: dict[str, Any]
+    blocked: list[dict[str, Any]] | None = None
+    """막힌 후보(`event_logs` · `session_candidate_blocked` · T562) — `ts`(적힌 시각) + payload 칸.
+
+    None 이면 덤프에 그 파일이 없다(옛 덤프) — 빈 목록(막힌 후보 0)과 가른다.
+    """
+
+
+BLOCKED_COLUMNS = ("ts", "payload_json")
+
+
+def _blocked(path: Path) -> list[dict[str, Any]] | None:
+    """`blocked.tsv` 를 읽는다 — 줄마다 `{"ts": 적힌 시각, **payload}`. 파일이 없으면 None."""
+    if not path.exists():
+        return None
+    return [{**_json(r["payload_json"]), "ts": r["ts"]} for r in _rows(path, BLOCKED_COLUMNS)]
 
 
 def _rows(path: Path, columns: tuple[str, ...]) -> list[dict[str, str]]:
@@ -317,6 +332,7 @@ def load_snapshot(path: Path) -> Snapshot:
         fund=fund,
         events=events,
         exchange=exchange,
+        blocked=_blocked(path / "blocked.tsv"),
     )
 
 

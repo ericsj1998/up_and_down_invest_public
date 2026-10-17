@@ -44,6 +44,7 @@ from updown.analysis.indicators.reference import btc_daily_vol as btc_daily_vol
 from updown.analysis.indicators.reference import needs_of as ref_needs_of
 from updown.analysis.indicators.reference import reference_regime
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
+from updown.common.db.models.enums import LogLevel
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Market, Timeframe
 from updown.common.domain.market import Balance
@@ -170,6 +171,8 @@ def refresh_backoff_s(failures: int) -> float:
 WATCH_TTL = 90.0
 STEP_WINDOW = 200
 """걸음 소요 표본 창 — 최근 200걸음(15m 판이면 이틀치)."""
+BLOCKED_EVENT = "session_candidate_blocked"
+"""막힌 후보 한 건을 `event_logs` 에 남길 때의 이벤트 이름 (T562 · `make live-check` 가 읽는다)."""
 STEP_SLOW_MS = 250.0
 """이보다 느린 걸음은 `live_step_slow` 로 남긴다.
 
@@ -1380,6 +1383,11 @@ class LiveRunner:
         """마지막으로 저장한 대기 계획(JSON 문자열) — 같으면 다시 안 쓴다 (T218)."""
         self._funnel_saved: dict[str, int] = {}
         """DB 에 이미 더한 깔때기 값 — 이번 세션 기준 (T445). 걸음마다 늘어난 만큼만 더한다."""
+        self._blocked_noted = 0
+        """`event_logs` 로 옮긴 막힌 후보의 마지막 일련번호 (T562 · `Session.blocked_since`)."""
+        self._born_at = datetime.now(UTC)
+        """이 러너가 선 시각(UTC) — 막힌 후보 기록에 싣는다(T562). `awaiting_fund` 는 기동(배포 ·
+        재기동) 직후 펀드가 붙기 전에만 정상이라, live-check 가 이 값과 견준다."""
 
     def use_store(self, store: RunStore | None, run_id: uuid.UUID, key: str = "") -> None:
         """판 저장소를 붙인다 (T16 ②).
@@ -1446,6 +1454,54 @@ class LiveRunner:
             self._funnel_saved = dict(self._session.funnel)
         except Exception as exc:
             self._log.warning("live_funnel_persist_failed", payload={"error": str(exc)[:160]})
+
+    async def _note_blocked_candidates(self) -> None:
+        """새로 막힌 후보를 `event_logs` 에 한 줄씩 **추가만** 한다 (T562).
+
+        Note:
+            깔때기(`_persist_funnel`)는 개수만 남겨 *"재현은 들어가고 라이브는 못 들어간 자리"* 를
+            사후에 못 찾았다(T561 §9 · 생존자 편향). 세션이 남긴 기록(`Session.blocked_since`)을
+            옮기기만 하고 값은 안 바꾼다. 직렬화는 여기서만 한다 — 펀드 재현 · 연구는 이 길이 없다.
+
+            ⛔ UPDATE · DELETE 하지 않는다(절대 규칙 #8-2 · `RunStore.note_event`).
+            ⚠️ 실패해도 걸음을 막지 않는다 — 막힌 후보는 이미 안 들어간 자리라 기록 실패가 막는
+            행동이 없다(규칙 #8-1 분류는 보류 쪽 그대로). 그러나 조용히 삼키지 않는다(규칙 #8):
+            경고를 남기고 다음 걸음에 남은 것부터 다시 적는다. 순환 창이 넘쳐 잃은 것도 센다.
+        """
+        if self._store is None or self.observe_only:
+            return
+        fresh = self._session.blocked_since(self._blocked_noted)
+        if not fresh:
+            return
+        lost = fresh[0].seq - self._blocked_noted - 1
+        if lost > 0:
+            self._log.warning(
+                "live_blocked_note_lost",
+                payload={
+                    "lost": lost,
+                    "note": "막힌 후보가 순환 창(blocked_recent)에서 밀려나 event_logs 에 못 갔다",
+                },
+            )
+        for item in fresh:
+            payload: dict[str, Any] = {
+                **item.as_row(),
+                "market": self.instrument.market.value,
+                "run": self._run_key,
+                "runner_started": self._born_at.isoformat(),
+            }
+            try:
+                await self._store.note_event(BLOCKED_EVENT, payload, level=LogLevel.INFO)
+            except Exception as exc:
+                self._log.warning(
+                    "live_blocked_note_failed",
+                    payload={
+                        "error": str(exc)[:160],
+                        "pending": fresh[-1].seq - self._blocked_noted,
+                        "note": "막힌 후보를 event_logs 에 못 남겼다 — 다음 걸음에 다시 (T562)",
+                    },
+                )
+                return
+            self._blocked_noted = item.seq
 
     async def restore_pending(self, saved: pending_mod.PendingEntry) -> set[str]:
         """저장돼 있던 대기 계획을 **거래소 사실과 대조해** 이어받는다 (T218).
@@ -4042,6 +4098,8 @@ class LiveRunner:
         await self._persist_pending()
         # ⭐ 깔때기 증분을 DB 에 더한다 (T445) — "왜 안 들어갔나" 가 재배포를 넘어 남게.
         await self._persist_funnel()
+        # ⭐ 막힌 후보를 한 건씩 남긴다 (T562) — 개수가 아니라 "무엇이 막혔나" 가 남게.
+        await self._note_blocked_candidates()
         # 🔴 **채워진 만큼 손절을 다시 건다** (T19 · 사다리의 가장 위험한 자리).
         await self._resize_stop()
         # 🔴 **원장이 반익했으면 거래소에서도 던다** (사고 ③-b).

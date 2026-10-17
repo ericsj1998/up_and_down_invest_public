@@ -37,6 +37,12 @@ LEV_WARN = Decimal("0.25")
 """체결 배율이 계획 배율과 이 비율 넘게 다르면 ⚠️."""
 EQUITY_TOL = Decimal("0.5")
 """펀드 장부 equity 와 거래소 지갑 총액의 허용 차(USDT)."""
+AWAITING_FUND_GRACE = timedelta(hours=4)
+"""`awaiting_fund` 로 막힌 후보가 정상인 창 — 판 기동(배포 · 재기동) 뒤 이 안 (T562 · T293).
+
+펀드는 판을 다 되살린 뒤에 붙으므로(약 100초 · 실패하면 120초 단위로 늘어난다) 기동 직후의
+첫 4H 봉 하나까지는 기다림이 날 수 있다. 그 밖에 나오면 펀드가 안 붙은 판이 있다는 뜻이다.
+"""
 MEM_AVAIL_WARN, SWAP_WARN, STEAL_WARN, DISK_WARN = 120, 1600, 20, 85
 
 
@@ -580,6 +586,51 @@ def supply_row(
         f"지금 {pct(now_share)} · {back}일 전 {pct(prev_share)} · 알트 {n}종",
         f"참고(해 평균) {ref} — 낮으면 일봉 채널 · MACD 롱이 쉬는 장(관찰 · 판정 아님)",
     )
+
+
+def blocked_row(snap: Snapshot, health: Health, now: datetime, days: int) -> Row:
+    """1절 한 줄 — 기간 안 막힌 후보 수 · 코드별 (T562 · `session_candidate_blocked`).
+
+    Args:
+        snap: 스냅샷 — `blocked` 가 None 이면 옛 덤프다.
+        health: 서버 상태 — 기록에 러너 기동 시각이 없으면 API 기동 시각으로 견준다.
+        now: 보고 시각(UTC).
+        days: 기간(일).
+
+    Returns:
+        상태 · 값 · 기준. `awaiting_fund` 가 러너 기동 뒤 `AWAITING_FUND_GRACE` 밖에서 나왔으면
+        ⚠️(펀드가 안 붙은 판), 기동 시각을 모르면 밖으로 센다(확인 쪽으로). 나머지 코드(문 ·
+        캔들 · 몫 반대 …)는 정해진 규칙이 막은 것이라 수만 싣는다.
+
+    Note:
+        깔때기(3-5)는 개수, 이 줄은 **기록**에서 센다 — 기록이 있으면 어느 종목 · 봉 · 다리 ·
+        계획값이었는지 `event_logs` 에서 바로 찾을 수 있다.
+    """
+    item = f"막힌 후보({days}일)"
+    grace = f"{int(AWAITING_FUND_GRACE.total_seconds() // 3600)}H"
+    basis = (
+        f"awaiting_fund 는 판 기동(배포 · 재기동) 뒤 {grace} 안에서만 정상 — 그 밖이면 ⚠️ · "
+        "나머지 코드는 규칙이 막은 수(참고)"
+    )
+    if snap.blocked is None:
+        return Row("now", item, "info", "자료 없음(옛 덤프 · 기록 전 서버)", basis)
+    since = now - timedelta(days=days)
+    rows = [r for r in snap.blocked if (when(r.get("ts")) or when(r.get("at")) or since) >= since]
+    codes: Counter[str] = Counter(str(r.get("code") or "?") for r in rows)
+    late: list[str] = []
+    for r in rows:
+        if r.get("code") != "awaiting_fund":
+            continue
+        boot = when(r.get("runner_started")) or health.api_started
+        noted = when(r.get("ts")) or when(r.get("at"))
+        if boot is None or noted is None or noted - boot > AWAITING_FUND_GRACE:
+            late.append(f"{r.get('symbol') or '?'} {kst(noted)}")
+    value = f"{len(rows)}건"
+    if codes:
+        value += " · " + " · ".join(f"{c} {n}" for c, n in codes.most_common(6))
+    if late:
+        value += f" · awaiting_fund 기동 {grace} 밖 {len(late)}건({', '.join(late[:4])})"
+    return Row("now", item, "warn" if late else "ok", value, basis)
 
 
 # ── 2. 최근 7일 매매 ──────────────────────────────────────────────────────
