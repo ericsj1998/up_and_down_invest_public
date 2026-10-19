@@ -205,3 +205,9 @@ live-check: ## 라이브 점검 — 지금 · 최근 7일 · 신호 · 이유(�
 
 live-check-report: ## 라이브 점검 — 마지막 스냅샷으로 보고서만
 	uv run python scripts/research/live_check.py --days 7
+
+# ── 연구 자료 갱신(T577) ─────────────────────────────────
+# "오늘 기준" 재료 갱신 한 줄 — ① DB 적재 → ② 가벼운 재료 → ③ 세션 캐시 · 원장 → ④ 판 + 검증 + 안 본 구간 → ⑤ 보고서.
+# 판 · 펀드 재현이 돌면 시작하지 않는다. 보고서 logs/t279/refresh/<END>/report.md · docs/status/research_refresh_latest.md
+research-refresh: ## 연구 자료 "오늘 기준" 갱신(T577 · END=YYYY-MM-DD 선택 · DRY=1 이면 마른 실행)
+	@bash scripts/research/refresh/refresh.sh $(END) $(if $(DRY),--dry,)
