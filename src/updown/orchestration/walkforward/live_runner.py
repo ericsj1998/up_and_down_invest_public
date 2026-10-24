@@ -295,6 +295,15 @@ LIQ_LOOKBACK = 20
 직후에 조회하므로 최근 몇 줄이면 충분하다.
 """
 
+ZERO_CONFIRM_SECONDS = 20
+"""포지션 0 을 **이름 없는 체결**로 닫기 전에 0 이 이어져야 하는 시간(초) (T599 · 2026-10-24).
+
+🔴 10-23 SUSHI: 진입 체결 0.5 초 뒤 포지션 조회가 아직 0 이었다(P0 · 조회 지연). 대조는 그 0 을
+믿고, 이름으로 못 찾은 청산 체결 대신 "가장 최근 체결"(= 방금 낸 진입 체결)을 청산가로 잡아 원장만
+닫고 몫 손절을 거뒀다 — 거래소 포지션이 손절 없이 4 시간 남았다. 발동한 손절(`ao-{id}`) · 우리
+청산처럼 **이름으로 찾는 체결**은 기다리지 않는다(손절 발동을 늦게 따라가지 않게). 대조는 30 초마다.
+"""
+
 LIQ_MARKS = ("liq", "adl", "강제")
 """청산으로 읽는 문구 조각들.
 
@@ -894,6 +903,33 @@ def foreign_stop_ids(stops: Sequence[dict[str, str]], key: str) -> list[str]:
     ]
 
 
+def closes_side(row: Mapping[str, object], direction: Direction | None) -> bool:
+    """끝난 주문 한 줄이 그 방향 포지션을 **닫는 쪽** 체결일 수 있나 (T599 · 2026-10-24).
+
+    Args:
+        row: `recent_orders` 한 줄 — `size` 는 Gate 처럼 매수 양수 · 매도 음수(세 어댑터 공통).
+        direction: 닫히는 매매의 방향. 모르면 None.
+
+    Returns:
+        롱이면 매도(음수) · 숏이면 매수(양수) 줄이면 True. 방향을 모르거나 `size` 가 없거나 0 이거나
+        못 읽으면 True(예전처럼 거르지 않는다).
+
+    Note:
+        🔴 10-23 SUSHI 숏: 체결 직후 조회 지연에 "가장 최근 체결" 로 물러선 청산가가 방금 낸 **진입
+        체결**(매도 74 계약)이었다 — 진입가로 원장을 닫고 손절을 거둬 포지션이 4 시간 무방비였다.
+        진입과 같은 방향 체결은 그 포지션을 닫을 수 없다.
+    """
+    if direction is None:
+        return True
+    try:
+        size = Decimal(str(row.get("size") or "0"))
+    except Exception:
+        return True
+    if size == 0:
+        return True
+    return (size < 0) if direction is Direction.LONG else (size > 0)
+
+
 def _notice_closes(runner: object, before: int) -> None:
     """실현된 기록이 늘었으면 러너의 `on_closed` 를 부른다 — 걸음과 60초 프로브가 같이 쓴다.
 
@@ -1124,6 +1160,9 @@ class LiveRunner:
         self._share_mismatch = ""
         """몫 모드 대조(T320 P4)가 **어느 몫이 나갔는지 못 가른** 사정 — 비면 갈림 없음. 감사가
         `share_mismatch` 로 올리고, 그 판은 새 진입을 안 받는다(D2 · 추정하지 않는다)."""
+        self._zero_seen_at: datetime | None = None
+        """대조가 거래소 포지션 0 을 처음 본 시각 — 이름 없는 체결로 닫기 전 `ZERO_CONFIRM_SECONDS`
+        를 센다(T599). 0 이 아닌 크기를 읽거나 원장을 닫으면 None."""
         self._stop_id: str = ""
         """지금 걸려 있는 **조건부 주문 id** (사용자 신고 2026-08-20).
 
@@ -2518,9 +2557,15 @@ class LiveRunner:
             self._log.warning("live_reconcile_unreadable", payload={"error": str(exc)[:140]})
             return False
         if Decimal(str(snapshot.get("size", "0") or "0")) != 0:
+            self._zero_seen_at = None
             return False
 
-        fill = await self._closing_fill(held.trade_id)
+        # 🔴 T599 — 이름 있는 청산 체결이 없으면 0 이 이어질 때까지 기다린다(조회 지연 · 진입 오인)
+        fill = await self._closing_fill(held.trade_id, named_only=True)
+        if fill is None:
+            if not self._zero_confirmed():
+                return False
+            fill = await self._closing_fill(held.trade_id)
         if fill is None:
             self._log.error(
                 "live_reconcile_no_fill",
@@ -2541,6 +2586,7 @@ class LiveRunner:
             self._fired("liquidation", f"강제청산 — 진입 {held.entry} · 청산 {fill}")
         done = held.closed(at=datetime.now(UTC), price=fill, outcome=outcome)
         self._fired("reconcile", f"거래소가 먼저 닫았다 — {outcome.value} @ {fill}")
+        self._zero_seen_at = None
         self._session.ledger.replace(done)
         self._session.release()
         await self._align_fee(done.trade_id)
@@ -2588,6 +2634,8 @@ class LiveRunner:
             self._log.warning("live_reconcile_unreadable", payload={"error": str(exc)[:140]})
             return False
         owed = sum(self._share_contracts(item) for item in shares)
+        if size:
+            self._zero_seen_at = None
         if size == owed and size > 0:
             self._share_mismatch = ""
             return False
@@ -2595,6 +2643,11 @@ class LiveRunner:
             return False  # 주인 없는 계약 — 감사(`share_size_mismatch`)가 연속으로 보면 막는다
         if size == 0:
             gone = shares
+            # 🔴 T599 — 몫마다 이름 있는 청산 체결(발동한 손절 `ao-` · 우리 청산)이 없으면 0 이
+            #    이어질 때까지 기다린다. 조회 지연에 진입 체결을 청산가로 잡은 사고(10-23 SUSHI).
+            named = [await self._share_closing_fill(item, sole=False) for item in gone]
+            if any(fill is None for fill in named) and not self._zero_confirmed():
+                return False
         else:
             if not isinstance(self._orders, StopAware):
                 return False
@@ -2661,6 +2714,7 @@ class LiveRunner:
             )
             done = held.closed(at=datetime.now(UTC), price=fill, outcome=outcome)
             self._fired("reconcile", f"거래소가 몫을 먼저 닫았다 — {outcome.value} @ {fill}")
+            self._zero_seen_at = None
             self._session.ledger.replace(done)
             self._session.release(leg=held.playbook)
             # 🔴 T328 — 거래소가 이 몫을 닫았으면(손절 발동 · 강제 청산) **이 몫 이름의 손절 잔재를
@@ -2726,6 +2780,8 @@ class LiveRunner:
                 owners.update(await self._store.stop_owners(fired))
         for row in filled:
             text = str(row.get("text", ""))
+            if not closes_side(row, held.direction):
+                continue  # T599 — 진입과 같은 방향 체결(진입 자신 · 옛 형식 이름)은 청산이 아니다
             if held.trade_id in text or (
                 text.startswith("ao-") and owners.get(text[3:]) == held.trade_id
             ):
@@ -2734,6 +2790,30 @@ class LiveRunner:
         if sole:
             return await self._closing_fill(held.trade_id)
         return None
+
+    def _zero_confirmed(self) -> bool:
+        """포지션 0 이 `ZERO_CONFIRM_SECONDS` 넘게 이어졌나 — 처음 본 0 은 조회 지연으로 (T599).
+
+        Returns:
+            처음 0 을 본 뒤 그 시간이 지났으면 True. 처음 보면 그 시각을 적고 False.
+
+        Note:
+            0 이 아닌 크기를 한 번이라도 읽으면(또는 원장을 닫으면) 시각을 지운다 — 다음 0 은 다시
+            처음부터 센다. 이름으로 찾은 청산 체결(발동한 손절 · 우리 청산)은 이 문을 거치지 않는다.
+        """
+        now = datetime.now(UTC)
+        seen = cast("datetime | None", getattr(self, "_zero_seen_at", None))
+        if seen is None:
+            self._zero_seen_at = now
+            self._log.info(
+                "live_reconcile_zero_wait",
+                payload={
+                    "seconds": ZERO_CONFIRM_SECONDS,
+                    "note": "거래소 포지션 0 — 이름 있는 청산 체결이 없어 조회 지연인지 더 본다",
+                },
+            )
+            return False
+        return (now - seen).total_seconds() >= ZERO_CONFIRM_SECONDS
 
     async def _was_liquidated(self) -> bool:
         """방금 사라진 포지션이 **강제청산**이었나 (T14-2).
@@ -2774,11 +2854,13 @@ class LiveRunner:
                 return True
         return False
 
-    async def _closing_fill(self, trade_id: str) -> Decimal | None:
+    async def _closing_fill(self, trade_id: str, *, named_only: bool = False) -> Decimal | None:
         """그 매매를 **닫은** 체결가 — 거래소 이력에서 읽는다.
 
         Args:
             trade_id: 원장의 매매 id.
+            named_only: 이름으로 찾는 체결(우리 id · 붙잡은 손절의 `ao-{id}`)만 — 가장 최근 체결로
+                물러서지 않는다 (T599).
 
         Returns:
             체결가. 못 찾으면 None.
@@ -2787,7 +2869,16 @@ class LiveRunner:
             ⭐ 조건부가 발동해 생긴 주문은 Gate 가 `ao-` 이름을 붙인다 — 우리 id 가 안
             달려 있으므로 **가장 최근 체결**을 쓴다. 우리 이름이 붙은 청산 주문
             (`take_profit`·`cclose`)이 있으면 그쪽이 우선이다.
+
+            🔴 T599 — 진입과 **같은 방향** 체결은 청산이 아니다. 체결 직후 조회 지연에 "가장 최근
+            체결" 이 방금 낸 진입 체결이어서 진입가로 원장을 닫은 사고(10-23 SUSHI)가 있었다.
         """
+        held = next(
+            (item for item in self._session.ledger.records if item.trade_id == trade_id), None
+        )
+        side = held.direction if held is not None else None
+        # 단독 판만 — 몫 판의 `_stop_id` 는 마지막으로 건 다른 몫의 것일 수 있다
+        stop_id = "" if getattr(self, "_shared", False) else getattr(self, "_stop_id", "")
         if not hasattr(self._orders, "recent_orders"):
             return None
         try:
@@ -2799,19 +2890,21 @@ class LiveRunner:
                 payload={"trade": trade_id, "error": str(exc)[:120]},
             )
             return None
-        ours = [
+        listed = [
             row
             for row in cast("list[dict[str, str]]", rows)
-            if trade_id in str(row.get("text", "")) and row.get("fill_price")
+            if row.get("fill_price") and closes_side(row, side)
+        ]
+        ours = [
+            row
+            for row in listed
+            if trade_id in str(row.get("text", ""))
+            or (stop_id and str(row.get("text", "")) == f"ao-{stop_id}")
         ]
         pick = ours[0] if ours else None
-        if pick is None:
+        if pick is None and not named_only:
             # ⚠️ `ao-` 는 이름에 우리 id 가 없다. 체결된 것 중 가장 최근을 쓴다.
-            fills = [
-                row
-                for row in cast("list[dict[str, str]]", rows)
-                if row.get("fill_price") and str(row.get("finish_as")) == "filled"
-            ]
+            fills = [row for row in listed if str(row.get("finish_as")) == "filled"]
             pick = fills[0] if fills else None
         if pick is None:
             return None
