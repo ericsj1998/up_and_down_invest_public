@@ -10,14 +10,20 @@
 - 포지션 0 을 이름 없는 체결로 닫으려면 0 이 `ZERO_CONFIRM_SECONDS` 넘게 이어져야 한다.
 - 이름 있는 체결(발동한 손절 `ao-{id}`)은 기다리지 않고 바로 닫는다.
 - 0 이 아닌 크기를 한 번 읽으면 기다림을 처음부터 다시 센다.
+- 고아 이어받기(`_retry_adopt`)는 30 초 점검 루프에서도 감사 뒤에 돈다(전엔 걸음 = 4h 판은 4 시간).
+- 나가는 중(메이커 청산 대기 · 막힌 몫 청산 재시도)인 포지션은 이어받지 않는다.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
+from test_live_fixes_1281 import _orphan_runner, _Stops  # pyright: ignore[reportPrivateUsage]
 from test_share_runner import (
     ShareExchange,
     _Runner,  # pyright: ignore[reportPrivateUsage]
@@ -25,8 +31,13 @@ from test_share_runner import (
     now_of,
     share,
 )
+from updown.orchestration.walkforward import live_runner as lr
 from updown.orchestration.walkforward.ledger import Direction, Ledger, Outcome, TradeRecord
-from updown.orchestration.walkforward.live_runner import ZERO_CONFIRM_SECONDS, closes_side
+from updown.orchestration.walkforward.live_runner import (
+    ZERO_CONFIRM_SECONDS,
+    LiveRunner,
+    closes_side,
+)
 
 
 def one_share() -> tuple[_Runner, ShareExchange, TradeRecord]:
@@ -122,3 +133,41 @@ class TestRealExitsAreNotDelayed:
         assert reconcile(run) is True
         assert now_of(run, a).exit_price == Decimal("94.0")
         assert run._zero_seen_at is None  # pyright: ignore[reportPrivateUsage]
+
+
+class TestOrphansAreAdoptedBetweenBars:
+    def test_the_probe_loop_retries_adoption_after_the_audit(self) -> None:
+        source = inspect.getsource(
+            LiveRunner._keep_probing  # pyright: ignore[reportPrivateUsage]
+        )
+        assert "await self._retry_adopt()" in source, "점검 루프가 고아를 안 이어받는다"
+        # 감사가 센 연속 수(_mismatch_streak)가 조건이라 감사 뒤여야 한다
+        assert source.index("_run_audit") < source.index("_retry_adopt")
+
+    def test_the_walk_still_retries_too(self) -> None:
+        source = inspect.getsource(LiveRunner._walk_once)  # pyright: ignore[reportPrivateUsage]
+        assert "_retry_adopt" in source
+
+    @pytest.mark.parametrize("exiting", ["maker", "share_retry"])
+    def test_a_position_on_its_way_out_is_not_adopted(
+        self, monkeypatch: pytest.MonkeyPatch, exiting: str
+    ) -> None:
+        monkeypatch.setattr(lr, "ADOPT_RETRY_S", 0.0)
+        runner = _orphan_runner(_Stops([[]]), refused=None, streak=2)
+        calls: list[int] = []
+
+        async def adopt() -> bool:
+            calls.append(1)
+            return True
+
+        runner.adopt = adopt  # type: ignore[method-assign]
+        if exiting == "maker":
+            runner.__dict__["_maker_exit"] = {"t1": (3, 2)}
+        else:
+            runner.__dict__["_exit_retry"] = {"t1": object()}
+        asyncio.run(runner._retry_adopt())  # pyright: ignore[reportPrivateUsage]
+        assert calls == [], "나가는 중인 포지션을 이어받으면 마무리 경로와 다툰다"
+        runner.__dict__["_maker_exit"] = {}
+        runner.__dict__["_exit_retry"] = {}
+        asyncio.run(runner._retry_adopt())  # pyright: ignore[reportPrivateUsage]
+        assert calls == [1], "다 나가면 다시 이어받는다"

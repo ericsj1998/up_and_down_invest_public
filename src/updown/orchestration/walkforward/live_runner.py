@@ -3528,6 +3528,11 @@ class LiveRunner:
                 #    원인이었는지 알 수 없게 된다.
                 if any(item["code"] == "stop_missing" for item in self.findings):
                     await self._guard_stop(escalate=False)
+                # 🔴 **고아도 다음 걸음까지 기다리지 않는다** (T599 · 2026-10-24). 감사는 1 분 안에
+                #    "원장 없음 / 거래소 보유중" 을 봤는데 이어받기(`_retry_adopt`)가 걸음 안에만
+                #    있어 4h 판은 4 시간 뒤에야 이어받고 손절을 다시 걸었다(10-23 SUSHI). 감사
+                #    뒤에 부른다 — 감사가 센 연속 수(`_mismatch_streak`)가 조건 · 60 초 묶음 그대로.
+                await self._retry_adopt()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -7231,6 +7236,11 @@ class LiveRunner:
             return
         if getattr(self._session, "waiting_trade", None) is not None:
             return  # 우리 지정가가 봉 사이에 채워진 것 — 고아가 아니라 반영 대기다
+        if getattr(self, "_maker_exit", None) or self._exit_state()[0]:
+            # T599 — **나가는 중**이다(메이커 청산 대기 · 막힌 몫 청산 재시도). 원장은 닫았고
+            #    거래소는 아직 들고 있어 감사가 갈림으로 세지만, 이어받으면 마무리 경로와 다툰다.
+            #    점검 루프에서도 부르게 된 뒤(30 초) 이 창이 걸음 간격보다 훨씬 자주 열린다.
+            return
         now = time.monotonic()
         last = state.get("_adopt_retry_at")
         # 첫 번은 바로 묻는다 — 기본값 0 이면 부팅 1시간 안(monotonic < 간격)엔 첫 번도 건너뛰었다.
