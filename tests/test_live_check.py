@@ -22,6 +22,7 @@ from updown.orchestration.live_review.check import (
     active_audits,
     macd_hist,
     now_rows,
+    outside_row,
     parse_health,
     position_checks,
     story_of,
@@ -311,3 +312,68 @@ def test_fund_never_anchored_with_a_skip_reason_is_a_warning() -> None:
     row = next(r for r in rows if r.item == "펀드 장부 ↔ 거래소 지갑")
     assert row.status == "warn"
     assert "건너뜀 사유: 펀드 밖 단독 판 8개" in row.value and "마지막 없음" in row.value
+
+
+def _book(
+    at: datetime, kind: str, change: str, text: str, contract: str = "ETH_USDT"
+) -> dict[str, Any]:
+    return {
+        "type": kind,
+        "change": change,
+        "text": text,
+        "contract": contract,
+        "time": str(int(at.timestamp())),
+    }
+
+
+def test_outside_row_counts_human_orders_like_the_anchor() -> None:
+    """2026-10-28 "수동 매매 잘 찍히나" — 기간 안 `web` 주문 손익 · 수수료 · 입출금을 한 줄로.
+
+    펀드 종목(NEAR)의 `t-` 주문은 매매법 몫이라 안 센다 · 펀드 밖 계약(ETH)은 전부 사람 몫
+    (앵커와 같다).
+    """
+    t_in = NOW - timedelta(days=2)
+    t_old = NOW - timedelta(days=20)
+    exchange = {
+        "account_book": [
+            _book(t_in, "pnl", "-47.84", "ETH_USDT:1"),
+            _book(t_in, "fee", "-0.16", "ETH_USDT:1"),
+            _book(t_in, "pnl", "+0.75", "NEAR_USDT:2", "NEAR_USDT"),  # 매매법 주문 — 안 센다
+            _book(t_in, "dnw", "50", "", "USDT"),
+            _book(t_old, "pnl", "-100", "ETH_USDT:3"),  # 기간 밖
+        ],
+        "finished_orders": [
+            {"id": 1, "text": "web_p_2359.12_0", "create_time": str(int(t_in.timestamp()))},
+            {"id": 2, "text": "t-abc-def-cl-0", "create_time": str(int(t_in.timestamp()))},
+            {"id": 3, "text": "web", "create_time": str(int(t_old.timestamp()))},
+        ],
+    }
+    row = outside_row(_snap([], exchange), NOW, 7)
+    assert row.status == "warn"
+    assert "사람 주문 1건" in row.value and "-48.00 USDT" in row.value
+    assert "입출금 +50.00" in row.value
+    assert "마지막 사람 주문" in row.value and "없음" not in row.value
+
+
+def test_outside_row_is_ok_when_only_our_orders() -> None:
+    t_in = NOW - timedelta(days=1)
+    exchange = {
+        "account_book": [
+            _book(t_in, "pnl", "0.75", "NEAR_USDT:2", "NEAR_USDT"),
+            _book(t_in, "pnl", "-0.30", "NEAR_USDT:4", "NEAR_USDT"),
+        ],
+        "finished_orders": [
+            {"id": 2, "text": "t-abc-def-cl-0", "create_time": str(int(t_in.timestamp()))},
+            # 조건부 손절(ao-) = 매매법
+            {"id": 4, "text": "ao-9", "create_time": str(int(t_in.timestamp()))},
+        ],
+    }
+    row = outside_row(_snap([], exchange), NOW, 7)
+    assert row.status == "ok"
+    assert "사람 주문 0건" in row.value and "마지막 사람 주문 없음" in row.value
+    assert row.item == "매매법 밖 주문(사람) · 입출금(7일)"
+
+
+def test_outside_row_without_book_is_info() -> None:
+    row = outside_row(_snap([], {}), NOW, 7)
+    assert row.status == "info"

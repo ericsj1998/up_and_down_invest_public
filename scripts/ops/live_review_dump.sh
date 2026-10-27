@@ -34,7 +34,8 @@ echo "api=$API days=$DAYS at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/meta.txt"
    coalesce(t.funding_paid::text,''), coalesce(t.fee_actual::text,''), coalesce(t.realized_adjust::text,''),
    coalesce(t.half_price::text,''), coalesce(to_char(t.half_at at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),''),
    replace(replace(coalesce(t.evidence_json::text,'{}'), E'\t',' '), E'\n',' '),
-   coalesce(t.contract_adjust::text,'')
+   -- contract_adjust 는 0135(미배포) 열 — to_jsonb 로 읽어 서버에 열이 없어도(빈 칸) 덤프가 깨지지 않는다
+   coalesce(to_jsonb(t)->>'contract_adjust','')
    from wf_trades t join wf_runs r on r.id = t.run_id
    where r.live and (t.opened_at >= $SINCE or t.closed_at is null or t.placed_at >= $SINCE)
    order by t.placed_at" > "$OUT/trades.tsv"

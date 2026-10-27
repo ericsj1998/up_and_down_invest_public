@@ -20,6 +20,7 @@ from typing import Any, cast
 from updown.orchestration.live_review.attribution import TradeMoney, fill_basis, money_of
 from updown.orchestration.live_review.health import gate_of, why_no_entry
 from updown.orchestration.live_review.snapshot import Snapshot, Trade, dec, when
+from updown.orchestration.rebalancer.anchor import DNW_TYPES, outside_since, row_time
 
 KST = timezone(timedelta(hours=9))
 MARK = {"ok": "✅", "warn": "⚠️", "bad": "⛔", "info": "·"}
@@ -388,6 +389,7 @@ def now_rows(
     ghosts: Sequence[str],
     now: datetime,
     latest_tag: str = "",
+    days: int = 7,
 ) -> list[Row]:
     """1절 — 지금 라이브가 도는가(컨테이너 · 리더 · 스위치 · 판 · 점검 · 대조 · 자원)."""
     s = "now"
@@ -534,6 +536,7 @@ def now_rows(
             "(펀드 밖 판이 있으면 건너뜀)",
         )
     )
+    rows.append(outside_row(snap, now, days))
     core_dd = twr_drawdown(snap.fund.get("core_twr"))
     fund_dd = twr_drawdown(snap.fund.get("twr"))
     at_s = str(_dict(snap.fund.get("drawdown_brake")).get("at", ""))
@@ -550,6 +553,78 @@ def now_rows(
     )
     rows.append(_resource_row(health))
     return rows
+
+
+OUR_ORDER_TEXTS = ("t-", "ao-", "liq-")
+"""거래소 주문 text 가 이걸로 시작하면 사람 주문이 아니다 — `t-` 매매법 · `ao-` 조건부 손절
+(거래소 발동) · `liq-` 강제 청산. 사람은 `web` · `web_p_…` · `close_all` · `app…`(Gate 웹 · 앱)."""
+
+
+def outside_row(snap: Snapshot, now: datetime, days: int) -> Row:
+    """매매법 밖 주문(사람) · 거래소 입출금 — 기간 안 자금 원장에서 (2026-10-28).
+
+    "수동 매매가 보고서에 잘 찍히나" 에 답하는 줄 — `check.md` 엔 없었고 옛 분석기에만 있었다.
+
+    Args:
+        snap: 스냅샷(`exchange.account_book` · `exchange.finished_orders`).
+        now: 기준 시각.
+        days: 기간(일).
+
+    Returns:
+        상태 · 값 · 기준. 기간 안 사람 주문이 있거나 그 손익 · 수수료가 0 이 아니면 ⚠️.
+
+    Note:
+        사람 몫은 4H 지갑 앵커가 입출금 흐름으로 빼는 몫(`outside_since` · 2026-10-15)과
+        **같은 함수**로 센다 — 점검과 앵커가 다른 수를 말하면 둘 중 하나가 틀린 것이다. 조건부의
+        원래 이름(`stop_texts`)은 스냅샷에 없어 `ao-` 는 전부 매매법으로 둔다(앵커가 모를 때와 같은
+        쪽 · 사람 몫을 부풀리지 않는다). 펀드 종목이 아닌 계약의 줄은 전부 사람 몫이다(앵커와 같다).
+        펀드 계좌엔 매매법 주문만 있어야 한다(수동은 바이낸스 · 사용자 2026-10-10). 앵커가 멈춘
+        동안은 그 몫이 흐름으로 안 빠지고 성과에 섞인다(T606 발견 1) — 그래서 이 줄이 따로 센다.
+        자금 원장은 덤프가 최근 1000 줄만 받는다 — 다 찼으면 기간 앞을 못 본 것이라 적는다.
+    """
+    since = now - timedelta(days=days)
+    book = _rows_of(snap.exchange.get("account_book"))
+    finished = _rows_of(snap.exchange.get("finished_orders"))
+    texts = {str(o.get("id", "")): str(o.get("text", "")) for o in finished if o.get("id")}
+    members = {r.symbol for r in snap.runs}
+    for leg in _rows_of(snap.fund.get("legs")):
+        members.update(str(x) for x in cast("list[Any]", leg.get("symbols") or []))
+    outside = outside_since(book, since, frozenset(members), texts, {})
+    dnw = Decimal(0)
+    for row in book:
+        at = row_time(row.get("time"))
+        if str(row.get("type", "")) in DNW_TYPES and at is not None and at > since:
+            dnw += dec(row.get("change")) or Decimal(0)
+    human_at = [
+        row_time(o.get("create_time"))
+        for o in finished
+        if not str(o.get("text", "")).startswith(OUR_ORDER_TEXTS)
+    ]
+    human_at = [a for a in human_at if a is not None]
+    recent = sum(1 for a in human_at if a > since)
+    last = max(human_at) if human_at else None
+    if not book and not finished:
+        return Row(
+            "now",
+            f"매매법 밖 주문(사람) · 입출금({days}일)",
+            "info",
+            "자금 원장 없음(스냅샷에 거래소 조회가 없다)",
+            "펀드 계좌엔 매매법 주문만 — 사람 주문이 있으면 ⚠️",
+        )
+    value = (
+        f"사람 주문 {recent}건 · 손익 · 수수료 {_f(outside, sign=True)} USDT · "
+        f"입출금 {_f(dnw, sign=True)} USDT · 마지막 사람 주문 {kst(last) if last else '없음'}"
+    )
+    if len(book) >= 1000:
+        value += " · ⚠️ 자금 원장 1000줄 끝(기간 앞은 못 봤다)"
+    return Row(
+        "now",
+        f"매매법 밖 주문(사람) · 입출금({days}일)",
+        "warn" if recent or outside != 0 else "ok",
+        value,
+        "펀드 계좌엔 매매법 주문만(수동은 바이낸스 · 2026-10-10) — 사람 주문이 있으면 ⚠️ · "
+        "그 손익은 앵커가 돌 때만 입출금 흐름으로 빠진다(앵커 멈추면 성과에 섞임)",
+    )
 
 
 def trend_supply(
