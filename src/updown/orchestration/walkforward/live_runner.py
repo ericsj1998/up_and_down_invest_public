@@ -737,6 +737,43 @@ def add_pnl_of(record: TradeRecord, multiplier: Decimal) -> Decimal | None:
     return gross - record.cost_pct * record.add_fill * size
 
 
+def contract_adjust_of(
+    record: TradeRecord, multiplier: Decimal, ledger_leverage: Decimal, staked_fallback: Decimal
+) -> Decimal | None:
+    """**계약 손익 - 의도 손익** USDT — 라이브 장부 몫을 거래소 몫으로 맞추는 값 (T606).
+
+    Args:
+        record: 닫힌 원장 기록(`contracts > 0` · `exit_price` 있음).
+        multiplier: 계약 승수.
+        ledger_leverage: 판의 거래소 배율(강제청산 때 잃는 격리 증거금 = 명목 ÷ 배율).
+        staked_fallback: `margin_used` 가 없을 때(단독 판) 걷기가 쓰는 증거금.
+
+    Returns:
+        `_walk_wallet` 이 더할 값. 계약을 모르거나(모형 · 옛 기록) 아직 안 닫혔으면 None.
+
+    Note:
+        의도 손익 = `margin_used x filled_ratio x gain_pct ÷ 100`(걷기 식 그대로 · `leverage` 곱) ·
+        계약 손익 = 계약 x 승수 x 진입가 x (가격 수익률 - 비용 비율 - 펀딩 비율). 둘의 차만 적으므로
+        `leverage` · `gain_pct` · 백테스트 길은 한 비트도 안 바뀐다. 불타기 추가분(`add_pnl`)은 자기
+        계약으로 따로 적혀 있어 여기 안 든다. 펀드 재현 `runner_rules.wallet_adjust` 와 같은 식.
+    """
+    if record.contracts <= 0 or multiplier <= 0 or record.entry <= 0:
+        return None
+    gain = record.gain_pct
+    exit_avg = record.exit_average
+    if gain is None or exit_avg is None:
+        return None
+    staked = record.margin_used if record.margin_used is not None else staked_fallback
+    intended = staked * record.filled_ratio * gain / Decimal(100)
+    notional = Decimal(record.contracts) * multiplier * record.entry
+    if record.outcome is Outcome.LIQUIDATED:
+        actual = -(notional / ledger_leverage) if ledger_leverage > 0 else -notional
+    else:
+        move = (exit_avg - record.entry) * record.direction.sign / record.entry
+        actual = notional * (move - record.cost_pct - record.funding_pct)
+    return actual - intended
+
+
 def fee_from_close(row: dict[str, object], multiplier: Decimal) -> tuple[Decimal, Decimal] | None:
     """거래소 청산 행(`position_close`)에서 **실제 수수료와 그 비율**을 읽는다 (T236).
 
@@ -6778,16 +6815,19 @@ class LiveRunner:
         )
 
     async def _book_adds(self) -> None:
-        """닫힌 매매의 불타기 추가분 손익을 **청산가로 다시 적는다** (T308 ⑥ · 겹쳐 쌓지 않는다).
+        """닫힌 매매의 **계약 기준 돈**을 다시 적는다 — 불타기 추가분(T308 ⑥) · 계약 손익 차(T606).
 
         Note:
-            청산가는 나중에 체결가로 고쳐질 수 있다(`_correct_exit_to_fill`) — 그래서 누적이 아니라
-            매번 다시 계산해 **바뀌었을 때만** 갈아 끼운다.
+            청산가 · 수수료는 나중에 고쳐질 수 있다(`_correct_exit_to_fill` · `_align_fee`) — 그래서
+            누적이 아니라 매번 다시 계산해 **바뀌었을 때만** 갈아 끼운다. 명세는 캐시(`_spec`)라
+            거래소 요청은 없고, 닫힌 기록을 한 번 훑는 산술뿐이다(서버 자원 제약 · 사용자 10-28).
         """
         done = [
             item
             for item in self._session.ledger.records
-            if item.add_contracts > 0 and item.exit_price is not None and item.closed_at is not None
+            if item.exit_price is not None
+            and item.closed_at is not None
+            and (item.add_contracts > 0 or item.contracts > 0)
         ]
         if not done:
             return
@@ -6797,19 +6837,38 @@ class LiveRunner:
         except Exception as exc:
             self._log.warning("live_add_book_unreadable", payload={"error": str(exc)[:140]})
             return
+        ledger = self._session.ledger
         for item in done:
-            pnl = add_pnl_of(item, multiplier)
-            if pnl is None or pnl == item.add_pnl:
+            if item.add_contracts > 0:
+                pnl = add_pnl_of(item, multiplier)
+                if pnl is not None and pnl != item.add_pnl:
+                    item = dc_replace(item, add_pnl=pnl)
+                    ledger.replace(item)
+                    self._log.info(
+                        "live_add_booked",
+                        payload={
+                            "trade_id": item.trade_id,
+                            "add_pnl": str(pnl),
+                            "exit": str(item.exit_price),
+                            "add_fill": str(item.add_fill),
+                            "contracts": item.add_contracts,
+                        },
+                    )
+            # ⭐ T606 — 계약 손익 - 의도 손익. 거래소가 진실 · 장부 몫 = 거래소 몫.
+            adj = contract_adjust_of(item, multiplier, ledger.leverage, ledger.sizing_base)
+            if adj is None or adj == item.contract_adjust:
                 continue
-            self._session.ledger.replace(dc_replace(item, add_pnl=pnl))
+            ledger.replace(dc_replace(item, contract_adjust=adj))
             self._log.info(
-                "live_add_booked",
+                "live_contract_adjust_booked",
                 payload={
                     "trade_id": item.trade_id,
-                    "add_pnl": str(pnl),
+                    "contract_adjust": str(adj),
+                    "contracts": item.contracts,
+                    "leverage": str(item.leverage),
+                    "filled_leverage": str(item.filled_leverage),
                     "exit": str(item.exit_price),
-                    "add_fill": str(item.add_fill),
-                    "contracts": item.add_contracts,
+                    "note": "계약 손익 - 의도 손익(leverage x gain_pct) · 걷기가 더함(T606)",
                 },
             )
 

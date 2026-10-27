@@ -274,3 +274,23 @@ def test_fund_bound_to_the_open_runs_stays_ok() -> None:
     assert blocked_row(snap, Health(), NOW, 7).status == "ok"
     # 펀드 파일에 runs 가 없으면(옛 형식) 조용히 지나간다.
     assert unbound_members(Snapshot(Path(), NOW, runs, [], [], {}, [], {}, blocked=[])) == []
+
+
+def test_snapshot_reads_old_rows_without_the_contract_adjust_column(tmp_path: Path) -> None:
+    """T606 - `contract_adjust` 는 맨 끝 칸이라 옛 스냅샷(칸 하나 적음)도 그대로 읽힌다."""
+    from updown.orchestration.live_review.snapshot import TRADE_COLUMNS, load_snapshot
+
+    assert TRADE_COLUMNS[-1] == "contract_adjust" and TRADE_COLUMNS[-2] == "evidence_json"
+    old = [""] * (len(TRADE_COLUMNS) - 1)
+    old[TRADE_COLUMNS.index("run_id")] = "r1"
+    old[TRADE_COLUMNS.index("symbol")] = "NEAR_USDT"
+    old[TRADE_COLUMNS.index("trade_id")] = "abcd1234ffff"
+    old[TRADE_COLUMNS.index("entry")] = "5.3"
+    old[TRADE_COLUMNS.index("evidence_json")] = '{"a": 1}'
+    new = [*old, "-0.97"]
+    new[TRADE_COLUMNS.index("trade_id")] = "ffff4321dcba"  # 같은 id 는 한 줄로 합쳐진다
+    tab, nl = chr(9), chr(10)
+    (tmp_path / "trades.tsv").write_text(tab.join(old) + nl + tab.join(new) + nl, encoding="utf-8")
+    snap = load_snapshot(tmp_path)
+    assert [t.contract_adjust for t in snap.trades] == [None, Decimal("-0.97")]
+    assert all(t.evidence == {"a": 1} and t.entry == Decimal("5.3") for t in snap.trades)

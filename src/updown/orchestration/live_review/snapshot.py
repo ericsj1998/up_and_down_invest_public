@@ -35,6 +35,7 @@ TRADE_COLUMNS = (
     "half_price",
     "half_at",
     "evidence_json",
+    "contract_adjust",  # T606 · 0135 — 맨 끝에 붙인다(옛 스냅샷은 이 칸이 없어 빈 값으로 읽힌다)
 )
 RUN_COLUMNS = (
     "id",
@@ -117,6 +118,8 @@ class Trade:
     half_price: Decimal | None
     half_at: datetime | None
     evidence: dict[str, Any] = field(default_factory=dict[str, Any])
+    contract_adjust: Decimal | None = None
+    """계약 손익 - 의도 손익(T606) — 옛 스냅샷 · 모형은 None."""
 
     @property
     def leg(self) -> str:
@@ -277,6 +280,7 @@ def load_snapshot(path: Path) -> Snapshot:
             half_price=dec(r["half_price"]),
             half_at=when(r["half_at"]),
             evidence=_json(r["evidence_json"]),
+            contract_adjust=dec(r.get("contract_adjust", "")),
         )
         for r in _rows(path / "trades.tsv", TRADE_COLUMNS)
     ]

@@ -26,7 +26,7 @@ from updown.orchestration.walkforward.ledger import (
     Outcome,
     TradeRecord,
 )
-from updown.orchestration.walkforward.live_runner import LiveRunner, add_pnl_of
+from updown.orchestration.walkforward.live_runner import LiveRunner, add_pnl_of, contract_adjust_of
 from updown.orchestration.walkforward.order_mapping import add_key, add_order
 from updown.orchestration.walkforward.store import add_from_json, add_to_json
 
@@ -376,3 +376,81 @@ class TestDeclaration:
         order = add_order(_open(Direction.SHORT), SOL, 3, run="6eccc5abcdef")
         assert order.side is Side.SELL and order.quantity == Decimal(3)
         assert order.idempotency_key.endswith(":add:0")
+
+
+class TestContractAdjust:
+    """T606 — 계약 손익 - 의도 손익. 라이브 장부 몫을 거래소 몫으로 맞추는 값(걷기가 더한다)."""
+
+    def test_rounding_up_is_booked(self) -> None:
+        """UNI 꼴 — 계획 0.36 배인데 정수 계약이 0.48 배. 장부가 덜 센 만큼 양수로 적힌다."""
+        done = _open(leverage=Decimal("0.36"), margin_used=Decimal(100), contracts=48).closed(
+            at=NOW, price=Decimal(110), outcome=Outcome.TAKE_PROFIT
+        )
+        # 의도 = 100 x (10% - 0.1%) x 0.36 = 3.564 · 계약 = 48 x 100 x (0.10 - 0.001) = 475.2
+        adj = contract_adjust_of(done, Decimal(1), Decimal(6), Decimal(100))
+        assert adj is not None
+        assert adj == Decimal("475.2") - Decimal("3.564")
+
+    def test_partial_fill_is_booked_negative(self) -> None:
+        """SUSHI 10-14 꼴 — 선언 4.5 배인데 체결은 0.09 배. 장부가 과다 센 손실을 되돌린다."""
+        done = _open(leverage=Decimal("4.5"), margin_used=Decimal(50), contracts=1).closed(
+            at=NOW, price=Decimal(95), outcome=Outcome.STOP_LOSS
+        )
+        adj = contract_adjust_of(done, Decimal(1), Decimal(6), Decimal(50))
+        assert adj is not None
+        intended = Decimal(50) * (Decimal("-5") - Decimal("0.1")) * Decimal("4.5") / 100
+        actual = Decimal(1) * Decimal(100) * (Decimal("-0.05") - Decimal("0.001"))
+        assert adj == actual - intended
+        assert adj > 0, "원장이 더 잃은 것으로 적었으니 되돌림은 양수"
+
+    def test_matching_notional_needs_no_adjustment(self) -> None:
+        """의도 배율 = 실제 배율이면 차는 0 — 지금까지의 라이브 숫자가 안 바뀐다."""
+        done = _open(leverage=Decimal(4), margin_used=Decimal(100), contracts=4).closed(
+            at=NOW, price=Decimal(110), outcome=Outcome.TAKE_PROFIT
+        )
+        adj = contract_adjust_of(done, Decimal(1), Decimal(6), Decimal(100))
+        assert adj is not None and abs(adj) < Decimal("1e-20")
+
+    def test_liquidation_loses_the_isolated_margin(self) -> None:
+        done = _open(leverage=Decimal(4), margin_used=Decimal(100), contracts=4).closed(
+            at=NOW, price=Decimal(1), outcome=Outcome.LIQUIDATED
+        )
+        adj = contract_adjust_of(done, Decimal(1), Decimal(6), Decimal(100))
+        # 원장 -100% x 100 = -100 · 거래소는 격리 증거금 400 / 6 만
+        assert adj == Decimal(-400) / Decimal(6) - Decimal(-100)
+
+    def test_model_records_are_left_alone(self) -> None:
+        done = _open(contracts=0).closed(at=NOW, price=Decimal(110), outcome=Outcome.TAKE_PROFIT)
+        assert contract_adjust_of(done, Decimal(1), Decimal(6), Decimal(100)) is None
+        assert contract_adjust_of(_open(contracts=4), Decimal(1), Decimal(6), Decimal(100)) is None
+
+    def test_booking_follows_a_corrected_exit_without_stacking(self) -> None:
+        done = _open(leverage=Decimal("0.36"), margin_used=Decimal(100), contracts=48).closed(
+            at=NOW, price=Decimal(110), outcome=Outcome.TAKE_PROFIT
+        )
+        runner = _Runner(done, _Exchange())
+        asyncio.run(runner._book_adds())  # pyright: ignore[reportPrivateUsage]
+        first = runner.record.contract_adjust
+        assert first == Decimal("475.2") - Decimal("3.564")
+        assert "live_contract_adjust_booked" in runner._log.events  # pyright: ignore[reportPrivateUsage]
+        fixed = runner.record.closed(at=NOW, price=Decimal(109), outcome=Outcome.TAKE_PROFIT)
+        runner._session.ledger.replace(fixed)  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(runner._book_adds())  # pyright: ignore[reportPrivateUsage]
+        assert runner.record.contract_adjust != first, "청산가가 바뀌면 다시 적는다"
+        before = runner.record.contract_adjust
+        asyncio.run(runner._book_adds())  # pyright: ignore[reportPrivateUsage]
+        assert runner.record.contract_adjust == before, "같으면 안 건드린다 — 쌓지 않는다"
+
+    def test_wallet_walk_adds_it(self) -> None:
+        def ledger(adj: Decimal) -> Ledger:
+            book = Ledger(seed_cash=BASE, funding=Funding.WALLET, refill=False)
+            book.add(
+                _open(contract_adjust=adj).closed(
+                    at=NOW, price=Decimal(100), outcome=Outcome.TAKE_PROFIT
+                )
+            )
+            return book
+
+        assert ledger(Decimal("-0.97")).realized_cash - ledger(Decimal(0)).realized_cash == Decimal(
+            "-0.97"
+        )

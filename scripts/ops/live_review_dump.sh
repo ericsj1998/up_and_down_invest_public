@@ -33,7 +33,8 @@ echo "api=$API days=$DAYS at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/meta.txt"
    t.leverage, coalesce(t.filled_leverage::text,''), coalesce(t.margin_used::text,''), coalesce(t.contracts::text,''),
    coalesce(t.funding_paid::text,''), coalesce(t.fee_actual::text,''), coalesce(t.realized_adjust::text,''),
    coalesce(t.half_price::text,''), coalesce(to_char(t.half_at at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),''),
-   replace(replace(coalesce(t.evidence_json::text,'{}'), E'\t',' '), E'\n',' ')
+   replace(replace(coalesce(t.evidence_json::text,'{}'), E'\t',' '), E'\n',' '),
+   coalesce(t.contract_adjust::text,'')
    from wf_trades t join wf_runs r on r.id = t.run_id
    where r.live and (t.opened_at >= $SINCE or t.closed_at is null or t.placed_at >= $SINCE)
    order by t.placed_at" > "$OUT/trades.tsv"

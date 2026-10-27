@@ -393,6 +393,20 @@ class TradeRecord:
     ⚠️ 진입 때 한 번 적고 바꾸지 않는다(반익 · 재레버로 줄어든 뒤 지금 든 수는 이 값에서 센다).
     0 = 모형(백테스트 · 페이퍼) · 옛 기록 · 체결 수량을 못 읽은 경우.
     """
+    contract_adjust: Decimal = Decimal(0)
+    """**계약 손익 - 의도 손익** (USDT · 부호째) — 라이브가 청산 뒤 붙인다 (T606 · 0135).
+
+    원장 손익은 `margin_used x filled_ratio x gain_pct` 이고 `gain_pct` 는 **의도 배율**
+    `leverage` 를 곱한다(규칙 #5 · 백테스트와 같은 숫자). 거래소 손익은 **실제 계약 x 가격
+    차**다. 정수 계약 반올림(UNI 계획 0.36 → 체결 0.48) · 부분 체결(SUSHI 10-14 4.5 → 0.09 ·
+    원장 -3.78 대 실제 -0.08) · 이어받기(SUSHI 10-23 +1.77 대 +0.80)에서 둘이 갈렸고 4H 지갑
+    앵커가 멈추면 그 차가 펀드 잔고에 영구히 쌓였다. 이 값은 그 차를 매매 단위로 적어
+    `_walk_wallet` 이 `realized_adjust` 처럼 더한다 — **라이브 장부 몫 = 계약 손익**. 펀드
+    재현(`runner_rules.wallet_adjust`)이 이미 쓰던 식과 같다.
+
+    청산가 · 수수료가 나중에 고쳐지면 **다시 계산해 갈아 끼운다**(`add_pnl` 처럼 · 누적 아님).
+    0 = 모형(백테스트 · 페이퍼 · `contracts` 0) · 옛 기록. `leverage` · `gain_pct` 는 안 건드린다.
+    """
     fee_actual: Decimal | None = None
     """거래소가 실제로 뗀 수수료 (USDT · 양수 · 왕복 합) — 라이브가 청산 이력에서 붙인다 (T236).
 
@@ -759,6 +773,7 @@ class TradeRecord:
             filled_leverage=self.filled_leverage,
             contracts=self.contracts,
             fee_actual=self.fee_actual,
+            contract_adjust=self.contract_adjust,  # T606 — 청산가 보정 뒤 다시 닫을 때도 잇는다
         )
 
 
@@ -1263,6 +1278,8 @@ class Ledger:
             pnl += item.realized_adjust
             # ⭐ T308 ⑥ — 불타기 추가분. 처음 크기의 손익(위)과 평단 · 계약이 달라 따로 적혀 있다.
             pnl += item.add_pnl
+            # ⭐ T606 — 계약 손익 - 의도 손익. 라이브만 0 이 아니다 → 장부 몫 = 거래소 몫.
+            pnl += item.contract_adjust
             margin += pnl
             # ⭐ **그때의 증거금으로 센다** — 나중에 곱하면 규모가 달라진다.
             earned += pnl
