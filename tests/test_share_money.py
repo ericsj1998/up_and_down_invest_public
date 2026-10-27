@@ -28,7 +28,7 @@ from test_share_runner import (  # pyright: ignore[reportMissingImports]
 from updown.apps.api.rebalancer import mark_and_multiplier, share_rows, split_unrealized
 from updown.common.domain.instrument import Instrument
 from updown.orchestration.walkforward.ledger import Ledger, Outcome, TradeRecord
-from updown.orchestration.walkforward.live_runner import funding_weight, liq_findings
+from updown.orchestration.walkforward.live_runner import _NOT_REALISED, funding_weight, liq_findings
 
 
 def at(hour: int) -> datetime:
@@ -315,3 +315,48 @@ class TestLiquidationIsCheckedPerShare:
         assert found[0]["detail"].startswith("거래소 청산가 85 가 손절 80 보다")
         thin = dc_replace(held, planned_stop=Decimal("87.5"))
         assert [f["code"] for f in liq_findings(thin, Decimal(85))] == ["stop_near_liquidation"]
+
+
+class TestFeeAlignDoesNotAskWhileALifeIsOpen:
+    """2026-10-28 — 수수료 맞춤이 헛요청을 안 낸다(28 일 17,870 회 · 서버 자원 제약)."""
+
+    def test_an_open_share_means_no_exchange_request(self) -> None:
+        """원장에 열린 몫이 있으면 거래소 생애가 끝났을 수 없다 — position_closes 를 안 부른다."""
+        life = {
+            "first_open_time": str(at(1).timestamp()),
+            "time": str(at(8).timestamp()),
+            "pnl_fee": "-0.88",
+        }
+        run, a, _b = fee_board([life])
+        calls = {"n": 0}
+
+        async def counting(instrument: Instrument, limit: int = 30) -> list[dict[str, str]]:
+            del instrument, limit
+            calls["n"] += 1
+            return [life]
+
+        run._orders.position_closes = counting  # type: ignore[attr-defined]  # pyright: ignore[reportPrivateUsage]
+        run._session.ledger.add(share("cccccccc3333", stop="95", contracts=1, playbook="c@0"))  # pyright: ignore[reportPrivateUsage]
+        align(run, a)
+        assert calls["n"] == 0 and now_of(run, a).fee_actual is None
+        # 열린 몫이 닫히면 다음 맞춤은 묻고 채운다.
+        open_c = now_of(run, share("cccccccc3333", stop="95", contracts=1, playbook="c@0"))
+        run._session.ledger.replace(  # pyright: ignore[reportPrivateUsage]
+            open_c.closed(at=at(9), price=Decimal(100), outcome=Outcome.SIGNAL_EXIT)
+        )
+        align(run, a)
+        assert calls["n"] == 1 and now_of(run, a).fee_actual is not None
+
+    def test_a_cancelled_row_is_never_retried(self) -> None:
+        """T606 ③ 거짓 청산 취소 줄(열림 · 닫힘 시각 있음 · fee 없음)은 재시도 목록에 안 든다."""
+        run, a, _b = fee_board([])
+        twin = now_of(run, a).closed(at=at(6), price=Decimal(100), outcome=Outcome.CANCELLED)
+        run._session.ledger.replace(twin)  # pyright: ignore[reportPrivateUsage]
+        pending = [
+            item.trade_id
+            for item in run._session.ledger.records  # pyright: ignore[reportPrivateUsage]
+            if item.closed_at is not None
+            and item.fee_actual is None
+            and item.outcome not in _NOT_REALISED
+        ]
+        assert "aaaaaaaa1111" not in pending and "bbbbbbbb2222" in pending

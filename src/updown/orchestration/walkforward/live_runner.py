@@ -3168,6 +3168,12 @@ class LiveRunner:
             return
         if record.fee_actual is not None or not hasattr(self._orders, "position_closes"):
             return
+        if any(item.outcome is Outcome.OPEN for item in self._session.ledger.records):
+            # ⭐ 2026-10-28 — 우리 원장에 열린 몫이 있으면 거래소 생애(포지션 0)가 끝났을 수 없다
+            #    → 묻지 않는다(`_pnl_audit` 과 같은 규칙). 전에는 감사 주기마다 `position_closes`
+            #    GET 을 보내고 "생애가 아직 안 끝났다" 로 버렸다(28 일 17,870 회 · SUSHI 10 일 동안
+            #    매 155 초). 포지션이 0 이 되는 걸음에서 바로 맞춰지므로 정확성은 그대로다.
+            return
         try:
             rows = cast(
                 "list[dict[str, object]]",
@@ -4891,10 +4897,15 @@ class LiveRunner:
         """
         # ⭐ T236 — 아직 실제 수수료를 못 붙인 닫힌 매매를 감사 주기마다 셋씩 따라잡는다
         #    (닫힐 때 거래소 이력이 늦게 도착한 경우 · 옛 행). 실패해도 감사는 돈다.
+        # ⛔ 돈이 안 움직인 결말(취소 · 이관)은 거래소 청산 행이 없다 — 영원히 재시도하며 요청만
+        #    낸다(T606 ③ 거짓 청산 취소 줄은 opened_at · closed_at 이 둘 다 있어 이 거름 없이는
+        #    매 주기 GET).
         pending = [
             item.trade_id
             for item in self._session.ledger.records
-            if item.closed_at is not None and item.fee_actual is None
+            if item.closed_at is not None
+            and item.fee_actual is None
+            and item.outcome not in _NOT_REALISED
         ][-3:]
         for trade_id in pending:
             try:
