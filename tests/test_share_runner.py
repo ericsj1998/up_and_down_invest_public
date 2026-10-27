@@ -590,3 +590,18 @@ class TestAdoptedShareExposure:
         assert asyncio.run(run.adopt()) is True
         assert led.records[0].leverage == Decimal("2.25")
         assert led.records[0].filled_leverage is None
+
+    def test_outside_share_mode_only_the_exposure_is_recorded(self) -> None:
+        """몫 모드 밖 — 선언 배율은 두고 실측은 `filled_leverage` 에만.
+
+        재레버 목표가 `leverage` 를 읽으므로 그것은 건드리지 않는다.
+        """
+        run, led = self._adopting(ShareExchange(size=-74), budget="14.666648", leg_lev="2.25")
+        run._session.playbooks = (SimpleNamespace(share_same_side=False, attribution="macd@0.1.0"),)  # pyright: ignore[reportPrivateUsage]
+        assert asyncio.run(run.adopt()) is True
+        held = led.records[0]
+        assert held.leverage == Decimal("2.25")
+        assert held.filled_leverage is not None
+        assert abs(
+            held.filled_leverage - Decimal(74) * Decimal("0.2149") / Decimal("14.666648")
+        ) < Decimal("0.000001")

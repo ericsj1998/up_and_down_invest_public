@@ -612,8 +612,26 @@ def blocked_row(snap: Snapshot, health: Health, now: datetime, days: int) -> Row
         f"awaiting_fund 는 판 기동(배포 · 재기동) 뒤 {grace} 안에서만 정상 — 그 밖이면 ⚠️ · "
         "나머지 코드는 규칙이 막은 수(참고)"
     )
+    # 🔴 T605(2026-10-27) — 막힘 **기록**(blocked.tsv)이 비어도 펀드가 **죽은 판 키**를 묶고 있으면
+    #    그 종목의 지금 판은 모든 봉에서 `awaiting_fund` 로 막힌다(후보가 나기 전에 막혀 기록을 안
+    #    남긴다). 10-16 전환이 반쪽으로 끝나 핵심 8 종이 그 상태였는데 이 줄이 0 건 ✅ 로 가렸다.
+    #    깔때기 수는 누적(재기동을 넘어 쌓임)이라 시각 판정에 못 쓰고, 펀드 `runs` ↔ 열린 판 키
+    #    대조가
+    #    사실이다.
+    unbound = unbound_members(snap)
+    tail = (
+        f" · 🔴 펀드가 묶은 판이 열린 판이 아님 {len(unbound)}종({', '.join(unbound[:8])})"
+        if unbound
+        else ""
+    )
     if snap.blocked is None:
-        return Row("now", item, "info", "자료 없음(옛 덤프 · 기록 전 서버)", basis)
+        return Row(
+            "now",
+            item,
+            "warn" if unbound else "info",
+            "자료 없음(옛 덤프 · 기록 전 서버)" + tail,
+            basis,
+        )
     since = now - timedelta(days=days)
     rows = [r for r in snap.blocked if (when(r.get("ts")) or when(r.get("at")) or since) >= since]
     codes: Counter[str] = Counter(str(r.get("code") or "?") for r in rows)
@@ -630,44 +648,31 @@ def blocked_row(snap: Snapshot, health: Health, now: datetime, days: int) -> Row
         value += " · " + " · ".join(f"{c} {n}" for c, n in codes.most_common(6))
     if late:
         value += f" · awaiting_fund 기동 {grace} 밖 {len(late)}건({', '.join(late[:4])})"
-    # 🔴 T605(2026-10-27) — 막힘 **기록**(blocked.tsv)이 비어도 판 깔때기에는
-    #    `blocked:awaiting_fund` 가 봉마다 쌓인다(펀드에 안 묶인 판은 후보가 나기 전에 막혀
-    #    기록을 안 남긴다). 핵심 8 종이 10-16 부터
-    #    모든 봉에서 막혀 있었는데 이 줄이 0 건 ✅ 로 가렸다 — 깔때기도 같이 본다.
-    stuck = stuck_runs(snap, now)
-    if stuck:
-        value += (
-            f" · 🔴 깔때기 awaiting_fund 판 {len(stuck)}개 기동 {grace} 밖({', '.join(stuck[:5])})"
-        )
-    return Row("now", item, "warn" if late or stuck else "ok", value, basis)
+    value += tail
+    return Row("now", item, "warn" if late or unbound else "ok", value, basis)
 
 
-def stuck_runs(snap: Snapshot, now: datetime) -> list[str]:
-    """깔때기에 `blocked:awaiting_fund` 가 쌓였고 기동 뒤 `AWAITING_FUND_GRACE` 가 지난 열린 판.
-
-    T605(2026-10-27).
+def unbound_members(snap: Snapshot) -> list[str]:
+    """펀드 `runs`(종목 → 묶은 판 키)가 가리키는 판이 **열린 판이 아닌** 멤버 종목 (T605).
 
     Args:
-        snap: 스냅샷(`runs` 의 `meta["funnel"]`).
-        now: 보고 시각(UTC).
+        snap: 스냅샷(`fund["runs"]` · `runs`).
 
     Returns:
-        `종목 막힘수/후보수` 문자열 목록 — 종목 순. 기동 시각을 모르면 밖으로 센다(확인 쪽으로).
+        `종목(묶은 키 → 열린 키)` 목록 — 종목 순. 그 종목에 열린 판이 없으면 "열린 판 · 펀드 선언"
+        줄이
+        따로 말하므로 여기서는 뺀다. 펀드 파일에 `runs` 가 없으면 빈 목록.
     """
+    bound = snap.fund.get("runs") if isinstance(snap.fund, dict) else None
+    if not isinstance(bound, dict):
+        return []
+    open_key = {r.symbol: r.key for r in snap.runs if r.closed_at is None}
     out: list[str] = []
-    for run in sorted(snap.runs, key=lambda r: r.symbol):
-        if run.closed_at is not None:
+    for symbol, key in sorted(cast("dict[str, object]", bound).items()):
+        have = open_key.get(str(symbol))
+        if have is None or have == str(key):
             continue
-        funnel = run.meta.get("funnel") if isinstance(run.meta, dict) else None
-        if not isinstance(funnel, dict):
-            continue
-        blocked = int(funnel.get("blocked:awaiting_fund") or 0)
-        if blocked <= 0:
-            continue
-        if run.opened_at is not None and now - run.opened_at <= AWAITING_FUND_GRACE:
-            continue
-        cands = sum(int(v or 0) for k, v in funnel.items() if str(k).startswith("cand:"))
-        out.append(f"{run.symbol} {blocked}/{cands}")
+        out.append(f"{symbol}({str(key)[-6:]}→{have[-6:]})")
     return out
 
 

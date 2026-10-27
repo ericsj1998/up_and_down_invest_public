@@ -2319,19 +2319,25 @@ class LiveRunner:
                 keeper.attribution, self._session.ledger.leverage
             ),
         )
+        # 🔴 T604(2026-10-27 실계좌) — 이어받은 포지션이 **실제로 만든 노출**(계약 x 승수 x 평단 ÷
+        #    예산)을 `filled_leverage` 에 적는다(정상 진입의 `_record_filled_exposure` 와 같은
+        #    자리).
+        #    ⛔ 명세 · 예산을 못 읽으면 지어내지 않고 비워 둔 채 기록한다(규칙 #8).
+        actual = await self._adopted_exposure(abs(size), entry, record.leverage)
+        if actual is not None:
+            record = dc_replace(record, filled_leverage=actual)
         if self._shared:
             # ⭐ T320 — 몫 하나로 이어받는다: 그 몫의 계약 수 = 거래소 전량(몫 손절이 그
             #    크기로 걸린다).
             record = dc_replace(record, contracts=int(abs(size)))
-            # 🔴 T604(2026-10-27 실계좌) — 이어받은 몫의 배율은 **거래소에 실제로 있는 계약**으로
-            #    센다.
-            #    다리 선언 배율(leg_leverage 2.25)을 적었더니 펀드 장부가 SUSHI 청산 몫을 +1.77 로
-            #    더했는데 거래소 실제 손익은 +0.80 이었다(장부 > 지갑 +0.88). 손익률(`gain_pct`)이
-            #    `leverage` 를 곱하므로 의도가 아닌 사실을 적는다 — 입양 기록에는 "의도" 가 없다.
-            #    ⛔ 명세 · 예산을 못 읽으면 지어내지 않고 선언 배율을 그대로 두되 기록한다(규칙 #8).
-            actual = await self._adopted_exposure(abs(size), entry)
             if actual is not None:
-                record = dc_replace(record, leverage=actual, filled_leverage=actual)
+                # 🔴 T604 — 몫 모드는 `leverage` 도 실측으로. 다리 선언 배율(2.25)을 적었더니 펀드
+                #    장부가 SUSHI 청산 몫을 +1.77 로 더했는데 거래소 손익은 +0.80 이었다(장부 > 지갑
+                #    +0.88). 손익률(`gain_pct`)이 `leverage` 를 곱하므로 의도가 아닌 사실을 적는다 —
+                #    입양 기록에는 "의도" 가 없다. 몫 모드는 재레버가 꺼져(`share_mode_faults`)
+                #    `held.leverage` 를 목표 크기로 읽는 곳이 없다. 몫 모드 밖은 재레버 목표가
+                #    `leverage` 를 쓰므로 건드리지 않는다(반쯤 줄어든 포지션을 의도로 굳히지 않게).
+                record = dc_replace(record, leverage=actual)
             # ⭐ 2026-10-01 — 남의 이름(콘솔 · 운영 스크립트)의 손절로 이어받았으면 봐 둔다.
             #    우리 몫 손절이 걸린 뒤 `_withdraw_foreign_stops` 가 거둬 손절을 하나로 만든다.
             foreign = foreign_stop_ids(armed, self._share_stop_key(record))
@@ -2375,14 +2381,18 @@ class LiveRunner:
         )
         return True
 
-    async def _adopted_exposure(self, contracts: Decimal, entry: Decimal) -> Decimal | None:
+    async def _adopted_exposure(
+        self, contracts: Decimal, entry: Decimal, intended: Decimal
+    ) -> Decimal | None:
         """이어받은 포지션이 **실제로 만든 노출**(명목 ÷ 사이징 기준) — T604.
 
-        `_record_filled_exposure` 와 같은 식이다.
+        `_record_filled_exposure` · `fund_replay.runner_rules.filled_exposure` 와 같은 식이다
+        (저쪽이 이 모듈을 import 하므로 여기서 되가져오지 않는다).
 
         Args:
             contracts: 거래소 보유 계약 수(절댓값).
             entry: 거래소 평단.
+            intended: 다리 선언 배율 — 기록에 같이 남겨 실측과의 차를 나중에 볼 수 있게.
 
         Returns:
             노출 배율. 계약 명세 · 사이징 기준을 못 읽거나 0 이면 None — 호출자가 선언 배율을
@@ -2426,8 +2436,9 @@ class LiveRunner:
                 "entry": str(entry),
                 "multiplier": str(multiplier),
                 "sizing_base": str(base),
-                "leverage": str(actual),
-                "note": "이어받은 몫의 배율 = 실제 명목 ÷ 예산 (T604 · 손익률 · 상한 회계 둘 다)",
+                "intended": str(intended),
+                "filled": str(actual),
+                "note": "이어받은 포지션의 실측 노출 = 명목 ÷ 예산 (T604 · 몫 모드는 손익률도)",
             },
         )
         return actual

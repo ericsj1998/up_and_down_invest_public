@@ -216,81 +216,61 @@ def test_macd_hist_needs_enough_bars() -> None:
     assert got is not None and got[0] >= 0
 
 
-def test_funnel_awaiting_fund_past_grace_is_a_warning() -> None:
-    """T605 — 막힘 기록이 비어도 깔때기에 `blocked:awaiting_fund` 가 기동 4H 넘게 쌓였으면 ⚠️.
+def _run(symbol: str, key: str, *, closed: bool = False) -> Run:
+    return Run(
+        key,
+        key,
+        symbol,
+        "pb",
+        "pb",
+        None,
+        Decimal("2.14"),
+        NOW - timedelta(days=11),
+        NOW if closed else None,
+        "지움" if closed else "",
+        {},
+    )
 
-    10-16 전환이 반쪽으로 끝나 핵심 8 종 판이 모든 봉에서 펀드 기다림으로 막혔는데
-    "막힌 후보 0건 ✅" 로 가렸다.
+
+def test_fund_bound_to_a_dead_run_is_a_warning() -> None:
+    """T605 — 펀드 `runs` 가 가리키는 판 키가 열린 판이 아니면(죽은 판을 묶음) ⚠️.
+
+    10-16 전환이 반쪽으로 끝나 핵심 8 종의 펀드 묶음은 옛 키를 가리킨 채 새 판이 떴고, 그 판은
+    모든 봉에서 `awaiting_fund` 로 막혔는데 "막힌 후보 0건 ✅" 로 가렸다. 깔때기 수는 재기동을
+    넘어 쌓여 시각 판정에 못 쓴다 —
+    펀드 묶음 ↔ 열린 판 키 대조가 사실이다.
     """
-    from updown.orchestration.live_review.check import blocked_row, stuck_runs
+    from updown.orchestration.live_review.check import blocked_row, unbound_members
 
-    stuck = Run(
-        "r2",
-        "live2",
-        "BTC_USDT",
-        "pb",
-        "pb",
-        None,
-        Decimal("2.14"),
-        NOW - timedelta(days=11),
-        None,
-        "",
-        {
-            "funnel": {
-                "blocked:awaiting_fund": 266,
-                "cand:private_strategy": 1,
-                "bars:DOWN": 142,
-            }
-        },
-    )
-    fresh = Run(
-        "r3",
-        "live3",
-        "ETH_USDT",
-        "pb",
-        "pb",
-        None,
-        Decimal("2.14"),
-        NOW - timedelta(hours=1),
-        None,
-        "",
-        {"funnel": {"blocked:awaiting_fund": 1}},
-    )
-    closed = Run(
-        "r4",
-        "live4",
-        "XRP_USDT",
-        "pb",
-        "pb",
-        None,
-        None,
-        NOW - timedelta(days=11),
-        NOW,
-        "지움",
-        {"funnel": {"blocked:awaiting_fund": 50}},
-    )
-    snap = Snapshot(Path(), NOW, [stuck, fresh, closed], [], [], {}, [], {}, blocked=[])
-    assert stuck_runs(snap, NOW) == ["BTC_USDT 266/1"]
+    runs = [
+        _run("BTC_USDT", "livefed01907"),
+        _run("ALGO_USDT", "live7fe0fa61"),
+        _run("BTC_USDT", "livefe5d17f4", closed=True),
+    ]
+    fund = {
+        "runs": {
+            "BTC_USDT": "livefe5d17f4",
+            "ALGO_USDT": "live7fe0fa61",
+            "LINK_USDT": "live22862d93",
+        }
+    }
+    snap = Snapshot(Path(), NOW, runs, [], [], fund, [], {}, blocked=[])
+    # LINK 는 열린 판이 없다 — "열린 판 · 펀드 선언" 줄의 몫이라 여기선 안 센다.
+    assert unbound_members(snap) == ["BTC_USDT(e5d17f4→fed01907)"[:0] + "BTC_USDT(5d17f4→d01907)"]
     row = blocked_row(snap, Health(), NOW, 7)
     assert row.status == "warn"
-    assert "BTC_USDT 266/1" in row.value
+    assert "BTC_USDT(5d17f4→d01907)" in row.value
+    # 막힘 기록이 없는 옛 덤프라도 묶음 어긋남은 ⚠️ 로 올린다.
+    old = Snapshot(Path(), NOW, runs, [], [], fund, [], {}, blocked=None)
+    assert blocked_row(old, Health(), NOW, 7).status == "warn"
 
 
-def test_funnel_without_awaiting_fund_stays_ok() -> None:
-    from updown.orchestration.live_review.check import blocked_row
+def test_fund_bound_to_the_open_runs_stays_ok() -> None:
+    from updown.orchestration.live_review.check import blocked_row, unbound_members
 
-    run = Run(
-        "r1",
-        "live1",
-        "NEAR_USDT",
-        "pb",
-        "pb",
-        None,
-        None,
-        NOW - timedelta(days=9),
-        None,
-        "",
-        {"funnel": {"ref_volpct": 35, "cand:private_strategy": 1}},
-    )
-    snap = Snapshot(Path(), NOW, [run], [], [], {}, [], {}, blocked=[])
+    runs = [_run("NEAR_USDT", "live1")]
+    snap = Snapshot(Path(), NOW, runs, [], [], {"runs": {"NEAR_USDT": "live1"}}, [], {}, blocked=[])
+    assert unbound_members(snap) == []
     assert blocked_row(snap, Health(), NOW, 7).status == "ok"
+    # 펀드 파일에 runs 가 없으면(옛 형식) 조용히 지나간다.
+    assert unbound_members(Snapshot(Path(), NOW, runs, [], [], {}, [], {}, blocked=[])) == []
