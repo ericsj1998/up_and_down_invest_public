@@ -294,3 +294,20 @@ def test_snapshot_reads_old_rows_without_the_contract_adjust_column(tmp_path: Pa
     snap = load_snapshot(tmp_path)
     assert [t.contract_adjust for t in snap.trades] == [None, Decimal("-0.97")]
     assert all(t.evidence == {"a": 1} and t.entry == Decimal("5.3") for t in snap.trades)
+
+
+def test_fund_never_anchored_with_a_skip_reason_is_a_warning() -> None:
+    """T606 - `anchor.at` 이 없어도 건너뜀 사유가 있으면 장부 차는 저절로 안 맞춰진다 → ⚠️ + 사유."""
+    fund = {
+        "legs": [{"attribution": "private_strategy@0.1.0", "symbols": ["NEAR_USDT"]}],
+        "twr": {"equity": "100", "twr": "1", "twr_peak": "1"},
+        "core_twr": {"twr": "1", "twr_peak": "1"},
+        "drawdown_brake": {"at": "0.05"},
+        "anchor": None,
+        "anchor_skipped": "펀드 밖 단독 판 8개(ADA_USDT BNB_USDT BTC_USDT)",
+    }
+    snap = Snapshot(Path(), NOW, [], [], [], fund, [], {"account": {"total": "100"}})
+    rows = now_rows(snap, Health(leader_health=True, leader_pttl=1000), [], [], NOW)
+    row = next(r for r in rows if r.item == "펀드 장부 ↔ 거래소 지갑")
+    assert row.status == "warn"
+    assert "건너뜀 사유: 펀드 밖 단독 판 8개" in row.value and "마지막 없음" in row.value

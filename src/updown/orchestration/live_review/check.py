@@ -512,10 +512,17 @@ def now_rows(
     #    졌던 것을 이 줄이 "차 +0.88 ⚠️" 로만 말했다. 마지막 앵커 시각(`anchor.at`)이 낡았으면 차가
     #    저절로 안 사라진다는 뜻이라 사유를 같이 적는다 — 펀드 파일에 이미 있는 값이라 비용 없음.
     anchored_at = when(_dict(snap.fund.get("anchor")).get("at"))
-    stale = anchored_at is not None and now - anchored_at > ANCHOR_STALE
+    skipped = str(snap.fund.get("anchor_skipped") or "")
+    # 한 번도 앵커가 안 돈 펀드(at 없음)도 건너뜀 사유가 있으면 낡은 것으로 본다(조용히 안 넘긴다).
+    stale = (anchored_at is None and bool(skipped)) or (
+        anchored_at is not None and now - anchored_at > ANCHOR_STALE
+    )
     eq_value = f"장부 {_f(eq)} · 지갑 {_f(total)} USDT · 차 {_f(diff, sign=True)}"
     if stale:
-        eq_value += f" · 🔴 지갑 앵커 마지막 {kst(anchored_at)}(이 차는 저절로 안 맞춰짐)"
+        last = kst(anchored_at) if anchored_at is not None else "없음"
+        eq_value += f" · 🔴 지갑 앵커 마지막 {last}(이 차는 저절로 안 맞춰짐)"
+        if skipped:
+            eq_value += f" · 건너뜀 사유: {skipped[:80]}"
     rows.append(
         Row(
             s,

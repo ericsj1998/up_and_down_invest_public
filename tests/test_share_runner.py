@@ -626,6 +626,16 @@ class TestExitFillCorrection:
         exit_a(run, a, b)
         assert now_of(run, a).exit_price == Decimal(110)
 
+    def test_a_partial_fill_response_is_not_written(self) -> None:
+        """부분 체결 평단을 전량 청산가로 적지 않는다 - 남은 수량의 청산가 근거가 사라진다."""
+        run, _exch, a, _b = two_shares()
+        run._session.ledger.replace(closed(a))  # pyright: ignore[reportPrivateUsage]
+        partial = SimpleNamespace(
+            status=OrderStatus.PARTIALLY_FILLED, average_price=Decimal("110.3")
+        )
+        run._correct_exit_from_response(a.trade_id, cast("Any", partial))  # pyright: ignore[reportPrivateUsage]
+        assert now_of(run, a).exit_price == Decimal(110)
+
     def test_no_fill_in_the_response_changes_nothing(self) -> None:
         run, _exch, a, _b = two_shares()
         run._session.ledger.replace(closed(a))  # pyright: ignore[reportPrivateUsage]

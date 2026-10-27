@@ -405,7 +405,9 @@ class TradeRecord:
     재현(`runner_rules.wallet_adjust`)이 이미 쓰던 식과 같다.
 
     청산가 · 수수료가 나중에 고쳐지면 **다시 계산해 갈아 끼운다**(`add_pnl` 처럼 · 누적 아님).
-    0 = 모형(백테스트 · 페이퍼 · `contracts` 0) · 옛 기록. `leverage` · `gain_pct` 는 안 건드린다.
+    0 = 백테스트(`contracts` 0) · 옛 기록 · 단독 판(`margin_used` 없음) · 재레버로 줄인 매매
+    (`realized_adjust` ≠ 0 · 이미 감축가로 적힘). 라이브 · 테스트넷 페이퍼 러너 둘 다 적는다(둘 다
+    정수 계약 체결이 있다). `leverage` · `gain_pct` 는 안 건드린다. 식은 `contract_adjust_of`.
     """
     fee_actual: Decimal | None = None
     """거래소가 실제로 뗀 수수료 (USDT · 양수 · 왕복 합) — 라이브가 청산 이력에서 붙인다 (T236).
@@ -775,6 +777,50 @@ class TradeRecord:
             fee_actual=self.fee_actual,
             contract_adjust=self.contract_adjust,  # T606 — 청산가 보정 뒤 다시 닫을 때도 잇는다
         )
+
+
+def contract_adjust_of(
+    record: TradeRecord, contracts: int, multiplier: Decimal, ledger_leverage: Decimal
+) -> Decimal | None:
+    """**계약 손익 - 의도 손익** USDT — 장부 몫을 거래소 몫으로 맞추는 값 (T606).
+
+    Args:
+        record: 닫힌 기록(`exit_price` 있음 · `margin_used` 있음).
+        contracts: 진입 계약 수(진입 때 고정된 값).
+        multiplier: 계약 승수.
+        ledger_leverage: 판의 거래소 배율(강제청산 때 잃는 격리 증거금 = 명목 ÷ 배율).
+
+    Returns:
+        `_walk_wallet` 이 `realized_adjust` 처럼 더할 값. 다음이면 None(= 적지 않음):
+        계약 0(모형 · 옛 기록) · 아직 안 닫힘 · `margin_used` 없음(단독 판은 걷기가 그때그때
+        증거금을 쓰므로 여기서 의도 손익을 다시 셀 수 없다) · `realized_adjust` 가 0 이 아님
+        (재레버로 줄인 계약의 손익이 감축가로 이미 적혀 있는데 `contracts` 는 진입 전량이라
+        두 번 센다).
+
+    Note:
+        의도 손익 = `margin_used x filled_ratio x gain_pct ÷ 100`(걷기 식 그대로 · `leverage` 곱) ·
+        계약 손익 = 계약 x 승수 x 진입가 x (가격 수익률 - 비용 비율 - 펀딩 비율) · 강제청산은
+        격리 증거금(명목 ÷ 배율)만 잃는다. 둘의 차만 적으므로 `leverage` · `gain_pct` · 백테스트
+        길은 한 비트도 안 바뀐다. 불타기 추가분(`add_pnl`)은 자기 계약으로 따로 적혀 있어 여기
+        안 든다. 라이브 러너(`_book_adds`)와 펀드 재현(`runner_rules.wallet_adjust`)이 **같은 이
+        함수**를 쓴다.
+    """
+    if contracts <= 0 or multiplier <= 0 or record.entry <= 0 or record.margin_used is None:
+        return None
+    if record.realized_adjust != 0:
+        return None
+    gain = record.gain_pct
+    exit_avg = record.exit_average
+    if gain is None or exit_avg is None:
+        return None
+    intended = record.margin_used * record.filled_ratio * gain / Decimal(100)
+    notional = Decimal(contracts) * multiplier * record.entry
+    if record.outcome is Outcome.LIQUIDATED:
+        actual = -(notional / ledger_leverage) if ledger_leverage > 0 else -notional
+    else:
+        move = (exit_avg - record.entry) * record.direction.sign / record.entry
+        actual = notional * (move - record.cost_pct - record.funding_pct)
+    return actual - intended
 
 
 def new_trade_id() -> str:

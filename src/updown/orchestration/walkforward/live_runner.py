@@ -70,6 +70,7 @@ from updown.orchestration.walkforward.ledger import (
     Ledger,
     Outcome,
     TradeRecord,
+    contract_adjust_of,
     new_trade_id,
     plan_fault,
 )
@@ -735,43 +736,6 @@ def add_pnl_of(record: TradeRecord, multiplier: Decimal) -> Decimal | None:
     size = Decimal(record.add_contracts) * multiplier
     gross = (record.exit_price - record.add_fill) * record.direction.sign * size
     return gross - record.cost_pct * record.add_fill * size
-
-
-def contract_adjust_of(
-    record: TradeRecord, multiplier: Decimal, ledger_leverage: Decimal, staked_fallback: Decimal
-) -> Decimal | None:
-    """**계약 손익 - 의도 손익** USDT — 라이브 장부 몫을 거래소 몫으로 맞추는 값 (T606).
-
-    Args:
-        record: 닫힌 원장 기록(`contracts > 0` · `exit_price` 있음).
-        multiplier: 계약 승수.
-        ledger_leverage: 판의 거래소 배율(강제청산 때 잃는 격리 증거금 = 명목 ÷ 배율).
-        staked_fallback: `margin_used` 가 없을 때(단독 판) 걷기가 쓰는 증거금.
-
-    Returns:
-        `_walk_wallet` 이 더할 값. 계약을 모르거나(모형 · 옛 기록) 아직 안 닫혔으면 None.
-
-    Note:
-        의도 손익 = `margin_used x filled_ratio x gain_pct ÷ 100`(걷기 식 그대로 · `leverage` 곱) ·
-        계약 손익 = 계약 x 승수 x 진입가 x (가격 수익률 - 비용 비율 - 펀딩 비율). 둘의 차만 적으므로
-        `leverage` · `gain_pct` · 백테스트 길은 한 비트도 안 바뀐다. 불타기 추가분(`add_pnl`)은 자기
-        계약으로 따로 적혀 있어 여기 안 든다. 펀드 재현 `runner_rules.wallet_adjust` 와 같은 식.
-    """
-    if record.contracts <= 0 or multiplier <= 0 or record.entry <= 0:
-        return None
-    gain = record.gain_pct
-    exit_avg = record.exit_average
-    if gain is None or exit_avg is None:
-        return None
-    staked = record.margin_used if record.margin_used is not None else staked_fallback
-    intended = staked * record.filled_ratio * gain / Decimal(100)
-    notional = Decimal(record.contracts) * multiplier * record.entry
-    if record.outcome is Outcome.LIQUIDATED:
-        actual = -(notional / ledger_leverage) if ledger_leverage > 0 else -notional
-    else:
-        move = (exit_avg - record.entry) * record.direction.sign / record.entry
-        actual = notional * (move - record.cost_pct - record.funding_pct)
-    return actual - intended
 
 
 def fee_from_close(row: dict[str, object], multiplier: Decimal) -> tuple[Decimal, Decimal] | None:
@@ -3242,6 +3206,10 @@ class LiveRunner:
         """
         fill = getattr(done, "average_price", None)  # 어댑터 더블은 평단을 안 줄 수 있다
         if not fill or fill <= 0:
+            return
+        if getattr(done, "status", OrderStatus.FILLED) is not OrderStatus.FILLED:
+            # 부분 체결의 평단을 전량 청산가로 적으면 남은 수량의 청산가 근거가 사라진다 —
+            # 전량 체결만 고친다.
             return
         record = next(
             (item for item in self._session.ledger.records if item.trade_id == trade_id), None
@@ -6838,6 +6806,7 @@ class LiveRunner:
             self._log.warning("live_add_book_unreadable", payload={"error": str(exc)[:140]})
             return
         ledger = self._session.ledger
+        ledger_leverage = ledger.leverage
         for item in done:
             if item.add_contracts > 0:
                 pnl = add_pnl_of(item, multiplier)
@@ -6855,7 +6824,9 @@ class LiveRunner:
                         },
                     )
             # ⭐ T606 — 계약 손익 - 의도 손익. 거래소가 진실 · 장부 몫 = 거래소 몫.
-            adj = contract_adjust_of(item, multiplier, ledger.leverage, ledger.sizing_base)
+            #    펀드 멤버(`margin_used` 있음)만 · 재레버로 줄인 매매는 건너뜀 — 식은
+            #    `ledger.contract_adjust_of`(펀드 재현과 같은 함수).
+            adj = contract_adjust_of(item, item.contracts, multiplier, ledger_leverage)
             if adj is None or adj == item.contract_adjust:
                 continue
             ledger.replace(dc_replace(item, contract_adjust=adj))

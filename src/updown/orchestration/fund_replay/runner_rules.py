@@ -21,7 +21,7 @@ from dataclasses import replace as dc_replace
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from updown.orchestration.walkforward.ledger import Outcome
+from updown.orchestration.walkforward.ledger import contract_adjust_of
 from updown.orchestration.walkforward.live_runner import MARGIN_HEADROOM, add_pnl_of
 from updown.orchestration.walkforward.order_mapping import (
     MAX_SIZE_MULT,
@@ -157,19 +157,11 @@ def wallet_adjust(
         `Ledger._walk_wallet`. 계약 손익 = 계약 명목 x (가격 수익률 - 비용 - 펀딩).
         강제청산은 원장이 -100% 로 적지만 거래소는 격리 증거금(명목 ÷ 배율)만 가져간다.
     """
-    gain = record.gain_pct
-    exit_avg = record.exit_average
-    if gain is None or exit_avg is None or record.entry <= 0:
-        return Decimal(0)
-    staked = record.margin_used if record.margin_used is not None else Decimal(0)
-    ledger_pnl = staked * record.filled_ratio * gain / Decimal(100)
-    notional = Decimal(contracts) * multiplier * record.entry
-    if record.outcome is Outcome.LIQUIDATED:
-        contract_pnl = -(notional / ledger_leverage) if ledger_leverage > 0 else -notional
-    else:
-        move = (exit_avg - record.entry) * record.direction.sign / record.entry
-        contract_pnl = notional * (move - record.cost_pct - record.funding_pct)
-    return contract_pnl - ledger_pnl
+    # T606 — 라이브 러너와 **같은 함수**(`ledger.contract_adjust_of`)를 쓴다. 재현은 재레버를
+    #    안 돌려 `realized_adjust` 가 늘 0 이고 멤버라 `margin_used` 가 있어 None 은
+    #    "안 닫힘 · 계약 0" 뿐이다.
+    adj = contract_adjust_of(record, contracts, multiplier, ledger_leverage)
+    return Decimal(0) if adj is None else adj
 
 
 def add_contracts(

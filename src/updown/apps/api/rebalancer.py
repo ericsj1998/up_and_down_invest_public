@@ -824,6 +824,9 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
         },
         "marks": {sym: str(mark) for sym, mark in fund.coordinator.marks.items()},
         "anchor": None if fund.anchor is None else fund.anchor.to_dict(),
+        # T606 — 마지막 틱에서 앵커를 건너뛴 이유(없으면 None). 라이브 점검이 읽어 "장부 차가
+        #    저절로 안 맞춰진다" 고 말한다 — 화면 응답에만 있던 값을 파일에도 남긴다.
+        "anchor_skipped": fund.anchor_skipped,
     }
 
 
