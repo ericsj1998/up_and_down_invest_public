@@ -2137,30 +2137,84 @@ class LiveRunner:
             그 기록의 손절은 지어낸 값이 아니라 **이 포지션에 쓰던 계획**이다 — 그것으로 이어받고
             `_guard_stop` 이 같은 값으로 손절을 다시 건다.
         """
+        item = self._false_close_twin(size)
+        if item is None or item.planned_stop <= 0:
+            return None
+        self._log.warning(
+            "live_adopt_stop_from_ledger",
+            payload={
+                "trade_id": item.trade_id,
+                "planned_stop": str(item.planned_stop),
+                "size": str(size),
+                "note": "거래소에 손절이 없어 원장의 마지막 계획으로 이어받는다 — "
+                "손절은 _guard_stop 이 건다",
+            },
+        )
+        return item.planned_stop
+
+    def _false_close_twin(self, size: Decimal) -> TradeRecord | None:
+        """거래소가 아직 든 이 포지션을 원장이 **먼저 닫아 버린** 기록 (T606 ③).
+
+        같은 방향 · 같은 계약 수 · `ADOPT_STOP_LOOKBACK` 안에 닫힌 마지막 것.
+
+        Args:
+            size: 거래소 포지션 크기(부호 = 방향).
+
+        Returns:
+            그 기록. 없으면 None. `_stop_from_ledger` 의 손절 복구와 `adopt` 의 거짓 청산 취소가
+            같이 쓴다.
+        """
         want = Direction.SHORT if size < 0 else Direction.LONG
         when = self._session.cursor
         for item in reversed(self._session.ledger.records):
-            if item.outcome is Outcome.OPEN or item.direction is not want:
-                continue
-            if item.planned_stop <= 0:
+            if item.outcome in _NOT_REALISED or item.direction is not want:
                 continue
             if item.contracts and int(abs(size)) != int(item.contracts):
                 continue
             closed = item.closed_at or item.opened_at
             if closed is None or when - closed > ADOPT_STOP_LOOKBACK:
                 continue
-            self._log.warning(
-                "live_adopt_stop_from_ledger",
-                payload={
-                    "trade_id": item.trade_id,
-                    "planned_stop": str(item.planned_stop),
-                    "size": str(size),
-                    "note": "거래소에 손절이 없어 원장의 마지막 계획으로 이어받는다 — "
-                    "손절은 _guard_stop 이 건다",
-                },
-            )
-            return item.planned_stop
+            return item
         return None
+
+    def _cancel_false_close(self, size: Decimal, adopted_id: str) -> None:
+        """이어받은 포지션을 원장이 먼저 닫아 둔 **거짓 청산 줄을 취소로 바꾼다** (T606 ③).
+
+        Args:
+            size: 거래소 포지션 크기(부호 = 방향).
+            adopted_id: 방금 이어받은 기록의 id — 그 줄은 건드리지 않는다.
+
+        Note:
+            🔴 10-23 SUSHI: 진입 0.5 초 뒤 거래소 0 을 잘못 읽어 원장이 손절(-0.01)로 닫았고(T599
+            원인), 4 시간 뒤 같은 포지션을 이어받아 익절(+0.80)로 끝났다 — 한 포지션이 두 줄.
+            거짓 손절
+            줄은 **시스템 매매**라 하루 손절 2 번 정지(`exits`) · 연속 손절 크기 축소 · 승률에 들고,
+            진짜 결과(이어받음)는 빠진다 → 다음 포지션 크기가 한 단계 깎일 수 있다(진짜 돈).
+            `CANCELLED`(돈이 움직이지 않은 결말)로 바꾸면 `ledger.closed` · `exits` · 연속 손절 ·
+            수수료 맞춤이 모두 그 줄을 건너뛴다. 거래소 사실은 이어받은 줄이 들고 간다.
+            원장 사본 하나 갈아 끼우는 산술이라 자원 비용은 없다.
+        """
+        twin = self._false_close_twin(size)
+        if twin is None or twin.trade_id == adopted_id:
+            return
+        self._session.ledger.replace(
+            twin.closed(
+                at=twin.closed_at or self._session.cursor,
+                price=twin.entry,
+                outcome=Outcome.CANCELLED,
+            )
+        )
+        self._log.warning(
+            "live_false_close_cancelled",
+            payload={
+                "trade_id": twin.trade_id,
+                "was": twin.outcome.value,
+                "exit": str(twin.exit_price),
+                "adopted": adopted_id,
+                "note": "거래소는 이 포지션을 닫은 적이 없다 — 원장이 먼저 닫은 줄을 취소로(돈 0)"
+                " · 하루 정지 · 연속 손절 · 승률에서 뺀다 · 결과는 이어받은 줄이 든다",
+            },
+        )
 
     async def adopt(self) -> bool:
         """거래소에 **이미 열려 있는 포지션**을 원장으로 이어받는다.
@@ -2355,6 +2409,8 @@ class LiveRunner:
         self._fired("adopt", f"거래소 포지션 {size} 계약을 원장으로 되읽었다")
         self._session.ledger.add(record)
         self._session.adopt(record)
+        # ⭐ T606 ③ — 이 포지션을 원장이 먼저 닫아 둔 줄이 있으면(T599 거짓 청산) 취소로 바꾼다.
+        self._cancel_false_close(size, trade_id)
         # 🔴 **이어받은 기록에 진입 주문을 보내지 않는다** (2026-09-30 실계좌 사고 · T332 후속).
         #    `_place()` 는 "열림 · 아직 안 보낸 · 체결 기록 없는" 원장 기록을 새 계획으로 보고
         #    진입을 보낸다. 되살린 기록은 `_revived_open` 으로 비켜 가지만 **입양 기록은 그 목록에
