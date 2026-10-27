@@ -214,3 +214,83 @@ def test_macd_hist_needs_enough_bars() -> None:
     assert macd_hist([Decimal(1)] * 10) is None
     got = macd_hist([Decimal(100 + i) for i in range(60)])
     assert got is not None and got[0] >= 0
+
+
+def test_funnel_awaiting_fund_past_grace_is_a_warning() -> None:
+    """T605 — 막힘 기록이 비어도 깔때기에 `blocked:awaiting_fund` 가 기동 4H 넘게 쌓였으면 ⚠️.
+
+    10-16 전환이 반쪽으로 끝나 핵심 8 종 판이 모든 봉에서 펀드 기다림으로 막혔는데
+    "막힌 후보 0건 ✅" 로 가렸다.
+    """
+    from updown.orchestration.live_review.check import blocked_row, stuck_runs
+
+    stuck = Run(
+        "r2",
+        "live2",
+        "BTC_USDT",
+        "pb",
+        "pb",
+        None,
+        Decimal("2.14"),
+        NOW - timedelta(days=11),
+        None,
+        "",
+        {
+            "funnel": {
+                "blocked:awaiting_fund": 266,
+                "cand:private_strategy": 1,
+                "bars:DOWN": 142,
+            }
+        },
+    )
+    fresh = Run(
+        "r3",
+        "live3",
+        "ETH_USDT",
+        "pb",
+        "pb",
+        None,
+        Decimal("2.14"),
+        NOW - timedelta(hours=1),
+        None,
+        "",
+        {"funnel": {"blocked:awaiting_fund": 1}},
+    )
+    closed = Run(
+        "r4",
+        "live4",
+        "XRP_USDT",
+        "pb",
+        "pb",
+        None,
+        None,
+        NOW - timedelta(days=11),
+        NOW,
+        "지움",
+        {"funnel": {"blocked:awaiting_fund": 50}},
+    )
+    snap = Snapshot(Path(), NOW, [stuck, fresh, closed], [], [], {}, [], {}, blocked=[])
+    assert stuck_runs(snap, NOW) == ["BTC_USDT 266/1"]
+    row = blocked_row(snap, Health(), NOW, 7)
+    assert row.status == "warn"
+    assert "BTC_USDT 266/1" in row.value
+
+
+def test_funnel_without_awaiting_fund_stays_ok() -> None:
+    from updown.orchestration.live_review.check import blocked_row
+
+    run = Run(
+        "r1",
+        "live1",
+        "NEAR_USDT",
+        "pb",
+        "pb",
+        None,
+        None,
+        NOW - timedelta(days=9),
+        None,
+        "",
+        {"funnel": {"ref_volpct": 35, "cand:private_strategy": 1}},
+    )
+    snap = Snapshot(Path(), NOW, [run], [], [], {}, [], {}, blocked=[])
+    assert blocked_row(snap, Health(), NOW, 7).status == "ok"

@@ -630,7 +630,45 @@ def blocked_row(snap: Snapshot, health: Health, now: datetime, days: int) -> Row
         value += " · " + " · ".join(f"{c} {n}" for c, n in codes.most_common(6))
     if late:
         value += f" · awaiting_fund 기동 {grace} 밖 {len(late)}건({', '.join(late[:4])})"
-    return Row("now", item, "warn" if late else "ok", value, basis)
+    # 🔴 T605(2026-10-27) — 막힘 **기록**(blocked.tsv)이 비어도 판 깔때기에는
+    #    `blocked:awaiting_fund` 가 봉마다 쌓인다(펀드에 안 묶인 판은 후보가 나기 전에 막혀
+    #    기록을 안 남긴다). 핵심 8 종이 10-16 부터
+    #    모든 봉에서 막혀 있었는데 이 줄이 0 건 ✅ 로 가렸다 — 깔때기도 같이 본다.
+    stuck = stuck_runs(snap, now)
+    if stuck:
+        value += (
+            f" · 🔴 깔때기 awaiting_fund 판 {len(stuck)}개 기동 {grace} 밖({', '.join(stuck[:5])})"
+        )
+    return Row("now", item, "warn" if late or stuck else "ok", value, basis)
+
+
+def stuck_runs(snap: Snapshot, now: datetime) -> list[str]:
+    """깔때기에 `blocked:awaiting_fund` 가 쌓였고 기동 뒤 `AWAITING_FUND_GRACE` 가 지난 열린 판.
+
+    T605(2026-10-27).
+
+    Args:
+        snap: 스냅샷(`runs` 의 `meta["funnel"]`).
+        now: 보고 시각(UTC).
+
+    Returns:
+        `종목 막힘수/후보수` 문자열 목록 — 종목 순. 기동 시각을 모르면 밖으로 센다(확인 쪽으로).
+    """
+    out: list[str] = []
+    for run in sorted(snap.runs, key=lambda r: r.symbol):
+        if run.closed_at is not None:
+            continue
+        funnel = run.meta.get("funnel") if isinstance(run.meta, dict) else None
+        if not isinstance(funnel, dict):
+            continue
+        blocked = int(funnel.get("blocked:awaiting_fund") or 0)
+        if blocked <= 0:
+            continue
+        if run.opened_at is not None and now - run.opened_at <= AWAITING_FUND_GRACE:
+            continue
+        cands = sum(int(v or 0) for k, v in funnel.items() if str(k).startswith("cand:"))
+        out.append(f"{run.symbol} {blocked}/{cands}")
+    return out
 
 
 # ── 2. 최근 7일 매매 ──────────────────────────────────────────────────────

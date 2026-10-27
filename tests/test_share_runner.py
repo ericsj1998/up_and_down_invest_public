@@ -533,3 +533,60 @@ class TestShareSizeAudit:
         run, _exch, _a, _b = armed()
         for _ in range(3):
             assert run._share_size_findings(5) == []  # pyright: ignore[reportPrivateUsage]
+
+
+class TestAdoptedShareExposure:
+    """T604(2026-10-27 실계좌) — 이어받은 몫의 배율은 **거래소에 실제로 있는 계약**으로 센다.
+
+    SUSHI 74 계약(실제 배율 1.08)을 다리 선언 배율 2.25 로 적어 펀드 장부가 청산 몫을 +1.77 로
+    더했는데 거래소 손익은 +0.80 이었다. 손익률(`gain_pct`)이 `leverage` 를 곱하므로 입양 기록의
+    `leverage` 는
+    실제 명목 ÷ 사이징 기준이어야 한다.
+    """
+
+    @staticmethod
+    def _adopting(exch: ShareExchange, *, budget: str, leg_lev: str) -> tuple[_Runner, Ledger]:
+        led = Ledger(seed_cash=Decimal(budget), margin_budget=Decimal(budget), refill=False)
+        run = _Runner(exch, led)
+        book = SimpleNamespace(share_same_side=True, attribution="macd@0.1.0")
+        run._session.playbooks = (book,)  # pyright: ignore[reportPrivateUsage]
+        run._session.book_for = lambda _d: book  # pyright: ignore[reportPrivateUsage]
+        run._session.leg_leverage = {"macd@0.1.0": Decimal(leg_lev)}  # pyright: ignore[reportPrivateUsage]
+        run._session.cursor = datetime(2026, 10, 22, 20, 0, tzinfo=UTC)  # pyright: ignore[reportPrivateUsage]
+        run._session.adopt = lambda _r: None  # pyright: ignore[reportPrivateUsage]
+        run.placed = {}
+        run._sent = set()  # pyright: ignore[reportPrivateUsage]
+        run.guards = {}
+        run._run_key = ""  # pyright: ignore[reportPrivateUsage]
+        exch.open_stops = _stops_with_price(  # type: ignore[method-assign]
+            [{"id": "s1", "text": "t-76d8c94d76fc-stop_loss-0", "size": "74"}]
+        )
+
+        async def snap(_i: Instrument) -> dict[str, str]:
+            return {"size": "-74", "entry_price": "0.2149", "leverage": "6"}
+
+        exch.position_snapshot = snap  # type: ignore[method-assign]
+        return run, led
+
+    def test_leverage_is_the_real_exposure_not_the_leg_declaration(self) -> None:
+        """74 계약 x 0.2149 x 승수 1 ÷ 예산 14.67 = 1.084 — 선언 2.25 가 아니다."""
+        run, led = self._adopting(ShareExchange(size=-74), budget="14.666648", leg_lev="2.25")
+        assert asyncio.run(run.adopt()) is True
+        held = led.records[0]
+        assert held.contracts == 74
+        want = Decimal(74) * Decimal("0.2149") / Decimal("14.666648")
+        assert abs(held.leverage - want) < Decimal("0.000001")
+        assert held.filled_leverage == held.leverage
+        assert held.margin_used == Decimal("14.666648")  # 분모와 같은 예산이 증거금으로 적힌다
+
+    def test_unknown_spec_keeps_the_declared_leverage(self) -> None:
+        """명세를 못 읽으면 지어내지 않고 선언 배율을 둔다(규칙 #8)."""
+        run, led = self._adopting(ShareExchange(size=-74), budget="14.666648", leg_lev="2.25")
+
+        async def broken() -> dict[str, str]:
+            raise RuntimeError("spec unreadable")
+
+        run._contract_spec = broken  # type: ignore[method-assign]
+        assert asyncio.run(run.adopt()) is True
+        assert led.records[0].leverage == Decimal("2.25")
+        assert led.records[0].filled_leverage is None
