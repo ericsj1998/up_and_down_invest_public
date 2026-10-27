@@ -37,6 +37,8 @@ LEV_WARN = Decimal("0.25")
 """체결 배율이 계획 배율과 이 비율 넘게 다르면 ⚠️."""
 EQUITY_TOL = Decimal("0.5")
 """펀드 장부 equity 와 거래소 지갑 총액의 허용 차(USDT)."""
+ANCHOR_STALE = timedelta(hours=24)
+"""펀드 지갑 앵커(4H 틱)가 이보다 오래 안 돌았으면 장부 차가 저절로 안 사라진다 (T606)."""
 AWAITING_FUND_GRACE = timedelta(hours=4)
 """`awaiting_fund` 로 막힌 후보가 정상인 창 — 판 기동(배포 · 재기동) 뒤 이 안 (T562 · T293).
 
@@ -506,13 +508,23 @@ def now_rows(
     total = dec(_dict(snap.exchange.get("account")).get("total"))
     eq = dec(_dict(snap.fund.get("twr")).get("equity"))
     diff = None if total is None or eq is None else eq - total
+    # 🔴 T606(2026-10-28) — 장부 차는 4H 지갑 앵커가 지우는데, 그 앵커가 11 일 동안 조용히 건너뛰어
+    #    졌던 것을 이 줄이 "차 +0.88 ⚠️" 로만 말했다. 마지막 앵커 시각(`anchor.at`)이 낡았으면 차가
+    #    저절로 안 사라진다는 뜻이라 사유를 같이 적는다 — 펀드 파일에 이미 있는 값이라 비용 없음.
+    anchored_at = when(_dict(snap.fund.get("anchor")).get("at"))
+    stale = anchored_at is not None and now - anchored_at > ANCHOR_STALE
+    eq_value = f"장부 {_f(eq)} · 지갑 {_f(total)} USDT · 차 {_f(diff, sign=True)}"
+    if stale:
+        eq_value += f" · 🔴 지갑 앵커 마지막 {kst(anchored_at)}(이 차는 저절로 안 맞춰짐)"
     rows.append(
         Row(
             s,
             "펀드 장부 ↔ 거래소 지갑",
-            "ok" if diff is not None and abs(diff) <= EQUITY_TOL else "warn",
-            f"장부 {_f(eq)} · 지갑 {_f(total)} USDT · 차 {_f(diff, sign=True)}",
-            f"앵커 = 지갑 총액 · 차 ≤ {EQUITY_TOL}(정시 틱 전엔 조금 다를 수 있다)",
+            "ok" if diff is not None and abs(diff) <= EQUITY_TOL and not stale else "warn",
+            eq_value,
+            f"앵커 = 지갑 총액 · 차 ≤ {EQUITY_TOL}(정시 틱 전엔 조금 다를 수 있다) · 앵커가 "
+            f"{int(ANCHOR_STALE.total_seconds() // 3600)}H 넘게 안 돌았으면 ⚠️"
+            "(펀드 밖 판이 있으면 건너뜀)",
         )
     )
     core_dd = twr_drawdown(snap.fund.get("core_twr"))

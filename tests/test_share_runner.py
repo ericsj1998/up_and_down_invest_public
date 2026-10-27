@@ -62,6 +62,7 @@ class ShareExchange:
         self.unreadable = False
         self.refuse = False
         self.history: list[dict[str, str]] = []
+        self.fill = Decimal(120)  # submit_order 응답 평단(T606 시험이 바꾼다)
 
     async def stops_for(
         self,
@@ -134,7 +135,7 @@ class ShareExchange:
             status=OrderStatus.FILLED,
             broker_order_id="c1",
             filled_quantity=Decimal(qty),
-            average_price=Decimal(120),
+            average_price=self.fill,
         )
 
 
@@ -605,3 +606,30 @@ class TestAdoptedShareExposure:
         assert abs(
             held.filled_leverage - Decimal(74) * Decimal("0.2149") / Decimal("14.666648")
         ) < Decimal("0.000001")
+
+
+class TestExitFillCorrection:
+    """T606 ③ — 몫 청산은 시장가 응답의 평단으로 원장 청산가를 고친다(요청 없이)."""
+
+    def test_share_exit_takes_the_response_fill(self) -> None:
+        run, exch, a, b = two_shares()
+        asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+        exch.fill = Decimal("110.3")  # 거래소는 110.3 에 채웠다 · 원장은 110 으로 닫혔다(0.27% 차)
+        exit_a(run, a, b)
+        assert now_of(run, a).exit_price == Decimal("110.3")
+        assert now_of(run, b).outcome is Outcome.OPEN
+
+    def test_a_far_fill_is_not_written(self) -> None:
+        """평단이 원장 청산가와 3% 넘게 멀면 지어내지 않는다(규칙 #8) — 기본 120 대 110."""
+        run, _exch, a, b = two_shares()
+        asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+        exit_a(run, a, b)
+        assert now_of(run, a).exit_price == Decimal(110)
+
+    def test_no_fill_in_the_response_changes_nothing(self) -> None:
+        run, _exch, a, _b = two_shares()
+        run._session.ledger.replace(closed(a))  # pyright: ignore[reportPrivateUsage]
+        run._correct_exit_from_response(  # pyright: ignore[reportPrivateUsage]
+            a.trade_id, cast("Any", SimpleNamespace(status="filled"))
+        )
+        assert now_of(run, a).exit_price == Decimal(110)

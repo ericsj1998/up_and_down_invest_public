@@ -4489,29 +4489,27 @@ async def _anchor_for(fund: Fund) -> Anchored | None:
     market = fund.market
     others = [f.fund_id for f in FUNDS.values() if f.fund_id != fund.fund_id and f.market == market]
     if others:
-        fund.anchor_skipped = f"같은 거래소에 다른 펀드 {len(others)}개"
-        return None
+        return _anchor_skip(fund, f"같은 거래소에 다른 펀드 {len(others)}개")
     mine = set(fund.handles.values())
-    strangers = 0
+    strangers: list[str] = []
     for handle in SESSIONS:
         runner = LIVE_RUNNERS.get(handle)
         if handle not in mine and runner is not None and runner.instrument.market.value == market:
-            strangers += 1
+            strangers.append(runner.instrument.symbol)
     if strangers:
-        fund.anchor_skipped = f"펀드 밖 단독 판 {strangers}개"
-        return None
+        return _anchor_skip(
+            fund, f"펀드 밖 단독 판 {len(strangers)}개({' '.join(sorted(strangers)[:8])})"
+        )
     total = await _wallet_total(market)
     if total is None:
-        fund.anchor_skipped = "거래소 계좌를 읽을 수 없음"
-        return None
+        return _anchor_skip(fund, "거래소 계좌를 읽을 수 없음")
     try:
         from updown.apps.api.exchange import _orders_adapter  # pyright: ignore[reportPrivateUsage]
 
         orders = _orders_adapter(market)
         rows: list[dict[str, Any]] = await orders.account_book(limit=ANCHOR_BOOK_ROWS)
     except Exception as exc:
-        fund.anchor_skipped = f"자금 원장을 읽을 수 없음: {str(exc)[:60]}"
-        return None
+        return _anchor_skip(fund, f"자금 원장을 읽을 수 없음: {str(exc)[:60]}")
     now = datetime.now(UTC)
     ledger = fund.coordinator.engine.ledger
     state = fund.anchor
@@ -4538,6 +4536,22 @@ async def _anchor_for(fund: Fund) -> Anchored | None:
         f"{result.state.idle:.2f}",
     )
     return result
+
+
+def _anchor_skip(fund: Fund, why: str) -> None:
+    """앵커를 건너뛴다 — 이유를 펀드에 적고 **로그에도 남긴다** (T606 · 2026-10-28).
+
+    Note:
+        🔴 10-16 ~ 10-27 실계좌: 반쪽 전환이 남긴 펀드 밖 판 8 개 때문에 앵커가 11 일 동안 한 번도
+        안 돌았는데 `fund.anchor_skipped` 만 바뀌어(화면 한 줄) 로그 · 사건 어디에도 없었다. 그 사이
+        원장 ≠ 거래소 차(입양 배율 · 반올림 · 청산가)가 펀드 잔고에 영구히 쌓였다(+0.88). 4H 틱
+        한 번에 한 줄이라 서버 자원에 뜻있는 비용은 없다. 사유가 같으면 WARNING 을 거듭 찍지 않는다
+        (INFO).
+    """
+    level = _logger.info if fund.anchor_skipped == why else _logger.warning
+    fund.anchor_skipped = why
+    level("fund_anchor_skipped: %s %s", fund.fund_id, why)
+    return None
 
 
 ANCHOR_BOOK_ROWS = 300

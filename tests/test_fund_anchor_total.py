@@ -70,3 +70,30 @@ async def test_resting_order_margin_is_not_a_loss() -> None:
     assert found is not None
     assert found.equity_before_flow == Decimal("298.09")
     assert found.state.mode == "account"
+
+
+@pytest.mark.usefixtures("account")
+async def test_a_skipped_anchor_is_logged_and_only_shouts_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """T606 ① — 펀드 밖 판이 있어 앵커를 건너뛰면 **로그에 남는다**.
+
+    10-16 ~ 27 은 조용히 11 일 건너뛰었다.
+
+    같은 사유가 이어지면 WARNING 을 거듭 찍지 않고 INFO 로 내린다(4H 틱마다 한 줄).
+    """
+    import logging
+
+    fund = _fund()
+    stranger = SimpleNamespace(
+        instrument=SimpleNamespace(market=SimpleNamespace(value="GATE"), symbol="BTC_USDT")
+    )
+    monkeypatch.setattr(mod, "SESSIONS", {"h-stranger": object()})
+    monkeypatch.setattr(mod, "LIVE_RUNNERS", {"h-stranger": stranger})
+    with caplog.at_level(logging.INFO, logger=mod._logger.name):  # pyright: ignore[reportPrivateUsage]
+        assert await mod._anchor_for(fund) is None  # pyright: ignore[reportPrivateUsage]
+        assert await mod._anchor_for(fund) is None  # pyright: ignore[reportPrivateUsage]
+    assert fund.anchor_skipped == "펀드 밖 단독 판 1개(BTC_USDT)"
+    skipped = [r for r in caplog.records if "fund_anchor_skipped" in r.getMessage()]
+    assert [r.levelno for r in skipped] == [logging.WARNING, logging.INFO]
+    assert "BTC_USDT" in skipped[0].getMessage()

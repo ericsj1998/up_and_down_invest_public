@@ -3187,6 +3187,60 @@ class LiveRunner:
             )
         await self._persist()
 
+    def _correct_exit_from_response(self, trade_id: str, done: OrderResult) -> None:
+        """시장가 청산 **응답에 든 평단**으로 원장 청산가를 고친다 (T606 ③ · 2026-10-28).
+
+        Args:
+            trade_id: 원장의 매매 id.
+            done: 청산 주문의 거래소 응답 — `average_price` 가 있으면 그것이 체결가다.
+
+        Note:
+            `_correct_exit_to_fill` 은 거래소에 체결 이력을 **다시 물어** 고치는데(메이커 경로
+            하나만 불렀다) 몫 청산 · 단독 시장가 청산은 아무 보정이 없어 30 일 동안
+            `live_exit_price_corrected` 가 0 건이었다 — 매매마다 ±0.02 ~ 0.06 USDT 가 원장에
+            남았다(AR +0.236% · XMR -0.173%).
+            응답은 이미 손에 있으니 **요청을 더 보내지 않고** 고친다(서버 자원 제약 · 사용자 10-28).
+            ⛔ 평단이 없거나 0 · 원장 청산가와 `ENTRY_FILL_SANITY_PCT` 넘게 멀면 안 고친다(규칙 #8).
+            수수료 맞춤(`_align_fee`)은 기존 감사 주기가 하던 대로 둔다 — 여기서 더 묻지 않는다.
+        """
+        fill = getattr(done, "average_price", None)  # 어댑터 더블은 평단을 안 줄 수 있다
+        if not fill or fill <= 0:
+            return
+        record = next(
+            (item for item in self._session.ledger.records if item.trade_id == trade_id), None
+        )
+        if record is None or record.exit_price is None or record.exit_price <= 0:
+            return
+        if fill == record.exit_price:
+            return
+        gap = abs(Decimal(fill) / record.exit_price - 1) * 100
+        if gap > ENTRY_FILL_SANITY_PCT:
+            self._log.warning(
+                "live_exit_fill_far",
+                payload={
+                    "trade_id": trade_id,
+                    "exit": str(record.exit_price),
+                    "average_price": str(fill),
+                    "gap_pct": f"{gap:.3f}",
+                    "note": "평단이 원장 청산가와 너무 멀다 — 고치지 않는다(규칙 #8)",
+                },
+            )
+            return
+        corrected = record.closed(
+            at=record.closed_at or datetime.now(UTC), price=fill, outcome=record.outcome
+        )
+        self._session.ledger.replace(corrected)
+        self._log.info(
+            "live_exit_price_corrected",
+            payload={
+                "trade_id": trade_id,
+                "from": str(record.exit_price),
+                "to": str(fill),
+                "gap_pct": f"{gap:.3f}",
+                "note": "신호가 → 시장가 응답 평단 (요청 없이 · 거래소가 진실)",
+            },
+        )
+
     async def _correct_exit_to_fill(self, trade_id: str) -> None:
         """청산된 매매의 원장 청산가를 **거래소 실측 체결가로 교정한다** (자동 재구성 · 벽돌 1).
 
@@ -7073,6 +7127,10 @@ class LiveRunner:
                 order_id=str(done.broker_order_id or ""),
                 contracts=str(abs(size)),
             )
+            if limit is None:
+                # T606 ③ — 시장가 전량 청산은 응답 평단으로 바로 고친다(요청 없음). 지정가(메이커)는
+                # 체결이 나중이라 `_correct_exit_to_fill` 이 맡는다.
+                self._correct_exit_from_response(now.trade_id, done)
             kind = "마감 판정 손절" if stop_by_close else "신호 청산"
             self._fired(
                 "stop_exit" if stop_by_close else "signal_exit",
@@ -7245,6 +7303,7 @@ class LiveRunner:
             order_id=str(done.broker_order_id or ""),
             contracts=str(size),
         )
+        self._correct_exit_from_response(now.trade_id, done)  # T606 ③ — 응답 평단으로 · 요청 없음
         self._fired(
             "stop_exit" if stop_by_close else "signal_exit",
             f"{role} — 몫 {size} 계약 (다른 몫 {others} 계약은 그대로)",
