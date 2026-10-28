@@ -15,13 +15,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from updown.analysis.indicators.reference import RefNeeds, needs_of, reference_regime
 from updown.common.domain.instrument import Timeframe
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from updown.common.domain.candle import Candle
+    from updown.orchestration.fund_replay.engine_leg import ReplayEngineLeg
     from updown.orchestration.rebalancer.legs import FundLeg
     from updown.orchestration.walkforward.session import Session
 
@@ -128,6 +130,7 @@ def assemble(
     legs: Sequence[FundLeg],
     capital: Decimal,
     slots: int,
+    engines: Sequence[ReplayEngineLeg] = (),
 ) -> Coordinator:
     """판들을 한 펀드로 묶는다 — 실계좌 펀드 생성과 같은 순서.
 
@@ -138,13 +141,18 @@ def assemble(
         legs: 다리 선언(`declared_legs`).
         capital: 시작 총자본.
         slots: 자리 수(예산 = 총자본 ÷ 자리).
+        engines: 엔진 다리들(T608) — 실계좌처럼 조정자 포트로 끼운다(실현이 총자본에 든다 ·
+            브레이크에서 뺀 다리면 `isolate` 가 귀속 키로 가린다 · 다리 문은 세션 포트만 받는다).
 
     Returns:
         조정자 — 첫 틱으로 예산을 나눠 준 뒤다. 판은 `fund_ready` 로 풀려 있다.
     """
-    basket = Basket(members=as_members([(b.symbol, Decimal(1)) for b in boards]))
+    names = [(b.symbol, Decimal(1)) for b in boards] + [(e.symbol, Decimal(1)) for e in engines]
+    basket = Basket(members=as_members(names))
     engine = RebalanceEngine(basket=basket, ledger=TwrLedger(equity=capital), slots=slots)
-    ports: dict[str, SessionBridge] = {b.symbol: SessionBridge(session=b.session) for b in boards}
+    ports: dict[str, Any] = {b.symbol: SessionBridge(session=b.session) for b in boards}
+    for leg in engines:
+        ports[leg.symbol] = leg.engine
     coordinator = Coordinator(engine=engine, ports=dict(ports))
     # ⭐ 420차 — 실계좌 `_wire_gate` 와 같다: 브레이크에서 뺀 다리가 있으면
     #    본 다리 원장 낙폭을 준다.
@@ -167,6 +175,7 @@ class FundReplay:
         ref_4h: Sequence[Candle],
         *,
         seed: int,
+        engines: Sequence[ReplayEngineLeg] = (),
     ) -> None:
         """걸음을 준비한다.
 
@@ -175,9 +184,12 @@ class FundReplay:
             coordinator: 펀드 조정자.
             ref_4h: 기준(BTC) 4H 봉 오름차순 — 국면값을 여기서 낸다.
             seed: 같은 시각 판 순서를 섞는 씨앗(실계좌는 도착 순서).
+            engines: 엔진 다리들(T608) — 정시마다 봉을 흘리고 마감을 처리한다 · 증거금을 나눠 쓴다.
         """
         self.boards = list(boards)
         self.coordinator = coordinator
+        self.engines = list(engines)
+        self._loop: asyncio.AbstractEventLoop | None = asyncio.new_event_loop() if engines else None
         self._ref = list(ref_4h)
         self._ref_ends = [c.ts + FOUR for c in self._ref]
         self._rnd = random.Random(seed)
@@ -205,6 +217,8 @@ class FundReplay:
                 self._inject_ref(t)
             if on_hour:
                 self._inject_funding(t)
+            if on_hour and self.engines:
+                self._advance_engines(t)
             of_day = t.hour * 60 + t.minute
             due = [b for b in self.boards if of_day % b.minutes == 0]
             self._rnd.shuffle(due)
@@ -293,7 +307,43 @@ class FundReplay:
                     held += isolated_margin(
                         rec.add_contracts, rec.add_fill, board.spec.multiplier, led.leverage
                     )
+        for leg in self.engines:
+            held += leg.held_margin()
         return self.coordinator.engine.balance - held
+
+    def wait(self, coro: Any) -> Any:
+        """엔진 코루틴을 되감기 루프에서 끝까지 돈다(엔진 다리가 있을 때만 루프가 있다)."""
+        if self._loop is None:
+            raise RuntimeError("엔진 다리가 없는 되감기에는 루프가 없다")
+        return self._loop.run_until_complete(coro)
+
+    def _advance_engines(self, t: datetime) -> None:
+        """정시 — 엔진마다 끝난 1H 봉을 모의 거래소에 흘리고, 처리 시각이 지난 거래일을 마감한다."""
+        for leg in self.engines:
+            for kind, detail in self.wait(leg.advance(t)):
+                self.result.events.append(ReplayEvent(t, leg.symbol, kind, "", detail))
+
+    def _ask_yield(self, board: ReplayBoard, rec: Any, t: datetime) -> None:
+        """러너 `_ask_yield`(T533)와 같다.
+
+        가용이 max(예산, 이 진입 증거금) 보다 작으면 엔진 다리에 비켜 달라고 묻고, 엔진은 늦게 든
+        몫부터 닫는다. 엔진이 없으면 아무것도 안 한다.
+        """
+        if not self.engines:
+            return
+        led = board.session.ledger
+        budget = led.sizing_base
+        lev = led.leverage
+        want = max(budget, budget * rec.leverage / lev) if lev > 0 else budget
+        spare = self.spare()
+        if spare >= want:
+            return
+        freed = Decimal(0)
+        for leg in self.engines:
+            freed += self.wait(leg.engine.yield_margin(want))
+        self._note(
+            t, board, "yield", rec.trade_id, f"want {want:.2f} spare {spare:.2f} freed {freed:.2f}"
+        )
 
     def _note(self, t: datetime, board: ReplayBoard, kind: str, tid: str, detail: str) -> None:
         self.result.events.append(ReplayEvent(t, board.symbol, kind, tid, detail))
@@ -309,6 +359,7 @@ class FundReplay:
                 continue
             if tid not in board.seen and rec.outcome is not Outcome.PENDING:
                 board.seen.add(tid)
+                self._ask_yield(board, rec, t)
                 n = entry_contracts(
                     rec,
                     budget=led.sizing_base,
