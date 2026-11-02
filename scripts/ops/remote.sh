@@ -4,6 +4,8 @@
 #   bash scripts/ops/remote.sh scripts/ops/status.sh
 #   bash scripts/ops/remote.sh scripts/ops/probe_gate.py        # .py 는 api 컨테이너 안 python 으로
 #   bash scripts/ops/remote.sh -- 'docker ps'                   # 한 줄 명령
+#   bash scripts/ops/remote.sh scripts/ops/fresh_start_t607.py --step 0   # 파일 뒤 인자는 그대로 넘어간다(T607 · 2026-11-02)
+#     ⚠️ 인자는 단순 토큰(-x · 숫자 · 영문)만 — 따옴표 · $ · 공백이 든 값은 아래 함정 그대로 깨진다
 #
 # 왜 이 모양인가 (docs/platform/ops_runbook.md §2): `wsl.exe bash -lc "..."` 페이로드는 $(...) · 백틱 ·
 # 따옴표 · {{.Names}} 가 깨진다. **명령은 파일에 적고 파일을 올려 실행한다** — 그게 유일하게 안 깨지는 길이다.
@@ -20,6 +22,10 @@ if [ "${1:-}" = "--" ]; then
 fi
 src="${1:?사용법: remote.sh <로컬 스크립트 경로> | -- '<명령>'}"
 name="$(basename "$src")"
+shift
+# 파일 뒤 인자 — 셸 안전하게 인용해 원격 명령 끝에 붙인다(없으면 빈 문자열 · 지금까지와 같다).
+ARGS=""
+for a in "$@"; do ARGS="$ARGS $(printf '%q' "$a")"; done
 scp -q -i "$KEY" "$src" "$HOST:/tmp/$name"
 case "$name" in
   *.py)
@@ -27,7 +33,7 @@ case "$name" in
     # ⚠️ api_demo 는 빼야 한다 — 그 컨테이너는 테스트넷 키·데모 DB 라 프로브가 빈 값을 낸다 (2026-09-06 실측:
     #    배포 뒤 `docker ps` 가 api_demo 를 먼저 내놓아 probe_gate 가 조용히 아무것도 안 찍었다).
     "${SSH[@]}" "API=\$(docker ps --format '{{.Names}}' | grep -E '^updown_live-api(_b)?-1$' | head -1); \
-      docker cp /tmp/$name \"\$API\":/tmp/$name && docker exec \"\$API\" python /tmp/$name 2>&1 | grep -v '^{'" ;;
+      docker cp /tmp/$name \"\$API\":/tmp/$name && docker exec \"\$API\" python /tmp/$name$ARGS 2>&1 | grep -v '^{'" ;;
   *)
-    "${SSH[@]}" "bash /tmp/$name" ;;
+    "${SSH[@]}" "bash /tmp/$name$ARGS" ;;
 esac
