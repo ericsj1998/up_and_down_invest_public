@@ -5373,12 +5373,17 @@ class LiveRunner:
             found += await self._pnl_audit()
 
         # ⑧ 원장과 거래소가 같은 것을 말하는가.
+        # ⭐ T759 ① — 이 바퀴에서 거래소가 말한 포지션을 ⑨(청산가)가 다시 묻지 않고 그대로 쓴다.
+        #    같은 순간의 같은 값이라 판정은 한 글자도 안 바뀌고, 보유 판의 `positions/<SYM>` 조회가
+        #    바퀴마다 2 → 1 로 준다(2026-11-02 실측: 보유 판 84 회 / 16 분 중 절반이 이 중복).
+        position_seen: dict[str, str] | None = None
         if isinstance(self._orders, PositionAware):
             try:
                 position = await self._orders.position_snapshot(self.instrument)
             except Exception:
                 position = {}
             else:
+                position_seen = position
                 on_book = held is not None
                 on_exchange = bool(position)
                 # ⭐ 입양 거부는 streak 를 기다리지 않는다 — 거부 순간이 곧 확진이고,
@@ -5440,7 +5445,11 @@ class LiveRunner:
         )
         if held is not None and isinstance(self._orders, PositionAware):
             try:
-                snapshot = await self._orders.position_snapshot(self.instrument)
+                snapshot = (
+                    position_seen
+                    if position_seen is not None
+                    else await self._orders.position_snapshot(self.instrument)
+                )
                 raw_liq = str(snapshot.get("liq_price", "") or "")
                 exchange_liq = Decimal(raw_liq) if raw_liq else None
             except Exception:
