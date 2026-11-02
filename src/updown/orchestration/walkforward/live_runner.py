@@ -51,8 +51,10 @@ from updown.common.domain.market import Balance
 from updown.common.domain.order import OrderKind, OrderResult, OrderStatus
 from updown.common.domain.session import MarketCalendar, SessionConfigError, Tradability
 from updown.common.logging.setup import get_logger
+from updown.decision.risk.merged_liquidation import MergedLeg, check_merged_liquidation
 from updown.decision.risk.policy import funding_shortfall
 from updown.decision.risk.policy import load_settings as load_risk_settings
+from updown.decision.sizing import MAINTENANCE_MARGIN
 from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter, RequestCounting
 from updown.marketdata.ingest.timeframes import interval_seconds
 from updown.marketdata.stream import CandleStream
@@ -5839,6 +5841,176 @@ class LiveRunner:
         else:
             self._session.release()
 
+    def _merged_liq_legs(
+        self, exclude: str, multiplier: Decimal, snapshot: Mapping[str, str] | None
+    ) -> list[MergedLeg] | None:
+        """지금 거래소에 든 몫들을 합친 포지션의 조각으로 — 실제 계약 수로 (T741).
+
+        Args:
+            exclude: 빼놓을 기록(들려는 새 몫 자신 — 원장엔 있지만 거래소엔 아직 없다).
+            multiplier: 계약 승수 — 수량을 코인 단위로 바꾼다(명목 = 수량 x 값).
+            snapshot: 거래소 포지션 칸. 몫 모드가 아니고 원장이 계약 수를 모르면 여기 `size` 로
+                대신한다.
+
+        Returns:
+            조각들. 어느 몫의 계약 수를 **모르면 None** — 추정해 재지 않는다(규칙 #8-1 · 몫 모드
+            D2 와 같은 태도). 든 몫이 없으면 빈 목록.
+        """
+        legs: list[MergedLeg] = []
+        held = [
+            item
+            for item in self._session.ledger.records
+            if item.outcome is Outcome.OPEN and item.trade_id != exclude
+        ]
+        for item in held:
+            quantity = self._share_contracts(item)
+            entry = item.entry
+            if quantity <= 0:
+                # 원장이 계약 수를 모른다 — 포지션이 이 기록 하나뿐일 때만 거래소 크기로 대신한다.
+                if snapshot is None or self._shared or len(held) != 1:
+                    return None
+                quantity = abs(held_size(snapshot))
+                if quantity <= 0:
+                    return None
+                raw_entry = str(snapshot.get("entry_price") or "")
+                entry = Decimal(raw_entry) if raw_entry else item.entry
+            base = Decimal(quantity - item.add_contracts) * multiplier
+            if base > 0:
+                legs.append(MergedLeg(base, entry, item.planned_stop))
+            if item.add_contracts > 0:
+                fill = item.add_fill or item.add_price or item.entry
+                legs.append(
+                    MergedLeg(Decimal(item.add_contracts) * multiplier, fill, item.planned_stop)
+                )
+        return legs
+
+    def _merged_liq_contracts(
+        self,
+        *,
+        role: str,
+        record: TradeRecord,
+        contracts: int,
+        price: Decimal,
+        stop: Decimal,
+        direction: Direction,
+        multiplier: Decimal,
+        leverage: Decimal,
+        spec: Mapping[str, str],
+        snapshot: Mapping[str, str] | None,
+    ) -> tuple[int, str]:
+        """합친 청산가 검사에 맞춘 계약 수 — 둘째 몫 · 불타기 공용 (T741 · spec §4.2 ②).
+
+        Args:
+            role: `share`(둘째 몫 진입) · `add`(불타기).
+            record: 새 몫 기록 또는 불타기할 몫.
+            contracts: 보내려던 계약 수.
+            price: 더하려는 값.
+            stop: 그 조각을 지키는 손절.
+            direction: 방향.
+            multiplier: 계약 승수.
+            leverage: 포지션 배율(거래소 격리 배율).
+            spec: 계약 명세 — `maintenance_rate` 가 있으면 원장 상수와 **큰 쪽**을 쓴다(보수적).
+            snapshot: 거래소 포지션 칸(불타기 때 이미 읽은 것). 없으면 None.
+
+        Returns:
+            `(계약 수, 설명)`. 검사가 꺼져 있거나 든 몫이 없으면 요청 그대로. 0 이면 호출자가
+            버린다.
+
+        Note:
+            🔴 **먼저 적고 그 다음 줄인다**(P5). 줄이거나 막으면 화면에도 올린다(`_fired`) —
+            로그에만 두면 아무도 안 본다. 계약 수를 모르는 몫이 있으면 **0** 이다 — 리스크 증가
+            행동은 불확실하면 보류다(규칙 #8-1).
+        """
+        buffer = getattr(self._session, "merged_liq_buffer_ratio", None)
+        if buffer is None or contracts <= 0 or leverage <= 1 or multiplier <= 0:
+            return contracts, ""
+        # 둘째 몫은 자기 기록을 뺀다(원장엔 있지만 거래소엔 아직 없다) · 불타기는 자기 몫도 든 몫.
+        held = self._merged_liq_legs(
+            record.trade_id if role == "share" else "", multiplier, snapshot
+        )
+        if held is None:
+            why = "어느 몫의 계약 수를 모른다 — 합친 청산가를 못 재어 더 싣지 않는다"
+            self._log.warning(
+                "live_merged_liq_check",
+                payload={"trade_id": record.trade_id, "role": role, "action": "block", "why": why},
+            )
+            self._fired("merged_liq", f"{role} 막음 — 계약 수 모름")
+            return 0, why
+        if not held:
+            return contracts, ""
+        raw = str(spec.get("maintenance_rate", "") or "")
+        maintenance = max(Decimal(raw) if raw else Decimal(0), MAINTENANCE_MARGIN)
+        verdict = check_merged_liquidation(
+            held=held,
+            new=MergedLeg(Decimal(contracts) * multiplier, price, stop),
+            long=direction is Direction.LONG,
+            leverage=leverage,
+            buffer_ratio=Decimal(str(buffer)),
+            maintenance=maintenance,
+        )
+        allowed = int((verdict.quantity / multiplier).to_integral_value(rounding=ROUND_FLOOR))
+        allowed = min(allowed, contracts)
+        detail = (
+            f"{verdict.why} · 청산 {verdict.liq_before} → {verdict.liq_after} · "
+            f"묶은 손절 {verdict.binding_stop} · 계약 {contracts} → {allowed}"
+        )
+        payload = {
+            "trade_id": record.trade_id,
+            "role": role,
+            "action": verdict.action if allowed > 0 else "block",
+            "why": verdict.why,
+            "wanted": contracts,
+            "granted": allowed,
+            "liq_before": None if verdict.liq_before is None else str(verdict.liq_before),
+            "liq_after": None if verdict.liq_after is None else str(verdict.liq_after),
+            "binding_stop": None if verdict.binding_stop is None else str(verdict.binding_stop),
+            "leverage": str(leverage),
+            "maintenance": str(maintenance),
+            "buffer": str(buffer),
+            "note": "합친 청산가 vs 모든 몫 손절 + 버퍼 — 어기면 계약을 줄이고 0 이면 안 싣는다",
+        }
+        if allowed >= contracts:
+            self._log.info("live_merged_liq_check", payload=payload)
+            return contracts, detail
+        self._log.warning("live_merged_liq_check", payload=payload)
+        self._fired("merged_liq", f"{role} {'막음' if allowed <= 0 else '줄임'} — {detail}"[:160])
+        return allowed, detail
+
+    async def _skip_merged_liq(self, record: TradeRecord, detail: str) -> None:
+        """합친 청산가 검사가 막은 둘째 몫을 **원장에서 거둔다** (T741 · `_skip_unfillable` 의 길).
+
+        Args:
+            record: 방금 원장에 적힌 새 몫 기록. 주문은 안 나갔다.
+            detail: 검사 설명.
+
+        Note:
+            `CANCELLED` 로 닫는다 — 체결 전에 계획이 사라져 주문을 거둔 것이다. `OPEN` 으로 두면
+            거래소에 없는 포지션이 원장에 남아 자가 점검이 고아로 올린다. 세션의 그 몫만 놓는다.
+        """
+        self._log.warning(
+            "live_merged_liq_blocked",
+            payload={
+                "trade_id": record.trade_id,
+                "symbol": self._session.instrument.symbol,
+                "detail": detail[:200],
+                "note": "둘째 몫을 들면 합친 청산가가 어느 몫 손절 안쪽이다 — 원장을 거둔다",
+            },
+        )
+        self.placed[record.trade_id] = {
+            "status": "blocked",
+            "order_id": "",
+            "contracts": "0",
+            "error": f"합친 청산가 검사 — {detail}"[:180],
+        }
+        await self._note_order(record.trade_id, role="진입", status="blocked", error=detail[:180])
+        self._session.ledger.replace(
+            record.closed(at=record.placed_at, price=record.entry, outcome=Outcome.CANCELLED)
+        )
+        if self._shared:
+            self._session.release(leg=record.playbook)
+        else:
+            self._session.release()
+
     async def _protect(self, record: TradeRecord) -> None:
         """**지정가 사다리로 이미 산** 매매에 손절·익절만 건다 (2026-08-20 ⓐ).
 
@@ -6702,6 +6874,24 @@ class LiveRunner:
             max_leverage=envelope,
         )
         lev = Decimal(str(snapshot.get("leverage") or 0)) or self._session.ledger.leverage
+        # 🔴 T741 — 합친 청산가가 **모든** 몫 손절 바깥 + 버퍼인지 실제 계약 수로 다시 본다
+        #    (spec §4.2 ②). 세션이 노출로 한 번 봤지만 여기는 반올림 · 거래소 배율 · 명세
+        #    유지증거금으로 잰 값이다.
+        contracts, merged_detail = self._merged_liq_contracts(
+            role="add",
+            record=held,
+            contracts=contracts,
+            price=price,
+            stop=held.planned_stop,
+            direction=held.direction,
+            multiplier=multiplier,
+            leverage=lev,
+            spec=spec,
+            snapshot=snapshot,
+        )
+        if contracts <= 0:
+            self._drop_add(held, "merged_liq", detail=merged_detail)
+            return
         need = Decimal(contracts) * price * multiplier / lev if lev > 0 else Decimal(0)
         spare = await self._spare_margin()
         if spare is not None and need > spare * MARGIN_HEADROOM:
@@ -8427,6 +8617,24 @@ class LiveRunner:
                 self._skip_unfillable(record, equity, multiplier, size_min)
                 return
             contracts = fitted
+        # 🔴 T741 — 둘째 몫이면 합친 청산가가 **모든** 몫 손절 바깥 + 버퍼인지 실제 계약 수로 본다
+        #    (spec §4.2 ②). 세션(`_fit_merged_share`)이 노출로 먼저 봤고, 여기는 반올림 · 명세
+        #    유지증거금을 넣어 다시 잰다. 0 이면 원장을 거둔다(주문은 안 나갔다).
+        contracts, merged_detail = self._merged_liq_contracts(
+            role="share",
+            record=record,
+            contracts=contracts,
+            price=record.entry,
+            stop=record.planned_stop,
+            direction=record.direction,
+            multiplier=multiplier,
+            leverage=self._session.ledger.leverage,
+            spec=spec,
+            snapshot=None,
+        )
+        if contracts <= 0:
+            await self._skip_merged_liq(record, merged_detail)
+            return
         drift = rounding_drift_pct(contracts, equity, leverage, record.entry, multiplier)
         self._log.info(
             "live_runner_sizing",

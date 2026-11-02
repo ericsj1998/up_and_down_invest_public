@@ -1326,6 +1326,8 @@ async def _live_start(
         session.stop_cap_ratio = require_stop_cap(_risk, session.ledger.leverage)
         # 🔴 손절 하한 (T147~T150) — β 의 짝. 손절거리를 [하한, β x 청산거리] 로 가둔다.
         session.stop_min_pct = _risk.stop_min_pct
+        # 🔴 T741 — 둘째 몫 · 불타기 전 합친 청산가 검사의 버퍼 (spec §4.2 ②).
+        session.merged_liq_buffer_ratio = _risk.merged_liq_buffer_ratio
     except RiskConfigError as exc:
         # ⛔ 시작을 거부한다 — 시작해 두고 청산이 나는 것보다 낫다 (절대 규칙 #8).
         raise HTTPException(400, str(exc)) from exc
@@ -3737,6 +3739,8 @@ def apply_playbook_knobs(session: Session, book: Playbook, catalog: dict[str, Ru
     session.stop_cap_ratio = require_stop_cap(_risk, session.ledger.leverage)
     # 🔴 손절 하한 (T147~T150) — β 의 짝. 손절거리를 [하한, β x 청산거리] 로 가둔다.
     session.stop_min_pct = _risk.stop_min_pct
+    # 🔴 T741 — 둘째 몫 · 불타기 전 합친 청산가 검사의 버퍼 (spec §4.2 ②). 세션 · 러너는 묻기만.
+    session.merged_liq_buffer_ratio = _risk.merged_liq_buffer_ratio
     # ⭐ T42 ⑤ — 국면 RANGE 판정이 탐지기와 같은 최소 폭을 쓴다 (백테스트와 같은 배선).
     # ⭐ T233 ② — close 매매법의 라이브 보호 손절 자리. 백테스트는 안 쓰지만 같은 함수가 세팅해
     #    "화면 숫자 = 라이브 설정" 을 지킨다. close 매매법이 있는데 비율이 없으면 라이브가

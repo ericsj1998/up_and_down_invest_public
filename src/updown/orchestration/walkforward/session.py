@@ -61,6 +61,11 @@ from updown.common.domain.setup import TradeSetup
 from updown.common.domain.trade_tick import BarDelta
 from updown.common.logging.setup import get_logger
 from updown.decision.portfolio_rules import Grant
+from updown.decision.risk.merged_liquidation import (
+    MergedLeg,
+    MergedLiqVerdict,
+    check_merged_liquidation,
+)
 from updown.decision.sizing import DEFAULT_LEVERAGE_CAP, capped_stop, protect_stop, size_for
 from updown.marketdata.ingest.delta_store import load_bar_deltas
 from updown.marketdata.ingest.timeframes import interval
@@ -1092,6 +1097,13 @@ class Session:
     """
     stop_cap_ratio: Decimal | None = None
     stop_protect_ratio: Decimal | None = None
+    merged_liq_buffer_ratio: Decimal | None = None
+    """합친 청산가 검사의 버퍼 b — 둘째 몫 · 불타기가 들기 전에 (T741 · spec §4.2 ②). None 이면 끔.
+
+    ⛔ 세션이 정하지 않는다 — `config/risk.yml` 의 `merged_liq_buffer_ratio` 를
+    `apply_playbook_knobs` 가 넣어 준다. 판단은 `decision.risk.merged_liquidation` 이 하고 세션은
+    든 몫 · 새 몫을 모아 묻고(`_fit_merged_share` · `_fit_merged_add`) 답대로 줄이거나 안 든다.
+    """
     short_allowed: bool = True
     """숏 진입이 되는 시장인가 — 능력표 `short_allowed` (T239 · `apply_playbook_knobs` 가 세팅).
 
@@ -3357,6 +3369,7 @@ class Session:
             ):
                 base = held.filled_leverage if held.filled_leverage is not None else held.leverage
                 given = self._gate_add(now, base * quiet.frac, held.playbook)
+                given = self._fit_merged_add(held, given, first.close)  # T741
                 held = replace(
                     held,
                     add_at=first.ts + span,
@@ -3382,6 +3395,7 @@ class Session:
                 # 요청 = 처음 **실제** 노출 x 비율(체결 실측이 없으면 의도한 노출 · 모형).
                 base = held.filled_leverage if held.filled_leverage is not None else held.leverage
                 given = self._gate_add(now, base * rule.frac, held.playbook)
+                given = self._fit_merged_add(held, given, row.close)  # T741
                 held = replace(
                     held,
                     add_at=at,
@@ -3726,6 +3740,149 @@ class Session:
             return record
         self._count("wick_stop")
         return tightened
+
+    def _merged_legs(self) -> list[MergedLeg]:
+        """지금 든 몫들을 합친 포지션의 조각으로 (T741).
+
+        Returns:
+            몫마다 `(수량, 진입가, 손절)` — 붙은 불타기는 그 몫 손절을 지닌 조각으로 따로. 반익한
+            몫은 수량 절반.
+
+        Note:
+            수량은 **노출 x 자리 예산 ÷ 진입가** 다 — 세션은 계약 수를 모른다. 식은 비율에만
+            의존하므로 단위는 상관없다(계단식 유지증거금은 러너가 실제 계약으로 다시 본다).
+            체결 실측 노출(`filled_leverage` · `add_filled`)이 있으면 그것을, 없으면 의도한 노출.
+        """
+        base = self.ledger.sizing_base
+        if base <= 0:
+            base = Decimal(1)
+        legs: list[MergedLeg] = []
+        for item in self._held.values():
+            exposure = (
+                item.filled_leverage
+                if item.filled_leverage is not None
+                else item.leverage * item.filled_ratio
+            )
+            if item.entry <= 0 or exposure <= 0:
+                continue
+            quantity = exposure * base / item.entry
+            if item.half_at is not None:
+                quantity *= HALF_LEFT
+            legs.append(MergedLeg(quantity, item.entry, item.planned_stop))
+            added = item.add_filled if item.add_filled is not None else item.add_exposure
+            if item.add_at is not None and item.add_price and added > 0:
+                legs.append(
+                    MergedLeg(added * base / item.add_price, item.add_price, item.planned_stop)
+                )
+        return legs
+
+    def _merged_verdict(
+        self, *, exposure: Decimal, price: Decimal, stop: Decimal, direction: Direction, role: str
+    ) -> MergedLiqVerdict | None:
+        """합친 청산가 검사에 묻고 **먼저 적는다** (T741 · P5).
+
+        Args:
+            exposure: 더하려는 노출(명목 ÷ 자리 예산).
+            price: 더하려는 값.
+            stop: 그 조각을 지키는 손절.
+            direction: 방향.
+            role: 로그용 — `share`(둘째 몫) · `add`(불타기).
+
+        Returns:
+            판정. 검사가 꺼져 있거나(버퍼 None) 청산이 없는 시장 · 배율 1 이하 · 든 몫이 없으면
+            None.
+        """
+        buffer = self.merged_liq_buffer_ratio
+        if (
+            buffer is None
+            or not self.has_liquidation
+            or self.ledger.leverage <= 1
+            or not self._held
+        ):
+            return None
+        held = self._merged_legs()
+        if not held:
+            return None
+        base = self.ledger.sizing_base if self.ledger.sizing_base > 0 else Decimal(1)
+        verdict = check_merged_liquidation(
+            held=held,
+            new=MergedLeg(exposure * base / price, price, stop),
+            long=direction is Direction.LONG,
+            leverage=self.ledger.leverage,
+            buffer_ratio=buffer,
+        )
+        payload = {
+            "role": role,
+            "action": verdict.action,
+            "why": verdict.why,
+            "wanted": str(exposure),
+            "granted": str(exposure * verdict.ratio),
+            "liq_before": None if verdict.liq_before is None else str(verdict.liq_before),
+            "liq_after": None if verdict.liq_after is None else str(verdict.liq_after),
+            "binding_stop": None if verdict.binding_stop is None else str(verdict.binding_stop),
+            "leverage": str(self.ledger.leverage),
+            "buffer": str(buffer),
+            "note": "합친 청산가 vs 모든 몫 손절 + 버퍼 — 어기면 크기를 줄이고 0 이면 안 든다",
+        }
+        if verdict.action == "allow":
+            _logger.info("session_merged_liq_check", payload=payload)
+        else:
+            _logger.warning("session_merged_liq_check", payload=payload)
+            self._count(f"merged_liq:{verdict.action}")
+        return verdict
+
+    def _fit_merged_share(self, record: TradeRecord) -> TradeRecord | None:
+        """둘째 몫의 크기를 합친 청산가 검사에 맞춘다 (T741 · spec §4.2 ②).
+
+        Args:
+            record: 손절 · 노출이 정해진 새 몫 기록(아직 원장 밖).
+
+        Returns:
+            그대로 또는 노출을 줄인 기록. 막혔으면 None — 호출자는 이 봉에 들지 않는다.
+
+        Note:
+            든 몫이 없으면(첫 몫) 아무것도 하지 않는다 — β 가 그 몫을 지킨다. 배율은 건드리지
+            않는다: 격리 포지션의 배율 변경은 거래소 쪽 위험이다(사용자 결정 2026-11-01).
+        """
+        verdict = self._merged_verdict(
+            exposure=record.leverage,
+            price=record.entry,
+            stop=record.planned_stop,
+            direction=record.direction,
+            role="share",
+        )
+        if verdict is None or verdict.action == "allow":
+            return record
+        if verdict.action == "block":
+            return None
+        return replace(record, leverage=record.leverage * verdict.ratio)
+
+    def _fit_merged_add(self, held: TradeRecord, given: Grant, price: Decimal) -> Grant:
+        """불타기 크기를 합친 청산가 검사에 맞춘다 — `_gate_add` 의 답 뒤에 (T741).
+
+        Args:
+            held: 불타기할 몫.
+            given: 펀드 문의 답.
+            price: 추가 가격.
+
+        Returns:
+            그대로 · 줄인 · 막은(`merged_liq`) 답. 불타기는 **같은 꼴**이다 — 같은 포지션에 같은
+            방향으로 더 싣고 손절은 원 몫 것이라, 둘째 몫과 한 검사가 둘 다 본다.
+        """
+        if given.blocked is not None or given.size <= 0:
+            return given
+        verdict = self._merged_verdict(
+            exposure=given.size,
+            price=price,
+            stop=held.planned_stop,
+            direction=held.direction,
+            role="add",
+        )
+        if verdict is None or verdict.action == "allow":
+            return given
+        if verdict.action == "block":
+            return Grant(Decimal(0), "merged_liq", given.shrunk)
+        return Grant(given.size * verdict.ratio, None, "merged_liq")
 
     def _rescaled_leverage(self, record: TradeRecord, new_stop: Decimal) -> Decimal | None:
         """손절을 당긴 뒤의 배율 — 크기 승수는 지키고 손절 거리 몫만 다시 도출한다 (T232).
@@ -4238,6 +4395,11 @@ class Session:
         if self.stop_too_tight(record):
             self._count("stop_too_tight")
             return
+        # 🔴 T741 — 둘째 몫이면 합친 청산가 검사 (시장가 경로와 같은 자 · spec §4.2 ②).
+        fitted = self._fit_merged_share(record)
+        if fitted is None:
+            return
+        record = fitted
         tickets: list[str] = []
         for index, leg in enumerate(legs):
             ticket = f"{trade_id}:{index}"
@@ -5130,6 +5292,12 @@ class Session:
         if self.stop_too_tight(record):
             self._count("stop_too_tight")
             return
+        # 🔴 T741 — 둘째 몫이면 합친 청산가가 **모든** 몫 손절 바깥 + 버퍼인지 본다 (spec §4.2 ②).
+        #    어기면 버퍼를 지키는 크기로 줄이고, 0 이면 이 봉엔 안 든다. 첫 몫은 그대로다.
+        fitted = self._fit_merged_share(record)
+        if fitted is None:
+            return None
+        record = fitted
         self.ledger.add(record)
         self._hold(record)  # T320 — 다른 다리 몫이 있으면 더한다(`_may_share` 를 지난 후보)
         self._count(f"entered:{record.playbook}")

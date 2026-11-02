@@ -185,6 +185,20 @@ class RiskSettings:
     조금 안쪽).
     None 이면 close 매매법을 라이브로 못 띄운다 (`apply_playbook_knobs` 가 막는다).
     """
+    merged_liq_buffer_ratio: Decimal | None = None
+    """합친 청산가 검사의 버퍼 b — 둘째 몫 · 불타기가 들기 전에 (T741 · spec §4.2 ②). None 이면 끔.
+
+    몫 모드(T320)에서 같은 코인 같은 방향 몫은 거래소 격리 포지션 **하나**로 합쳐진다. 뒤에 든 몫이
+    평단을 끌어올리면 합친 청산가가 앞 몫 손절보다 안쪽에 서고 그 손절은 장식이 된다(T739 · DOGE
+    dch 2024-10). 들기 전에 `decision.risk.merged_liquidation.check_merged_liquidation` 이
+    **모든 든 몫의 손절**이 합친 청산가에서 `b x (평단 - 청산가)` 이상 떨어져 있는지 보고, 아니면
+    버퍼를 지키는 최대 크기로 줄이거나(0 이면) 막는다. 배율은 바꾸지 않는다(사용자 결정 2026-11-01).
+
+    0.20 이면 감사 ⑨(`liq_findings` · 손절이 청산거리의 80% 지점이면 경고)와 같은 선에서 문이
+    막는다.
+
+    ⛔ 여기가 유일한 자리다 — 룰 설정 · 매매법 선언에 두지 않는다(β 와 같은 이유).
+    """
     leverage_needing_stop_cap: Decimal = Decimal(3)
     """이 배율을 **넘으면** β 없이 못 간다 — `require_stop_cap()` 이 강제한다.
 
@@ -205,7 +219,8 @@ class RiskSettings:
 
         Raises:
             RiskConfigError: 앵커가 빠졌거나 · `stop_min_pct` 가 (0, 1) 밖 · β 가 (0, 1] 밖 ·
-                `stop_protect_ratio` 가 (0, 1] 밖이거나 β 이하 · ATR 배수 후보가 §6.1 범위
+                `stop_protect_ratio` 가 (0, 1] 밖이거나 β 이하 · `merged_liq_buffer_ratio` 가
+                [0, 1) 밖 · ATR 배수 후보가 §6.1 범위
                 (1.5~3.0) 밖 · 어느 앵커의 `risk_pct` 가 `risk_pct_hard_cap` 을 넘는 경우.
         """
         missing = set(RiskPresetName) - set(self.anchors)
@@ -237,6 +252,12 @@ class RiskSettings:
                     f"안쪽이면 "
                     f"close 판정이 터치로 바뀐다"
                 )
+        buffer = self.merged_liq_buffer_ratio
+        if buffer is not None and not (Decimal(0) <= buffer < Decimal(1)):
+            raise RiskConfigError(
+                f"merged_liq_buffer_ratio 가 {buffer} 다 — 0 이상 1 미만이어야 한다 "
+                f"(청산가와 손절 사이 거리의 비율 · 1 이면 어떤 손절도 못 지킨다)"
+            )
         for multiple in self.atr_stop_multiple_candidates:
             if not Decimal("1.5") <= multiple <= Decimal("3.0"):
                 raise RiskConfigError(
@@ -458,6 +479,11 @@ def parse_settings(raw: Mapping[str, object]) -> RiskSettings:
             None
             if raw.get("stop_protect_ratio") is None
             else _decimal(raw["stop_protect_ratio"], "stop_protect_ratio")
+        ),
+        merged_liq_buffer_ratio=(
+            None
+            if raw.get("merged_liq_buffer_ratio") is None
+            else _decimal(raw["merged_liq_buffer_ratio"], "merged_liq_buffer_ratio")
         ),
         leverage_needing_stop_cap=_decimal(
             raw.get("leverage_needing_stop_cap", "3"), "leverage_needing_stop_cap"

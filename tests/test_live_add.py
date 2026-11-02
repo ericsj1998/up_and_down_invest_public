@@ -152,6 +152,10 @@ class _Runner:
     _record_add = LiveRunner._record_add  # pyright: ignore[reportPrivateUsage]
     _drop_add = LiveRunner._drop_add  # pyright: ignore[reportPrivateUsage]
     _book_adds = LiveRunner._book_adds  # pyright: ignore[reportPrivateUsage]
+    # T741 — 불타기 전 합친 청산가 검사(세션 스텁에 버퍼가 없으면 꺼진 채 지나간다).
+    _merged_liq_contracts = LiveRunner._merged_liq_contracts  # pyright: ignore[reportPrivateUsage]
+    _merged_liq_legs = LiveRunner._merged_liq_legs  # pyright: ignore[reportPrivateUsage]
+    _share_contracts = staticmethod(LiveRunner._share_contracts)  # pyright: ignore[reportPrivateUsage]
 
     def __init__(self, record: TradeRecord, exchange: _Exchange, *, spare: str = "1000") -> None:
         self._session = _Session([record])
