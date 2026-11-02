@@ -30,6 +30,7 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 
+import redis as redis_sync
 from redis.asyncio import Redis
 
 from updown.common.lock.redis_lock import LockConfig, SingleInstanceLock
@@ -62,6 +63,7 @@ class TradingLeader:
         stop: Callable[[], Awaitable[None]],
         config: LockConfig | None = None,
         promote_retry_s: float = PROMOTE_RETRY_S,
+        heartbeat_client: redis_sync.Redis | None = None,
     ) -> None:
         """게이트를 만든다.
 
@@ -71,9 +73,16 @@ class TradingLeader:
             stop: 팔로워로 내려갈 때 거래를 멈추는 코루틴 (태스크 취소).
             config: 락 설정. 기본 키는 `TRADER_LOCK_KEY`.
             promote_retry_s: 팔로워의 승격 재시도 간격.
+            heartbeat_client: 동기 Redis 클라이언트 — 주면 락 갱신이 **별도 스레드**에서 돈다
+                (T759 ③). 2026-11-02 실계좌: 펀드 복원이 루프를 43 ~ 50 초 막자 심장박동이
+                못 돌아 1 분마다 `trader_lock_lost` → 복원 반복 → CPU 98%. 일하는 리더가
+                "죽은 것" 으로 읽히지 않게 갱신을 루프 밖으로 뺀다.
         """
         self._lock = SingleInstanceLock(
-            redis, config or LockConfig(key=TRADER_LOCK_KEY), on_lost=self._on_lost
+            redis,
+            config or LockConfig(key=TRADER_LOCK_KEY),
+            on_lost=self._on_lost,
+            heartbeat_client=heartbeat_client,
         )
         self._start = start
         self._stop = stop

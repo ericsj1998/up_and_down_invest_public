@@ -21,9 +21,11 @@ G0-6 검증은 기동 후 `/health` 를 한 번 부르면 그대로 충족된다
 
 import asyncio
 import contextlib
+import os
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import redis as redis_sync
 from fastapi import FastAPI, Request, Response
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse
@@ -324,8 +326,23 @@ def create_app(state: ApiState | None = None) -> FastAPI:
             _logger.info(
                 "showcase_mode", payload={"note": "데모 펀드만 · 부가 루프 없음 · 새 판 거절"}
             )
+        # ⭐ T759 ③ — 락 갱신은 별도 스레드(동기 Redis)로. 루프가 막혀도 리더를 잃지 않는다.
+        #    끄는 스위치 `TRADER_LOCK_HEARTBEAT_THREAD=0`(기본 켬). 클라이언트는 lazy 연결이라
+        #    여기서는 안 붙고, 락이 ping 으로 확인한 뒤 못 붙으면 루프 심장박동으로 되돌아간다.
+        heartbeat_client = (
+            redis_sync.Redis.from_url(  # pyright: ignore[reportUnknownMemberType]
+                resolved_state.settings.redis_url, socket_timeout=5.0, socket_connect_timeout=5.0
+            )
+            if redis is not None and os.environ.get("TRADER_LOCK_HEARTBEAT_THREAD", "1") != "0"
+            else None
+        )
         leader = (
-            TradingLeader(redis, start=_start_trading, stop=_stop_trading)
+            TradingLeader(
+                redis,
+                start=_start_trading,
+                stop=_stop_trading,
+                heartbeat_client=heartbeat_client,
+            )
             if redis is not None
             else None
         )
@@ -347,6 +364,9 @@ def create_app(state: ApiState | None = None) -> FastAPI:
             if leader is not None:
                 with contextlib.suppress(Exception):
                     await leader.shutdown()
+            if heartbeat_client is not None:
+                with contextlib.suppress(Exception):
+                    heartbeat_client.close()
             attach_store(None)
             attach_state_store(None)
             attach_fundamentals(None)
