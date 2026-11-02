@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -133,6 +134,19 @@ class TestTheVerdict:
             and got.liq_before is not None
             and got.liq_after > got.liq_before
         )
+
+    def test_a_new_stop_inside_the_line_is_labelled_as_such(self) -> None:
+        """🟡-1 — 든 1@80(손절 76) 아래 60 에 새 몫(손절 56.1)을 얹으면 막는 것은 맞지만 원인은
+        든 몫이 아니라 **새 몫 손절이 합친 선 안쪽**이다. 라벨이 거짓 원인을 말하지 않는다."""
+        got = check_merged_liquidation(
+            held=self.HELD,
+            new=MergedLeg(Decimal(1), Decimal(60), Decimal("56.1")),
+            long=True,
+            leverage=L6,
+            buffer_ratio=B20,
+        )
+        assert got.action == "block" and got.why == "new_stop_violates"
+        assert got.binding_stop == Decimal("56.1")
 
     def test_a_held_violation_blocks_instead_of_averaging_down(self) -> None:
         """🔴 든 몫만으로 이미 어기면 막는다 — 낮게 더 사서 평단을 내리는 길은 가지 않는다."""
@@ -378,6 +392,18 @@ def setup_long(stop: str) -> TradeSetup:
     )
 
 
+def setup_short(stop: str) -> TradeSetup:
+    """손절이 진입(100) 위 → 숏. 목표는 아래."""
+    return replace(
+        setup_long(stop),
+        stop_loss=Decimal(stop),
+        stop_candidates=(
+            StopCandidate(price=Decimal(stop), timeframe=Timeframe.M15, source="test"),
+        ),
+        tp_ladder=(TakeProfitStep(price=Decimal(70), ratio=Decimal(1), then=None),),
+    )
+
+
 def offer(s: Session, owner: Playbook, stop: str = "94") -> TradeRecord | None:
     shot = Snapshot(
         at=s.cursor,
@@ -388,8 +414,16 @@ def offer(s: Session, owner: Playbook, stop: str = "94") -> TradeRecord | None:
     return s._enter(shot)  # pyright: ignore[reportPrivateUsage]
 
 
-def holding(s: Session, *, entry: str, stop: str) -> Session:
+def holding(
+    s: Session, *, entry: str, stop: str, direction: Direction = Direction.LONG, half: bool = False
+) -> Session:
     first = held_record(BREAKOUT, entry=entry, stop=stop, at=s.cursor)
+    if direction is Direction.SHORT:
+        first = replace(
+            first, direction=direction, planned_target=Decimal(1), planned_first=Decimal(1)
+        )
+    if half:
+        first = replace(first, half_at=s.cursor, half_price=Decimal(entry))
     s.ledger.add(first)
     s._hold(first)  # pyright: ignore[reportPrivateUsage]
     return s
@@ -433,6 +467,48 @@ class TestTheSessionAsksBeforeASecondShare:
         s.has_liquidation = False
         got = offer(s, CHANNEL)
         assert got is not None and got.leverage == L6
+
+    def test_the_short_mirror_in_the_session(self) -> None:
+        """숏 — 120 에 든 몫(손절 126) 아래 100 에 같은 노출의 숏을 얹으면 평단이 내려와 합친
+        청산가가 든 몫 손절 안쪽이다 → 줄인다."""
+        s = holding(
+            flat_session((BREAKOUT, CHANNEL)), entry="120", stop="126", direction=Direction.SHORT
+        )
+        s.merged_liq_buffer_ratio = B20
+        shot = Snapshot(
+            at=s.cursor,
+            proposals=(Proposal(playbook=CHANNEL, setup=setup_short("106")),),
+            trend={},
+            has_box=False,
+        )
+        got = s._enter(shot)  # pyright: ignore[reportPrivateUsage]
+        assert got is not None and got.direction is Direction.SHORT and got.leverage < L6
+        assert s.funnel.get("merged_liq:shrink") == 1
+
+    def test_a_half_closed_share_counts_half(self) -> None:
+        """반익한 몫은 수량 절반 — 든 몫이 작으면 같은 둘째 몫이 평단을 더 끌어 더 줄어든다."""
+        whole = holding(flat_session((BREAKOUT, CHANNEL)), entry="80", stop="76")
+        whole.merged_liq_buffer_ratio = B20
+        halved = holding(flat_session((BREAKOUT, CHANNEL)), entry="80", stop="76", half=True)
+        halved.merged_liq_buffer_ratio = B20
+        legs_whole = whole._merged_legs()  # pyright: ignore[reportPrivateUsage]
+        legs_half = halved._merged_legs()  # pyright: ignore[reportPrivateUsage]
+        assert legs_half[0].quantity == legs_whole[0].quantity / 2
+        a, b = offer(whole, CHANNEL), offer(halved, CHANNEL)
+        assert a is not None and b is not None and b.leverage < a.leverage < L6
+
+    def test_the_limit_ladder_path_is_fitted_too(self) -> None:
+        """`_bid`(지정가) — 시장가와 같은 자에서 줄인다. 대기 기록의 노출이 줄어 있다."""
+        from updown.orchestration.walkforward.sealed_filler import SealedFiller
+
+        s = holding(flat_session((BREAKOUT, CHANNEL)), entry="80", stop="76")
+        s.merged_liq_buffer_ratio = B20
+        s.limit_entry = True
+        s.filler = SealedFiller()
+        assert offer(s, CHANNEL) is None, "지정가는 걸어 두는 것이라 바로 산 기록이 없다"
+        pending = s.pending_entry()
+        assert pending is not None and pending[0].leverage < L6
+        assert s.funnel.get("merged_liq:shrink") == 1
 
 
 # ── 러너 — 불타기 · 둘째 몫 계약 수 ────────────────────────────────────────
@@ -603,7 +679,7 @@ class _Runner:
     def skip(self, record: TradeRecord, detail: str) -> None:
         asyncio.run(self._skip_merged_liq(record, detail))
 
-    def fit_share(self, record: TradeRecord, contracts: int) -> tuple[int, str]:
+    def fit_share(self, record: TradeRecord, contracts: int) -> tuple[int, str] | None:
         return self._merged_liq_contracts(
             role="share",
             record=record,
@@ -648,14 +724,43 @@ class TestTheRunnerAsksBeforeAnAdd:
         r.add()
         assert r.sent == [2]
 
-    def test_unknown_share_contracts_hold_the_add(self) -> None:
-        """🔴 몫 모드에서 계약 수를 모르는 몫이 있으면 추정하지 않고 보류한다(규칙 #8-1)."""
+    def test_unknown_share_contracts_defer_the_add_not_drop_it(self) -> None:
+        """🟠-3 — 몫 모드에서 계약 수를 모르는 몫이 있으면 추정하지 않고 **다음 걸음에 다시** 본다
+        (`live_add_unreadable` 과 같은 태도 · 늦으면 `stale` 로 자연 소멸). 영구 버림이 아니다."""
         other = _open(
             "95", trade_id="other", playbook=CHANNEL.attribution, contracts=0, add_at=None
         )
         r = _Runner([_open("95"), other], shared=True)
+        r._orders.size = "8"  # pyright: ignore[reportPrivateUsage]  — 거래소엔 두 몫 합이 들어 있다
         r.add()
-        assert not r.sent and r.record.add_held == "merged_liq"
+        assert not r.sent
+        assert r.record.add_held is None and r.record.add_exposure == 2, "버리지 않았다"
+        assert "live_merged_liq_unreadable" in r.events
+        # 사람이 계약 수를 채우면(또는 체결 기록이 붙으면) 같은 불타기가 그대로 나간다.
+        r.session.ledger.replace(replace(other, contracts=4))
+        r.add()
+        assert r.sent == [2]
+
+    def test_the_short_mirror_in_the_runner(self) -> None:
+        """숏 4 계약 @100(손절 110) 위에 2 계약 @90 — 롱 손셈의 거울 · 1 계약만 허용된다."""
+        short = _open(
+            "110",
+            direction=Direction.SHORT,
+            add_price=Decimal(90),
+            planned_target=Decimal(1),
+            planned_first=Decimal(1),
+        )
+        r = _Runner([short])
+        r._orders.size = "-4"  # pyright: ignore[reportPrivateUsage]
+        r.add()
+        assert r.sent == [1] and "merged_liq" in r.fired
+
+    def test_a_half_closed_share_counts_half_in_the_runner(self) -> None:
+        """반익한 몫은 `contracts // 2` 만 든 것으로 센다 — 조각 수량이 절반이다."""
+        half = _open("95", add_at=None, half_at=NOW - timedelta(hours=1), half_price=Decimal(120))
+        r = _Runner([half])
+        legs = r._merged_liq_legs("", Decimal(1), None)  # pyright: ignore[reportPrivateUsage]
+        assert legs is not None and [leg.quantity for leg in legs] == [Decimal(2)]
 
 
 class TestTheRunnerAsksBeforeASecondShare:
@@ -670,8 +775,16 @@ class TestTheRunnerAsksBeforeASecondShare:
             entry=Decimal(110),
         )
         r = _Runner([held, new], shared=True)
-        got, detail = r.fit_share(new, 2)
-        assert got == 1 and "shrunk" in detail
+        got = r.fit_share(new, 2)
+        assert got is not None and got[0] == 1 and "shrunk" in got[1]
+
+    def test_unknown_other_share_contracts_give_no_verdict(self) -> None:
+        """다른 몫의 계약 수를 모르면 None — 둘째 몫 `_send` 는 그것을 막음으로 읽어 거둔다(D2)."""
+        held = _open("89", add_at=None, contracts=0)
+        new = _open("94", trade_id="new", playbook=CHANNEL.attribution, contracts=0, add_at=None)
+        r = _Runner([held, new], shared=True)
+        assert r.fit_share(new, 2) is None
+        assert "live_merged_liq_unreadable" in r.events
 
     def test_a_blocked_second_share_is_withdrawn_from_the_ledger(self) -> None:
         held = _open("88", add_at=None)

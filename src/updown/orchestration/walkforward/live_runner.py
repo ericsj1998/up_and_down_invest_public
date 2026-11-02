@@ -5897,7 +5897,7 @@ class LiveRunner:
         leverage: Decimal,
         spec: Mapping[str, str],
         snapshot: Mapping[str, str] | None,
-    ) -> tuple[int, str]:
+    ) -> tuple[int, str] | None:
         """합친 청산가 검사에 맞춘 계약 수 — 둘째 몫 · 불타기 공용 (T741 · spec §4.2 ②).
 
         Args:
@@ -5914,12 +5914,14 @@ class LiveRunner:
 
         Returns:
             `(계약 수, 설명)`. 검사가 꺼져 있거나 든 몫이 없으면 요청 그대로. 0 이면 호출자가
-            버린다.
+            버린다. **None 이면 지금은 못 잰다**(어느 몫의 계약 수를 모른다) — 호출자가 보류 ·
+            재시도를 정한다(불타기는 다음 걸음 · 둘째 몫은 안 든다).
 
         Note:
             🔴 **먼저 적고 그 다음 줄인다**(P5). 줄이거나 막으면 화면에도 올린다(`_fired`) —
-            로그에만 두면 아무도 안 본다. 계약 수를 모르는 몫이 있으면 **0** 이다 — 리스크 증가
-            행동은 불확실하면 보류다(규칙 #8-1).
+            로그에만 두면 아무도 안 본다. 계약 수를 모르는 몫은 추정하지 않는다 — 리스크 증가
+            행동은 불확실하면 보류다(규칙 #8-1). 영구 버림이 아니라 **보류**인 이유: 모름의 흔한
+            원인(전송 예외 뒤 `contracts=0` 으로 남은 OPEN 기록)은 사람이 정리하면 풀린다.
         """
         buffer = getattr(self._session, "merged_liq_buffer_ratio", None)
         if buffer is None or contracts <= 0 or leverage <= 1 or multiplier <= 0:
@@ -5929,13 +5931,16 @@ class LiveRunner:
             record.trade_id if role == "share" else "", multiplier, snapshot
         )
         if held is None:
-            why = "어느 몫의 계약 수를 모른다 — 합친 청산가를 못 재어 더 싣지 않는다"
             self._log.warning(
-                "live_merged_liq_check",
-                payload={"trade_id": record.trade_id, "role": role, "action": "block", "why": why},
+                "live_merged_liq_unreadable",
+                payload={
+                    "trade_id": record.trade_id,
+                    "role": role,
+                    "note": "어느 몫의 계약 수를 모른다 — 합친 청산가를 못 재어 지금은 더 싣지 "
+                    "않는다(불타기는 다음 걸음에 다시 · 둘째 몫은 안 든다)",
+                },
             )
-            self._fired("merged_liq", f"{role} 막음 — 계약 수 모름")
-            return 0, why
+            return None
         if not held:
             return contracts, ""
         raw = str(spec.get("maintenance_rate", "") or "")
@@ -6411,6 +6416,30 @@ class LiveRunner:
                     size_min=int(spec.get("order_size_min", 1)),
                     size_max=int(spec.get("order_size_max", 0)) or None,
                 )
+                # 🔴 T741 — 지정가 다리도 같은 검사(시장가 `_send` 와 같은 자 · spec §4.2 ②).
+                #    몫 모드는 `share_mode_faults` 가 지정가를 막아 지금 라이브에선 든 몫이 없어
+                #    그대로 지나가지만, 그 전제가 풀려도 이 구멍은 열리지 않게 둔다. 0 · 모름이면
+                #    이 다리는 보내지 않는다.
+                merged = self._merged_liq_contracts(
+                    role="share",
+                    record=waiting,
+                    contracts=contracts,
+                    price=want.price,
+                    stop=waiting.planned_stop,
+                    direction=waiting.direction,
+                    multiplier=multiplier,
+                    leverage=self._session.ledger.leverage,
+                    spec=spec,
+                    snapshot=None,
+                )
+                contracts, merged_detail = merged if merged is not None else (0, "몫 계약 수 모름")
+                if contracts <= 0:
+                    box.failed(want.ticket)
+                    self._log.warning(
+                        "live_limit_entry_merged_liq",
+                        payload={"ticket": want.ticket, "detail": merged_detail[:200]},
+                    )
+                    continue
                 sent = await self._orders.submit_order(
                     limit_entry_order(
                         waiting,
@@ -6877,7 +6906,7 @@ class LiveRunner:
         # 🔴 T741 — 합친 청산가가 **모든** 몫 손절 바깥 + 버퍼인지 실제 계약 수로 다시 본다
         #    (spec §4.2 ②). 세션이 노출로 한 번 봤지만 여기는 반올림 · 거래소 배율 · 명세
         #    유지증거금으로 잰 값이다.
-        contracts, merged_detail = self._merged_liq_contracts(
+        merged = self._merged_liq_contracts(
             role="add",
             record=held,
             contracts=contracts,
@@ -6889,6 +6918,9 @@ class LiveRunner:
             spec=spec,
             snapshot=snapshot,
         )
+        if merged is None:
+            return  # 몫 계약 수를 모른다 — 다음 걸음에 다시 본다(늦으면 `stale` 로 버린다)
+        contracts, merged_detail = merged
         if contracts <= 0:
             self._drop_add(held, "merged_liq", detail=merged_detail)
             return
@@ -8620,7 +8652,7 @@ class LiveRunner:
         # 🔴 T741 — 둘째 몫이면 합친 청산가가 **모든** 몫 손절 바깥 + 버퍼인지 실제 계약 수로 본다
         #    (spec §4.2 ②). 세션(`_fit_merged_share`)이 노출로 먼저 봤고, 여기는 반올림 · 명세
         #    유지증거금을 넣어 다시 잰다. 0 이면 원장을 거둔다(주문은 안 나갔다).
-        contracts, merged_detail = self._merged_liq_contracts(
+        merged = self._merged_liq_contracts(
             role="share",
             record=record,
             contracts=contracts,
@@ -8632,6 +8664,8 @@ class LiveRunner:
             spec=spec,
             snapshot=None,
         )
+        # 다른 몫의 계약 수를 모르면 새 몫은 안 든다(몫 모드 D2 와 같은 태도) — 거둔다.
+        contracts, merged_detail = merged if merged is not None else (0, "몫 계약 수 모름")
         if contracts <= 0:
             await self._skip_merged_liq(record, merged_detail)
             return

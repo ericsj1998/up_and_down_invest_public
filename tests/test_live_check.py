@@ -266,6 +266,38 @@ def test_fund_bound_to_a_dead_run_is_a_warning() -> None:
     assert blocked_row(old, Health(), NOW, 7).status == "warn"
 
 
+def test_merged_liq_row_counts_and_distributes_ratios() -> None:
+    """T741 — 합친 청산가 문의 줄임 · 막음 수와 줄인 비율 분포. 막음 ⚠️ · 줄임만 ✅ · 0 이면 참고."""
+    from updown.orchestration.live_review.check import merged_liq_row
+
+    def ev(kind: str, action: str, wanted: str, granted: str, hours: int = 3) -> dict[str, Any]:
+        return {
+            "event_type": kind,
+            "ts": (NOW - timedelta(hours=hours)).isoformat(),
+            "payload": {"action": action, "wanted": wanted, "granted": granted},
+        }
+
+    empty = _snap([], {}, events=[ev("live_merged_liq_check", "allow", "2", "2")])
+    assert merged_liq_row(empty, NOW, 7).status == "info"
+    assert merged_liq_row(empty, NOW, 7).value == "0건"
+    shrunk = _snap(
+        [],
+        {},
+        events=[
+            ev("live_merged_liq_check", "shrink", "4", "1"),
+            ev("live_merged_liq_check", "shrink", "2", "1"),
+            ev("session_merged_liq_check", "shrink", "6", "3"),
+            ev("live_merged_liq_check", "shrink", "10", "9", hours=24 * 9),  # 기간 밖
+        ],
+    )
+    row = merged_liq_row(shrunk, NOW, 7)
+    assert row.status == "ok"
+    assert "러너 줄임 2" in row.value and "세션 줄임 1" in row.value
+    assert "중위 0.50 [최소 0.25 ~ 최대 0.50]" in row.value
+    blocked = _snap([], {}, events=[ev("live_merged_liq_check", "block", "2", "0")])
+    assert merged_liq_row(blocked, NOW, 7).status == "warn"
+
+
 def test_fund_bound_to_the_open_runs_stays_ok() -> None:
     from updown.orchestration.live_review.check import blocked_row, unbound_members
 

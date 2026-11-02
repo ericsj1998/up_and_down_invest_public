@@ -90,7 +90,8 @@ class MergedLiqVerdict:
         liq_after: 허용 수량을 더한 뒤의 청산가. 막혔으면 `liq_before` 와 같다.
         binding_stop: 가장 묶은 손절(허용 수량을 정한 몫의 손절). 묶인 것이 없으면 None.
         why: 깔때기 라벨 — `ok` · `shrunk` · `held_violates`(든 몫만으로 이미 위반) ·
-            `no_room`(한 단위도 못 더함) · `off`(검사 꺼짐 · 배율 1 이하).
+            `new_stop_violates`(새 몫 손절이 수량 0 에서도 합친 선 안쪽) · `no_room`(한 단위도 못
+            더함) · `off`(검사 꺼짐 · 배율 1 이하).
     """
 
     action: Action
@@ -203,6 +204,10 @@ def check_merged_liquidation(
 
         ⚠️ 배율 1 이하(현물 · 청산 없음)는 `off` 로 그대로 허용한다 — 능력표 `leverage_allowed`
         거짓인 시장은 호출자가 아예 부르지 않는 것이 맞다.
+
+        ⚠️ 손절이 0 인 든 몫(손절 없이 입양된 기록)은 롱이면 늘 `held_violates` 다 — 그 포지션이
+        있는 동안 둘째 몫 · 불타기가 전부 막힌다(안전 방향). "검사에서 뺀다 vs 전부 차단" 은
+        [결정 필요](T741 문서) · 지금은 차단을 유지한다.
     """
     if not (Decimal(0) <= buffer_ratio < Decimal(1)):
         raise ValueError(f"merged_liq_buffer_ratio 가 {buffer_ratio} 다 — 0 이상 1 미만이어야 한다")
@@ -242,10 +247,12 @@ def check_merged_liquidation(
         a = sign * (stop - slope)
         c = sign * (fixed - stop * quantity)
         if c > 0:
-            # 든 몫만으로 이미 이 손절을 침범한다 — 더 사서 고치지 않는다.
-            return MergedLiqVerdict(
-                "block", new.quantity, Decimal(0), before, before, stop, "held_violates"
-            )
+            # 수량 0 에서도 이 손절이 선 안쪽이다 — 더 사서 고치지 않는다. 든 몫의 손절이면 든 몫
+            # 만으로 이미 위반(`held_violates`), 새 몫의 손절이면 **새 몫 자리가 합친 선 안쪽**
+            # (`new_stop_violates` · 낮게 든 몫 아래에 더 낮게 드는 꼴) — 알림이 거짓 원인을 말하지
+            # 않게 가른다.
+            why = "new_stop_violates" if leg is new else "held_violates"
+            return MergedLiqVerdict("block", new.quantity, Decimal(0), before, before, stop, why)
         if a >= 0:
             continue  # 이 손절은 어떤 수량에도 안 묶인다(값이 평단을 안전한 쪽으로 끌거나 멀다)
         cap = c / a  # c ≤ 0 · a < 0 → cap ≥ 0

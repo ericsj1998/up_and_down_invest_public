@@ -3882,7 +3882,9 @@ class Session:
             return given
         if verdict.action == "block":
             return Grant(Decimal(0), "merged_liq", given.shrunk)
-        return Grant(given.size * verdict.ratio, None, "merged_liq")
+        # 앞 장치(브레이크 · 총 명목)가 줄인 라벨을 덮지 않는다 — `brake+notional` 관례 그대로.
+        shrunk = f"{given.shrunk}+merged_liq" if given.shrunk else "merged_liq"
+        return Grant(given.size * verdict.ratio, None, shrunk)
 
     def _rescaled_leverage(self, record: TradeRecord, new_stop: Decimal) -> Decimal | None:
         """손절을 당긴 뒤의 배율 — 크기 승수는 지키고 손절 거리 몫만 다시 도출한다 (T232).

@@ -746,6 +746,62 @@ def blocked_row(snap: Snapshot, health: Health, now: datetime, days: int) -> Row
     return Row("now", item, "warn" if late or unbound else "ok", value, basis)
 
 
+MERGED_LIQ_EVENTS = ("live_merged_liq_check", "session_merged_liq_check")
+"""합친 청산가 검사 기록(T741) — 러너(실제 계약) · 세션(노출) 순. 같은 진입이 둘 다 남긴다."""
+
+
+def merged_liq_row(snap: Snapshot, now: datetime, days: int) -> Row:
+    """1절 한 줄 — 둘째 몫 · 불타기 전 합친 청산가 검사가 기간 안 몇 번 줄이고 막았나 (T741).
+
+    Args:
+        snap: 스냅샷 — `events` 의 `live_merged_liq_check` · `session_merged_liq_check`.
+        now: 보고 시각(UTC).
+        days: 기간(일).
+
+    Returns:
+        상태 · 값 · 기준. 값은 러너 · 세션 각각의 줄임 · 막음 건수와 **줄인 비율(허용 ÷ 요청)의
+        분포**(§1-0s — 값을 만들면 분포를 싣는다). 막음이 있으면 ⚠️(든 몫만으로 위반 — 손절 0 인
+        입양 몫 · 계약 수 모름 가능성), 줄임만 있으면 ✅, 하나도 없으면 참고.
+
+    Note:
+        연구 엔진 · 펀드 재현에는 이 문이 없다(T741 §할 일 3). 라이브와 재현의 간극이 **문 때문**
+        인지 가르는 눈금이 이 줄이다 — 건수가 0 이면 문이 숫자를 바꾸지 않았다.
+    """
+    since = now - timedelta(days=days)
+    counts: Counter[str] = Counter()
+    ratios: list[Decimal] = []
+    for ev in snap.events:
+        kind = str(ev.get("event_type", ""))
+        at = when(ev.get("ts"))
+        if kind not in MERGED_LIQ_EVENTS or at is None or at < since:
+            continue
+        pl = _dict(ev.get("payload"))
+        action = str(pl.get("action") or "")
+        if action not in {"shrink", "block"}:
+            continue
+        source = "러너" if kind == MERGED_LIQ_EVENTS[0] else "세션"
+        counts[f"{source} {'줄임' if action == 'shrink' else '막음'}"] += 1
+        wanted, granted = dec(str(pl.get("wanted") or "")), dec(str(pl.get("granted") or ""))
+        if action == "shrink" and wanted and granted is not None and wanted > 0:
+            ratios.append(granted / wanted)
+    item = f"합친 청산가 문({days}일)"
+    basis = (
+        "둘째 몫 · 불타기 때만 돈다 — 0 건은 다몫 사이클이 없었다는 뜻(참고) · 줄임은 규칙대로 ✅ "
+        "· 막음은 ⚠️(든 몫만으로 위반 · 손절 0 입양 몫 · 계약 수 모름) → event_logs 에서 종목 · "
+        "청산 전 → 후 · 묶은 손절을 본다 · 연구 · 재현엔 이 문이 없다"
+    )
+    if not counts:
+        return Row("now", item, "info", "0건", basis)
+    value = " · ".join(f"{k} {n}" for k, n in sorted(counts.items()))
+    if ratios:
+        ordered = sorted(ratios)
+        mid = ordered[len(ordered) // 2]
+        lo, hi = _f(ordered[0]), _f(ordered[-1])
+        value += f" · 줄인 비율(허용÷요청) 중위 {_f(mid)} [최소 {lo} ~ 최대 {hi}]"
+    blocked = any(k.endswith("막음") for k in counts)
+    return Row("now", item, "warn" if blocked else "ok", value, basis)
+
+
 def unbound_members(snap: Snapshot) -> list[str]:
     """펀드 `runs`(종목 → 묶은 판 키)가 가리키는 판이 **열린 판이 아닌** 멤버 종목 (T605).
 
