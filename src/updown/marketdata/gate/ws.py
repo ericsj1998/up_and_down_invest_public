@@ -30,6 +30,8 @@ Gate 는 **진행 중인 봉도** `update` 로 계속 보낸다. 그것을 확�
 
 import asyncio
 import json
+import os
+import time
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -62,6 +64,50 @@ TESTNET_WS_URL: Final = "wss://fx-ws-testnet.gateio.ws/v4/ws/usdt"
 """
 
 CANDLE_CHANNEL: Final = "futures.candlesticks"
+
+DEFAULT_PING_INTERVAL_S: Final = 20.0
+"""keepalive 핑 간격(초) — env `GATE_WS_PING_INTERVAL_S` 로 바꾼다."""
+
+DEFAULT_PING_TIMEOUT_S: Final = 40.0
+"""핑 뒤 pong 을 **처리**할 때까지 기다리는 시간(초) — env `GATE_WS_PING_TIMEOUT_S`
+(T759 ② · 2026-11-02).
+
+🔴 websockets 기본값 20 초였다. 11-02 실계좌에서 펀드 복원이 이벤트 루프를 43 ~ 50 초 막자
+pong 은 도착했는데 **읽지 못해** 17 개 소켓이 `no close frame received or sent`(1006) 로 끊겼고,
+끊긴 소켓마다 REST 백필이 몰렸다. 막힘의 뿌리는 따로 고쳤고(④' 선언 파싱 캐시), 여기서는 20 ~ 40
+초짜리 다른 멈춤(가비지 컬렉션 · 큰 리포트)에도 소켓이 살아남게 기본을 40 초로 둔다. 진짜 끊김은
+그만큼 늦게 안다 — 그 뒤에 `IDLE_TIMEOUT_S`(900 초 무갱신) 가 있다.
+"""
+
+
+def keepalive_settings() -> tuple[float, float]:
+    """(핑 간격, 핑 타임아웃) — env 가 있으면 그것, 없으면 기본.
+
+    Returns:
+        초 단위 둘.
+
+    Raises:
+        GateWebSocketError: env 값이 숫자가 아니거나 0 이하 — 조용히 기본으로 되돌리지
+            않는다(규칙 #8).
+    """
+    out: list[float] = []
+    for name, default in (
+        ("GATE_WS_PING_INTERVAL_S", DEFAULT_PING_INTERVAL_S),
+        ("GATE_WS_PING_TIMEOUT_S", DEFAULT_PING_TIMEOUT_S),
+    ):
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            out.append(default)
+            continue
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise GateWebSocketError(f"{name}={raw!r} 는 초(숫자)가 아니다") from exc
+        if value <= 0:
+            raise GateWebSocketError(f"{name}={raw!r} 는 0 보다 커야 한다")
+        out.append(value)
+    return out[0], out[1]
+
 
 IDLE_TIMEOUT_S: Final = 900.0
 """캔들 채널에서 이만큼(초) 아무 갱신이 없으면 구독이 죽은 것으로 보고 다시 붙는다 (2026-10-14).
@@ -477,8 +523,9 @@ class GateCandleStream:
         multiplier: Decimal,
         *,
         url: str = LIVE_WS_URL,
-        ping_interval: float = 20.0,
+        ping_interval: float | None = None,
         idle_timeout: float | None = IDLE_TIMEOUT_S,
+        ping_timeout: float | None = None,
     ) -> None:
         """스트림을 만든다.
 
@@ -487,9 +534,10 @@ class GateCandleStream:
             timeframe: 시간축.
             multiplier: 계약 승로 (`Decimal`) — 어댑터가 계약 명세에서 읽어 넘긴다.
             url: 웹소켓 URL. testnet 은 `TESTNET_WS_URL`.
-            ping_interval: 핑 간격(초).
+            ping_interval: 핑 간격(초). None 이면 설정(`keepalive_settings`).
             idle_timeout: 이만큼(초) 갱신이 없으면 다시 붙는다(`IDLE_TIMEOUT_S`).
                 None 이면 끝없이 기다린다.
+            ping_timeout: 핑 뒤 pong 처리 대기(초). None 이면 설정(`keepalive_settings`).
 
         Raises:
             GateWebSocketError: 종목이 없는 경우.
@@ -501,7 +549,9 @@ class GateCandleStream:
         self._timeframe = timeframe
         self._multiplier = multiplier
         self._url = url
-        self._ping_interval = ping_interval
+        default_interval, default_timeout = keepalive_settings()
+        self._ping_interval = default_interval if ping_interval is None else ping_interval
+        self._ping_timeout = default_timeout if ping_timeout is None else ping_timeout
         self._idle_timeout = idle_timeout
         self.reconnects = 0
         """재연결 횟수 — **0 이 아니면 봉에 구멍이 있을 수 있다.**"""
@@ -540,13 +590,16 @@ class GateCandleStream:
             `socket.recv()` 하나뿐이라(취소해도 데이터를 잃지 않는다) 제너레이터를 겹치지 않는다.
             정상 종료(서버가 닫음)도 이제 `gate_ws_reconnect` 로 남는다 — 예전엔 조용히 다시 붙었다.
         """
+        subscribed_at = last_recv = time.monotonic()
         while True:
             try:
                 async with websockets.connect(
-                    self._url, ping_interval=self._ping_interval
+                    self._url, ping_interval=self._ping_interval, ping_timeout=self._ping_timeout
                 ) as socket:
                     for payload in build_subscription(self._timeframe, self.contracts):
                         await socket.send(payload)
+                    subscribed_at = time.monotonic()
+                    last_recv = subscribed_at
                     _logger.info(
                         "gate_ws_subscribed",
                         payload={
@@ -559,6 +612,7 @@ class GateCandleStream:
                     while True:
                         try:
                             raw = await asyncio.wait_for(socket.recv(), timeout=self._idle_timeout)
+                            last_recv = time.monotonic()
                         except TimeoutError as exc:
                             raise GateStreamIdleError(
                                 f"{int(self._idle_timeout or 0)}초 동안 갱신 없음 — 구독이 끊겼다"
@@ -572,12 +626,19 @@ class GateCandleStream:
                             yield item
             except (OSError, websockets.WebSocketException, GateStreamIdleError) as exc:
                 self.reconnects += 1
+                now = time.monotonic()
                 _logger.warning(
                     "gate_ws_reconnect",
                     payload={
                         "reason": str(exc)[:200],
                         "reconnects": self.reconnects,
                         "contracts": self.contracts,
+                        # ⭐ T759 ② — 진단: 구독 뒤 몇 초 · 마지막 수신 뒤 몇 초 · 핑 타임아웃.
+                        #    여러 소켓이 같은 밀리초에 같은 idle_s 로 끊기면 네트워크가 아니라
+                        #    **우리 루프가 막힌 것**이다(2026-11-02 · 17 회가 전부 그랬다).
+                        "since_subscribed_s": round(now - subscribed_at, 1),
+                        "idle_s": round(now - last_recv, 1),
+                        "ping_timeout_s": self._ping_timeout,
                         "note": "이 사이 봉에 구멍이 있을 수 있다 — REST 로 메워야 한다",
                     },
                 )
