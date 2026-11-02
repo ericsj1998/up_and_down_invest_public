@@ -24,6 +24,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -1121,7 +1122,12 @@ async def _restore_one(data: dict[str, Any]) -> None:
     ports: dict[str, Any] = {}
     engines: dict[str, Any] = {}
     kept: list[BasketMember] = []
+    loop_started = time.perf_counter()
     for member in basket.members:
+        # ⭐ T759 ④' — 멤버마다 한 번 양보한다. 2026-11-02 실계좌에서 이 루프(39 종)가 한 번도
+        #    양보하지 않아 이벤트 루프가 43 ~ 50 초 막혔고, 락 심장박동 · 웹소켓 핑이 그 사이
+        #    굶었다. 양보는 순서를 바꾸지 않는다(펀드 락 안 · 멤버 순서 그대로).
+        await asyncio.sleep(0)
         engine_leg = _engine_leg(legs, member.symbol)
         if engine_leg is not None:  # 엔진 다리 — 자기 상태 파일에서 이어 받는다
             try:
@@ -1197,6 +1203,17 @@ async def _restore_one(data: dict[str, Any]) -> None:
         handles[member.symbol] = handle
         ports[member.symbol] = port
         kept.append(member)
+    # ⭐ T759 ④' 관측 규약 — 새로 재는 값은 분포를 남긴다. 배포 뒤 이 값이 43,000 → 1,000 아래로
+    #    내려갔는지가 캐시 가설(선언 파싱 반복)의 검증이다.
+    _events.info(
+        "fund_restore_timing",
+        payload={
+            "fund_id": str(data.get("fund_id")),
+            "members": len(basket.members),
+            "kept": len(kept),
+            "loop_ms": round((time.perf_counter() - loop_started) * 1000),
+        },
+    )
     if not kept:
         raise RuntimeError("펀드 구성원이 하나도 뜨지 않았다")
     if corrected:

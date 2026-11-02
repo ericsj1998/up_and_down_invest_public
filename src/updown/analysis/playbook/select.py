@@ -1111,6 +1111,76 @@ def _parse_declared(declared: object) -> list[Playbook]:
     return out
 
 
+_FileSig = tuple[tuple[str, int, int], ...]
+"""파일 묶음의 서명 — (경로, mtime_ns, size) 튜플들."""
+
+_FILE_CACHE: dict[tuple[str, ...], tuple[_FileSig, tuple[Playbook, ...], dict[str, Path]]] = {}
+"""파일 선언 캐시 — 열쇠는 파일 목록, 값은 (서명, 파싱 결과, id → 파일) (T759 ④').
+
+🔴 2026-11-02 실계좌: 펀드 복원이 멤버 39 종마다 `start_books → _playbook → load_playbooks()` 를
+불러 선언 YAML 전체를 **매번 다시 파싱**했고(로컬 75 ms/회 · 서버는 더), 그 동기 작업이 이벤트
+루프를 43 ~ 50 초 막아 락 TTL 이 만료됐다. 파일이 바뀌지 않았으면(mtime · size 같음) 같은 튜플을
+돌려준다 — **같은 입력 → 같은 출력**이라 선언 해석은 한 글자도 안 바뀐다. 바뀐 순간 다시 파싱한다.
+"""
+
+
+def _file_signature(files: Sequence[Path]) -> _FileSig:
+    """파일들의 (경로 · mtime_ns · size).
+
+    없는 파일은 (-1, -1) 로 적어 다음 호출이 다시 읽게 한다.
+    """
+    out: list[tuple[str, int, int]] = []
+    for target in files:
+        try:
+            info = target.stat()
+            out.append((str(target), info.st_mtime_ns, info.st_size))
+        except OSError:
+            out.append((str(target), -1, -1))
+    return tuple(out)
+
+
+def _load_files_cached(files: Sequence[Path]) -> tuple[list[Playbook], dict[str, Path]]:
+    """파일 선언 전부 — 서명이 같으면 캐시, 다르면 다시 파싱한다.
+
+    Args:
+        files: 선언 파일들(접점 순서).
+
+    Returns:
+        (플레이북 목록 사본, id → 파일). 목록은 새 리스트라 부르는 쪽이 덧붙여도 캐시가 안 바뀐다.
+
+    Raises:
+        PlaybookConfigError: 파일이 없거나 값이 잘못되거나 같은 id 가 두 파일에 있는 경우 —
+            실패는 캐시하지 않는다(다음 호출이 다시 읽는다 · 조용한 실패 금지).
+    """
+    key = tuple(str(target) for target in files)
+    signature = _file_signature(files)
+    hit = _FILE_CACHE.get(key)
+    if hit is not None and hit[0] == signature:
+        return list(hit[1]), dict(hit[2])
+    out: list[Playbook] = []
+    seen: dict[str, Path] = {}
+    for target in files:
+        for book in _load_file(target):
+            if book.playbook_id in seen:
+                raise PlaybookConfigError(
+                    f"플레이북 id 가 겹친다: '{book.playbook_id}' "
+                    f"({seen[book.playbook_id]} · {target})"
+                )
+            seen[book.playbook_id] = target
+            out.append(book)
+    _FILE_CACHE[key] = (signature, tuple(out), dict(seen))
+    _logger.info(
+        "playbook_files_parsed",
+        payload={"files": list(key), "books": len(out), "note": "서명이 바뀌어 다시 읽었다"},
+    )
+    return out, seen
+
+
+def forget_file_cache() -> None:
+    """파일 선언 캐시를 비운다 — 시험과, 선언을 바꾼 것을 아는 사람이 쓴다."""
+    _FILE_CACHE.clear()
+
+
 def load_playbooks(path: Path | None = None) -> tuple[Playbook, ...]:
     """선언된 플레이북 전부 — 접점 순서로 파일들을 합친다 (T224).
 
@@ -1136,17 +1206,7 @@ def load_playbooks(path: Path | None = None) -> tuple[Playbook, ...]:
             "updown.playbooks)도 없다. 플레이북이 안 도는 측정은 옛 무플레이북 측정과 "
             "구분이 안 된다"
         )
-    out: list[Playbook] = []
-    seen: dict[str, Path] = {}
-    for target in files:
-        for book in _load_file(target):
-            if book.playbook_id in seen:
-                raise PlaybookConfigError(
-                    f"플레이북 id 가 겹친다: '{book.playbook_id}' "
-                    f"({seen[book.playbook_id]} · {target})"
-                )
-            seen[book.playbook_id] = target
-            out.append(book)
+    out, seen = _load_files_cached(files)
     # ⭐ T349 — DB 에 저장한 선언을 **뒤에** 붙인다. 파일이 SSoT: 같은 id 는 파일이 이기고
     #    DB 줄은 건너뛴다(조용히 덮어쓰면 리뷰 · 재현을 거친 선언이 API 한 번에 바뀐다).
     #    `path` 를 준 호출(시험 · 도구)은 파일만.
