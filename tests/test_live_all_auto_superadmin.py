@@ -40,12 +40,16 @@ def test_trader_without_manage_roles_is_refused(monkeypatch: pytest.MonkeyPatch)
 def test_superadmin_passes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(wf, "LIVE_RUNNERS", {})
     monkeypatch.setattr(wf, "_settings", None)
-    out = asyncio.run(wf.set_auto_all(_request(_Who({Cap.MANAGE_ROLES})), {"on": False}))
+    monkeypatch.setenv(wf.ADMIN_PW_ENV, "test-pw")  # T754b — 권한 + 관리자 비밀번호 둘 다
+    out = asyncio.run(
+        wf.set_auto_all(_request(_Who({Cap.MANAGE_ROLES})), {"on": False, "admin_pw": "test-pw"})
+    )
     assert out["auto"] is False and out["persisted"] is False
 
 
 def test_no_caller_passes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(wf, "LIVE_RUNNERS", {})
     monkeypatch.setattr(wf, "_settings", None)
-    out = asyncio.run(wf.set_auto_all(_request(None), {"on": True}))
+    monkeypatch.setenv(wf.ADMIN_PW_ENV, "test-pw")
+    out = asyncio.run(wf.set_auto_all(_request(None), {"on": True, "admin_pw": "test-pw"}))
     assert out["auto"] is True
