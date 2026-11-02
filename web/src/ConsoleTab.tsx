@@ -28,6 +28,7 @@ import {
   type Reconcile,
 } from "./api";
 import { Escape } from "./Escape";
+import { HaltBanner } from "./HaltBanner";
 import { History } from "./History";
 import { Faucet } from "./Faucet";
 import { Leftovers } from "./Leftovers";
@@ -655,6 +656,11 @@ export function ConsoleTab({ openRun }: Props) {
       <div className="page-head">
         <h1>거래 콘솔</h1>
       </div>
+
+      {/* 🔴 T754 — 첫 화면 맨 위 "매매 중 / 신규 진입 중지됨" 배지 + 중지 · 재개 (사용자 2026-11-02).
+          RUN 탭 "전부 중지 · 전부 재개" 와 **같은 스위치**(`app_settings.live_entries_halted`)다.
+          버튼은 슈퍼관리자(`manage_roles`)에게만 — 서버가 다시 판정한다. 데모 모드는 데모 API(데모 DB)를 본다. */}
+      <HaltBanner canToggle={!!me.who?.caps?.includes("manage_roles")} />
 
       {/* 🔴 **문제 있는 원장 요약 + 수동 동기화** (사용자 요구 2026-09-01). 개별 배너
           위에 몇 개인지 세어 주고, 30초 주기를 안 기다리고 지금 대조하거나 고아를

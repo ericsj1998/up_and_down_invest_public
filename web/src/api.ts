@@ -1481,6 +1481,25 @@ export function reportSend(body: {
  *
  * ⭐ 이쪽은 **새 진입만** 막는다. 이미 든 것은 계속 관리된다.
  */
+/** 전 판 신규 진입 스위치의 지금 상태 (T754). `changed_at` 은 UTC ISO — 표시는 KST 로. */
+export type LiveAutoAllState = {
+  /** 참이면 신규 진입을 받는다. 거짓이면 멈춤 — 든 포지션은 계속 관리된다. */
+  auto: boolean;
+  halted: boolean;
+  changed_at: string | null;
+  changed_by: string | null;
+  /** 도는 라이브 판 수 · 그중 진입이 꺼진 판 수 (메모리 상태 — DB 와 어긋나면 화면이 말한다). */
+  runs: number;
+  runs_auto_off: number;
+  /** 거짓이면 저장소가 없어 메모리 상태만 말한다(로컬 시험). */
+  persisted: boolean;
+};
+
+/** 전 판 신규 진입 스위치를 읽는다 — 첫 화면 배지가 느린 주기로 부른다 (T754). */
+export function liveAutoAll(): Promise<LiveAutoAllState> {
+  return request(`/walkforward/live-all/auto`);
+}
+
 /** 도는 라이브 판 전부의 새 진입을 멈추거나 켠다 — DB 에 남아 재시작 뒤에도 유지된다 (2026-10-01). */
 export function setAutoAll(
   on: boolean,

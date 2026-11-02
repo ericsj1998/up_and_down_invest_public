@@ -239,6 +239,35 @@ class SettingsStore:
             return None
         return None if found is None else str(found)
 
+    async def get_with_time(self, key: str) -> tuple[str | None, datetime | None]:
+        """설정 하나를 **마지막으로 바뀐 시각**과 함께 읽는다 (T754).
+
+        Args:
+            key: 설정 이름.
+
+        Returns:
+            `(값, 바뀐 시각)`. 없거나 못 읽으면 `(None, None)`.
+
+        Note:
+            화면이 "누가 · 언제 멈췄나" 를 보여 주려면 값만으로는 모자란다 — `get` 과 같은
+            실패 규약(못 읽으면 None · 예외를 밖으로 내지 않는다)을 지킨다.
+        """
+        try:
+            async with self._factory() as session:
+                row = (
+                    await session.execute(
+                        sa.select(AppSetting.value, AppSetting.updated_at).where(
+                            AppSetting.key == key
+                        )
+                    )
+                ).one_or_none()
+        except Exception as exc:
+            _logger.error("app_setting_unreadable", payload={"key": key, "error": str(exc)[:160]})
+            return None, None
+        if row is None:
+            return None, None
+        return str(row[0]), row[1]
+
     async def put(self, key: str, value: str, *, by: str = "") -> None:
         """설정 하나를 적는다.
 
@@ -275,9 +304,12 @@ class SettingsStore:
                     )
                 else:
                     statement = insert(AppSetting).values(key=key, value=value)
+                    # ⚠️ Core 문장은 ORM `onupdate` 를 안 거친다 — 갱신 시각을 여기서 직접 적는다.
+                    #    안 적으면 "언제 바꿨나" 가 첫 저장 시각으로 굳는다 (T754).
                     await session.execute(
                         statement.on_conflict_do_update(
-                            index_elements=["key"], set_={"value": statement.excluded.value}
+                            index_elements=["key"],
+                            set_={"value": statement.excluded.value, "updated_at": sa.func.now()},
                         )
                     )
                 await session.commit()

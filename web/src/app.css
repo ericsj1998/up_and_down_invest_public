@@ -1327,3 +1327,52 @@ textarea.input {
     width: 100%;
   }
 }
+
+/* T754 — 첫 화면 맨 위 신규 진입 스위치 배지. 색은 토큰에서(멈춤 = loss · 매매 중 = gain). */
+.halt-banner {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--stone-border);
+  border-left-width: 4px;
+  border-radius: var(--r-input);
+  background: var(--pure-white);
+}
+.halt-banner.ok {
+  border-color: var(--gain);
+}
+.halt-banner.bad {
+  border-color: var(--loss);
+  background: var(--loss-wash);
+}
+.halt-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.halt-confirm {
+  margin-top: 8px;
+  font-size: 13px;
+}
+.halt-badge {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--warm-gray);
+}
+.halt-badge.ok {
+  color: var(--gain);
+}
+.halt-badge.bad {
+  color: var(--loss);
+}
+.halt-meta {
+  font-size: 12px;
+}
+.halt-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+.halt-error {
+  margin: 8px 0 0;
+}

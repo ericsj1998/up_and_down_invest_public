@@ -208,7 +208,11 @@ class TestAutoAll:
         assert lives["a"].session.auto is False
         assert lives["b"].session.auto is False
         assert lives["bt"].session.auto is True  # 라이브가 아닌 세션은 안 건드린다
-        assert store.put_calls == [(wf.HALT_KEY, "1", "live-all/auto")]
+        # T754 — 스위치 값 + 누가 바꿨나(호출자 없으면 경로 이름) 두 줄.
+        assert store.put_calls == [
+            (wf.HALT_KEY, "1", "live-all/auto"),
+            (wf.HALT_BY_KEY, "live-all/auto", "live-all/auto"),
+        ]
 
 
 def test_transferred_is_not_realised() -> None:

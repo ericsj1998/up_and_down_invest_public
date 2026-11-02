@@ -466,6 +466,13 @@ HALT_KEY = "live_entries_halted"
 """app_settings 키 — "1" 이면 모든 라이브 판이 **새 진입만** 멈춘다 (2026-10-01 · 재시작을
 넘는다)."""
 
+HALT_BY_KEY = "live_entries_halted_by"
+"""app_settings 키 — `HALT_KEY` 를 마지막으로 바꾼 사람(이메일 · 모르면 호출 경로) (T754).
+
+🔴 새 상태가 아니다 — 스위치는 `HALT_KEY` 하나이고 이것은 그 스위치의 **꼬리표**다. 화면이
+"누가 · 언제 멈췄나" 를 보여 주지 않으면 사람은 리더 상실 · LIVE_ORDERS 꺼짐과 헷갈린다.
+시각은 `app_settings.updated_at` 이 말한다(`SettingsStore.get_with_time`)."""
+
 
 def run_store() -> RunStore | None:
     """지금의 판 저장소 — 모듈 밖(재조정기)이 전환 뒤 옛 판 줄을 이관으로 닫을 때 쓴다."""
@@ -1959,6 +1966,44 @@ async def live_health_all() -> dict[str, Any]:
     return await _HEALTH_ALL.get_or_fetch("all", health_all_fresh)
 
 
+@router.get("/live-all/auto")
+async def live_auto_all_state() -> dict[str, Any]:
+    """전 판 **신규 진입 스위치**의 지금 상태 — 값 · 누가 · 언제 (T754 · 2026-11-02).
+
+    Returns:
+        `{auto, halted, changed_at, changed_by, runs, runs_auto_off, persisted}`.
+        `auto` 가 거짓이면 신규 진입이 멈춰 있다 — 든 포지션의 손절 · 청산 · 손절 올리기는
+        계속 돈다(§1.2.1). `changed_at` 은 UTC ISO(표시만 KST). `persisted` 가 거짓이면
+        저장소가 없어 메모리 상태만 말한다.
+
+    Note:
+        라이브 첫 화면 맨 위 배지가 읽는다. 쓰기는 `set_auto_all` 하나다 — 화면 두 곳(첫 화면 ·
+        RUN 탭)이 같은 스위치를 가리킨다. 거래 리더 · `LIVE_ORDERS` 와는 다른 물건이라 화면 문구가
+        "신규 진입" 을 꼭 말해야 한다. 호출은 분당 한 번 안팎(느린 폴링)이라 캐시가 없다.
+    """
+    halted = False
+    changed_at: datetime | None = None
+    changed_by: str | None = None
+    if _settings is not None:
+        value, changed_at = await _settings.get_with_time(HALT_KEY)
+        halted = value == "1"
+        changed_by = await _settings.get(HALT_BY_KEY)
+    auto_off = 0
+    for key in list(LIVE_RUNNERS):
+        live = SESSIONS.get(key)
+        if live is not None and not live.session.auto:
+            auto_off += 1
+    return {
+        "auto": not halted,
+        "halted": halted,
+        "changed_at": None if changed_at is None else changed_at.isoformat(),
+        "changed_by": changed_by,
+        "runs": len(LIVE_RUNNERS),
+        "runs_auto_off": auto_off,
+        "persisted": _settings is not None,
+    }
+
+
 @router.post("/live-all/auto")
 async def set_auto_all(
     request: Request, payload: Annotated[dict[str, Any], Body()]
@@ -1993,8 +2038,11 @@ async def set_auto_all(
             live.session.auto = wanted
             changed += 1
     persisted = False
+    # ⭐ 누가 눌렀나 — 이메일이 있으면 그것, 없으면(시험 · 내부) 호출 경로 (T754).
+    by = str(getattr(who, "email", "") or "") or "live-all/auto"
     if _settings is not None:
-        await _settings.put(HALT_KEY, "0" if wanted else "1", by="live-all/auto")
+        await _settings.put(HALT_KEY, "0" if wanted else "1", by=by)
+        await _settings.put(HALT_BY_KEY, by, by=by)
         persisted = True
     _logger.info(
         "live_auto_all_set",
@@ -2003,6 +2051,7 @@ async def set_auto_all(
             "changed": changed,
             "runs": len(LIVE_RUNNERS),
             "persisted": persisted,
+            "by": by,
         },
     )
     return {"auto": wanted, "changed": changed, "runs": len(LIVE_RUNNERS), "persisted": persisted}
