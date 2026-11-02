@@ -203,7 +203,10 @@ class TestAutoAll:
         store = _Settings()
         monkeypatch.setattr(wf, "_settings", store)
         _req = SimpleNamespace(state=SimpleNamespace(caller=None))  # 호출자 없음 = 통과
-        out = asyncio.run(wf.set_auto_all(_req, {"on": False}))  # type: ignore[arg-type]
+        monkeypatch.setenv(wf.ADMIN_PW_ENV, "pw-test")  # T754b — 비밀번호도 함께
+        out = asyncio.run(
+            wf.set_auto_all(_req, {"on": False, "admin_pw": "pw-test"})  # type: ignore[arg-type]
+        )
         assert out == {"auto": False, "changed": 2, "runs": 2, "persisted": True}
         assert lives["a"].session.auto is False
         assert lives["b"].session.auto is False

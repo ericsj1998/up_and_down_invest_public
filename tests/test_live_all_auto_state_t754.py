@@ -105,7 +105,8 @@ def test_set_records_the_caller_and_the_state_reads_it_back(
     monkeypatch.setattr(wf, "_settings", store)
     monkeypatch.setattr(wf, "LIVE_RUNNERS", {"a": object()})
     monkeypatch.setattr(wf, "SESSIONS", {"a": _Live(True)})
-    asyncio.run(wf.set_auto_all(_request("boss@x.y"), {"on": False}))
+    monkeypatch.setenv(wf.ADMIN_PW_ENV, "pw-test")
+    asyncio.run(wf.set_auto_all(_request("boss@x.y"), {"on": False, "admin_pw": "pw-test"}))
     assert store.put_calls == [
         (wf.HALT_KEY, "1", "boss@x.y"),
         (wf.HALT_BY_KEY, "boss@x.y", "boss@x.y"),
@@ -115,7 +116,7 @@ def test_set_records_the_caller_and_the_state_reads_it_back(
     assert out["changed_at"] is not None
     assert out["runs_auto_off"] == 1
     # 다시 켜면 같은 스위치가 "0" 이 된다 — 새 키가 생기지 않는다.
-    asyncio.run(wf.set_auto_all(_request("boss@x.y"), {"on": True}))
+    asyncio.run(wf.set_auto_all(_request("boss@x.y"), {"on": True, "admin_pw": "pw-test"}))
     assert store.rows[wf.HALT_KEY][0] == "0"
     assert asyncio.run(wf.live_auto_all_state())["auto"] is True
 
@@ -125,6 +126,7 @@ def test_caller_without_email_falls_back_to_route_name(monkeypatch: pytest.Monke
     monkeypatch.setattr(wf, "_settings", store)
     monkeypatch.setattr(wf, "LIVE_RUNNERS", {})
     monkeypatch.setattr(wf, "SESSIONS", {})
-    asyncio.run(wf.set_auto_all(_request(None), {"on": False}))
+    monkeypatch.setenv(wf.ADMIN_PW_ENV, "pw-test")
+    asyncio.run(wf.set_auto_all(_request(None), {"on": False, "admin_pw": "pw-test"}))
     assert store.put_calls[1] == (wf.HALT_BY_KEY, "live-all/auto", "live-all/auto")
     assert Cap.MANAGE_ROLES.value == "manage_roles"  # 화면이 버튼을 가리는 기능 이름과 같다

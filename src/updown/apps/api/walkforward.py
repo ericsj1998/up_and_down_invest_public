@@ -23,6 +23,7 @@ import json
 import os
 import random
 import re
+import secrets
 import time
 from bisect import bisect_right
 from collections import Counter
@@ -2004,6 +2005,59 @@ async def live_auto_all_state() -> dict[str, Any]:
     }
 
 
+ADMIN_PW_ENV = "ADMIN_PW"
+"""env 이름 — 전 판 진입 정지 · 재개 버튼이 요구하는 **관리자 비밀번호** (T754b · 2026-11-02).
+
+🔴 값은 서버 `.env.live`(데모는 `.env.demo`)에 **사람이** 넣는다 — 스크립트가 옮기지 않는다.
+비어 있으면 버튼이 503 으로 멈춘다(조용한 허용 금지 · 절대 규칙 #8). 값은 로그 · 이벤트 · 응답
+어디에도 찍지 않는다."""
+
+ADMIN_PW_MAX_FAILS = 5
+ADMIN_PW_LOCK_S = 600.0
+_ADMIN_PW_LOCK: dict[str, float] = {"fails": 0.0, "until": 0.0}
+"""연속 실패 횟수 · 잠금 해제 시각(`time.monotonic()`) — 프로세스 메모리뿐(재시작이면 풀린다 ·
+단순함이 목적)."""
+
+
+def _check_admin_pw(payload: Mapping[str, Any]) -> None:
+    """본문의 `admin_pw` 를 env `ADMIN_PW` 와 **상수 시간**으로 맞춰 본다 (T754b).
+
+    Args:
+        payload: 요청 본문. `admin_pw` 가 없으면 빈 문자열로 친다(= 틀림).
+
+    Raises:
+        HTTPException: 503 — 서버에 `ADMIN_PW` 가 없다(사람이 env 에 넣는다 · 조용히 열지 않는다).
+            429 — 연속 `ADMIN_PW_MAX_FAILS` 회 틀려 `ADMIN_PW_LOCK_S` 초 잠겼다.
+            403 — 비밀번호가 다르다.
+
+    Note:
+        🔴 비밀번호 · 입력값은 메시지 · 로그 · 이벤트 어디에도 넣지 않는다. 비교는
+        `secrets.compare_digest`(둘 다 바이트로). 잠금은 메모리 안 셈 하나 — 실계좌 서버는 API 한
+        프로세스가 리더라 충분하고, 재시작으로 풀리는 것은 받아들인다.
+    """
+    expected = os.environ.get(ADMIN_PW_ENV, "").strip()
+    if not expected:
+        raise HTTPException(503, f"{ADMIN_PW_ENV} 미설정 — 서버 env 에 사람이 넣는다")
+    now = time.monotonic()
+    if now < _ADMIN_PW_LOCK["until"]:
+        left = int((_ADMIN_PW_LOCK["until"] - now) // 60) + 1
+        raise HTTPException(
+            429, f"관리자 비밀번호를 {ADMIN_PW_MAX_FAILS}회 연속 틀려 잠겼다 — {left}분 뒤 다시"
+        )
+    given = str(payload.get("admin_pw", "") or "")
+    if not secrets.compare_digest(given.encode("utf-8"), expected.encode("utf-8")):
+        _ADMIN_PW_LOCK["fails"] += 1
+        if _ADMIN_PW_LOCK["fails"] >= ADMIN_PW_MAX_FAILS:
+            _ADMIN_PW_LOCK["fails"] = 0.0
+            _ADMIN_PW_LOCK["until"] = now + ADMIN_PW_LOCK_S
+            _logger.warning(
+                "live_auto_all_pw_locked",
+                payload={"fails": ADMIN_PW_MAX_FAILS, "lock_s": ADMIN_PW_LOCK_S},
+            )
+        raise HTTPException(403, "관리자 비밀번호가 다릅니다")
+    _ADMIN_PW_LOCK["fails"] = 0.0
+
+
 @router.post("/live-all/auto")
 async def set_auto_all(
     request: Request, payload: Annotated[dict[str, Any], Body()]
@@ -2014,7 +2068,10 @@ async def set_auto_all(
         request: 요청 — 🔴 **슈퍼관리자(`manage_roles` 기능)만** 누를 수 있다(사용자 2026-10-02
             "펀드 전체 매매 일시중지 버튼 · 단 슈퍼관리자 권한 필수"). 실계좌 전체를 멈추거나
             되살리는 스위치라 거래 권한만으로는 모자란다. 호출자가 없으면(시험 · 내부) 통과한다.
-        payload: `{on}`. 거짓이면 새 진입을 안 받는다.
+        payload: `{on, admin_pw}`. 거짓이면 새 진입을 안 받는다. 🔴 `admin_pw` 는 env
+            `ADMIN_PW` 와 같아야 한다(T754b · 사용자 2026-11-02 "관리자 비밀번호를 요구하게") —
+            권한 검사와 **둘 다** 통과해야 한다. 없거나 틀리면 403 · 서버에 `ADMIN_PW` 가 없으면
+            503 · 5회 연속 틀리면 10분 429.
 
     Returns:
         `{auto, changed, runs, persisted}`.
@@ -2028,6 +2085,8 @@ async def set_auto_all(
     if who is not None and not who.has(Cap.MANAGE_ROLES):
         need = Cap.MANAGE_ROLES.value
         raise HTTPException(403, f"전 판 진입 정지 · 재개는 슈퍼관리자('{need}' 기능)만 할 수 있다")
+    # 🔴 권한 뒤 비밀번호 — 둘 다 (T754b). 비밀번호는 여기서 끝나고 아래로 흘러가지 않는다.
+    _check_admin_pw(payload)
     wanted = bool(payload.get("on", True))
     changed = 0
     for key in list(LIVE_RUNNERS):

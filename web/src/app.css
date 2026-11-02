@@ -1376,3 +1376,47 @@ textarea.input {
 .halt-error {
   margin: 8px 0 0;
 }
+
+/* T754b — 관리 화면: 모든 펀드 · RUN 신규 진입 전부 중지. 폭 가득 · 붉은 배경 · 흰 글자 (사용자 "개빨간"). */
+.admin-halt-pw {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+.admin-halt-pw .input {
+  flex: 1;
+  max-width: 360px;
+}
+.admin-halt-btn {
+  display: block;
+  width: 100%;
+  padding: 18px 16px;
+  border: 0;
+  border-radius: var(--r-input);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: #fff;
+  cursor: pointer;
+  transition: filter 120ms;
+}
+.admin-halt-btn + .admin-halt-btn {
+  margin-top: 10px;
+}
+.admin-halt-btn.halt {
+  background: #d10000;
+  box-shadow: 0 2px 0 #7a0000;
+}
+.admin-halt-btn.resume {
+  background: var(--gain);
+  padding: 12px 16px;
+  font-size: 15px;
+}
+.admin-halt-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.admin-halt-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}

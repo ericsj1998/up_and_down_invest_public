@@ -1,22 +1,21 @@
 /**
- * 라이브 첫 화면 맨 위 — **신규 진입 스위치** 배지 + "매매 중지 · 매매 재개" (T754 · 2026-11-02).
+ * 신규 진입 스위치 **상태 배지** — 콘솔 머리 · RUN 탭 · 관리 화면이 같은 것을 그린다 (T754 · T754b).
  *
- * 🔴 **새 상태가 아니다.** 서버의 `app_settings.live_entries_halted`(RUN 탭 "전부 중지 · 전부 재개"
- * 와 같은 스위치)를 읽고 쓴다 — 두 자리가 다른 값을 가리키면 사람은 어느 쪽을 믿을지 모른다.
+ * 🔴 **새 상태가 아니다.** 서버의 `app_settings.live_entries_halted` 를 읽는다. 🔴 **바꾸는 버튼은 여기 없다** —
+ * 사이드바 '관리' 의 `AdminHaltControl`(붉은 버튼 + 관리자 비밀번호)만 바꾼다(사용자 2026-11-02 "왜 RUN 에
+ * 붙어 있는 거지? 관리에서 제어"). 바뀌면 `announceHaltChanged()` 창 이벤트로 모든 배지가 바로 다시 읽는다.
  *
  * 🔴 **신규 진입만 멈춘다.** 든 포지션의 손절 · 청산 · 손절 올리기는 계속 돈다. 문구가 그것을 매번
  * 말해야 거래 리더 상실 · `LIVE_ORDERS` 꺼짐과 헷갈리지 않는다.
  *
- * 권한: 서버가 `manage_roles` 로 판정한다(2026-10-02). 화면은 권한 없는 계정엔 배지만 그리고 버튼을 숨긴다.
- * 폴링: 60초 — 화면 폴링이 API CPU 를 올린 전력이 있어(T331) 10초 폴링에 얹지 않았다. 버튼을 누르면 바로
- * 다시 읽고, RUN 탭이 바꿨을 때는 `announceHaltChanged()` 창 이벤트로 즉시 맞춘다.
+ * 폴링: 60초 — 화면 폴링이 API CPU 를 올린 전력이 있어(T331) 10초 폴링에 얹지 않았다.
  */
 import { useCallback, useEffect, useState } from "react";
-import { liveAutoAll, setAutoAll, type LiveAutoAllState } from "./api";
+import { liveAutoAll, type LiveAutoAllState } from "./api";
 
 const EVENT = "updown:halt-changed";
 
-/** 다른 자리(RUN 탭)가 스위치를 바꿨을 때 부른다 — 배지가 60초를 안 기다리고 다시 읽는다. */
+/** 관리 화면이 스위치를 바꿨을 때 부른다 — 모든 배지가 60초를 안 기다리고 다시 읽는다. */
 export function announceHaltChanged(): void {
   window.dispatchEvent(new Event(EVENT));
 }
@@ -36,12 +35,9 @@ function kst(iso: string | null): string {
   });
 }
 
-export function HaltBanner({ canToggle }: { canToggle: boolean }) {
+export function HaltBanner() {
   const [state, setState] = useState<LiveAutoAllState | null>(null);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  // 🔴 확인은 팝업(confirm)이 아니라 화면 안 한 줄 (CLAUDE.md 인라인 패널 규약).
-  const [asking, setAsking] = useState<"halt" | "resume" | null>(null);
 
   const pull = useCallback(() => {
     liveAutoAll()
@@ -62,18 +58,6 @@ export function HaltBanner({ canToggle }: { canToggle: boolean }) {
       window.removeEventListener(EVENT, pull);
     };
   }, [pull]);
-
-  const apply = (on: boolean) => {
-    setBusy(true);
-    setError("");
-    setAutoAll(on)
-      .then(() => {
-        setAsking(null);
-        announceHaltChanged();
-      })
-      .catch((exc: unknown) => setError(String(exc)))
-      .finally(() => setBusy(false));
-  };
 
   const halted = state?.halted ?? null;
   const tone = halted === null ? "" : halted ? "bad" : "ok";
@@ -105,57 +89,7 @@ export function HaltBanner({ canToggle }: { canToggle: boolean }) {
               : ""}
           </span>
         ) : null}
-        {canToggle && state && asking === null ? (
-          <span className="halt-actions">
-            {halted ? (
-              <button
-                type="button"
-                className="btn small"
-                disabled={busy}
-                title="모든 라이브 판의 신규 진입을 다시 받는다"
-                onClick={() => setAsking("resume")}
-              >
-                매매 재개
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="btn small danger"
-                disabled={busy}
-                title="모든 라이브 판의 신규 진입만 멈춘다 — 든 포지션은 계속 관리된다 · 재시작 뒤에도 유지"
-                onClick={() => setAsking("halt")}
-              >
-                매매 중지
-              </button>
-            )}
-          </span>
-        ) : null}
       </div>
-      {asking ? (
-        <div className="halt-row halt-confirm">
-          <span>
-            {asking === "halt"
-              ? "신규 진입을 멈춘다 — 든 포지션의 손절 · 청산 · 손절 올리기는 계속 돈다. 재시작 뒤에도 유지된다."
-              : "신규 진입을 다시 받는다 — 도는 라이브 판 전부에 바로 적용된다."}
-          </span>
-          <button
-            type="button"
-            className={`btn small ${asking === "halt" ? "danger" : "primary"}`}
-            disabled={busy}
-            onClick={() => apply(asking === "resume")}
-          >
-            {busy ? "…" : asking === "halt" ? "중지 확인" : "재개 확인"}
-          </button>
-          <button
-            type="button"
-            className="btn small"
-            disabled={busy}
-            onClick={() => setAsking(null)}
-          >
-            취소
-          </button>
-        </div>
-      ) : null}
       {error ? <p className="notice bad halt-error">{error}</p> : null}
     </div>
   );

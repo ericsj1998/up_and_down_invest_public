@@ -131,6 +131,10 @@ bash scripts/ops/remote.sh scripts/ops/swap_same_image.sh                       
 bash scripts/ops/remote.sh scripts/ops/probe_env_names.sh                                     # 이름만 확인
 ```
 
+**`ADMIN_PW`(T754b · 2026-11-02)** — 사이드바 '관리' 의 "모든 펀드 · RUN 신규 진입 전부 중지 · 재개" 붉은 버튼이 요구하는
+관리자 비밀번호. 서버 `.env.live`(데모 `.env.demo`)에 **사람이** 넣고 `swap_same_image.sh` 로 적용한다 — 비어 있으면 그 버튼이
+503("ADMIN_PW 미설정")으로 멈추고 조용히 열리지 않는다. 틀리면 403 · 5회 연속 틀리면 10분 잠금. 값은 로그 어디에도 안 찍힌다.
+
 `LIVE_ORDERS` · `GATE_API_*` 는 이 명령이 거절한다 — 아래 절차대로 사람이 서버에서. ⚠️ 토스 조회 토큰은 client 당 하나라
 서버가 쓰는 동안 연구 PC 에서 백필·판을 같은 키로 돌리면 서로 무효화한다(§5-1). **2026-09-11 실측**: 서버에 NASDAQ 을 켠 뒤
 연구 PC 의 로컬 데모 API 가 같은 키로 30분에 토큰 84회·재발급 83회를 주고받아 서버 시세가 계속 끊겼다 → 로컬 `.env.dev` 에

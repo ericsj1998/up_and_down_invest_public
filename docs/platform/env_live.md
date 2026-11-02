@@ -27,6 +27,7 @@
 | `SESSION_SECRET` | Settings(auth) | **서버 전용** (`openssl rand -base64 48`) · 데모 API(`.env.demo`)와는 같은 값 | ✅ |
 | `FRED_API_KEY` · `FINNHUB_API_KEY` | T276 주요 일정 달력(지표 발표 예정일 · 실적 예정일) | 둘 다 무료 키 — FRED 는 세인트루이스 연준, Finnhub 는 분당 60콜. 배포 전엔 줄이 없어도 되고, 없으면 달력이 **이유와 함께 빈 칸**이어야 한다(규칙 #8) | ✅ `scripts/ops/sync_env_keys.sh` 가 배포(ship.sh 0b)마다 로컬 `.env.dev` 에서 **없을 때만** 붙인다(허용 목록 · 덮어쓰기 없음 · 값 미출력 · 2026-09-14) |
 | `ADMIN_EMAILS` | Settings(auth) | 첫 로그인에 admin 이 될 이메일 · dev 와 같아도 된다 | ✅ |
+| `ADMIN_PW` | walkforward(`_check_admin_pw`) | **서버 전용** · 관리 화면 "신규 진입 전부 중지 · 재개" 버튼의 관리자 비밀번호 (T754b) · 없으면 그 버튼만 503 · 데모 `.env.demo` 에도 | ✅ |
 | `SMTP_HOST` · `SMTP_PORT` · `SMTP_USER` · `SMTP_PASSWORD` · `NOTIFY_FROM_EMAIL` | Settings → `report/daily.py` | dev 와 **같은 값** (같은 메일 계정) | ✅ (2026-09-06 `env_sync.sh` 로 채움 — 그 전엔 비어 있었고 `SMTP_PORT` 는 줄이 없었다) |
 | `REPORT_TO` | Settings → 일간 리포트 수신자 | 받을 주소 | ✅ |
 | `REPORT_HOUR_KST` | Settings(`report_hour_kst` · 기본 9) | 정수 시각. 09시면 줄이 없어도 된다 | ✅ 줄 없음(기본 9). 죽은 이름 `REPORT_AT_KST` 는 지웠다(§3) |

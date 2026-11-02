@@ -1500,14 +1500,20 @@ export function liveAutoAll(): Promise<LiveAutoAllState> {
   return request(`/walkforward/live-all/auto`);
 }
 
-/** 도는 라이브 판 전부의 새 진입을 멈추거나 켠다 — DB 에 남아 재시작 뒤에도 유지된다 (2026-10-01). */
+/**
+ * 도는 라이브 판 전부의 새 진입을 멈추거나 켠다 — DB 에 남아 재시작 뒤에도 유지된다 (2026-10-01).
+ *
+ * 🔴 `adminPw` — 서버 env `ADMIN_PW` 와 맞아야 한다 (T754b). 틀리면 403 · 서버에 없으면 503 · 5회 연속
+ * 틀리면 10분 429. 값은 이 요청 본문 한 번에만 실리고 어디에도 남기지 않는다.
+ */
 export function setAutoAll(
   on: boolean,
+  adminPw: string,
 ): Promise<{ auto: boolean; changed: number; runs: number; persisted: boolean }> {
   return request(`/walkforward/live-all/auto`, {
     method: "POST",
     headers: JSON_POST,
-    body: JSON.stringify({ on }),
+    body: JSON.stringify({ on, admin_pw: adminPw }),
   });
 }
 

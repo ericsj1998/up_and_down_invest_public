@@ -47,6 +47,7 @@ import {
   type Who,
 } from "./api";
 import { clearAccountMarket, setAccountMarket, type MarketPolicy } from "./api";
+import { AdminHaltControl } from "./AdminHaltControl";
 import { LogsCard } from "./LogsCard";
 import { ResourcesCard } from "./ResourcesCard";
 import { ErrorCard, whenSec } from "./ui";
@@ -544,6 +545,8 @@ export function Accounts({ who }: { who: Who | null }) {
 
   return (
     <>
+      {/* T754b — 모든 펀드 · RUN 신규 진입 전부 중지(붉은 버튼 + 관리자 비밀번호). 관리 화면 맨 위. */}
+      <AdminHaltControl who={who} />
       <div className="card">
         <h2>
           계정{" "}

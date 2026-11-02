@@ -25,7 +25,6 @@ import {
   healthAll as fetchHealthAll,
   playbooks,
   setAuto,
-  setAutoAll,
   startLive,
   symbols,
   type Book,
@@ -45,8 +44,8 @@ import {
   pct,
   when,
 } from "./ui";
-// T754 — 첫 화면 배지와 같은 스위치다. 여기서 바꾸면 배지가 60초를 안 기다리고 다시 읽는다.
-import { announceHaltChanged } from "./HaltBanner";
+// T754 · T754b — 신규 진입 스위치 상태 배지(읽기만). 바꾸는 버튼은 사이드바 '관리' 에만 있다.
+import { HaltBanner } from "./HaltBanner";
 
 /** 고를 수 있는 종목 — Gate 무기한만. 업비트는 조회 전용(키 없음)이라 주문이 없다. */
 // 🔴 **목록을 여기 박지 않는다** (사용자 신고 2026-08-20: *"왜 종목을 추가했는데
@@ -409,33 +408,13 @@ export function Runs({ rows, open, refresh, available }: Props) {
       </Fold>
 
       <h2 className="section-title">도는 RUN {alive.length}개</h2>
-      {/* 🔴 전부 중지 · 재개는 슈퍼관리자(`manage_roles`)만 — 실계좌 전체를 멈추는 스위치라
-          거래 권한만으로는 모자란다(사용자 2026-10-02). 서버(`POST /live-all/auto`)가 다시 판정한다. */}
-      {alive.length && me.who?.caps?.includes("manage_roles") ? (
-        <p style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          {/* 🔴 전부 중지는 새 진입만 멈춘다 — 든 포지션의 손절·청산은 계속 관리된다.
-              DB 에 남아 재시작·리더 교체·매매법 전환 뒤에도 유지된다 (2026-10-01). */}
-          <button
-            className="btn small"
-            disabled={busy !== ""}
-            title="모든 RUN 의 새 진입만 멈춘다 — 든 포지션은 계속 관리된다 · 재시작 뒤에도 유지"
-            onClick={() =>
-              act("auto-all-off", () => setAutoAll(false).then(announceHaltChanged))
-            }
-          >
-            {busy === "auto-all-off" ? "…" : "전부 중지"}
-          </button>
-          <button
-            className="btn small"
-            disabled={busy !== ""}
-            title="모든 RUN 의 새 진입을 다시 받는다"
-            onClick={() =>
-              act("auto-all-on", () => setAutoAll(true).then(announceHaltChanged))
-            }
-          >
-            {busy === "auto-all-on" ? "…" : "전부 재개"}
-          </button>
-        </p>
+      {/* T754b — 전부 중지 · 재개 버튼은 여기서 뺐다(사용자 2026-11-02 "왜 RUN 에 붙어 있는 거지?").
+          상태만 보이고, 바꾸는 것은 사이드바 '관리' 의 붉은 버튼 + 관리자 비밀번호다. */}
+      {alive.length ? (
+        <>
+          <HaltBanner />
+          <p className="faint">신규 진입 전부 중지 · 재개는 사이드바 <b>관리</b> 에서 바꾼다(관리자 비밀번호).</p>
+        </>
       ) : null}
       {error ? <ErrorCard message={error} /> : null}
       {popupNote ? <p className="notice bad">{popupNote}</p> : null}
