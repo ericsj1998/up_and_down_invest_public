@@ -43,6 +43,7 @@ Redis 락에는 이론적 취약점이 있다 — GC 정지나 네트워크 지�
 import asyncio
 import contextlib
 import threading
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -66,6 +67,16 @@ DEFAULT_TTL_SECONDS = 30.0
 
 DEFAULT_RENEW_INTERVAL_SECONDS = 10.0
 """갱신 주기. TTL 의 1/3 이하여야 한다 — 아래 `LockConfig` 검증 참조."""
+
+DEFAULT_LOOP_STALL_LIMIT_SECONDS = 90.0
+"""루프 멈춤 한도(초) — 스레드 심장박동이 갱신을 **멈추는** 선 (T759 검토 1-c).
+
+이벤트 루프가 이만큼 도장을 안 찍었으면 스레드는 갱신하지 않는다. 스레드 갱신은 루프가
+43 ~ 50 초 막혀도 락을 지키려는 것이지, 루프가 **영영** 멈춘(교착 · 무한 동기 루프)
+프로세스가 리더 자리를 붙들게 하려는 것이 아니다. 한도를 넘으면 갱신을 멈춰 TTL 로
+팔로워(블루그린 새 슬롯)가 승격할 길을 남긴다. TTL(30) 보다 커야 하고, 이번 사고의
+막힘(50) 은 흡수하는 값이다.
+"""
 
 MIN_RENEW_ATTEMPTS_PER_TTL = 3
 """TTL 안에 최소 몇 번 갱신을 시도해야 하는가.
@@ -115,6 +126,7 @@ class LockConfig:
     key: str = DEFAULT_LOCK_KEY
     ttl_seconds: float = DEFAULT_TTL_SECONDS
     renew_interval_seconds: float = DEFAULT_RENEW_INTERVAL_SECONDS
+    loop_stall_limit_seconds: float = DEFAULT_LOOP_STALL_LIMIT_SECONDS
 
     def __post_init__(self) -> None:
         """설정 불변식을 검증한다.
@@ -136,6 +148,11 @@ class LockConfig:
                 f"갱신 주기가 너무 길다: renew={self.renew_interval_seconds}s > "
                 f"ttl/{MIN_RENEW_ATTEMPTS_PER_TTL}={max_interval:.1f}s. "
                 "TTL 안에 최소 3회 시도해야 한 번의 일시 실패를 흡수한다"
+            )
+        if self.loop_stall_limit_seconds <= self.ttl_seconds:
+            raise LockConfigError(
+                f"루프 멈춤 한도는 TTL 보다 커야 한다: stall={self.loop_stall_limit_seconds}s "
+                f"<= ttl={self.ttl_seconds}s — 작으면 평범한 지연에도 갱신을 멈춰 락을 잃는다"
             )
 
     @property
@@ -180,6 +197,13 @@ class SingleInstanceLock:
         self._thread: threading.Thread | None = None
         self._thread_stop = threading.Event()
         self._lost_task: asyncio.Task[None] | None = None
+        self._loop_seen = time.monotonic()
+        self._stamp: asyncio.Task[None] | None = None
+        self._stall_logged = False
+        self.loop_stalls = 0
+        """루프 멈춤으로 갱신을 건너뛴 횟수 — 진단 · 시험용."""
+        self.thread_deaths = 0
+        """심장박동 스레드가 예외로 죽은 횟수 — 진단 · 시험용."""
 
     @property
     def token(self) -> str:
@@ -315,9 +339,20 @@ class SingleInstanceLock:
                 daemon=True,
             )
             self._thread.start()
+            # ⭐ 검토 1-c — 루프 생존 도장. 루프가 돌면 주기마다 시각을 찍고, 스레드는
+            #    그 시각이 한도보다 오래됐으면 갱신을 멈춘다(교착 프로세스가 리더를 붙들지 않게).
+            #    앞 도장 태스크가 남아 있으면(상실 뒤 재획득 등) 먼저 거둔다 — 두 벌이 돌지 않게.
+            if self._stamp is not None and not self._stamp.done():
+                self._stamp.cancel()
+            self._loop_seen = time.monotonic()
+            self._stamp = asyncio.create_task(self._loop_stamp_loop())
             _logger.info(
                 "engine_lock_heartbeat_started",
-                payload={"key": self._config.key, "mode": "thread"},
+                payload={
+                    "key": self._config.key,
+                    "mode": "thread",
+                    "loop_stall_limit_s": self._config.loop_stall_limit_seconds,
+                },
             )
             return
         self._heartbeat = asyncio.create_task(self._heartbeat_loop())
@@ -353,8 +388,20 @@ class SingleInstanceLock:
             return False
         return True
 
+    async def _loop_stamp_loop(self) -> None:
+        """이벤트 루프가 살아 있다는 도장 — 스레드 심장박동이 읽는다 (검토 1-c)."""
+        while True:
+            await asyncio.sleep(self._config.renew_interval_seconds)
+            self._loop_seen = time.monotonic()
+
     async def stop_heartbeat(self) -> None:
-        """갱신 루프(태스크 또는 스레드)를 멈춘다."""
+        """갱신 루프(태스크 또는 스레드)와 도장 태스크를 멈춘다."""
+        stamp = self._stamp
+        self._stamp = None
+        if stamp is not None and not stamp.done():
+            stamp.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stamp
         thread = self._thread
         self._thread = None
         if thread is not None and thread.is_alive():
@@ -371,29 +418,104 @@ class SingleInstanceLock:
             await task
 
     def _heartbeat_thread(self, loop: asyncio.AbstractEventLoop) -> None:
+        """스레드 심장박동의 껍데기 — 몸통이 예외로 죽어도 **조용히 사라지지 않는다** (검토 1-b).
+
+        Args:
+            loop: 상실 · 폴백을 통지할 이벤트 루프.
+
+        Note:
+            몸통(`_heartbeat_thread_body`)이 던지면 `engine_lock_heartbeat_thread_died` 를
+            남기고, 세운 것이 아니면 루프 심장박동을 다시 띄운다 — "리더는 거래하는데 락은
+            아무도 갱신 안 하는" 상태가 생기지 않게.
+        """
+        try:
+            self._heartbeat_thread_body(loop)
+        except BaseException as exc:
+            self.thread_deaths += 1
+            with contextlib.suppress(Exception):
+                _logger.error(
+                    "engine_lock_heartbeat_thread_died",
+                    payload={
+                        "key": self._config.key,
+                        "error": f"{type(exc).__name__}: {exc}"[:160],
+                        "note": "심장박동 스레드가 예외로 죽었다 — 루프 심장박동으로 되돌린다",
+                    },
+                )
+            if not self._thread_stop.is_set():
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(self._fallback_after_thread_death)
+
+    def _fallback_after_thread_death(self) -> None:
+        """루프 스레드에서 — 스레드가 죽었으니 예전 루프 심장박동을 다시 띄운다 (검토 1-b)."""
+        if self._thread_stop.is_set() or not self._held:
+            return
+        if self._heartbeat is not None and not self._heartbeat.done():
+            return
+        self._heartbeat = asyncio.ensure_future(self._heartbeat_loop())
+        _logger.warning(
+            "engine_lock_heartbeat_started",
+            payload={"key": self._config.key, "mode": "loop", "note": "스레드 사망 뒤 폴백"},
+        )
+
+    def _renew_sync(self) -> tuple[bool, str]:
+        """동기 갱신 한 번 — (갱신됐나, 실패 사유)."""
+        assert self._sync is not None
+        try:
+            renewed = bool(
+                self._sync.eval(  # pyright: ignore[reportUnknownMemberType]
+                    _RENEW_SCRIPT, 1, self._config.key, self._token, str(self._config.ttl_ms)
+                )
+            )
+        except Exception as exc:
+            return False, f"Redis 갱신 호출 실패: {type(exc).__name__}: {exc}"
+        return renewed, "다른 인스턴스가 락을 가져갔거나 TTL 이 만료됐다"
+
+    def _heartbeat_thread_body(self, loop: asyncio.AbstractEventLoop) -> None:
         """스레드 심장박동 — 루프가 막혀도 같은 토큰 · 같은 Lua 로 갱신한다 (T759 ③).
 
         Args:
             loop: 상실을 통지할 이벤트 루프(`on_lost` 는 코루틴이라 루프에서 돈다).
 
         Note:
-            갱신 실패의 뜻은 루프 심장박동과 같다 — **더는 리더가 아니다.** 버티지 않고
-            한 번 통지한 뒤 끝난다. 루프가 막혀 있으면 통지는 풀린 뒤에 처리된다(지금과 같다).
+            - 갱신 `0`(키가 남의 것 · 만료)의 뜻은 루프 심장박동과 같다 — **더는 리더가 아니다.**
+              한 번 통지한 뒤 끝난다.
+            - 호출 **예외**(타임아웃 · 연결)는 TTL 안에서 한 번 더 시도한다(검토 1-d). 키가 아직 내
+              것이면 Lua 가 1 을, 남이 가져갔으면 0 을 주므로 재시도는 소유권을 침해하지 않는다 —
+              5 초 지연 한 번이 "상실 → 복원 전체 → 1 분 주기" 증폭(11-02)으로 번지지 않게.
+            - 루프 도장이 한도(`loop_stall_limit_seconds`)보다 오래됐으면 **갱신을 멈춘다**
+              (검토 1-c) — 교착한 프로세스가 리더를 붙들면 팔로워가 영영 못 뜬다.
+              도장이 돌아오면 다시 갱신한다(그 사이 TTL 이 지났으면 다음 갱신이 0 을 받아
+              정상 상실 경로를 탄다).
+            - 세운 뒤(`_thread_stop`)에 받은 실패는 상실로 읽지 않는다(검토 1-a) — 해제가 지운 키다.
         """
-        assert self._sync is not None
+        retry_wait = min(1.0, self._config.renew_interval_seconds / 2)
         while not self._thread_stop.wait(self._config.renew_interval_seconds):
-            try:
-                renewed = bool(
-                    self._sync.eval(  # pyright: ignore[reportUnknownMemberType]
-                        _RENEW_SCRIPT, 1, self._config.key, self._token, str(self._config.ttl_ms)
+            stalled_s = time.monotonic() - self._loop_seen
+            if stalled_s > self._config.loop_stall_limit_seconds:
+                self.loop_stalls += 1
+                if not self._stall_logged:
+                    self._stall_logged = True
+                    _logger.error(
+                        "engine_lock_loop_stalled",
+                        payload={
+                            "key": self._config.key,
+                            "stalled_s": round(stalled_s, 1),
+                            "limit_s": self._config.loop_stall_limit_seconds,
+                            "note": "🔴 이벤트 루프가 한도 넘게 멈춰 있다 — 갱신을 멈춰 TTL 로 "
+                            "팔로워 승격 길을 남긴다(교착 프로세스는 리더가 아니다)",
+                        },
                     )
-                )
-                reason = "다른 인스턴스가 락을 가져갔거나 TTL 이 만료됐다"
-            except Exception as exc:
-                renewed = False
-                reason = f"Redis 갱신 호출 실패: {type(exc).__name__}: {exc}"
+                continue
+            self._stall_logged = False
+            renewed, reason = self._renew_sync()
+            if not renewed and reason.startswith("Redis 갱신 호출 실패"):
+                if self._thread_stop.wait(retry_wait):
+                    return
+                renewed, reason = self._renew_sync()
             if renewed:
                 continue
+            if self._thread_stop.is_set():  # 해제 · 정지 뒤의 실패는 상실이 아니다 (검토 1-a)
+                return
             self._held = False
             _logger.error(
                 "engine_lock_lost",
@@ -415,10 +537,20 @@ class SingleInstanceLock:
             return
 
     def _schedule_lost(self, reason: str) -> None:
-        """루프 스레드에서 `on_lost` 코루틴을 태스크로 띄운다 (스레드가 직접 못 부른다)."""
-        if self._on_lost is None:
+        """루프 스레드에서 `on_lost` 코루틴을 태스크로 띄운다 (스레드가 직접 못 부른다).
+
+        옛 루프 경로처럼 `on_lost` 의 예외는 삼킨다(검토 1-e) — 받는 곳 없는 태스크 예외
+        경고를 안 남긴다.
+        """
+        if self._on_lost is None or self._thread_stop.is_set():
             return
-        self._lost_task = asyncio.ensure_future(self._on_lost(reason))
+        on_lost = self._on_lost
+
+        async def _notify() -> None:
+            with contextlib.suppress(Exception):
+                await on_lost(reason)
+
+        self._lost_task = asyncio.ensure_future(_notify())
 
     async def _heartbeat_loop(self) -> None:
         """주기적으로 갱신하고, 실패하면 상실을 통지한다.

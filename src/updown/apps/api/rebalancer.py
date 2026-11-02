@@ -1061,6 +1061,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
         같은 종목을 또 띄우면 409(종목당 포지션 하나)다. **도는 세션이 있으면 재사용**하고
         (펀드 격리 재적용), 없을 때만 새로 띄운다.
     """
+    restore_started = time.perf_counter()
     members = as_members(
         [(str(m["symbol"]), Decimal(str(m["weight"]))) for m in data["basket"]["members"]]
     )
@@ -1151,6 +1152,11 @@ async def _restore_one(data: dict[str, Any]) -> None:
         handle = _running_handle(member.symbol, fund_market)
         if handle is not None:  # autostart 가 되살린 세션 재사용 — 펀드 격리 재적용
             session = SESSIONS[handle].session
+            # ⭐ T759 검토 3-a — 원장을 바꾸기 **전에** 문을 닫는다. 펀드 파일을 못 읽어
+            #    단독 판으로 뜬 세션은 `fund_ready=True` 라, 아래 양보(`sleep(0)`) 사이에 걸으면
+            #    예산만 바뀌고 문은 없는 반쪽 원장으로 진입할 수 있다. 끝의 `_attach_gate` 가
+            #    다시 True 로 되돌린다.
+            session.fund_ready = False
             session.ledger.wallet_start = Decimal(0)
             session.ledger.refill = False  # T235 — 몫 안에서 굴린다 (채울 지갑이 없다)
             # 🔴 seed 는 **저장된 몫**으로 (T285). 현재 몫으로 덮으면 원장 걷기가 새 시작점에서
@@ -1212,6 +1218,9 @@ async def _restore_one(data: dict[str, Any]) -> None:
             "members": len(basket.members),
             "kept": len(kept),
             "loop_ms": round((time.perf_counter() - loop_started) * 1000),
+            # 검토 3-b — 함수 머리(`_refresh_stored_legs` 포함)부터의 소요.
+            #   공백 ② 의 양끝에 더 가깝다.
+            "since_start_ms": round((time.perf_counter() - restore_started) * 1000),
         },
     )
     if not kept:

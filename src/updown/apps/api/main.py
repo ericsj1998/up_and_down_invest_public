@@ -221,6 +221,12 @@ def create_app(state: ApiState | None = None) -> FastAPI:
             configure_logging(settings.log_level, file_dir=log_paths.under("app"), proc="api")
             resolved_state = ApiState(settings)
         app.state.updown = resolved_state
+        # ⭐ T759 ② 검토 5-b — 웹소켓 keepalive env 는 기동 때 **한 번** 검증한다.
+        #    틀리면 여기서 멈춘다 — 판마다 스트림을 만들 때 던져 봉이 조용히 안 오는
+        #    것보다 낫다(규칙 #8).
+        from updown.marketdata.gate.ws import keepalive_settings
+
+        keepalive_settings()
         _logger.info(
             "api_started",
             payload={"app_env": resolved_state.settings.app_env.value},
