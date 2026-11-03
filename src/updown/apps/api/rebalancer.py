@@ -70,7 +70,7 @@ from updown.decision.universe import DEFAULT_CONFIG_PATH as DEFAULT_UNIVERSE_CON
 from updown.decision.universe import load_universe_config, quarter_start
 from updown.execution.gateway import engine_order_adapter
 from updown.marketdata.ingest.timeframes import interval
-from updown.marketdata.provider import MarketDataProvider
+from updown.marketdata.provider import MarketDataProvider, gate_universe_facts
 from updown.orchestration import leg_engines
 from updown.orchestration.rebalancer import (
     Coordinator,
@@ -4902,6 +4902,38 @@ def _apply_carry(fund: Fund, carry: Mapping[str, Sequence[str]], quarter: str) -
     )
 
 
+_DELIST_CACHE: dict[str, Any] = {"at": None, "names": frozenset()}
+"""Gate 폐지 공지 계약(4 시간 캐시) — 점검마다 거래소를 두드리지 않는다."""
+_DELIST_CLOSED: set[str] = set()
+"""폐지 공지로 이미 닫으라고 한 종목 — 같은 공지로 닫기를 거듭 부르지 않는다."""
+
+
+async def _delisting_now(now: datetime, cfg: RotationConfig) -> frozenset[str]:
+    """Gate 에서 폐지 공지가 붙은 계약 이름들 — 4 시간에 한 번 읽는다(실패면 지난 값 · 경고).
+
+    Args:
+        now: 지금(UTC).
+        cfg: 교체 실행 설정(캐시 간격).
+
+    Returns:
+        계약 이름들.
+    """
+    at = cast("datetime | None", _DELIST_CACHE["at"])
+    if at is not None and now - at < timedelta(seconds=cfg.delist_every_s):
+        return cast("frozenset[str]", _DELIST_CACHE["names"])
+    facts = gate_universe_facts()
+    try:
+        table = await facts.contracts()
+    except Exception as exc:  # 못 읽으면 지난 값으로 — 다음 점검이 다시(조용히 넘기지 않음)
+        _events.warning("universe_delisting_unreadable", payload={"error": str(exc)[:200]})
+        return cast("frozenset[str]", _DELIST_CACHE["names"])
+    finally:
+        await facts.aclose()
+    names = frozenset(n for n, (_trading, delisting) in table.items() if delisting)
+    _DELIST_CACHE.update(at=now, names=names)
+    return names
+
+
 async def _universe_step(fund: Fund, now: datetime, cfg: RotationConfig) -> dict[str, Any]:
     """우주 펀드 한 번 점검 — 계획을 다시 세우고 진입 범위는 바로, 띄우기 · 거두기는 묶음만큼.
 
@@ -4961,6 +4993,23 @@ async def _universe_step(fund: Fund, now: datetime, cfg: RotationConfig) -> dict
             _set_entry(fund, a.symbol, a.entry_legs)
         elif a.action in (DROP, RESPAWN) and a.symbol in fund.handles:
             _set_entry(fund, a.symbol, ())
+    # ①-2 분기 중 폐지 공지(D6) — 모든 다리 신규 진입 0 · 보유는 닫는다(리스크 감소 · 쉬는 분에도)
+    for sym in sorted(await _delisting_now(now, cfg)):
+        handle = fund.handles.get(sym)
+        if handle is None:
+            continue
+        _set_entry(fund, sym, ())
+        if _session_busy(handle) and sym not in _DELIST_CLOSED:
+            _DELIST_CLOSED.add(sym)
+            _events.warning(
+                "universe_delisting_seen",
+                payload={
+                    "fund_id": fund.fund_id,
+                    "symbol": sym,
+                    "note": "폐지 공지 — 진입 0 · 보유 닫음(D6)",
+                },
+            )
+            await _close_live_position(handle)
     done: list[str] = []
     skipped = ""
     if todo and cfg.quiet(now.minute):

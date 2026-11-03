@@ -113,6 +113,7 @@ class RotationConfig:
             (봉 마감 · 메모 deploy-not-at-bar-close).
         rss_limit_mb: 띄우기 전 프로세스 RSS + 예상 증가가 이 값을 넘으면 띄우지 않는다(R7 · 경보).
         board_mb: 판 하나의 예상 메모리(MB · T310 · 추정).
+        delist_every_s: 폐지 공지 계약 표를 다시 읽는 간격(초 · D6).
     """
 
     check_every_s: float = 300.0
@@ -122,6 +123,7 @@ class RotationConfig:
     quiet_to_minute: int = 5
     rss_limit_mb: float = 750.0
     board_mb: float = 5.0
+    delist_every_s: float = 14400.0
 
     def quiet(self, minute: int) -> bool:
         """봉 마감 앞뒤인가."""
@@ -141,4 +143,5 @@ def load_rotation_config(path: Path) -> RotationConfig:
         quiet_to_minute=int(body.get("quiet_to_minute", base.quiet_to_minute)),
         rss_limit_mb=float(body.get("rss_limit_mb", base.rss_limit_mb)),
         board_mb=float(body.get("board_mb", base.board_mb)),
+        delist_every_s=float(body.get("delist_every_s", base.delist_every_s)),
     )

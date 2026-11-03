@@ -117,6 +117,20 @@ def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(rb, "_tick", fake_tick)
     monkeypatch.setattr(rb, "_reattach_gate", lambda fund: None)
     monkeypatch.setattr(rb, "_save_fund", lambda fund: None)
+    delisted: set[str] = set()
+    closed: list[str] = []
+
+    async def fake_delist(now: datetime, cfg: RotationConfig) -> frozenset[str]:
+        del now, cfg
+        return frozenset(delisted)
+
+    async def fake_close(handle: str) -> dict[str, Any]:
+        closed.append(handle)
+        return {}
+
+    monkeypatch.setattr(rb, "_delisting_now", fake_delist)
+    monkeypatch.setattr(rb, "_close_live_position", fake_close)
+    rb._DELIST_CLOSED.clear()
     monkeypatch.setattr(
         rb, "member_playbook", lambda legs, sym: "+".join(rb._legs_of_symbol(legs, sym))
     )  # pyright: ignore[reportPrivateUsage]
@@ -134,7 +148,14 @@ def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         universe="c0",
         universe_quarter="2026-07-01",
     )
-    return {"fund": fund, "sessions": sessions, "spawned": spawned, "dropped": dropped}
+    return {
+        "fund": fund,
+        "sessions": sessions,
+        "spawned": spawned,
+        "dropped": dropped,
+        "delisted": delisted,
+        "closed": closed,
+    }
 
 
 def _step(world: dict[str, Any], now: datetime = NOW, cfg: RotationConfig = CFG) -> dict[str, Any]:
@@ -193,3 +214,12 @@ def test_missing_snapshot_keeps_last_quarter_and_does_nothing_new(world: dict[st
     out = _step(world, now=datetime(2027, 1, 1, 0, 20, tzinfo=UTC))
     assert out["action"] == "no_snapshot"
     assert world["spawned"] == [] and world["dropped"] == []
+
+
+def test_delisting_notice_zeroes_entries_and_closes_held_once(world: dict[str, Any]) -> None:
+    world["delisted"].update({"A_USDT", "Y_USDT"})
+    _step(world)
+    assert world["sessions"]["hA"].session.entry_legs == frozenset()  # 목록 안이어도 진입 0
+    assert world["closed"] == ["hY"]  # 보유만 닫는다
+    _step(world)
+    assert world["closed"] == ["hY"]  # 같은 공지로 거듭 닫지 않는다
