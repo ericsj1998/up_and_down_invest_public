@@ -270,3 +270,69 @@ def register_daily_report(
         "daily_report_owned_by_api",
         payload={"note": "리포트는 API 가 보낸다 — 계좌 요약이 그쪽 러너에 있다"},
     )
+
+
+def register_universe_job(
+    scheduler: AsyncIOScheduler,
+    factory: "async_sessionmaker[AsyncSession]",
+) -> None:
+    """분기 우주 스냅샷 잡 (T758 3 단계) — 매시 한 번 점검 · 없을 때만 바이낸스에서 받아 계산한다.
+
+    Args:
+        scheduler: 엔진 스케줄러.
+        factory: DB 세션 팩토리.
+
+    Note:
+        🔴 리더(api) 가 아니라 엔진에서 돈다 — 호출 ≈ 660 회 · 파싱이 리더 이벤트 루프를 막지
+        않게(T759).
+        이미 그 분기 `ok` 행이 있으면 DB 한 번 읽고 끝이라 매시 점검의 비용은 0 에 가깝다.
+        실패하면 다음 시각에
+        다시 한다(이전 분기 목록은 리더가 그대로 쓴다). 설정 `config/universe.yml` 의
+        `job.enabled` 가 거짓이면
+        등록하지 않는다.
+    """
+    from datetime import UTC, datetime
+
+    from updown.decision.universe import load_universe_config
+    from updown.marketdata.provider import universe_source
+    from updown.orchestration.rebalancer.universe_job import (
+        UniverseSnapshotStore,
+        load_job_config,
+        run_quarter,
+    )
+
+    job_cfg = load_job_config()
+    if not job_cfg.enabled:
+        _logger.info("universe_job_disabled", payload={})
+        return
+    store = UniverseSnapshotStore(factory)
+
+    async def job() -> None:
+        cfg = load_universe_config()
+        source = universe_source(pace_s=job_cfg.pace_s)
+        try:
+            out = await run_quarter(store, source, cfg, now=datetime.now(UTC), job=job_cfg)
+        finally:
+            await source.aclose()
+        _logger.info(
+            "universe_job_checked",
+            payload={
+                "quarter": out.quarter.isoformat(),
+                "action": out.action,
+                "legs_quarter": None if out.legs_quarter is None else out.legs_quarter.isoformat(),
+            },
+        )
+
+    scheduler.add_job(  # pyright: ignore[reportUnknownMemberType]
+        _traced("universe_snapshot", job),
+        trigger=CronTrigger(timezone="UTC", minute=job_cfg.check_minute),
+        id="universe_snapshot",
+        name="universe_snapshot",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=1800,
+        replace_existing=True,
+    )
+    _logger.info(
+        "job_registered", payload={"job": "universe_snapshot", "minute": job_cfg.check_minute}
+    )

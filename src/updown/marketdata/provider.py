@@ -46,7 +46,8 @@ from updown.common.domain.instrument import (
 from updown.common.logging.setup import get_logger
 from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter
 from updown.marketdata.binance.adapter import BinanceAdapter
-from updown.marketdata.binance.client import BinanceClient
+from updown.marketdata.binance.client import LIVE_BASE, BinanceClient
+from updown.marketdata.binance.universe_source import BinanceUniverseSource
 from updown.marketdata.binance.venue import binance_base, binance_ws
 from updown.marketdata.calendar.adapter import CalendarAdapter
 from updown.marketdata.calendar.client import CalendarClient
@@ -485,6 +486,22 @@ class MarketDataProvider:
                 failures.append(exc)
         if failures:
             raise BaseExceptionGroup("조회 클라이언트 종료 실패", failures)
+
+
+def universe_source(*, pace_s: float = 0.25) -> BinanceUniverseSource:
+    """분기 우주 순위 재료 읽기 — **조회 경로의 유일한 획득 지점** (절대 규칙 #0 · T758).
+
+    Args:
+        pace_s: 호출 사이 최소 간격(초).
+
+    Returns:
+        바이낸스 USDT-M **실거래 공개 주소** 위의 읽기 전용 소스. 데모(테스트넷) 프로세스에서도
+        순위는
+        실거래 거래대금으로 낸다 — 연구 순위가 그 자료다. 키를 들지 않는다. 부르는 쪽이 `aclose`
+        한다
+        (`await source.aclose()`).
+    """
+    return BinanceUniverseSource(BinanceClient(base_url=LIVE_BASE), pace_s=pace_s)
 
 
 _macro_shared: MacroAdapter | None = None

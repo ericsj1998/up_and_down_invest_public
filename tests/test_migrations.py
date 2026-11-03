@@ -147,6 +147,24 @@ def test_append_only_enforced_at_runtime(migrated_engine: Engine, statement: str
         conn.rollback()
 
 
+@pytest.mark.parametrize(
+    "statement", ["UPDATE universe_snapshots SET status = 'x'", "DELETE FROM universe_snapshots"]
+)
+def test_universe_snapshots_are_immutable(migrated_engine: Engine, statement: str) -> None:
+    """분기 우주 스냅샷은 더하기만 — 트리거가 고침 · 지움을 막는다 (T758 · 0136)."""
+    with migrated_engine.connect() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO universe_snapshots (quarter, profile, seed_tag, rule_digest, status, "
+                "ranked, alive, boundary_gaps, legs, source) VALUES ('2026-10-01', 'p', 's', 'r', "
+                "'ok', '{}', '{}', '{}', '{}', '{}')"
+            )
+        )
+        with pytest.raises(DatabaseError, match="더하기만"):
+            conn.execute(sa.text(statement))
+        conn.rollback()
+
+
 def test_insert_fails_without_partition_then_succeeds_after_creating_it(
     migrated_engine: Engine,
 ) -> None:

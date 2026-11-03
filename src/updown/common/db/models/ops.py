@@ -1,7 +1,7 @@
 """운영 테이블 — 감사 로그·알림·백테스트 (spec §9, §1.2.1, §4.12, §4.14)."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
@@ -125,3 +125,33 @@ class PlaybookDecl(Base):
     updated_at: Mapped[datetime] = mapped_column(
         server_default=sa.func.now(), onupdate=sa.func.now()
     )
+
+
+class UniverseSnapshotRow(Base):
+    """분기 우주 스냅샷 하나 (T758 · 0136) — **더하기만**.
+
+    Note:
+        분기마다 다리별로 "새로 들어갈 수 있는 종목" 을 정한 기록이다. 실패 · 이전 목록 유지도
+        `status` 로 남긴다(`ok` · `failed` · `kept_previous` · `drift`). 🔴 UPDATE · DELETE 는 DB
+        트리거가
+        막는다 — 지난 분기에 무엇으로 매매했는지가 바뀌면 재현이 안 된다. 같은 분기 · 프로필 ·
+        씨앗 ·
+        규칙의 `ok` 행은 하나뿐이다(부분 고유 색인).
+    """
+
+    __tablename__ = "universe_snapshots"
+
+    id: Mapped[int] = mapped_column(sa.BigInteger, primary_key=True, autoincrement=True)
+    quarter: Mapped[date] = mapped_column(sa.Date, index=True)
+    profile: Mapped[str]
+    seed_tag: Mapped[str]
+    rule_digest: Mapped[str]
+    input_digest: Mapped[str] = mapped_column(default="", server_default="")
+    status: Mapped[str]
+    reason: Mapped[str] = mapped_column(default="", server_default="")
+    ranked: Mapped[JsonDict]
+    alive: Mapped[JsonDict]
+    boundary_gaps: Mapped[JsonDict]
+    legs: Mapped[JsonDict]
+    source: Mapped[JsonDict]
+    computed_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())

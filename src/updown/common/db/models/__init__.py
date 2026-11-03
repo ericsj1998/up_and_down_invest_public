@@ -21,7 +21,12 @@ from updown.common.db.models.analysis import AnalysisReport, Structure
 from updown.common.db.models.fundamentals import FinancialFactRow
 from updown.common.db.models.market import Candle, CandleQualityIssue
 from updown.common.db.models.master import Instrument
-from updown.common.db.models.ops import AppSetting, EventLog, StockPaperAccount
+from updown.common.db.models.ops import (
+    AppSetting,
+    EventLog,
+    StockPaperAccount,
+    UniverseSnapshotRow,
+)
 from updown.common.db.models.walkforward import (
     WalkforwardCalibration,
     WalkforwardOrder,
@@ -48,6 +53,7 @@ __all__ = [
     "RoleCollection",
     "StockPaperAccount",
     "Structure",
+    "UniverseSnapshotRow",
     "WalkforwardCalibration",
     "WalkforwardOrder",
     "WalkforwardRun",
@@ -95,6 +101,14 @@ FUNDAMENTALS_TABLE_COUNT = 1
 #: 모델은 지웠는데 이 합을 안 내려 CI 가 붉었다(2026-09-11 · `assert 22 == 36`).
 DROPPED_DEAD_TABLE_COUNT = 14
 
+#: `universe_snapshots`(T758 · 0136 · 분기 우주 스냅샷 — 더하기만 · 트리거로 고침 · 지움 막음). §9
+#: 밖.
+UNIVERSE_TABLE_COUNT = 1
+
+#: `playbook_decls`(T349 · 0134 · DB 저장 매매법 선언). 합에서 빠져 있었다 — 0136 을 더하다 찾음
+#: (2026-11-04 · `assert 24 == 23`).
+PLAYBOOK_DECLS_TABLE_COUNT = 1
+
 EXPECTED_TABLE_COUNT = (
     SPEC_9_TABLE_COUNT
     + WALKFORWARD_TABLE_COUNT
@@ -102,5 +116,7 @@ EXPECTED_TABLE_COUNT = (
     + ACCOUNTS_TABLE_COUNT
     + STOCK_PAPER_TABLE_COUNT
     + FUNDAMENTALS_TABLE_COUNT
+    + UNIVERSE_TABLE_COUNT
+    + PLAYBOOK_DECLS_TABLE_COUNT
     - DROPPED_DEAD_TABLE_COUNT
 )

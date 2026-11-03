@@ -37,6 +37,7 @@ from updown.apps.engine.scheduler import (
     build_scheduler,
     register_candle_collection,
     register_daily_report,
+    register_universe_job,
 )
 from updown.common import paths as log_paths
 from updown.common.config import Settings, load_settings
@@ -174,6 +175,8 @@ class EngineRunner:
             )
             # 자원 비트 (T215) — api 가 engine 프로세스를 못 보므로 Redis 로 건넨다.
             register_resource_beat(self._scheduler, self._redis)
+            # 분기 우주 스냅샷 (T758) — 리더 밖에서 바이낸스 재료를 받아 불변 행 하나를 쓴다.
+            register_universe_job(self._scheduler, create_session_factory(self._engine))
             start_loop_lag()  # T265 눈금
 
             boot = asyncio.create_task(
