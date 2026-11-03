@@ -66,6 +66,7 @@ from updown.common.domain.instrument import Market, MarketGroup, Timeframe
 from updown.common.domain.session import load_calendar
 from updown.common.logging.setup import get_logger
 from updown.decision.allocation import Basket, BasketError, BasketMember, as_members, rank_members
+from updown.decision.universe import DEFAULT_CONFIG_PATH as DEFAULT_UNIVERSE_CONFIG
 from updown.decision.universe import load_universe_config, quarter_start
 from updown.execution.gateway import engine_order_adapter
 from updown.marketdata.ingest.timeframes import interval
@@ -102,6 +103,17 @@ from updown.orchestration.rebalancer.legs import (
     member_leverage,
     member_playbook,
     refresh_legs,
+)
+from updown.orchestration.rebalancer.rotation import (
+    DROP,
+    KEEP,
+    NARROW,
+    RESPAWN,
+    SPAWN,
+    WIND_DOWN,
+    RotationConfig,
+    load_rotation_config,
+    plan_rotation,
 )
 from updown.orchestration.rebalancer.universe_job import UniverseSnapshotStore, legs_of_row
 from updown.orchestration.rebalancer.wiring import wire_legs
@@ -4833,3 +4845,229 @@ async def _deposit_locked(
         "twr_return": str(report.twr_return),
         "flow": str(amount),
     }
+
+
+# ───────────────────────── T758 5 단계 — 분기 우주 교체(리더) ─────────────────────────
+
+
+def _session_busy(handle: str) -> bool:
+    """그 판에 열린 포지션 · 대기 진입 계획이 있나 — 있으면 세션을 다시 띄우지 않는다(D12)."""
+    live = SESSIONS.get(handle)
+    if live is None:
+        return False
+    session = live.session
+    if any(item.outcome is Outcome.OPEN for item in session.ledger.records):
+        return True
+    return session.pending_entry() is not None
+
+
+def _rss_mb() -> float:
+    """이 프로세스의 RSS(MB) — 리눅스 `/proc/self/status` · 못 읽으면 0(검사 건너뜀)."""
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmRSS:"):
+                return float(line.split()[1]) / 1024
+    except (OSError, ValueError, IndexError):
+        return 0.0
+    return 0.0
+
+
+def _set_entry(fund: Fund, symbol: str, legs: Sequence[str]) -> None:
+    handle = fund.handles.get(symbol)
+    if handle and handle in SESSIONS:
+        SESSIONS[handle].session.entry_legs = frozenset(legs)
+    fund.entry_legs[symbol] = tuple(sorted(legs))
+
+
+def _apply_carry(fund: Fund, carry: Mapping[str, Sequence[str]], quarter: str) -> None:
+    """다리 범위(`FundLeg.symbols`) · 바구니를 "세션이 실제로 싣는 것" 으로 맞춘다.
+
+    엔진 다리는 그대로 둔다.
+    """
+    leg_syms: dict[str, set[str]] = {}
+    for sym, legs in carry.items():
+        for leg in legs:
+            leg_syms.setdefault(leg, set()).add(sym)
+    fund.legs = tuple(
+        leg
+        if leg.engine is not None
+        else replace(leg, symbols=tuple(sorted(leg_syms.get(leg.playbook, ()))))
+        for leg in fund.legs
+    )
+    engine_syms = [s for s in fund.handles if _engine_leg(fund.legs, s) is not None]
+    engine_syms += [s for s in fund.engines if s not in engine_syms]
+    members = sorted(set(carry) | set(engine_syms))
+    fund.coordinator.engine.basket = Basket(
+        as_members([(s, Decimal(1)) for s in members]), version=f"universe:{quarter}"
+    )
+
+
+async def _universe_step(fund: Fund, now: datetime, cfg: RotationConfig) -> dict[str, Any]:
+    """우주 펀드 한 번 점검 — 계획을 다시 세우고 진입 범위는 바로, 띄우기 · 거두기는 묶음만큼.
+
+    Args:
+        fund: 우주 펀드(펀드 락 안에서 부른다).
+        now: 지금(UTC).
+        cfg: 교체 실행 설정.
+
+    Returns:
+        요약(로그 · 시험용).
+
+    Note:
+        🔴 같은 입력이면 같은 계획이다 — 중간에 멈춰도(재기동 · 리더 상실) 다음 점검이
+        남은 것만 한다.
+        진입 범위 좁히기는 I/O 가 없어 즉시 다 한다(새 분기가 오는 순간 빠진 다리의 신규 진입 0).
+        띄우기 · 거두기는 한 번에 `batch` 종목 · 종목 사이 `stagger_s` · 종목마다 양보
+        (T759 루프 공백).
+    """
+    if fund.universe is None:
+        return {"action": "not_universe"}
+    q = quarter_start(now.date())
+    legs_gate = await _universe_legs(fund.universe, q)
+    quarter = q.isoformat()
+    if legs_gate is None and fund.universe_quarter:
+        # 이번 분기 스냅샷이 아직 없다(실패 · 계산 전) — 지난 목록으로 수렴만 계속한다(R4).
+        quarter = fund.universe_quarter
+        legs_gate = await _universe_legs(fund.universe, date.fromisoformat(quarter))
+    if legs_gate is None:
+        return {"action": "no_snapshot", "quarter": q.isoformat()}
+    mine = {leg.playbook for leg in fund.legs if leg.engine is None}
+    scopes = {k: v for k, v in legs_gate.items() if k in mine}
+    session_syms = [s for s in fund.handles if _engine_leg(fund.legs, s) is None]
+    running = {s: _legs_of_symbol(fund.legs, s) for s in session_syms}
+    busy = {s: _session_busy(fund.handles[s]) for s in session_syms}
+    actions = plan_rotation(scopes, running, busy)
+    todo = [a for a in actions if a.action in (SPAWN, RESPAWN, DROP)]
+    if fund.universe_quarter != quarter:
+        _events.info(
+            "fund_rotation_planned",
+            payload={
+                "fund_id": fund.fund_id,
+                "from": fund.universe_quarter,
+                "to": quarter,
+                "counts": {
+                    k: sum(1 for a in actions if a.action == k)
+                    for k in sorted({a.action for a in actions})
+                },
+                "spawn": [a.symbol for a in actions if a.action == SPAWN],
+                "drop": [a.symbol for a in actions if a.action == DROP],
+                "wind_down": [a.symbol for a in actions if a.action == WIND_DOWN],
+            },
+        )
+        fund.universe_quarter = quarter
+    # ① 진입 범위 — 즉시(거둘 것 · 다시 띄울 것도 먼저 0 으로: 거두기 전 새 진입이 끼지 않게)
+    for a in actions:
+        if a.action in (KEEP, NARROW, WIND_DOWN):
+            _set_entry(fund, a.symbol, a.entry_legs)
+        elif a.action in (DROP, RESPAWN) and a.symbol in fund.handles:
+            _set_entry(fund, a.symbol, ())
+    done: list[str] = []
+    skipped = ""
+    if todo and cfg.quiet(now.minute):
+        skipped = "quiet"
+    elif todo:
+        spawns = [a for a in todo if a.action in (SPAWN, RESPAWN)][: cfg.batch]
+        rss = _rss_mb()
+        if spawns and rss and rss + len(spawns) * cfg.board_mb > cfg.rss_limit_mb:
+            _events.warning(
+                "fund_rotation_memory_hold",
+                payload={
+                    "fund_id": fund.fund_id,
+                    "rss_mb": round(rss),
+                    "want": len(spawns),
+                    "limit_mb": cfg.rss_limit_mb,
+                },
+            )
+            spawns = []
+            skipped = "memory"
+        drops = [a for a in todo if a.action in (DROP, RESPAWN)]
+        drops = [a for a in drops if a.action == DROP][: cfg.batch] + [
+            a for a in drops if a in spawns
+        ]
+        # ② 거두기 — 평평한 것만(계획 뒤 진입이 끼었으면 다음 점검으로)
+        for a in drops:
+            await asyncio.sleep(0)
+            handle = fund.handles.get(a.symbol, "")
+            if handle and _session_busy(handle):
+                continue
+            fund.handles.pop(a.symbol, None)
+            fund.coordinator.release(a.symbol)
+            fund.entry_legs.pop(a.symbol, None)
+            if handle:
+                await _drop_one(handle)
+            done.append(f"drop:{a.symbol}")
+        # ③ 다리 범위 · 바구니 — 띄울 종목을 미리 넣는다
+        #    (`_member_terms` 가 다리 범위에서 세트를 낸다)
+        fresh = [a for a in spawns if a.symbol not in fund.handles]
+        carried = {s: running[s] for s in running if s in fund.handles}
+        _apply_carry(fund, {**carried, **{a.symbol: a.legs for a in fresh}}, quarter)
+        # ④ 띄우기 — 묶음 · 간격 · 양보
+        if fresh:
+            report = await _tick(fund)
+            engine = fund.coordinator.engine
+            for a in fresh:
+                await asyncio.sleep(cfg.stagger_s)
+                share = report.budgets.get(a.symbol, Decimal(0))
+                capital = member_share(engine.balance, Decimal(1), engine.basket.weight_sum)
+                member_book, member_lev = _member_terms(
+                    fund.playbook, fund.leverage, fund.alt_leverage, fund.legs, a.symbol
+                )
+                try:
+                    handle, port = await _spawn_session(
+                        a.symbol,
+                        share,
+                        member_lev,
+                        member_book,
+                        market=fund.market,
+                        capital=capital,
+                        booked=min(share, capital),
+                    )
+                except Exception as exc:  # 한 종목 실패가 교체를 멈추지 않는다 — 다음 점검이 다시
+                    _events.warning(
+                        "fund_rotation_member_failed",
+                        payload={
+                            "fund_id": fund.fund_id,
+                            "symbol": a.symbol,
+                            "error": str(exc)[:200],
+                        },
+                    )
+                    continue
+                port.session.entry_legs = frozenset(a.entry_legs)
+                fund.entry_legs[a.symbol] = a.entry_legs
+                fund.handles[a.symbol] = handle
+                fund.coordinator.ports[a.symbol] = port  # type: ignore[index]
+                carried[a.symbol] = a.legs
+                done.append(f"{a.action}:{a.symbol}")
+            # 실제로 뜬 것만 남긴다 — 실패한 종목은 다리 범위 · 바구니에서 뺐다가 다음 점검이 다시
+            _apply_carry(fund, carried, quarter)
+            _reattach_gate(fund)
+    _save_fund(fund)
+    left = len(todo) - len(done)
+    out = {
+        "fund_id": fund.fund_id,
+        "quarter": quarter,
+        "done": done,
+        "left": max(0, left),
+        "skipped": skipped,
+    }
+    if done or todo:
+        _events.info("fund_rotation_step", payload=out)
+    return out
+
+
+async def universe_loop() -> None:
+    """우주 펀드를 `check_every_s` 마다 점검한다 — 리더에서만 돈다(펀드 락 안 · 저위험 · 수렴)."""
+    cfg = load_rotation_config(DEFAULT_UNIVERSE_CONFIG)
+    while True:
+        await asyncio.sleep(cfg.check_every_s)
+        for fund_id in [f.fund_id for f in FUNDS.values() if f.universe is not None]:
+            try:
+                async with _fund_lock(fund_id):
+                    fund = FUNDS.get(fund_id)
+                    if fund is not None:
+                        await _universe_step(fund, datetime.now(UTC), cfg)
+            except Exception as exc:  # 한 펀드 실패가 다른 펀드 · 루프를 멈추지 않는다(경보는 남김)
+                _events.error(
+                    "fund_rotation_failed",
+                    payload={"fund_id": fund_id, "error": f"{type(exc).__name__}: {exc}"[:300]},
+                )

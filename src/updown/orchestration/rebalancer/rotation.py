@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, cast
+
+import yaml
 
 KEEP = "keep"
 """세트 그대로 · 진입 범위만 새 목록으로."""
@@ -94,3 +98,47 @@ def leg_symbols(actions: tuple[MemberAction, ...]) -> dict[str, tuple[str, ...]]
         for leg in a.legs:
             out.setdefault(leg, set()).add(a.symbol)
     return {leg: tuple(sorted(s)) for leg, s in out.items()}
+
+
+@dataclass(frozen=True, slots=True)
+class RotationConfig:
+    """교체 실행 설정(`config/universe.yml` 의 `rotation` 블록 · 성능 · T759 교훈).
+
+    Attributes:
+        check_every_s: 리더가 우주 펀드를 점검하는 간격(초).
+        batch: 한 번 점검에 띄우기 · 거두기를 몇 종목까지(나머지는 다음 점검 · 계획이 다시 나온다).
+        stagger_s: 종목 사이 간격(초) — 되살림 `AUTOSTART_STAGGER_S` 와 같은 뜻.
+        quiet_from_minute: 매시 이 분부터 ···
+        quiet_to_minute: ··· 다음 시 이 분까지는 띄우기 · 거두기를 쉰다
+            (봉 마감 · 메모 deploy-not-at-bar-close).
+        rss_limit_mb: 띄우기 전 프로세스 RSS + 예상 증가가 이 값을 넘으면 띄우지 않는다(R7 · 경보).
+        board_mb: 판 하나의 예상 메모리(MB · T310 · 추정).
+    """
+
+    check_every_s: float = 300.0
+    batch: int = 4
+    stagger_s: float = 1.5
+    quiet_from_minute: int = 45
+    quiet_to_minute: int = 5
+    rss_limit_mb: float = 750.0
+    board_mb: float = 5.0
+
+    def quiet(self, minute: int) -> bool:
+        """봉 마감 앞뒤인가."""
+        return minute >= self.quiet_from_minute or minute < self.quiet_to_minute
+
+
+def load_rotation_config(path: Path) -> RotationConfig:
+    """`rotation` 블록을 읽는다 — 없으면 기본값."""
+    raw = cast("dict[str, Any]", yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+    body = cast("dict[str, Any]", raw.get("rotation") or {})
+    base = RotationConfig()
+    return RotationConfig(
+        check_every_s=float(body.get("check_every_s", base.check_every_s)),
+        batch=int(body.get("batch", base.batch)),
+        stagger_s=float(body.get("stagger_s", base.stagger_s)),
+        quiet_from_minute=int(body.get("quiet_from_minute", base.quiet_from_minute)),
+        quiet_to_minute=int(body.get("quiet_to_minute", base.quiet_to_minute)),
+        rss_limit_mb=float(body.get("rss_limit_mb", base.rss_limit_mb)),
+        board_mb=float(body.get("board_mb", base.board_mb)),
+    )
