@@ -1111,6 +1111,19 @@ class Session:
     """
     short_blocked: int = 0
     """능력표 때문에 버린 숏 후보 수 (T239)."""
+    entry_legs: frozenset[str] | None = None
+    """이번 분기에 이 종목에서 **새로 들어갈 수 있는** 다리(`playbook_id`) — 펀드가 정한다.
+
+    T758 분기 우주.
+
+    None 이면 제한이 없다(지금까지와 같다). 목록 밖 다리의 후보는 **신규 진입에서만** 거르고
+    `entry_legs_blocked` 로 센다 — 청산 · 손절 · 손절 상향 · 반대 신호 · 불타기(`_gate_add`)는
+    그대로다
+    (연구: 분기 목록 밖으로 빠진 종목의 포지션은 청산까지 들고, 그 다리의 새 진입만 없다).
+    다리 단위라 같은 종목의 다른 다리는 계속 들어간다.
+    """
+    entry_legs_blocked: int = 0
+    """분기 목록 밖이라 버린 신규 진입 후보 수 (T758)."""
     has_liquidation: bool = True
     """청산이 있는 시장인가 — 능력표 `leverage_allowed` (T254 ① · `apply_playbook_knobs` 가 세팅).
 
@@ -5012,6 +5025,16 @@ class Session:
             for item in shorts:
                 self._note_proposal_blocked("short_blocked", item)  # T562
             open_to_entry = [item for item in open_to_entry if item not in shorts]
+        if self.entry_legs is not None:
+            # ⭐ T758 — 분기 우주: 목록 밖 다리는 이 종목에서 새로 들지 않는다.
+            #    지우지 않고 센다 (§1-0s).
+            outside = [
+                item for item in open_to_entry if item.playbook.playbook_id not in self.entry_legs
+            ]
+            self.entry_legs_blocked += len(outside)
+            for item in outside:
+                self._note_proposal_blocked("entry_legs", item)
+            open_to_entry = [item for item in open_to_entry if item not in outside]
         if self._held:
             # ⭐ T320 — 보유 중이면 **같은 방향 몫을 더할 수 있는 다리**의 후보만 남는다.
             open_to_entry = [
