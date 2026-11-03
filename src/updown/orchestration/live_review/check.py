@@ -537,6 +537,7 @@ def now_rows(
         )
     )
     rows.append(outside_row(snap, now, days))
+    rows.append(universe_row(snap.fund, now))
     core_dd = twr_drawdown(snap.fund.get("core_twr"))
     fund_dd = twr_drawdown(snap.fund.get("twr"))
     at_s = str(_dict(snap.fund.get("drawdown_brake")).get("at", ""))
@@ -553,6 +554,46 @@ def now_rows(
     )
     rows.append(_resource_row(health))
     return rows
+
+
+def universe_row(fund: Mapping[str, Any], now: datetime) -> Row:
+    """분기 종목 우주 줄 (T758 6 단계) — 어느 분기 목록을 따르나 · 청산 대기 · 낡았나.
+
+    Args:
+        fund: 펀드 파일 딕셔너리.
+        now: 지금(UTC).
+
+    Returns:
+        점검 줄. 우주 펀드가 아니면 "고정 바구니" 정보 줄.
+    """
+    s = "펀드"
+    profile = fund.get("universe")
+    if not profile:
+        return Row(
+            s,
+            "분기 종목 우주",
+            "info",
+            "고정 바구니(우주 펀드 아님)",
+            "선언에 universe 키가 있을 때만",
+        )
+    q = datetime(now.year, 3 * ((now.month - 1) // 3) + 1, 1, tzinfo=UTC)
+    applied = str(fund.get("universe_quarter") or "")
+    entry = cast("dict[str, list[object]]", fund.get("entry_legs") or {})
+    zero = sorted(sym for sym, legs in entry.items() if not legs)
+    stale = applied != q.date().isoformat() and now - q > timedelta(hours=6)
+    value = (
+        f"{profile} · 따르는 분기 {applied or '없음'} · 지금 분기 {q.date().isoformat()} · "
+        f"종목 {len(entry)} · 신규 진입 0(청산 대기 · 폐지 공지) {len(zero)}"
+        + (f" · {', '.join(zero[:8])}" if zero else "")
+    )
+    return Row(
+        s,
+        "분기 종목 우주",
+        "warn" if stale else "ok",
+        value,
+        "새 분기 첫날 6 시간 안에 그 분기 스냅샷으로 바뀌어야 한다"
+        "(엔진 잡 universe_snapshot · 리더 universe_loop)",
+    )
 
 
 OUR_ORDER_TEXTS = ("t-", "ao-", "liq-")

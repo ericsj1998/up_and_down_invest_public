@@ -2241,6 +2241,17 @@ async def _status(fund: Fund) -> dict[str, Any]:
             }
         ),
         "per_symbol": per_symbol,
+        # ⭐ T758 — 분기 우주(없으면 None · 고정 바구니).
+        "universe": (
+            None
+            if fund.universe is None
+            else {
+                "profile": fund.universe,
+                "quarter": fund.universe_quarter,
+                "entry_legs": {k: list(v) for k, v in fund.entry_legs.items()},
+                "entry_zero": sorted(k for k, v in fund.entry_legs.items() if not v),
+            }
+        ),
         # ⭐ 다리(매매법)별 손익 — 금액 · 펀드 대비 % (사용자 2026-09-27).
         "legs": [leg | pnl.get(leg["playbook"], {}) for leg in legs],
         # ⭐ 지금 브레이크가 걸려 있나 (사용자 2026-10-09) — 다리 문과 같은 자로 판정.
