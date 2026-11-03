@@ -27,7 +27,7 @@ import os
 import time
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 from typing import Annotated, Any, cast
@@ -35,6 +35,7 @@ from uuid import uuid4
 
 import yaml
 from fastapi import APIRouter, Body, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from updown.analysis.playbook import db_source as playbook_db_source
 from updown.analysis.playbook.select import default_playbook, load_playbooks
@@ -65,6 +66,7 @@ from updown.common.domain.instrument import Market, MarketGroup, Timeframe
 from updown.common.domain.session import load_calendar
 from updown.common.logging.setup import get_logger
 from updown.decision.allocation import Basket, BasketError, BasketMember, as_members, rank_members
+from updown.decision.universe import load_universe_config, quarter_start
 from updown.execution.gateway import engine_order_adapter
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider
@@ -101,6 +103,7 @@ from updown.orchestration.rebalancer.legs import (
     member_playbook,
     refresh_legs,
 )
+from updown.orchestration.rebalancer.universe_job import UniverseSnapshotStore, legs_of_row
 from updown.orchestration.rebalancer.wiring import wire_legs
 from updown.orchestration.walkforward.ledger import Outcome, TradeRecord
 from updown.portfolio.performance import CashFlow, TwrLedger
@@ -172,6 +175,15 @@ class Fund:
     """마지막 틱에서 앵커를 못 한 이유(다른 펀드·단독 판·계좌 못 읽음).
 
     None = 앵커됨. 화면에 그대로 보여 준다.
+    """
+    universe: str | None = None
+    """분기 우주 프로필(T758) — None 이면 고정 바구니 펀드(지금까지와 같다)."""
+    universe_quarter: str | None = None
+    """지금 멤버가 따르는 스냅샷 분기(`2026-10-01`) — 새 분기 스냅샷이 오면 교체한다."""
+    entry_legs: dict[str, tuple[str, ...]] = field(default_factory=dict[str, tuple[str, ...]])
+    """`{종목: 신규 진입을 허용할 다리 id}`(T758 · 세션 `entry_legs`) — 우주 펀드만.
+
+    저장 · 복원 때 세션에 다시 건다.
     """
     engines: dict[str, Any] = field(default_factory=dict[str, Any])
     """`{종목: 엔진}` — 세션 대신 외부 엔진이 도는 다리의 종목(`FundLeg.engine` · `leg_engines`).
@@ -557,6 +569,34 @@ def _member_terms(
     return member_playbook(legs, symbol), member_leverage(legs, symbol)
 
 
+def _legs_of_symbol(legs: Sequence[FundLeg], symbol: str) -> tuple[str, ...]:
+    """그 종목을 싣는 다리 id 들(정렬) — 우주 펀드 세션의 진입 범위 기본값 (T758)."""
+    return tuple(sorted(leg.playbook for leg in legs if symbol in leg.symbols))
+
+
+_universe_store: UniverseSnapshotStore | None = None
+"""분기 우주 스냅샷 읽기 (T758) — 앱 시작 때 `attach_universe_store` 가 붙인다. 리더는 읽기만."""
+
+
+def attach_universe_store(factory: async_sessionmaker[AsyncSession]) -> None:
+    """스냅샷 저장소를 붙인다 — `apps/api/main.py` 시작에서."""
+    global _universe_store
+    _universe_store = UniverseSnapshotStore(factory)
+
+
+async def _universe_legs(profile: str, quarter: date) -> dict[str, tuple[str, ...]] | None:
+    """그 분기 · 프로필의 `ok` 스냅샷 다리 목록(주문 계약 이름) — 없으면 None.
+
+    Note:
+        규칙 지문까지 맞아야 한다 — 설정을 바꾼 뒤 옛 규칙 스냅샷으로 펀드를 만들지 않는다.
+    """
+    if _universe_store is None:
+        return None
+    cfg = load_universe_config(profile=profile)
+    row = await _universe_store.ok_for(quarter, cfg.profile, cfg.seed_tag, cfg.digest())
+    return None if row is None else legs_of_row(row)
+
+
 def _member_leverage(fund_leverage: Decimal, alt_leverage: Decimal | None, symbol: str) -> Decimal:
     """종목별 세션 배율 — 알트만 오버라이드한다 (2.0.0 A5: 코어 6x · 알트 5x).
 
@@ -828,6 +868,10 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
         # T606 — 마지막 틱에서 앵커를 건너뛴 이유(없으면 None). 라이브 점검이 읽어 "장부 차가
         #    저절로 안 맞춰진다" 고 말한다 — 화면 응답에만 있던 값을 파일에도 남긴다.
         "anchor_skipped": fund.anchor_skipped,
+        # ⭐ T758 — 분기 우주. 옛 저장본에는 없다(고정 바구니).
+        "universe": fund.universe,
+        "universe_quarter": fund.universe_quarter,
+        "entry_legs": {sym: list(v) for sym, v in fund.entry_legs.items()},
     }
 
 
@@ -1112,6 +1156,11 @@ async def _restore_one(data: dict[str, Any]) -> None:
         int(data.get("legs_revision", 0) or 0),
         [m.symbol for m in basket.members],
     )
+    universe = None if data.get("universe") in (None, "") else str(data["universe"])
+    saved_entry = {
+        str(k): tuple(str(x) for x in cast("list[object]", v))
+        for k, v in cast("dict[str, Any]", data.get("entry_legs") or {}).items()
+    }
     total = ledger.balance
     wsum = basket.weight_sum
     # ⭐ T285 — 저장된 몫(seed)·정산 mark. 옛 저장본(없음)은 지금 몫을 seed 로, mark 는 첫 틱이 지금
@@ -1206,6 +1255,12 @@ async def _restore_one(data: dict[str, Any]) -> None:
         if fixed is not None:
             corrected[member.symbol] = (port.session.ledger.seed_cash, fixed)
             port.session.ledger.seed_cash = fixed
+        if universe is not None:
+            # ⭐ T758 — 분기 우주 진입 범위(문이 붙기 전에 · fund_ready 가 꺼진 사이).
+            #    저장본이 없으면 그 종목 세트 전부 — 교체 점검이 다음에 다시 맞춘다.
+            port.session.entry_legs = frozenset(
+                saved_entry.get(member.symbol, _legs_of_symbol(legs, member.symbol))
+            )
         handles[member.symbol] = handle
         ports[member.symbol] = port
         kept.append(member)
@@ -1298,6 +1353,11 @@ async def _restore_one(data: dict[str, Any]) -> None:
         notional_fit=notional_fit,
         drawdown_brake=drawdown_brake,
         breadth_cap=breadth_cap,
+        universe=universe,
+        universe_quarter=(
+            None if data.get("universe_quarter") is None else str(data["universe_quarter"])
+        ),
+        entry_legs={k: v for k, v in saved_entry.items() if k in handles},
     )
     raw_anchor = data.get("anchor")
     if isinstance(raw_anchor, dict):
@@ -1641,6 +1701,8 @@ async def _create_fund(
     drawdown_brake: DrawdownBrake | None = None,
     breadth_cap: BreadthCap | None = None,
     legs: Sequence[FundLeg] = (),
+    universe: str | None = None,
+    universe_quarter: str | None = None,
 ) -> Fund:
     """바스켓 종목마다 세션을 띄우고 조정자로 묶는다.
 
@@ -1662,6 +1724,9 @@ async def _create_fund(
         breadth_cap: 조건부 총 명목 상한 선언 (T289). None = 없음.
         legs: 다리들 (T291 · 이종 합성 매매법). 있으면 종목마다 그 종목의 다리만 실은 세션을 띄우고
             문을 다리별로 세운다. 비어 있으면 지금까지의 경로 그대로다.
+        universe: 분기 우주 프로필(T758). 있으면 세션마다 진입 범위(`entry_legs`)를
+            그 종목 다리로 건다.
+        universe_quarter: 따른 스냅샷 분기.
 
     Returns:
         만들어진 펀드. `FUNDS` 에 등록된다.
@@ -1703,6 +1768,8 @@ async def _create_fund(
                 capital=capital,
                 booked=min(share, capital) if legs else None,
             )
+            if universe is not None:
+                port.session.entry_legs = frozenset(_legs_of_symbol(legs, member.symbol))
             handles[member.symbol] = handle
             ports[member.symbol] = port
     except Exception:
@@ -1752,6 +1819,9 @@ async def _create_fund(
         notional_fit=notional_fit,
         drawdown_brake=drawdown_brake,
         breadth_cap=breadth_cap,
+        universe=universe,
+        universe_quarter=universe_quarter,
+        entry_legs=({s: _legs_of_symbol(legs, s) for s in handles} if universe is not None else {}),
     )
     FUNDS[fund.fund_id] = fund
     _log_gate(fund)
@@ -2486,12 +2556,18 @@ def _refresh_stored_legs(
     return fresh, declared_rev
 
 
-def _legs_for(playbook_id: str, members: Sequence[str]) -> tuple[FundLeg, ...]:
+def _legs_for(
+    playbook_id: str,
+    members: Sequence[str],
+    scopes: Mapping[str, Sequence[str]] | None = None,
+) -> tuple[FundLeg, ...]:
     """그 매매법이 다리로 나뉘는 묶음이면 다리들을 만든다 — 아니면 빈 튜플 (T291).
 
     Args:
         playbook_id: 펀드가 고른 매매법.
         members: 펀드의 종목.
+        scopes: 다리별 종목 범위. None 이면 `baskets.yml by_playbook`(고정 바구니) ·
+            우주 펀드는 스냅샷.
 
     Returns:
         다리들. `split_legs` 가 아닌 매매법(지금까지의 전부)은 빈 튜플.
@@ -2504,7 +2580,8 @@ def _legs_for(playbook_id: str, members: Sequence[str]) -> tuple[FundLeg, ...]:
     if wrapper is None or not wrapper.split_legs:
         return ()
     try:
-        return declared_legs(wrapper, books, _leg_scopes(), members)
+        scope = _leg_scopes() if scopes is None else {k: list(v) for k, v in scopes.items()}
+        return declared_legs(wrapper, books, scope, members)
     except LegError as exc:
         raise HTTPException(400, f"다리 선언이 맞지 않는다: {exc}") from exc
 
@@ -2664,6 +2741,25 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
     #    ⛔ 선언이 없는 매매법에서만 3 으로 떨어진다 (옛 판들의 값 — 동작 불변).
     declared_book = next((item for item in load_playbooks() if item.playbook_id == book), None)
     declared = None if declared_book is None else declared_book.leverage
+    # ⭐ T758 — 분기 우주: 종목은 그 분기 스냅샷이 정한다(화면 바구니는 쓰지 않는다).
+    universe = None if declared_book is None else declared_book.universe
+    universe_quarter: str | None = None
+    universe_scopes: dict[str, tuple[str, ...]] | None = None
+    if universe is not None and declared_book is not None:
+        q = quarter_start(datetime.now(UTC).date())
+        found = await _universe_legs(universe, q)
+        if found is None:
+            raise HTTPException(
+                409, f"{q} 분기 우주 스냅샷이 아직 없다 — 엔진 잡(universe_snapshot)을 확인한다"
+            )
+        universe_scopes = {k: v for k, v in found.items() if k in declared_book.bundle}
+        wanted = sorted({sym for v in universe_scopes.values() for sym in v})
+        if not wanted:
+            raise HTTPException(409, f"{q} 스냅샷에 이 묶음 다리의 종목이 없다")
+        basket = Basket(
+            as_members([(sym, Decimal(1)) for sym in wanted]), version=f"universe:{q.isoformat()}"
+        )
+        universe_quarter = q.isoformat()
     # ⭐ 배분 방식·알트 배율도 배율과 같은 규칙이다 (T202 중 발견) — 페이로드가 없으면
     #    **매매법 선언을 쓴다**. 화면에 입력칸이 없어서 2.0.0 을 골라도 static 으로
     #    뜨던 함정을 선언 폴백으로 막는다. 페이로드가 명시하면 그쪽이 이긴다.
@@ -2700,7 +2796,7 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
     raw_alt = payload.get("alt_leverage")
     fallback = fallback_leverage(Market(str(payload.get("market") or Market.GATE.value)))
     # ⭐ T291 — 다리로 나뉘는 묶음이면 다리를 만든다(선언이 안 맞으면 여기서 400 · 세션 띄우기 전).
-    legs = _legs_for(book, list(basket.symbols))
+    legs = _legs_for(book, list(basket.symbols), universe_scopes)
     if legs and mode != "slots":
         # 조용히 문 하나짜리 묶음으로 뜨면 두 다리가 자리·상한을 나눠 써 측정과 다른 매매법이 된다.
         raise HTTPException(400, "다리로 나뉘는 매매법은 자리 배분(weight_mode: slots)이어야 한다")
@@ -2727,6 +2823,8 @@ async def create(request: Request, payload: Annotated[dict[str, Any], Body()]) -
                 drawdown_brake=drawdown_brake,
                 breadth_cap=breadth_cap if mode == "slots" else None,
                 legs=legs,
+                universe=universe,
+                universe_quarter=universe_quarter,
             )
         )
     except HTTPException:

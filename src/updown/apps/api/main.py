@@ -253,6 +253,10 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         attach_quick_cache(getattr(resolved_state, "redis", None))
         # ⭐ AI 분석·AI 차트 주문의 봉은 DB 먼저(`StoredCandles`) — 토스 1m 합성 2.5분을 한 번만.
         attach_candles(resolved_state.session_factory)
+        # ⭐ 분기 우주 스냅샷(T758) — 엔진이 쓴 행을 리더가 읽기만 한다.
+        from updown.apps.api.rebalancer import attach_universe_store
+
+        attach_universe_store(resolved_state.session_factory)
         # 🔴 계정 저장소 — 미들웨어가 **매 요청** 등급을 여기서 읽는다. 안 붙으면
         #    아무도 로그인할 수 없다 (조용히 통과시키지 않는다 · 규칙 #8).
         # ⭐ `ACCOUNTS_DATABASE_URL` 이 있으면 계정·문의·관리자 설정만 **그 DB** 에서 연다

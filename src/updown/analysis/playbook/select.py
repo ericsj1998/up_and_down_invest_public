@@ -1047,6 +1047,7 @@ def _parse_declared(declared: object) -> list[Playbook]:
                     drawdown_isolated=bool(body.get("drawdown_isolated", False)),
                     engine=None if body.get("engine") is None else str(body["engine"]),
                     legs_revision=_positive_int(body, "legs_revision", f"playbooks.{name}"),
+                    universe=None if body.get("universe") is None else str(body["universe"]),
                     superseded_by=(
                         None if body.get("superseded_by") is None else str(body["superseded_by"])
                     ),

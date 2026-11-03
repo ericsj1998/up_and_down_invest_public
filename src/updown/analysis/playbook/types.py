@@ -1295,6 +1295,12 @@ class Playbook:
     저장본 그대로다. 🔴 다리 값을 돌던 펀드에 넣고 싶을 때만 올린다 — 저장본이 이기는
     원칙의 명시적 예외다. ⛔ None 이면 동결(0 과 같다)이다.
     """
+    universe: str | None = None
+    """분기 종목 우주 프로필(`config/universe.yml` `profiles` 이름 · T758).
+
+    있으면 펀드 종목 · 다리 범위를 바구니(`baskets.yml`) 대신 그 분기 스냅샷
+    (`universe_snapshots`)에서 받고 분기마다 바꾼다. None 이면 지금까지의 고정 바구니다.
+    """
     engine: str | None = None
     """이 다리를 돌리는 **외부 엔진** 이름 (`orchestration.leg_engines` · entry point
     `updown.leg_engines`).
