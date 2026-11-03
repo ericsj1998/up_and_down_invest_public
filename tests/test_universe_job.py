@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
@@ -192,3 +193,31 @@ def test_parse_daily_quotes_drops_the_unclosed_quarter_day() -> None:
 def test_parse_daily_quotes_refuses_bad_rows() -> None:
     with pytest.raises(UniverseSourceError):
         parse_daily_quotes([["x"]], Q)
+
+
+def test_name_chain_result_is_what_the_leader_reads_and_raw_names_kept() -> None:
+    store = FakeStore()
+
+    async def names(
+        legs: Mapping[str, tuple[str, ...]],
+    ) -> tuple[dict[str, tuple[str, ...]], dict[str, str]]:
+        return {k: tuple(s.replace("USDT", "_USDT") for s in v) for k, v in legs.items()}, {}
+
+    out = _run(store, _source(), names=names)
+    assert out.legs["a"] == ("A_USDT", "B_USDT")
+    assert store.rows[0]["legs"] == {"a": ["AUSDT", "BUSDT"]}  # 연구 대조용 순위 이름
+    assert store.rows[0]["legs_gate"] == {"a": ["A_USDT", "B_USDT"]}
+
+
+def test_name_chain_failure_is_a_failed_snapshot() -> None:
+    store = FakeStore()
+
+    async def names(
+        legs: Mapping[str, tuple[str, ...]],
+    ) -> tuple[dict[str, tuple[str, ...]], dict[str, str]]:
+        del legs
+        raise RuntimeError("Gate 계약 표 못 받음")
+
+    out = _run(store, _source(), names=names)
+    assert out.action == "failed"
+    assert store.rows[-1]["status"] == STATUS_FAILED

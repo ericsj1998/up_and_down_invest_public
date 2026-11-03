@@ -293,11 +293,13 @@ def register_universe_job(
     """
     from datetime import UTC, datetime
 
-    from updown.decision.universe import load_universe_config
-    from updown.marketdata.provider import universe_source
+    from updown.decision.universe import DEFAULT_CONFIG_PATH, load_universe_config
+    from updown.decision.universe_names import load_name_chain
+    from updown.marketdata.provider import gate_universe_facts, universe_source
     from updown.orchestration.rebalancer.universe_job import (
         UniverseSnapshotStore,
         load_job_config,
+        make_name_chain,
         run_quarter,
     )
 
@@ -310,10 +312,15 @@ def register_universe_job(
     async def job() -> None:
         cfg = load_universe_config()
         source = universe_source(pace_s=job_cfg.pace_s)
+        facts = gate_universe_facts()
+        names = make_name_chain(source, facts, load_name_chain(DEFAULT_CONFIG_PATH))
         try:
-            out = await run_quarter(store, source, cfg, now=datetime.now(UTC), job=job_cfg)
+            out = await run_quarter(
+                store, source, cfg, now=datetime.now(UTC), job=job_cfg, names=names
+            )
         finally:
             await source.aclose()
+            await facts.aclose()
         _logger.info(
             "universe_job_checked",
             payload={

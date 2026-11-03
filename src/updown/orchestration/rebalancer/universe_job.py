@@ -18,7 +18,7 @@ T758 §2 · R4).
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -39,6 +39,7 @@ from updown.decision.universe import (
     quarter_start,
     universe_for,
 )
+from updown.decision.universe_names import ContractFacts, NameChainRule, gate_legs
 
 _logger = get_logger("orchestration.rebalancer.universe_job")
 
@@ -125,8 +126,15 @@ def load_job_config(path: Path = DEFAULT_CONFIG_PATH) -> JobConfig:
 
 
 # ───────────────────────── 기록 ↔ 스냅샷 ─────────────────────────
-def row_values(snap: UniverseSnapshot, source: Mapping[str, Any]) -> dict[str, Any]:
-    """스냅샷 → 표 행 값(`ok`)."""
+def row_values(
+    snap: UniverseSnapshot,
+    source: Mapping[str, Any],
+    legs_gate: Mapping[str, tuple[str, ...]] | None = None,
+) -> dict[str, Any]:
+    """스냅샷 → 표 행 값(`ok`).
+
+    `legs` 는 순위 이름 그대로(연구 대조용) · `legs_gate` 는 주문 계약 이름.
+    """
     return {
         "quarter": snap.quarter,
         "profile": snap.profile,
@@ -141,13 +149,27 @@ def row_values(snap: UniverseSnapshot, source: Mapping[str, Any]) -> dict[str, A
         "alive": {"items": list(snap.alive)},
         "boundary_gaps": {str(k): v for k, v in snap.boundary_gaps.items()},
         "legs": {k: list(v) for k, v in snap.legs.items()},
+        "legs_gate": {k: list(v) for k, v in (legs_gate or {}).items()},
         "source": dict(source),
     }
 
 
 def legs_of_row(row: UniverseSnapshotRow) -> dict[str, tuple[str, ...]]:
-    """표 행 → 다리별 목록(리더가 읽는 값)."""
-    return {str(k): tuple(str(x) for x in cast("list[object]", v)) for k, v in row.legs.items()}
+    """표 행 → 다리별 **주문 계약 이름** 목록(리더가 읽는 값 · 이름 사슬 뒤)."""
+    return {
+        str(k): tuple(str(x) for x in cast("list[object]", v)) for k, v in row.legs_gate.items()
+    }
+
+
+NameChain = Callable[
+    [Mapping[str, tuple[str, ...]]],
+    Awaitable[tuple[dict[str, tuple[str, ...]], dict[str, str]]],
+]
+"""`{다리: 순위 이름들}` → `({다리: 계약 이름들}, {순위 이름: 뺀 이유})`.
+
+`decision.universe_names.gate_legs` 에 재료(계약 표 · 두 거래소 가격)를 붙여 부르는 함수.
+실패하면 던진다(확인 못 한 이름으로 주문하지 않는다).
+"""
 
 
 class UniverseSnapshotStore:
@@ -287,6 +309,7 @@ async def run_quarter(
     job: JobConfig,
     verify: bool = False,
     compute: Callable[[list[SymbolDaily], date, UniverseConfig], UniverseSnapshot] = universe_for,
+    names: NameChain | None = None,
 ) -> JobOutcome:
     """지금 분기의 스냅샷을 보장한다.
 
@@ -298,6 +321,7 @@ async def run_quarter(
         job: 작업 설정.
         verify: 이미 `ok` 가 있어도 다시 받아 지문을 대조한다.
         compute: 순위 계산 함수(시험에서 바꿔 끼움).
+        names: 이름 사슬. None 이면 순위 이름을 그대로 쓴다(시험 · 같은 거래소).
 
     Returns:
         결과.
@@ -324,6 +348,11 @@ async def run_quarter(
         t1 = time.monotonic()
         snap = compute(daily, q, cfg)
         src["parse_ms"] = int((time.monotonic() - t1) * 1000)
+        if names is None:
+            legs_gate, dropped = dict(snap.legs), {}
+        else:
+            legs_gate, dropped = await names(snap.legs)
+        src["name_chain_dropped"] = dropped
     except (UniverseDataError, Exception) as exc:  # 부분 자료 금지 — 어떤 실패도 이전 목록
         prev = await store.latest_ok(cfg.profile, cfg.seed_tag, q - timedelta(days=1))
         rid = await store.insert(
@@ -335,6 +364,7 @@ async def run_quarter(
                 "alive": {},
                 "boundary_gaps": {},
                 "legs": {},
+                "legs_gate": {},
                 "source": {"calls": source.calls, "weight_max": source.weight_max},
             }
         )
@@ -362,7 +392,7 @@ async def run_quarter(
         old, new = existing.input_digest[:12], snap.input_digest[:12]
         rid = await store.insert(
             {
-                **row_values(snap, src),
+                **row_values(snap, src, legs_gate),
                 "status": STATUS_DRIFT,
                 "reason": f"input_digest {old} → {new}",
             }
@@ -372,7 +402,7 @@ async def run_quarter(
             payload={"quarter": q.isoformat(), "kept": existing.id, "drift_row": rid},
         )
         return JobOutcome(q, "drift", row_id=rid, legs=legs_of_row(existing), legs_quarter=q)
-    rid = await store.insert(row_values(snap, src))
+    rid = await store.insert(row_values(snap, src, legs_gate))
     _logger.info(
         "universe_snapshot_computed",
         payload={
@@ -380,9 +410,56 @@ async def run_quarter(
             "profile": cfg.profile,
             "seed_tag": cfg.seed_tag,
             "row_id": rid,
-            "legs": {k: len(v) for k, v in snap.legs.items()},
+            "legs": {k: len(v) for k, v in legs_gate.items()},
             "boundary_gaps": {str(k): round(v, 4) for k, v in snap.boundary_gaps.items()},
             **{k: v for k, v in src.items() if k != "statuses"},
         },
     )
-    return JobOutcome(q, "computed", row_id=rid, legs=dict(snap.legs), legs_quarter=q, detail=src)
+    if dropped:
+        _logger.warning(
+            "universe_name_mismatch",
+            payload={"quarter": q.isoformat(), "dropped": dropped},
+        )
+    return JobOutcome(q, "computed", row_id=rid, legs=legs_gate, legs_quarter=q, detail=src)
+
+
+class PriceSource(Protocol):
+    """순위 거래소 현재가(`BinanceUniverseSource.last_prices`)."""
+
+    async def last_prices(self) -> dict[str, float]:
+        """`{순위 이름: 가격}`."""
+        ...
+
+
+class ContractSource(Protocol):
+    """주문 거래소 계약 표 · 현재가(`GateUniverseFacts`)."""
+
+    async def contracts(self) -> dict[str, tuple[bool, bool]]:
+        """`{계약 이름: (거래 중, 폐지 공지)}`."""
+        ...
+
+    async def last_prices(self) -> dict[str, float]:
+        """`{계약 이름: 가격}`."""
+        ...
+
+
+def make_name_chain(rank: PriceSource, order: ContractSource, rule: NameChainRule) -> NameChain:
+    """재료를 붙인 이름 사슬 — 계약 표 한 번 · 두 거래소 시세 한 번씩.
+
+    Args:
+        rank: 순위 거래소 현재가.
+        order: 주문 거래소 계약 표 · 현재가.
+        rule: 이름 사슬 규칙.
+
+    Returns:
+        `run_quarter(names=...)` 에 넘길 함수.
+    """
+
+    async def chain(
+        legs: Mapping[str, tuple[str, ...]],
+    ) -> tuple[dict[str, tuple[str, ...]], dict[str, str]]:
+        table = await order.contracts()
+        facts = {n: ContractFacts(n, trading=t, in_delisting=d) for n, (t, d) in table.items()}
+        return gate_legs(legs, facts, await rank.last_prices(), await order.last_prices(), rule)
+
+    return chain

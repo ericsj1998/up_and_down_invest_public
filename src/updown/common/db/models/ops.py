@@ -153,5 +153,6 @@ class UniverseSnapshotRow(Base):
     alive: Mapped[JsonDict]
     boundary_gaps: Mapped[JsonDict]
     legs: Mapped[JsonDict]
+    legs_gate: Mapped[JsonDict] = mapped_column(default=dict, server_default="{}")
     source: Mapped[JsonDict]
     computed_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())

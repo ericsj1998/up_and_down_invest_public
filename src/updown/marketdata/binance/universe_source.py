@@ -195,3 +195,22 @@ class BinanceUniverseSource:
         if not isinstance(body, list):
             raise UniverseSourceError(f"{symbol} klines 모양이 틀렸다")
         return parse_daily_quotes(body, q)
+
+    async def last_prices(self) -> dict[str, float]:
+        """`{심볼: 최근 체결가}` — 이름 사슬 가격비 검사용.
+
+        `/fapi/v1/ticker/price` 한 번 · 가중치 2.
+
+        Raises:
+            UniverseSourceError: 응답을 못 받았거나 모양이 틀렸을 때.
+        """
+        body = await self._get("/fapi/v1/ticker/price")
+        if not isinstance(body, list):
+            raise UniverseSourceError("ticker/price 모양이 틀렸다")
+        out: dict[str, float] = {}
+        for raw in cast("list[dict[str, Any]]", body):
+            try:
+                out[str(raw["symbol"])] = float(raw["price"])
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out

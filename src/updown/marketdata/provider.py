@@ -57,6 +57,7 @@ from updown.marketdata.fundamentals.client import EdgarClient
 from updown.marketdata.fundamentals.edgar import EdgarAdapter
 from updown.marketdata.gate.adapter import GateAdapter
 from updown.marketdata.gate.client import GateClient
+from updown.marketdata.gate.universe_facts import GateUniverseFacts
 from updown.marketdata.macro.adapter import MacroAdapter
 from updown.marketdata.macro.client import MacroClient
 from updown.marketdata.toss.adapter import (
@@ -502,6 +503,16 @@ def universe_source(*, pace_s: float = 0.25) -> BinanceUniverseSource:
         (`await source.aclose()`).
     """
     return BinanceUniverseSource(BinanceClient(base_url=LIVE_BASE), pace_s=pace_s)
+
+
+def gate_universe_facts() -> GateUniverseFacts:
+    """분기 목록 이름 사슬의 주문 거래소 재료 — **조회 경로의 유일한 획득 지점** (규칙 #0 · T758).
+
+    Returns:
+        Gate 실거래 공개 주소 위의 계약 표 · 현재가 읽기. 키를 들지 않는다. 부르는 쪽이 닫는다
+        (`await facts.aclose()`).
+    """
+    return GateUniverseFacts(GateClient())
 
 
 _macro_shared: MacroAdapter | None = None

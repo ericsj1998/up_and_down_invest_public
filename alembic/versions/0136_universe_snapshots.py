@@ -37,6 +37,7 @@ def upgrade() -> None:
         sa.Column("alive", JSONB(), nullable=False),
         sa.Column("boundary_gaps", JSONB(), nullable=False),
         sa.Column("legs", JSONB(), nullable=False),
+        sa.Column("legs_gate", JSONB(), nullable=False, server_default="{}"),
         sa.Column("source", JSONB(), nullable=False),
         sa.Column(
             "computed_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
