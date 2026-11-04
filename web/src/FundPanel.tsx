@@ -660,6 +660,18 @@ export function FundPanel({
                   </span>
                 )
               ) : null}
+              {/* 분기 종목 우주(T758) — 어느 분기 목록을 따르나 · 신규 진입 0(청산 대기 · 폐지 공지) 종목. */}
+              {f.universe ? (
+                <span
+                  className="faint"
+                  title={f.universe.entry_zero.length ? `신규 진입 0: ${f.universe.entry_zero.join(", ")}` : undefined}
+                  data-testid="fund-universe"
+                >
+                  {" "}
+                  · 분기 목록 {f.universe.quarter ?? "없음"} · {Object.keys(f.universe.entry_legs).length}종
+                  {f.universe.entry_zero.length ? ` · 청산 대기 ${f.universe.entry_zero.length}` : ""}
+                </span>
+              ) : null}
             </span>
           </div>
           {/* 🔴 **거래소와 갈린 종목이 있으면 위 잔고·TWR 은 미확정이다** (2026-09-01

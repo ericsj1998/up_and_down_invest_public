@@ -1930,6 +1930,13 @@ export type FundStatus = {
    * 매매법 실현만의 낙폭(브레이크 원장 · `source` = own_pnl)이다 — 브레이크는 **이쪽**을 본다.
    */
   brake?: FundBrake | null;
+  /** 분기 종목 우주 (T758) — 없으면 고정 바구니 펀드. 옛 서버는 칸이 없다. */
+  universe?: {
+    profile: string;
+    quarter: string | null;
+    entry_legs: Record<string, string[]>;
+    entry_zero: string[];
+  } | null;
 };
 
 /** 브레이크 현황 한 덩어리 — 서버 `brake_view` 가 다리 문과 같은 자(엄격 부등호)로 판정한 값. */
