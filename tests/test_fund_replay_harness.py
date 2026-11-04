@@ -159,3 +159,60 @@ class TestReplay:
         replay, _a, _b = build()
         result = replay.run(START, START + timedelta(hours=6))
         assert [t for t, _ in result.equity] == [datetime(2026, 1, 2, tzinfo=UTC)]
+
+
+class MemberSession(ScriptSession):
+    """분기 우주 각본 세션 — 범위가 비고 보유가 없으면 커서만(`Session.idle_advance` 꼴)."""
+
+    def __init__(self, symbol: str, script: dict[int, tuple[str, Decimal]]) -> None:
+        super().__init__(symbol, script)
+        self.entry_legs: frozenset[str] | None = None
+        self.idled = 0
+        self.seen_legs: list[frozenset[str] | None] = []
+
+    def idle_advance(self) -> bool:
+        if self.entry_legs is None or self.entry_legs:
+            return False
+        self.idled += 1
+        self.cursor += timedelta(hours=1)
+        return True
+
+    def step(self) -> None:
+        self.seen_legs.append(self.entry_legs)
+        super().step()
+
+
+class TestMembership:
+    """T786 — 분기 우주 펀드 재현: 세션 진입 범위를 시각마다 걸고, 범위가 빈 판은 판단 없이 민다."""
+
+    def test_entry_legs_follow_the_quarter_and_empty_boards_only_advance(self) -> None:
+        a = MemberSession("AAA_USDT", {})
+        b = MemberSession("BBB_USDT", {})
+        boards = [
+            ReplayBoard(symbol="AAA_USDT", session=cast("Any", a), spec=ContractSpec(Decimal(1))),
+            ReplayBoard(symbol="BBB_USDT", session=cast("Any", b), spec=ContractSpec(Decimal(1))),
+        ]
+        coordinator = assemble(boards, legs=(), capital=Decimal(1000), slots=2)
+        switch = START + timedelta(hours=3)
+
+        def member(symbol: str, at: datetime) -> frozenset[str] | None:
+            if symbol == "AAA_USDT":
+                return frozenset({"leg_a"})
+            return frozenset() if at <= switch else frozenset({"leg_b"})
+
+        FundReplay(boards, coordinator, ref_4h=(), seed=1, membership=member).run(
+            START, START + timedelta(hours=6)
+        )
+        assert a.idled == 0 and len(a.seen_legs) == 6
+        assert set(a.seen_legs) == {frozenset({"leg_a"})}
+        assert b.idled == 3 and len(b.seen_legs) == 3  # 범위가 빈 세 걸음은 판단(step) 없이 커서만
+        assert set(b.seen_legs) == {frozenset({"leg_b"})}
+
+    def test_without_membership_nothing_changes(self) -> None:
+        a = MemberSession("AAA_USDT", {})
+        boards = [
+            ReplayBoard(symbol="AAA_USDT", session=cast("Any", a), spec=ContractSpec(Decimal(1)))
+        ]
+        coordinator = assemble(boards, legs=(), capital=Decimal(1000), slots=2)
+        FundReplay(boards, coordinator, ref_4h=(), seed=1).run(START, START + timedelta(hours=4))
+        assert a.idled == 0 and len(a.seen_legs) == 4 and set(a.seen_legs) == {None}

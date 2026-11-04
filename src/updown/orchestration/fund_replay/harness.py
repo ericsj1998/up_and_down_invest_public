@@ -24,6 +24,9 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 from updown.analysis.indicators.reference import RefNeeds, needs_of, reference_regime
 from updown.common.domain.instrument import Timeframe
 from updown.decision.allocation import Basket, as_members
@@ -176,6 +179,7 @@ class FundReplay:
         *,
         seed: int,
         engines: Sequence[ReplayEngineLeg] = (),
+        membership: Callable[[str, datetime], frozenset[str] | None] | None = None,
     ) -> None:
         """걸음을 준비한다.
 
@@ -185,6 +189,10 @@ class FundReplay:
             ref_4h: 기준(BTC) 4H 봉 오름차순 — 국면값을 여기서 낸다.
             seed: 같은 시각 판 순서를 섞는 씨앗(실계좌는 도착 순서).
             engines: 엔진 다리들(T608) — 정시마다 봉을 흘리고 마감을 처리한다 · 증거금을 나눠 쓴다.
+            membership: `(종목, 시각) → 신규 진입을 허용할 다리 id`(T786 · 분기 우주 펀드) —
+                실계좌 `_universe_step` 이 세션에 거는 `entry_legs` 와 같다. 빈 집합이고 보유가
+                없으면 그 걸음은 커서만 민다(`Session.idle_advance` · 실계좌는 그 판을 내린다).
+                None 이면 예전과 같다(고정 목록).
         """
         self.boards = list(boards)
         self.coordinator = coordinator
@@ -193,6 +201,7 @@ class FundReplay:
         self._ref = list(ref_4h)
         self._ref_ends = [c.ts + FOUR for c in self._ref]
         self._rnd = random.Random(seed)
+        self._membership = membership
         self.result = ReplayResult()
 
     def run(self, start: datetime, end: datetime) -> ReplayResult:
@@ -223,6 +232,12 @@ class FundReplay:
             due = [b for b in self.boards if of_day % b.minutes == 0]
             self._rnd.shuffle(due)
             for board in due:
+                if self._membership is not None:
+                    allowed = self._membership(board.symbol, t)
+                    if board.session.entry_legs != allowed:
+                        board.session.entry_legs = allowed
+                    if board.session.idle_advance():
+                        continue
                 self._halt_if_exhausted(board, t)
                 board.session.step()
                 self._after_step(board, t)
@@ -251,13 +266,23 @@ class FundReplay:
         """
         k = bisect_right(self._ref_ends, t)
         closed = self._ref[:k]
+        # 같은 필요(`RefNeeds` · 값 동등)는 한 번만 계산한다 — 판이 많은 동적 재현(T786)에서
+        # 같은 식을 판마다 되풀이하던 몫. 결과는 같다(순수 함수 · 같은 입력).
+        memo: dict[RefNeeds, Any] = {}
         for board in self.boards:
             needs = board.needs
             if needs is None or needs.empty:
                 continue
             s = board.session
             try:
-                got = reference_regime(closed, needs)
+                if needs not in memo:
+                    try:
+                        memo[needs] = reference_regime(closed, needs)
+                    except ValueError as exc:
+                        memo[needs] = exc
+                got = memo[needs]
+                if isinstance(got, ValueError):
+                    raise got
             except ValueError:
                 s.ref_above = s.ref_return = s.ref_surge = s.ref_sma_down = None
                 s.ref_vol = ()

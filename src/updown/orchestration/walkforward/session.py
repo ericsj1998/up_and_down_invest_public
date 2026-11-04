@@ -1256,6 +1256,26 @@ class Session:
         return self.feed.finished
 
     @property
+    def flat(self) -> bool:
+        """보유 · 걸린 주문 · 체결 대기가 하나도 없는가 (T786 · 동적 펀드 재현)."""
+        return not self._held and self._open is None and self._waiting is None
+
+    def idle_advance(self) -> bool:
+        """판단 없이 커서만 한 걸음 민다 — 보유가 없고 신규 진입이 전부 막힌 판 (T786).
+
+        실계좌 우주 펀드는 이번 분기 목록 밖이고 포지션이 없는 종목의 판을 **내린다**
+        (`rotation.plan_rotation` DROP) — 그동안 판단할 것이 없다. 재현 도구는 판을 내리지 않고
+        이 함수로 그 시간을 건너뛴다(탐지기를 안 돌려 걸음이 싸다).
+
+        Returns:
+            밀었으면 True. 보유 · 주문이 있거나 진입 범위가 비어 있지 않거나 끝났으면 False
+            (그때는 `step` 을 부른다).
+        """
+        if self.entry_legs is None or self.entry_legs or not self.flat or self.paused:
+            return False
+        return self.feed.advance(self.step_frame)
+
+    @property
     def playbook(self) -> Playbook:
         """대표 매매법 — 진입 TF·귀속 이름의 기본값.
 
