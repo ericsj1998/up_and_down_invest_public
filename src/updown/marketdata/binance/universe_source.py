@@ -32,6 +32,10 @@ class UniverseSourceError(RuntimeError):
     """순위 재료를 온전히 받지 못했다 — 이전 분기 목록을 유지할 일이다."""
 
 
+class InvalidSymbolStatusError(UniverseSourceError):
+    """거래소가 그 심볼의 봉을 상태 때문에 거절했다(`-1122` · 상장 전 등) — 봉이 없다는 답."""
+
+
 @dataclass(frozen=True, slots=True)
 class PerpSymbol:
     """바이낸스 USDT-M 심볼 하나(상태 무관).
@@ -118,6 +122,8 @@ class BinanceUniverseSource:
         self._max_tries = max_tries
         self.weight_max = 0
         self.calls = 0
+        self.invalid_status: list[str] = []
+        """봉 조회를 상태 때문에 거절당한 심볼 — 스냅샷 출처에 남긴다."""
 
     async def aclose(self) -> None:
         """클라이언트 연결을 닫는다."""
@@ -136,6 +142,10 @@ class BinanceUniverseSource:
                 self.calls += 1
                 return await self._client.get_json(path, params)
             except BinanceApiError as exc:
+                # 2026-11-04 G3 실측 — 상장 전 심볼(GAIBUSDT)은 400 `-1122 Invalid symbol status`.
+                #    다시 물어도 같은 답이라 재시도 안 함(실패로 세면 분기 스냅샷이 통째로 막힌다).
+                if exc.status_code == 400 and "-1122" in str(exc):
+                    raise InvalidSymbolStatusError(f"{path} {params} — {exc}") from exc
                 if attempt == self._max_tries:
                     raise UniverseSourceError(f"{path} {params} — {exc}") from exc
                 await asyncio.sleep(2.0**attempt)
@@ -182,16 +192,20 @@ class BinanceUniverseSource:
             UniverseSourceError: 재시도 뒤에도 못 받았을 때.
         """
         start = q - timedelta(days=lookback_days + 1)
-        body = await self._get(
-            "/fapi/v1/klines",
-            {
-                "symbol": symbol,
-                "interval": "1d",
-                "startTime": str(_ms(start)),
-                "endTime": str(_ms(q) - 1),
-                "limit": str(min(1500, lookback_days + 5)),
-            },
-        )
+        try:
+            body = await self._get(
+                "/fapi/v1/klines",
+                {
+                    "symbol": symbol,
+                    "interval": "1d",
+                    "startTime": str(_ms(start)),
+                    "endTime": str(_ms(q) - 1),
+                    "limit": str(min(1500, lookback_days + 5)),
+                },
+            )
+        except InvalidSymbolStatusError:
+            self.invalid_status.append(symbol)
+            return {}
         if not isinstance(body, list):
             raise UniverseSourceError(f"{symbol} klines 모양이 틀렸다")
         return parse_daily_quotes(body, q)

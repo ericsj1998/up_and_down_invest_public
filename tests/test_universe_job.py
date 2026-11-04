@@ -221,3 +221,20 @@ def test_name_chain_failure_is_a_failed_snapshot() -> None:
     out = _run(store, _source(), names=names)
     assert out.action == "failed"
     assert store.rows[-1]["status"] == STATUS_FAILED
+
+
+def test_invalid_symbol_status_is_no_bars_not_failure() -> None:
+    """상장 전 심볼의 400 `-1122` 는 봉 없음으로 — 분기 스냅샷을 막지 않는다(2026-11-04 G3)."""
+    from updown.marketdata.binance.client import BinanceApiError
+    from updown.marketdata.binance.universe_source import BinanceUniverseSource
+
+    class _Client:
+        async def get_json(self, path: str, params: dict[str, str] | None = None) -> list[object]:
+            raise BinanceApiError(
+                '400 {"code":-1122,"msg":"Invalid symbol status."}', status_code=400
+            )
+
+    src = BinanceUniverseSource(cast("Any", _Client()), pace_s=0.0)
+    got = asyncio.run(src.daily_quotes("GAIBUSDT", Q, 365))
+    assert got == {} and src.invalid_status == ["GAIBUSDT"]
+    assert src.calls == 1  # 재시도 안 함

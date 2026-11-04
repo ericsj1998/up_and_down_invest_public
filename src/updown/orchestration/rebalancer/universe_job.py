@@ -275,6 +275,7 @@ async def fetch_daily(
         "statuses": statuses,
         "calls": source.calls,
         "weight_max": source.weight_max,
+        "invalid_status": list(getattr(source, "invalid_status", [])),
         "fetch_ms": int((time.monotonic() - t0) * 1000),
     }
 
