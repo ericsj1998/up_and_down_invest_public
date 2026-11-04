@@ -337,6 +337,67 @@ s4 = 마지막 사건 넷 중 하나(hold_up · fail_up · hold_dn · fail_dn ·
 
 
 @dataclass(frozen=True, slots=True)
+class RefDistBand:
+    """기준 SMA 거리 띠 한 칸 — [low, high) 안이면 `mult` 배.
+
+    Attributes:
+        mult: 배수(0 이면 그 진입 건너뜀).
+        low: 아래 끝(포함) · None 이면 없음.
+        high: 위 끝(제외) · None 이면 없음.
+    """
+
+    mult: Decimal
+    low: Decimal | None = None
+    high: Decimal | None = None
+
+    def holds(self, value: Decimal) -> bool:
+        """값이 띠 안인가."""
+        if self.low is not None and value < self.low:
+            return False
+        return not (self.high is not None and value >= self.high)
+
+
+@dataclass(frozen=True, slots=True)
+class RefDistTilt:
+    """기준 종목(BTC) 일봉 종가의 SMA(`days`) 거리 % 가 정하는 크기 배수 (T783 · P0 · T772).
+
+    연구 `_t401f("BTC 200일 거리")` = 닫힌 BTC 일봉 종가 ÷ 직전 `days` 일 종가 평균 - 1 (x 100) ·
+    판 토큰 `ftilt=macd:btc200:lo:hi:m0:m1:m2`. 띠는 겹치지 않게 적는다(한 칸만 걸린다).
+    값은 러너가 4H 마감마다 주입한다(`Session.ref_dist_pct`) · 모르면 1 배(연구 NaN = 1).
+
+    Attributes:
+        days: SMA 일수(연구 200).
+        bands: 띠들.
+
+    Raises:
+        ValueError: 일수 · 띠가 말이 안 되는 경우.
+    """
+
+    days: int
+    bands: tuple[RefDistBand, ...]
+
+    def __post_init__(self) -> None:
+        """값이 말이 되는지."""
+        if not 2 <= self.days <= 400:
+            raise ValueError(f"일수는 2 ~ 400: {self.days}")
+        if not self.bands:
+            raise ValueError("띠가 하나는 있어야 한다")
+        for band in self.bands:
+            if band.mult < 0:
+                raise ValueError(f"배수는 0 이상: {band.mult}")
+            if band.low is None and band.high is None:
+                raise ValueError("띠 끝이 하나는 있어야 한다")
+
+    def mult_of(self, value: Decimal) -> Decimal:
+        """값 → 배수(걸린 띠 배수의 곱 · 없으면 1)."""
+        out = Decimal(1)
+        for band in self.bands:
+            if band.holds(value):
+                out *= band.mult
+        return out
+
+
+@dataclass(frozen=True, slots=True)
 class RefRegimeTilt:
     """기준 종목(BTC) 일봉 전고점 국면이 정하는 다리 크기 배수 (T436 · T557 · 혼합 4.3).
 
@@ -1450,6 +1511,10 @@ class Playbook:
 
     값은 러너가 주입한다(`Session.ref_vol_pct`). 🔴 **None(모름)이면 진입을 보류한다**(규칙 #8-1).
     ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_ref_dist_tilt: RefDistTilt | None = None
+    """기준 종목(BTC) 일봉 SMA 거리가 정하는 **크기 배수** (T783 · P0) — 러너 주입
+    (`Session.ref_dist_pct`) · 모름이면 1 배. ⛔ 선언이 None 이면 동결이다 (§5.6.2).
     """
     entry_ref_regime_tilt: RefRegimeTilt | None = None
     """기준 종목(BTC) 일봉 전고점 국면이 정하는 **크기 배수** (T436 · T557 · 혼합 4.3).

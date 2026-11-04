@@ -659,6 +659,11 @@ class Session:
     None = 모름 → 배수 1(크기를 키우지도 줄이지도 않는다 · 연구 "안 씀").
     """
     ref_pivot_s4: str | None = None
+    ref_dist_pct: Decimal | None = None
+    """기준 종목(BTC) 일봉 종가의 SMA 거리 % — 러너 주입(T783 · `entry_ref_dist_tilt`).
+
+    모르면 None(배수 1).
+    """
     """기준 종목(BTC) 일봉 전고점 국면 S4(hold_up · fail_up · hold_dn · fail_dn) — 러너 주입."""
     ref_vol: tuple[tuple[datetime, Decimal], ...] = ()
     """기준 종목(BTC) 연율 변동성 — `(그 UTC 일봉이 끝난 시각, 변동성)` 오름차순.
@@ -2052,6 +2057,22 @@ class Session:
                 mult *= rule.mult
             else:
                 self._count(f"bar_tilt:{k}:out")
+        return mult
+
+    def _ref_dist_tilt_mult(self, book: Playbook) -> Decimal:
+        """기준 종목(BTC) 일봉 SMA 거리 띠 배수 (T783 · P0) — 선언이 없거나 모르면 1.
+
+        Note:
+            깔때기에 `ref_dist_tilt:x<배수>` · `unknown` 을 센다(§1-0s).
+        """
+        rule = book.entry_ref_dist_tilt
+        if rule is None:
+            return Decimal(1)
+        if self.ref_dist_pct is None:
+            self._count("ref_dist_tilt:unknown")
+            return Decimal(1)
+        mult = rule.mult_of(self.ref_dist_pct)
+        self._count(f"ref_dist_tilt:x{mult}")
         return mult
 
     def _ref_regime_tilt_mult(self, book: Playbook) -> Decimal:
@@ -5257,6 +5278,12 @@ class Session:
         if regime_tilt <= 0:
             self._count("gate:ref_regime_tilt")
             return None
+        # ⭐ T783 · P0 — BTC 일봉 SMA 거리 띠(MACD 숏 · 모름 1).
+        dist_tilt = self._ref_dist_tilt_mult(chosen.playbook)
+        if dist_tilt <= 0:
+            self._count("gate:ref_dist_tilt")
+            return None
+        regime_tilt *= dist_tilt
         exposure *= tilt * bar_tilt * regime_tilt * self._window_mult(chosen.playbook, sig)
         if not self._fresh_close(chosen.playbook):
             self._count("gate:fresh_close")

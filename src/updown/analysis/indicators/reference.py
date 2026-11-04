@@ -63,6 +63,7 @@ class RefNeeds:
     pivot_k: int | None = None
     pivot_n: int | None = None
     pivot_lookback: int | None = None
+    dist_days: int | None = None
 
     @property
     def empty(self) -> bool:
@@ -75,6 +76,7 @@ class RefNeeds:
             and self.vol_days is None
             and self.vol_pct_bars is None
             and self.pivot_k is None
+            and self.dist_days is None
         )
 
     @property
@@ -98,6 +100,7 @@ class RefNeeds:
             6 * ((self.vol_days or 0) + 5),
             0 if self.vol_pct_bars is None else self.vol_pct_bars + (self.vol_pct_rank or 0) + 1,
             6 * pivot_days,
+            6 * ((self.dist_days or 0) + 2),
         )
 
 
@@ -126,6 +129,7 @@ def needs_of(playbooks: Iterable[Playbook]) -> RefNeeds:
     reg = next(
         (b.entry_ref_regime_tilt for b in books if b.entry_ref_regime_tilt is not None), None
     )
+    dist = next((b.entry_ref_dist_tilt for b in books if b.entry_ref_dist_tilt is not None), None)
     return RefNeeds(
         ma_n=ma_n,
         band_n=None if band is None else band.bars,
@@ -138,6 +142,7 @@ def needs_of(playbooks: Iterable[Playbook]) -> RefNeeds:
         pivot_k=None if reg is None else reg.pivot,
         pivot_n=None if reg is None else reg.confirm_days,
         pivot_lookback=None if reg is None else reg.lookback_days,
+        dist_days=None if dist is None else dist.days,
     )
 
 
@@ -164,6 +169,7 @@ class RefRegime:
     vol_pct: Decimal | None = None
     pivot_s1: str | None = None
     pivot_s4: str | None = None
+    dist_pct: Decimal | None = None
 
 
 def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
@@ -220,6 +226,14 @@ def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
     s4: str | None = None
     if needs.pivot_k is not None:
         s1, s4 = pivot_states(closed, needs.pivot_k, needs.pivot_n or 5, needs.pivot_lookback or 60)
+    dist_pct: Decimal | None = None
+    if needs.dist_days is not None:
+        # 연구 `BTC 200일 거리` = 닫힌 일봉 종가 ÷ 마지막 `days` 일 종가 평균 - 1 (그 날 포함)
+        daily = [c.close for c in closed if (c.ts + FOUR_HOURS).hour == 0]
+        if len(daily) < needs.dist_days:
+            raise ValueError(f"기준 일봉 부족(SMA 거리): {len(daily)} < {needs.dist_days}")
+        level = sum(daily[-needs.dist_days :], Decimal(0)) / needs.dist_days
+        dist_pct = (daily[-1] / level - 1) * 100
     return RefRegime(
         above=above,
         ret=ret,
@@ -229,6 +243,7 @@ def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
         vol_pct=vol_pct,
         pivot_s1=s1,
         pivot_s4=s4,
+        dist_pct=dist_pct,
     )
 
 

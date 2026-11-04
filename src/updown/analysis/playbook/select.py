@@ -44,6 +44,8 @@ from updown.analysis.playbook.types import (
     Playbook,
     PlaybookRegime,
     QuietAdd,
+    RefDistBand,
+    RefDistTilt,
     RefRegimeTilt,
     RefReturnBand,
     RefSmaDown,
@@ -455,6 +457,29 @@ def _ref_regime_tilt(raw: object, name: str) -> RefRegimeTilt:
         )
     except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
         raise PlaybookConfigError(f"{name}.entry_ref_regime_tilt — {exc}") from exc
+
+
+def _ref_dist_tilt(raw: object, name: str) -> RefDistTilt:
+    """기준 SMA 거리 띠 (T783 · P0).
+
+    예: `{days: 200, bands: [{high: "4.86", mult: "0.5"}, {low: "4.86", mult: "1.75"}]}`.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_ref_dist_tilt")
+    try:
+        bands = tuple(
+            RefDistBand(
+                mult=Decimal(str(_mapping(b, f"{name}.entry_ref_dist_tilt.bands")["mult"])),
+                low=None if b.get("low") is None else Decimal(str(b["low"])),
+                high=None if b.get("high") is None else Decimal(str(b["high"])),
+            )
+            for b in cast("list[dict[str, Any]]", body["bands"])
+        )
+        return RefDistTilt(days=int(str(body["days"])), bands=bands)
+    except (ArithmeticError, KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_ref_dist_tilt — {exc}") from exc
 
 
 def _early_entry(raw: object, name: str) -> EarlyEntry:
@@ -957,6 +982,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         None
                         if body.get("entry_ref_vol_pct") is None
                         else _ref_vol_pct(body["entry_ref_vol_pct"], f"playbooks.{name}")
+                    ),
+                    entry_ref_dist_tilt=(
+                        None
+                        if body.get("entry_ref_dist_tilt") is None
+                        else _ref_dist_tilt(body["entry_ref_dist_tilt"], f"playbooks.{name}")
                     ),
                     entry_ref_regime_tilt=(
                         None
