@@ -34,6 +34,7 @@ LEGS = {
     "private_strategy": "0.75",
     "private_strategy": "0.375",
 }
+Q1_SAME = {"private_strategy", "private_strategy"}
 
 
 def _books() -> dict[str, Playbook]:
@@ -45,7 +46,9 @@ class TestLiveDeclaration:
         books = _books()
         for leg, exposure in LEGS.items():
             assert books[leg].leg_exposure == Decimal(exposure), leg
-            assert books[leg].version == "0.1.0", f"{leg} 귀속 키 버전은 그대로"
+            # Q1(T783 · 펀드 0 이라 버전 올려 고침) — 일봉 채널 · MACD 롱은 그대로 0.1.0
+            want = "0.1.0" if leg in Q1_SAME else "0.2.0"
+            assert books[leg].version == want, f"{leg} 귀속 키 버전"
         for leg in set(LEGS) - {"private_strategy"}:
             brake = books[leg].drawdown_brake
             assert brake is not None and brake.at == Decimal("0.10"), leg

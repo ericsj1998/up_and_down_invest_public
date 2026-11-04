@@ -326,6 +326,7 @@ class TestLiveDeclaration:
             "private_strategy",  # T329 급락 되돌림 롱 — 12봉 시간 청산(재현용)
             "private_strategy",  # T329 — 실계좌 다리(혼합 2.3.0 · listed false)
             "private_strategy",  # 혼합 2.5.0 K05B25 — 2.4.0 다리 복사(2026-10-02)
+            "private_strategy",  # Q1 — 6 봉 고점 청산 보유 상한 240 봉(T783)
             "private_strategy",
             "private_strategy",
         }

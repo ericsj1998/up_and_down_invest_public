@@ -207,7 +207,7 @@ class TestItIsWiredLikeAnyOtherRule:
             "private_strategy",  # T304 — 혼합 2.0.0-V 의 삼각 다리(4x · 변동성 목표)
             "private_strategy",  # 384차 측정용 — 띠만 뺌
             "private_strategy",
-            "private_strategy",  # 혼합 2.5.0 K05B25 — 2.4.0 다리 복사(2026-10-02)
+            # Q1(T783): k05 삼각 다리는 SMA20 청산 → 6 봉 고점 청산(`high_exit_short`)
         }
 
 

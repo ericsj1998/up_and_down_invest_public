@@ -24,7 +24,9 @@ class TestDeclaration:
         )
         assert books["private_strategy"].listed is False
         assert books["private_strategy"].superseded_by is None
-        assert books["private_strategy"].listed is True
+        assert books["private_strategy"].listed is False  # Q1 — `_u` 가 선택창(T783)
+        q1 = books["private_strategy"]
+        assert q1.listed is True and q1.superseded_by is None
         assert books["private_strategy"].listed is False
         assert books["private_strategy"].listed is False
 

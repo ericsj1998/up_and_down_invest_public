@@ -44,7 +44,10 @@ class TestListedSlotPlaybooksDeclareTheirUniverse:
         missing = [
             book.playbook_id
             for book in load_playbooks()
-            if book.listed and book.weight_mode == "slots" and book.playbook_id not in blocks
+            if book.listed
+            and book.weight_mode == "slots"
+            and book.universe is None  # T758 — 분기 우주 묶음은 스냅샷이 종목을 정한다
+            and book.playbook_id not in blocks
         ]
         assert not missing, (
             f"{missing} 는 선택창에 있고 자리 배분인데 `baskets.yml by_playbook` 에 블록이 없다 — "
@@ -66,7 +69,7 @@ class TestListedSlotPlaybooksDeclareTheirUniverse:
         """자리 수 = 종목 수여야 "종목마다 자기 자리" 가 성립한다 (자리 6 · 6종)."""
         blocks = _by_playbook()
         for book in load_playbooks():
-            if not (book.listed and book.weight_mode == "slots"):
+            if not (book.listed and book.weight_mode == "slots") or book.universe is not None:
                 continue
             members = cast("list[dict[str, str]]", blocks[book.playbook_id]["members"])
             if book.playbook_id == "private_strategy":
