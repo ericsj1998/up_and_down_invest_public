@@ -3141,6 +3141,14 @@ class Session:
                     level = sma([row.close for row in gauge.rows], book.ma_exit_above_short)[-1]
                     if level is not None and gauge.rows[-1].close > level:
                         flipped = True
+            # ⭐ T783 — 직전 M 봉 고가 위 마감 청산(연구 `texit=hi:M` · 걷기 봉만 · 손절은 먼저).
+            if not flipped and not long and book.high_exit_short is not None and held.opened_at:
+                gauge = self._frame(book.timeframe, None)
+                if gauge is not None and high_exit_hit(
+                    gauge.rows, held.opened_at, book.high_exit_short, frame_span(book.timeframe)
+                ):
+                    flipped = True
+                    self._count("high_exit_short")
             # 🔴 **MACD 반대 교차 청산** (T302 · T303) — 판정 TF 의 MACD 선이 시그널
             #    위에서 마감하면 숏을 전량 정리한다. 4H MACD 3중 신호 숏의 청산이다.
             #    None 이면 이 가지는 없는 것과 같다.
@@ -5463,6 +5471,24 @@ def run_to_end(session: Session, *, limit: int = 100_000) -> Sequence[Snapshot]:
         if shot.opened is not None or shot.closed or shot.proposals:
             out.append(shot)
     return out
+
+
+def high_exit_hit(rows: Sequence[Candle], opened_at: datetime, m: int, span: timedelta) -> bool:
+    """숏 청산 — 마지막 닫힌 봉 종가가 직전 `m` 봉 고가 위인가 (T783 · 연구 T446 `texit=hi:M`).
+
+    Args:
+        rows: 판정 TF 닫힌 봉(오름차순).
+        opened_at: 진입 시각.
+        m: 볼 봉 수.
+        span: 판정 TF 한 봉 길이.
+
+    Returns:
+        걷기 봉(진입 뒤에 마감한 봉)이 `m + 1` 개 이상이고 마지막 종가 > 직전 `m` 봉 고가 최댓값.
+    """
+    walk = [row for row in rows if row.ts + span > opened_at]
+    if len(walk) <= m:
+        return False
+    return walk[-1].close > max(row.high for row in walk[-m - 1 : -1])
 
 
 def trail_exit_hit(

@@ -948,6 +948,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         if body.get("ma_exit_above_short") is None
                         else int(body["ma_exit_above_short"])
                     ),
+                    high_exit_short=(
+                        None
+                        if body.get("high_exit_short") is None
+                        else int(body["high_exit_short"])
+                    ),
                     trail_exit_pct_long=(
                         None
                         if body.get("trail_exit_pct_long") is None

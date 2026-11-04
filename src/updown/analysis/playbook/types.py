@@ -1456,6 +1456,14 @@ class Playbook:
 
     ⛔ None 이면 동결이다 (§5.6.2) — 기존 매매법은 한 글자도 다르게 돌지 않는다.
     """
+    high_exit_short: int | None = None
+    """숏 보유 중 판정 TF 종가가 **직전 M 봉 고가 위로 마감**하면 전량 나간다.
+
+    T783 · 연구 `texit=hi:M`(T446 걷기 규약): 걷기 봉 = 진입 뒤에 마감하는 판정 TF 봉 ·
+    직전 M 봉이 모두 걷기 봉일 때부터 본다 · 손절이 먼저. `ma_exit_above_short` 와 같이
+    두면 먼저 닿는 쪽이 이긴다(연구 변형은 SMA 청산을 이것으로 **바꾼다** — 선언에서
+    `ma_exit_above_short` 를 빼고 `max_hold_bars: 240`). ⛔ None 이면 동결이다 (§5.6.2).
+    """
     trail_exit_pct_long: Decimal | None = None
     """롱 보유 중 판정 TF 종가가 **보유 뒤 최고가 대비 X% 아래로 마감**하면 전량 나간다.
 
