@@ -50,6 +50,7 @@ from updown.analysis.playbook.types import (
     RefReturnBand,
     RefSmaDown,
     RefSurgeCap,
+    RefVolOff,
     RefVolPct,
     SmaTilt,
     VolTarget,
@@ -480,6 +481,21 @@ def _ref_dist_tilt(raw: object, name: str) -> RefDistTilt:
         return RefDistTilt(days=int(str(body["days"])), bands=bands)
     except (ArithmeticError, KeyError, TypeError, ValueError, AttributeError) as exc:
         raise PlaybookConfigError(f"{name}.entry_ref_dist_tilt — {exc}") from exc
+
+
+def _ref_vol_off(raw: object, name: str) -> RefVolOff:
+    """기준 일봉 변동성 문 (T612 SV1 · 숏 보호).
+
+    예: `{days: 20, min_pct: "3.5"}`.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_ref_vol_off")
+    try:
+        return RefVolOff(days=int(str(body["days"])), min_pct=Decimal(str(body["min_pct"])))
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_ref_vol_off — {exc}") from exc
 
 
 def _early_entry(raw: object, name: str) -> EarlyEntry:
@@ -992,6 +1008,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         None
                         if body.get("entry_ref_dist_tilt") is None
                         else _ref_dist_tilt(body["entry_ref_dist_tilt"], f"playbooks.{name}")
+                    ),
+                    entry_ref_vol_off=(
+                        None
+                        if body.get("entry_ref_vol_off") is None
+                        else _ref_vol_off(body["entry_ref_vol_off"], f"playbooks.{name}")
                     ),
                     entry_ref_regime_tilt=(
                         None

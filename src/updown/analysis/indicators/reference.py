@@ -12,6 +12,8 @@
   (T304 #2 · 연구 R2).
 - `vol` (`entry_vol_target.days` d): UTC 일봉 로그수익 d 개의 모집단 표준편차 x √365 ·
   최근 3 일 치 (T304 변동성 목표).
+- `vol_sd_pct` (`entry_ref_vol_off.days` d): UTC 일봉 로그수익 d 개의 표본 표준편차 x 100
+  (T612 SV1 · 숏 보호 · 연구 `t612_short_vol_dmul.sd20`).
 - `vol_pct` (`entry_ref_vol_pct` bars · rank): 4H 로그수익 `bars` 개의 모집단 표준편차를 직전
   `rank` 개 값 안에서 평균 순위 백분위로 (T329 급락 되돌림 롱 · 연구 573 `BTC변동성백분위`).
 """
@@ -64,6 +66,7 @@ class RefNeeds:
     pivot_n: int | None = None
     pivot_lookback: int | None = None
     dist_days: int | None = None
+    vol_off_days: int | None = None
 
     @property
     def empty(self) -> bool:
@@ -77,6 +80,7 @@ class RefNeeds:
             and self.vol_pct_bars is None
             and self.pivot_k is None
             and self.dist_days is None
+            and self.vol_off_days is None
         )
 
     @property
@@ -101,6 +105,7 @@ class RefNeeds:
             0 if self.vol_pct_bars is None else self.vol_pct_bars + (self.vol_pct_rank or 0) + 1,
             6 * pivot_days,
             6 * ((self.dist_days or 0) + 2),
+            6 * ((self.vol_off_days or 0) + 3),
         )
 
 
@@ -130,6 +135,7 @@ def needs_of(playbooks: Iterable[Playbook]) -> RefNeeds:
         (b.entry_ref_regime_tilt for b in books if b.entry_ref_regime_tilt is not None), None
     )
     dist = next((b.entry_ref_dist_tilt for b in books if b.entry_ref_dist_tilt is not None), None)
+    voff = next((b.entry_ref_vol_off for b in books if b.entry_ref_vol_off is not None), None)
     return RefNeeds(
         ma_n=ma_n,
         band_n=None if band is None else band.bars,
@@ -143,6 +149,7 @@ def needs_of(playbooks: Iterable[Playbook]) -> RefNeeds:
         pivot_n=None if reg is None else reg.confirm_days,
         pivot_lookback=None if reg is None else reg.lookback_days,
         dist_days=None if dist is None else dist.days,
+        vol_off_days=None if voff is None else voff.days,
     )
 
 
@@ -170,6 +177,7 @@ class RefRegime:
     pivot_s1: str | None = None
     pivot_s4: str | None = None
     dist_pct: Decimal | None = None
+    vol_sd_pct: Decimal | None = None
 
 
 def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
@@ -234,6 +242,18 @@ def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
             raise ValueError(f"기준 일봉 부족(SMA 거리): {len(daily)} < {needs.dist_days}")
         level = sum(daily[-needs.dist_days :], Decimal(0)) / needs.dist_days
         dist_pct = (daily[-1] / level - 1) * 100
+    vol_sd_pct: Decimal | None = None
+    if needs.vol_off_days is not None:
+        # 연구 `t612_short_vol_dmul.sd20` = 닫힌 일봉 로그수익 마지막 `days` 개의
+        # 표본 표준편차(ddof 1)
+        closes = [float(c.close) for c in closed if (c.ts + FOUR_HOURS).hour == 0]
+        if len(closes) < needs.vol_off_days + 1 or any(x <= 0 for x in closes):
+            raise ValueError(
+                f"기준 일봉 부족·이상(변동성 문): {len(closes)} < {needs.vol_off_days + 1}"
+            )
+        window = closes[-needs.vol_off_days - 1 :]
+        rets = [math.log(b / a) for a, b in itertools.pairwise(window)]
+        vol_sd_pct = Decimal(str(statistics.stdev(rets) * 100))
     return RefRegime(
         above=above,
         ret=ret,
@@ -244,6 +264,7 @@ def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
         pivot_s1=s1,
         pivot_s4=s4,
         dist_pct=dist_pct,
+        vol_sd_pct=vol_sd_pct,
     )
 
 

@@ -358,6 +358,38 @@ class RefDistBand:
 
 
 @dataclass(frozen=True, slots=True)
+class RefVolOff:
+    """기준 종목(BTC) 일봉 변동성이 문턱 이상인 날은 신규 진입을 하지 않는다 (T612 SV1 · 숏 보호).
+
+    값 = 닫힌 BTC 일봉 종가의 로그수익 최근 `days` 개 **표본** 표준편차(ddof 1) x 100 —
+    연구 `t612_short_vol_dmul.py` 의 `sd20` 와 같은 식이다. 값은 러너가 4H 마감마다 주입한다
+    (`Session.ref_vol_sd_pct`) · 모르면 막지 않는다(연구 NaN = 0 → 낮음).
+    보유 포지션은 건드리지 않는다 — 문이지 청산이 아니다.
+
+    Attributes:
+        days: 로그수익 개수(연구 20).
+        min_pct: 이 값 이상이면 그날 신규 진입 0(%).
+
+    Raises:
+        ValueError: 일수 · 문턱이 말이 안 되는 경우.
+    """
+
+    days: int
+    min_pct: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 말이 되는지."""
+        if not 2 <= self.days <= 400:
+            raise ValueError(f"일수는 2 ~ 400: {self.days}")
+        if self.min_pct <= 0:
+            raise ValueError(f"문턱은 0 초과: {self.min_pct}")
+
+    def blocks(self, value: Decimal) -> bool:
+        """이 값이면 신규 진입을 막는가."""
+        return value >= self.min_pct
+
+
+@dataclass(frozen=True, slots=True)
 class RefDistTilt:
     """기준 종목(BTC) 일봉 종가의 SMA(`days`) 거리 % 가 정하는 크기 배수 (T783 · P0 · T772).
 
@@ -1523,6 +1555,10 @@ class Playbook:
     entry_ref_dist_tilt: RefDistTilt | None = None
     """기준 종목(BTC) 일봉 SMA 거리가 정하는 **크기 배수** (T783 · P0) — 러너 주입
     (`Session.ref_dist_pct`) · 모름이면 1 배. ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_ref_vol_off: RefVolOff | None = None
+    """기준 종목(BTC) 일봉 변동성이 문턱 이상인 날 신규 진입을 하지 않는다 (T612 SV1 · 숏 보호) —
+    러너 주입(`Session.ref_vol_sd_pct`) · 모르면 막지 않는다. ⛔ 선언이 None 이면 동결이다 (§5.6.2).
     """
     entry_ref_regime_tilt: RefRegimeTilt | None = None
     """기준 종목(BTC) 일봉 전고점 국면이 정하는 **크기 배수** (T436 · T557 · 혼합 4.3).

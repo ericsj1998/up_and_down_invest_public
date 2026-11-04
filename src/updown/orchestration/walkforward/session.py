@@ -664,6 +664,11 @@ class Session:
 
     모르면 None(배수 1).
     """
+    ref_vol_sd_pct: Decimal | None = None
+    """기준 종목(BTC) 일봉 로그수익 표본 표준편차 % — 러너 주입(T612 SV1 · `entry_ref_vol_off`).
+
+    모르면 None(막지 않음 · 연구 NaN = 낮음).
+    """
     """기준 종목(BTC) 일봉 전고점 국면 S4(hold_up · fail_up · hold_dn · fail_dn) — 러너 주입."""
     ref_vol: tuple[tuple[datetime, Decimal], ...] = ()
     """기준 종목(BTC) 연율 변동성 — `(그 UTC 일봉이 끝난 시각, 변동성)` 오름차순.
@@ -2074,6 +2079,25 @@ class Session:
         mult = rule.mult_of(self.ref_dist_pct)
         self._count(f"ref_dist_tilt:x{mult}")
         return mult
+
+    def _ref_vol_off(self, book: Playbook) -> bool:
+        """기준 종목(BTC) 일봉 변동성 문 (T612 SV1 · 숏 보호) — 문턱 이상이면 True(신규 진입 안 함).
+
+        Note:
+            선언이 없으면 False(동결). 모르면 False(연구 NaN = 낮음) · 깔때기에 `ref_vol_off:on` ·
+            `off` · `unknown` 을 센다(§1-0s).
+        """
+        rule = book.entry_ref_vol_off
+        if rule is None:
+            return False
+        if self.ref_vol_sd_pct is None:
+            self._count("ref_vol_off:unknown")
+            return False
+        if rule.blocks(self.ref_vol_sd_pct):
+            self._count("ref_vol_off:on")
+            return True
+        self._count("ref_vol_off:off")
+        return False
 
     def _ref_regime_tilt_mult(self, book: Playbook) -> Decimal:
         """기준 종목(BTC) 일봉 전고점 국면 배수(T436 · T557 · 혼합 4.3) — 선언한 상태면 그 배수.
@@ -5292,6 +5316,11 @@ class Session:
             self._count("gate:ref_dist_tilt")
             return None
         regime_tilt *= dist_tilt
+        # ⭐ T612 SV1 — BTC 일봉 변동성이 문턱 이상인 날은 신규 진입 0
+        #    (삼각 숏 · MACD 숏 · 모름 통과).
+        if self._ref_vol_off(chosen.playbook):
+            self._count("gate:ref_vol_off")
+            return None
         exposure *= tilt * bar_tilt * regime_tilt * self._window_mult(chosen.playbook, sig)
         if not self._fresh_close(chosen.playbook):
             self._count("gate:fresh_close")
