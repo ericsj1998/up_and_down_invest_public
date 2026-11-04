@@ -614,9 +614,40 @@ class NewHighTilt:
             raise ValueError(f"배수는 0 보다 커야 한다: on {self.on} · off {self.off}")
 
 
-BAR_TILT_FEATURES = ("atr_pct", "body_ratio", "sma_slope5_pct")
+BAR_TILT_FEATURES = (
+    "atr_pct",
+    "body_ratio",
+    "sma_slope5_pct",
+    "sma_slope10_pct",
+    "rsi",
+    "volume_ratio",
+)
 """`BarTilt.feature` 가 받는 이름 — 연구 `t401_entry_census.feats` 의
-"ATR%" · "몸통 비율" · "4H SMA20 기울기"."""
+"ATR%" · "몸통 비율" · "4H SMA20 기울기" · "1D SMA50 기울기"(10 봉) · "RSI" · "거래량 배수"."""
+
+
+def _rsi_last(closes: Sequence[Decimal], n: int) -> Decimal | None:
+    """마지막 봉의 RSI — 연구 `t401_entry_census.rsi` 와 같은 식(첫 n 봉 단순 평균 뒤 Wilder).
+
+    Note:
+        Wilder 평활은 처음부터의 이력에 기대므로 봉 창이 다르면 끝자리가 조금 다르다
+        (창 ≥ 수백 봉이면 띠 판정에 영향이 없는 크기). 값이 모자라면 None.
+    """
+    if len(closes) <= n:
+        return None
+    gain = loss = Decimal(0)
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        g, lo = max(d, Decimal(0)), max(-d, Decimal(0))
+        if i <= n:
+            gain += g / n
+            loss += lo / n
+        else:
+            gain = (gain * (n - 1) + g) / n
+            loss = (loss * (n - 1) + lo) / n
+    if loss == 0:
+        return Decimal(100)
+    return 100 - 100 / (1 + gain / loss)
 
 
 @dataclass(frozen=True, slots=True)
@@ -635,7 +666,10 @@ class BarTilt:
         feature: `atr_pct` = TR 의 단순 평균(`period` 봉) ÷ 그 봉 종가 x 100 ·
             `body_ratio` = |종가 - 시가| ÷ (고가 - 저가) ·
             `sma_slope5_pct` = (SMA(`period`) 마지막 봉 ÷ 5 봉 전 SMA - 1) x 100
-            (연구 `4H SMA20 기울기`).
+            (연구 `4H SMA20 기울기`) ·
+            `sma_slope10_pct` = 같은 식 · 10 봉 전(연구 `1D SMA50 기울기` · T772) ·
+            `rsi` = 종가 RSI(`period` · 첫 `period` 봉 단순 평균 뒤 Wilder · 연구 `rsi` 그대로) ·
+            `volume_ratio` = 그 봉 거래량 ÷ 직전 `period` 봉 거래량 평균(연구 `거래량 배수` · 20).
         mult: 띠 안일 때 크기 배수. 0 이면 그 진입을 건너뛴다(한 건만 — 정지가 아니다).
         period: `atr_pct` 의 TR 평균 봉 수(연구 14) · `sma_slope5_pct` 의 SMA 길이(연구 20) ·
             `body_ratio` 는 안 쓴다.
@@ -681,15 +715,26 @@ class BarTilt:
             if rng <= 0:
                 return Decimal(0)
             return abs(last.close - last.open) / rng
-        if self.feature == "sma_slope5_pct":
+        if self.feature in ("sma_slope5_pct", "sma_slope10_pct"):
             # 연구 `feats["4H SMA20 기울기"]` = (s20[i] / s20[i-5] - 1) x 100 · SMA 는 단순 평균
-            if len(bars) < self.period + 5:
+            #   `1D SMA50 기울기` = (d50[j] / d50[j-10] - 1) x 100 (T772 2 호)
+            lag = 5 if self.feature == "sma_slope5_pct" else 10
+            if len(bars) < self.period + lag:
                 return None
             now = sum((c.close for c in bars[-self.period :]), Decimal(0)) / self.period
-            then = sum((c.close for c in bars[-self.period - 5 : -5]), Decimal(0)) / self.period
+            then = sum((c.close for c in bars[-self.period - lag : -lag]), Decimal(0)) / self.period
             if then <= 0:
                 return None
             return (now / then - 1) * 100
+        if self.feature == "rsi":
+            return _rsi_last([c.close for c in bars], self.period)
+        if self.feature == "volume_ratio":
+            # 연구 `b.v / fmean(직전 20 봉 v)` — 그 봉 자신은 평균에 안 든다
+            if len(bars) < self.period + 1:
+                return None
+            prior = [c.volume for c in bars[-self.period - 1 : -1]]
+            avg = sum(prior, Decimal(0)) / self.period
+            return last.volume / avg if avg > 0 else None
         if len(bars) < self.period + 1 or last.close <= 0:
             return None
         trs = [
