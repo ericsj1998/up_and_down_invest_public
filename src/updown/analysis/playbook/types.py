@@ -1447,6 +1447,11 @@ class Playbook:
     그 엔진이 자기 러너로 돈다 — 하루 한 번 걷고 한 포지션 안에 몫을 여럿 두는 다리처럼 세션 꼴에
     안 맞는 매매법을 위한 길이다. 그때 `setups` 는 비워 둔다(탐지기가 없다).
     """
+    engine_settings: Mapping[str, object] | None = None
+    """외부 엔진에 넘길 값(`LegEngineContext.settings`) — 플랫폼은 뜻을 모르고 그대로 건넨다.
+
+    None 이면 빈 사전(엔진 기본값). 엔진이 모르는 키를 거르는 것은 엔진 몫이다.
+    """
     superseded_by: str | None = None
     """이 매매법을 **대체하는** 매매법 id (T332 · 2026-09-30).
 

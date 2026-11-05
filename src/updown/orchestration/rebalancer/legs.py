@@ -52,6 +52,7 @@ class FundLeg:
         peer_open_boost: (짝 다리 귀속 키들, 문턱, 배수) — 짝 다리들 보유(이 진입 앞서 연 것)가 문턱
             이상이면 신규 진입 x 배수(T400 · 혼합 3.3). None = 없음.
         engine: 이 다리를 돌리는 외부 엔진 이름(`orchestration.leg_engines`). None = 세션 다리.
+        engine_settings: 그 엔진에 넘길 선언 값(`Playbook.engine_settings`). None = 빈 값.
     """
 
     playbook: str
@@ -73,6 +74,7 @@ class FundLeg:
     peer_open_max: tuple[str, int] | None = None
     peer_open_boost: tuple[tuple[str, ...], int, Decimal] | None = None
     engine: str | None = None
+    engine_settings: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """저장용 딕셔너리 — 돌던 펀드의 다리는 선언이 바뀌어도 안 바뀐다(저장본이 이긴다)."""
@@ -124,6 +126,7 @@ class FundLeg:
                 }
             ),
             "engine": self.engine,
+            "engine_settings": None if self.engine_settings is None else dict(self.engine_settings),
         }
 
     @classmethod
@@ -191,6 +194,12 @@ class FundLeg:
             peer_open_boost=boost,
             # 엔진 다리 앞 저장본엔 없다 — 없으면 세션 다리(그때 돌던 그대로)
             engine=None if data.get("engine") in (None, "") else str(data["engine"]),
+            # 엔진 값 앞 저장본엔 없다 — 없으면 빈 값(엔진 기본값 · 그때 돌던 그대로)
+            engine_settings=(
+                dict(cast("Mapping[str, Any]", data["engine_settings"]))
+                if isinstance(data.get("engine_settings"), Mapping)
+                else None
+            ),
         )
 
 
@@ -282,6 +291,9 @@ def declared_legs(
                 peer_open_max=peer,
                 peer_open_boost=boost,
                 engine=book.engine,
+                engine_settings=(
+                    None if book.engine_settings is None else dict(book.engine_settings)
+                ),
             )
         )
     covered = {symbol for leg in out for symbol in leg.symbols}

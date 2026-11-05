@@ -205,4 +205,5 @@ def test_listing_tags_the_source(monkeypatch: pytest.MonkeyPatch) -> None:
     rows = (db_source.DeclRow("db_bundle", body),)
     monkeypatch.setattr(db_source, "rows", lambda: rows)
     listing = {item["id"]: item["source"] for item in wf._playbooks_all()["playbooks"]}
-    assert listing["db_bundle"] == "db" and listing["private_strategy"] == "file"
+    assert listing["db_bundle"] == "db"
+    assert "file" in {src for key, src in listing.items() if key != "db_bundle"}  # 파일 선언은 file

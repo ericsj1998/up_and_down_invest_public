@@ -269,6 +269,25 @@ def _split_legs(body: Mapping[str, object], name: str) -> bool:
     return wanted
 
 
+def _engine_settings(body: Mapping[str, object], name: str) -> Mapping[str, object] | None:
+    """`engine_settings` 한 줄 — 외부 엔진에 그대로 넘길 사전(뜻은 엔진이 안다 · T788).
+
+    Args:
+        body: 플레이북 선언 전체 — `engine` 이 같이 있어야 한다.
+        name: 오류에 붙일 자리 이름.
+
+    Raises:
+        PlaybookConfigError: 사전이 아니거나 `engine` 없이 왔다(세션 다리에 엔진 값은 뜻이 없다 ·
+            조용히 버리지 않는다).
+    """
+    raw = body.get("engine_settings")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or body.get("engine") is None:
+        raise PlaybookConfigError(f"{name}.engine_settings — engine 과 함께 쓰는 사전이어야 한다")
+    return dict(cast("Mapping[str, object]", raw))
+
+
 def _leg_exposure(body: Mapping[str, object], name: str) -> Decimal | None:
     """`leg_exposure` 한 줄 — 거래소 배율(`leverage`)을 넘는 노출은 거부한다 (T291).
 
@@ -1102,6 +1121,7 @@ def _parse_declared(declared: object) -> list[Playbook]:
                     share_same_side=bool(body.get("share_same_side", False)),
                     drawdown_isolated=bool(body.get("drawdown_isolated", False)),
                     engine=None if body.get("engine") is None else str(body["engine"]),
+                    engine_settings=_engine_settings(body, f"playbooks.{name}"),
                     legs_revision=_positive_int(body, "legs_revision", f"playbooks.{name}"),
                     universe=None if body.get("universe") is None else str(body["universe"]),
                     superseded_by=(

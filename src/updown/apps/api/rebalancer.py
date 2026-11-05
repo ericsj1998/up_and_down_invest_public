@@ -1595,6 +1595,7 @@ async def _spawn_engine(fund_id: str, leg: FundLeg, symbol: str, market: str) ->
             capital=lambda: _fund_capital(fund_id),
             state_dir=ENGINES_ROOT,
             leverage=leg.leverage,
+            settings=dict(leg.engine_settings or {}),
         )
     )
     leg_engines.register_running(market, engine)
