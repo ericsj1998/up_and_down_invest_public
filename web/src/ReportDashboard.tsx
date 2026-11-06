@@ -464,8 +464,20 @@ function FundsSection({ data }: { data: Data | null }) {
  * 갈색(= 잃은 돈처럼)으로 보였다 (사용자 2026-09-27: *"넣은 돈 잃은 돈 번 돈이 분리가 잘 안되어 있는 걸로 보여"*).
  */
 const WALLET_FILL = {
-  light: { put: "#d3d9de", lost: "#eeaea7", earned: "#b8e2d9", line: "#37474f", putLine: "#8a959e" },
-  dark: { put: "#3a4550", lost: "#6e302b", earned: "#1d5a50", line: "#e0e6ea", putLine: "#9aa4ad" },
+  light: {
+    put: "#d3d9de",
+    lost: "#eeaea7",
+    earned: "#b8e2d9",
+    line: "#37474f",
+    putLine: "#8a959e",
+  },
+  dark: {
+    put: "#3a4550",
+    lost: "#6e302b",
+    earned: "#1d5a50",
+    line: "#e0e6ea",
+    putLine: "#9aa4ad",
+  },
 } as const;
 
 /**
@@ -485,13 +497,17 @@ function EquityChart({ data }: { data: Data | null }) {
   const layers = useMemo(() => walletLayers(wallet?.points ?? []), [wallet]);
   if (!data) return <Empty text="읽는 중…" />;
   if (wallet === null)
-    return <Empty text="거래소 자금 원장을 못 읽었다 — 넣은 돈 · 번 돈을 그릴 수 없다" />;
+    return (
+      <Empty text="거래소 자금 원장을 못 읽었다 — 넣은 돈 · 번 돈을 그릴 수 없다" />
+    );
   if (layers.x.length === 0) return <Empty text="구간에 그릴 잔고가 없다" />;
   const earned = n(wallet.earned);
   const principal = n(wallet.principal);
   const deposits = n(wallet.deposits);
   const earnedPct =
-    earned !== null && principal !== null && principal !== 0 ? (earned / principal) * 100 : null;
+    earned !== null && principal !== null && principal !== 0
+      ? (earned / principal) * 100
+      : null;
   const span = windowGain(layers);
   const paint = WALLET_FILL[theme];
   const pair = (ys: number[]) => layers.x.map((x, i) => ({ x, y: ys[i] ?? 0 }));
@@ -518,7 +534,10 @@ function EquityChart({ data }: { data: Data | null }) {
       markers: { fillColors: [paint.earned, paint.lost, paint.put] },
     },
     xaxis: { type: "datetime", labels: { datetimeUTC: false } },
-    yaxis: { min: layers.floor, labels: { formatter: (v: number) => usdt(v, 0) } },
+    yaxis: {
+      min: layers.floor,
+      labels: { formatter: (v: number) => usdt(v, 0) },
+    },
     tooltip: {
       ...base.tooltip,
       shared: true,
@@ -527,12 +546,15 @@ function EquityChart({ data }: { data: Data | null }) {
         const bal = layers.balance[dataPointIndex] ?? 0;
         const put = layers.principal[dataPointIndex] ?? 0;
         const gap = bal - put;
-        const when = new Date(layers.x[dataPointIndex] ?? 0).toLocaleString("ko-KR", {
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-        });
+        const when = new Date(layers.x[dataPointIndex] ?? 0).toLocaleString(
+          "ko-KR",
+          {
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+          },
+        );
         return (
           `<div style="padding:6px 8px;font-size:12px">` +
           `<div style="opacity:.7">${when}</div>` +
@@ -550,7 +572,8 @@ function EquityChart({ data }: { data: Data | null }) {
         <span>
           자본금 투입 <b>{usdt(principal)}</b>
           <span className="ml-1 text-xs text-blue-gray-500">
-            입금 {usdt(n(wallet.capital_in))} · 출금 {usdt(n(wallet.capital_out))} · 손익 아님
+            입금 {usdt(n(wallet.capital_in))} · 출금{" "}
+            {usdt(n(wallet.capital_out))} · 손익 아님
           </span>
         </span>
         <span>
@@ -563,11 +586,13 @@ function EquityChart({ data }: { data: Data | null }) {
           </b>
         </span>
         <span className={tone(span)}>
-          이 기간 손익 <b>{span === null ? "—" : `${span > 0 ? "+" : ""}${usdt(span)}`}</b>
+          이 기간 손익{" "}
+          <b>{span === null ? "—" : `${span > 0 ? "+" : ""}${usdt(span)}`}</b>
         </span>
         {deposits !== null && deposits !== 0 ? (
           <span className="text-blue-gray-500">
-            이 기간 {deposits > 0 ? "입금" : "출금"} <b>{usdt(Math.abs(deposits))}</b>
+            이 기간 {deposits > 0 ? "입금" : "출금"}{" "}
+            <b>{usdt(Math.abs(deposits))}</b>
           </span>
         ) : null}
       </div>
@@ -586,7 +611,8 @@ function EquityChart({ data }: { data: Data | null }) {
       ) : null}
       {!wallet.reached ? (
         <p className="px-1 pb-1 text-xs text-blue-gray-400">
-          받은 장부가 기간 시작까지 닿지 않았다 — 첫 점은 받은 가장 옛 줄에서 거꾸로 푼 값이다.
+          받은 장부가 기간 시작까지 닿지 않았다 — 첫 점은 받은 가장 옛 줄에서
+          거꾸로 푼 값이다.
         </p>
       ) : null}
       <Chart
@@ -776,7 +802,15 @@ function RunsTable({ data }: { data: Data | null }) {
                 key={r.key}
                 className="border-b border-blue-gray-50 last:border-0 dark:border-gray-800"
               >
-                <td className={`${td} font-mono font-semibold`}>{r.symbol}</td>
+                <td className={`${td} font-mono font-semibold`}>
+                  <Link
+                    to={`/paper/${r.key}`}
+                    className="underline-offset-2 hover:underline"
+                    onClick={() => runs.open(r.key, r.symbol)}
+                  >
+                    {r.symbol}
+                  </Link>
+                </td>
                 {/* 버전(@0.7.0)을 떼고 줄바꿈을 허용한다 — 잘린 이름은 이름이 아니다 (UX 점검). 전체는 title 에. */}
                 <td
                   className={`${td} max-w-[14rem] whitespace-normal break-all font-mono text-xs`}

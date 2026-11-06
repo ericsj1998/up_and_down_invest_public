@@ -7746,6 +7746,20 @@ class LiveRunner:
         cancel = getattr(self._orders, "cancel_stop", None)
         if cancel is None:
             return
+        # 🔴 2026-11-07 — 거래소가 이름을 출처 표시(`api`)로 돌려주면 우리 손절도 이어받을 때
+        #    "남의 것" 으로 적힌다. 걸고 난 지금 다시 보고 이미 없는 것 · 우리 것이 된 것은
+        #    안 거둔다(안 그러면 방금 찾은 우리 손절을 거둬 무방비가 된다).
+        want = self._share_stop_key(held)
+        if isinstance(self._orders, StopAware):
+            try:
+                rows = await self._orders.open_stops(self.instrument)
+            except Exception:
+                return  # 못 읽으면 다음 걸음이 다시 본다
+            alive = {str(row.get("id", "")): str(row.get("text", "")) for row in rows}
+            ids = [one for one in ids if one in alive and not same_share(alive[one], want)]
+            if not ids:
+                pending.pop(held.trade_id, None)
+                return
         left: list[str] = []
         for stop_id in ids:
             try:

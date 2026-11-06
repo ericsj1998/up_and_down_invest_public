@@ -356,7 +356,7 @@ async def lite(request: Request) -> dict[str, Any]:
         _orders_adapter,  # pyright: ignore[reportPrivateUsage]
         _tracked,  # pyright: ignore[reportPrivateUsage]
     )
-    from updown.apps.api.walkforward import SESSIONS
+    from updown.apps.api.walkforward import LIVE_RUNNERS, SESSIONS
 
     available: Decimal | None = None
     positions: list[dict[str, str]] | None = None
@@ -381,6 +381,7 @@ async def lite(request: Request) -> dict[str, Any]:
         realized_24h=realized,
         runs=len(SESSIONS),
         leader=None if gate is None else bool(gate.is_leader),
+        run_of={runner.instrument.symbol: key for key, runner in LIVE_RUNNERS.items()},
     )
     _lite_cache = (now, made)
     return made

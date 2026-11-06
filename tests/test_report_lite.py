@@ -52,6 +52,18 @@ def test_position_margin_counts_in_total_and_flat_rows_are_dropped() -> None:
     assert Decimal(rows[0]["pct"]) == Decimal(-5)
 
 
+def test_position_carries_its_run_and_engine_leg_has_none() -> None:
+    made = make(
+        positions=[
+            {"symbol": "NEAR_USDT", "size": "12", "margin": "11", "unrealised_pnl": "-1"},
+            {"symbol": "NAS100_USDT", "size": "29", "margin": "26", "unrealised_pnl": "1"},
+        ],
+        run_of={"NEAR_USDT": "abc"},
+    )
+    rows = {r["symbol"]: r["run"] for r in made["positions"]}  # type: ignore[union-attr]
+    assert rows == {"NEAR_USDT": "abc", "NAS100_USDT": ""}
+
+
 def test_unread_capital_leaves_earnings_blank() -> None:
     made = make(capital_moves=None)
     assert made["capital"] is None

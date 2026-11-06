@@ -214,6 +214,10 @@ def _problems(
     return out
 
 
+STOP_COUNT_LIMIT = 5
+"""한 종목 조건부 손절이 이보다 많으면 문제로 적는다(2026-11-07 NEAR 100 건)."""
+
+
 def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
     """거래소 포지션마다 원장 매매 · 걸린 손절을 붙이고 어긋남을 적는다.
 
@@ -223,9 +227,11 @@ def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
     ex = snap.exchange
     positions = [p for p in _rows_of(ex.get("positions")) if (_int(p.get("size", 0)) or 0) != 0]
     stops: dict[str, tuple[Decimal | None, int | None]] = {}
+    stop_count: dict[str, int] = {}
     for o in _rows_of(ex.get("price_orders")):
         contract, trig, ssize = _stop_of(o)
         stops.setdefault(contract, (trig, ssize))
+        stop_count[contract] = stop_count.get(contract, 0) + 1
     by_sym: dict[str, Trade] = {}
     for t in open_trades(snap):
         by_sym.setdefault(t.symbol, t)
@@ -248,7 +254,12 @@ def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
                 trade=trade,
                 stop_trigger=stop[0] if stop else None,
                 stop_size=stop[1] if stop else None,
-                problems=tuple(_problems(trade, size, stop)),
+                problems=tuple(_problems(trade, size, stop))
+                + (
+                    (f"조건부 손절 {stop_count[sym]}건 — 겹쳐 쌓였다",)
+                    if stop_count.get(sym, 0) > STOP_COUNT_LIMIT
+                    else ()
+                ),
             )
         )
     held = {c.symbol for c in out}

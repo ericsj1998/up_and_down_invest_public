@@ -6,11 +6,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { LiteHome } from "./LiteHome";
+import { OpenRunsProvider } from "./shell/openRuns";
 
 describe("LiteHome 약식 리포트", () => {
   const html = renderToStaticMarkup(
     <MemoryRouter>
-      <LiteHome />
+      <OpenRunsProvider>
+        <LiteHome />
+      </OpenRunsProvider>
     </MemoryRouter>,
   );
 

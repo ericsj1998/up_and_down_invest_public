@@ -248,7 +248,14 @@ export type LiteHomeData = {
   realized_24h: string | null;
   runs: number;
   leader: boolean | null;
-  positions: { symbol: string; side: "long" | "short"; unrealized: string; pct: string | null }[];
+  positions: {
+    symbol: string;
+    /** 그 판 id — 판이 없는 다리(나스닥)는 빈 값. */
+    run: string;
+    side: "long" | "short";
+    unrealized: string;
+    pct: string | null;
+  }[];
 };
 
 export function liteHome(): Promise<LiteHomeData> {

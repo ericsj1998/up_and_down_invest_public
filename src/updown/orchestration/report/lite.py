@@ -37,6 +37,7 @@ def lite_payload(
     realized_24h: Decimal | None,
     runs: int,
     leader: bool | None,
+    run_of: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """첫 화면 한 덩어리를 만든다.
 
@@ -49,6 +50,7 @@ def lite_payload(
         realized_24h: 최근 24 시간 순 실현 손익. 못 읽으면 None.
         runs: 살아 있는 판 수.
         leader: 이 프로세스가 거래 리더인가. 모르면 None.
+        run_of: 종목 → 판 id — 포지션을 눌러 그 판 화면으로 간다. 판이 없는 다리(나스닥)는 빈 값.
 
     Returns:
         `{at, total, unrealized, capital, earned, realized_24h, runs, leader, positions}`.
@@ -74,6 +76,7 @@ def lite_payload(
             rows.append(
                 {
                     "symbol": str(item.get("symbol", "")),
+                    "run": (run_of or {}).get(str(item.get("symbol", "")), ""),
                     "side": "long" if size > 0 else "short",
                     "unrealized": str(pnl),
                     "pct": None if margin <= 0 else str(pnl / margin * Decimal(100)),

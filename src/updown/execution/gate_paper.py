@@ -150,6 +150,12 @@ def stop_row(raw: dict[str, Any]) -> dict[str, str]:
     }
 
 
+STOP_SOURCE_LABELS = frozenset({"", "api"})
+"""조건부 `initial.text` 가 우리 이름이 아니라 **출처 표시**인 값 — API 로 건 것만 우리 후보다.
+
+`web` · `app` 은 사람이 건 것이라 넣지 않는다(이어받기의 남의 손절 거두기가 따로 본다)."""
+
+
 def _stop_expiring_soon(item: dict[str, Any], *, now: float | None = None) -> bool:
     """이 조건부 손절의 만료가 `STOP_REFRESH_BEFORE_S`(3일) 안으로 다가왔나 (장투 · 갭2).
 
@@ -213,6 +219,9 @@ class GatePaperAdapter:
         self._check_client(trade)
         self._trade = trade
         self._quotes = quotes
+        # 조건부 id → 우리 몫 이름. 거래소가 `initial.text` 를 출처 표시로 바꿔 돌려주므로
+        # 이름으로는 되찾지 못한다(2026-11-07 실계좌 · `_share_stop`).
+        self._share_names: dict[str, str] = {}
 
     _broker: str = BROKER_NAME
     """잔고·원장·공유조회 키에 남는 브로커 이름 — 서브클래스가 바꾼다."""
@@ -432,6 +441,16 @@ class GatePaperAdapter:
 
         Note:
             등록을 먼저 · 취소를 나중에(전량 경로와 같은 까닭 — 무방비보다 이중이 낫다).
+
+            🔴 2026-11-07 실계좌 — 거래소가 조건부의 `initial.text` 를 우리 이름 대신 출처
+            표시(`api`)로 돌려준다. 이름으로만 찾으면 늘 "없다" 로 보여 1 분마다 하나씩 더 걸었고,
+            NEAR · RIVER 가 100 개씩 쌓여 `OrderOverLimit` 이 났다. 그래서 ① 건 id 를 기억하고
+            ② 출처 표시 줄은 **값 · 크기가 같으면 이 몫의 것**으로 본다(재시작 뒤에도 찾는다).
+            같은 값 · 같은 크기의 몫이 둘이면 재시작 뒤 첫 몫이 둘 다 가져가 하나를 거두지만, 둘째
+            몫이 바로 다시 건다.
+
+            ⚠️ 취소 실패로 던지지 않는다. 던지면 "손절 못 걸었다" 로 세어 멀쩡한 포지션을 시장가로
+            닫는 길에 오른다. 남은 여분은 다음 점검이 다시 거둔다.
         """
         wanted_price = price_text(trigger)
         wanted_size = -size if long else size
@@ -440,24 +459,28 @@ class GatePaperAdapter:
         for item in existing:
             got_initial: object = item.get("initial")
             initial = cast("dict[str, Any]", got_initial) if isinstance(got_initial, dict) else {}
-            text = str(initial.get("text", ""))
+            fid_raw: object = item.get("id")
+            fid = "" if fid_raw is None else str(fid_raw)
+            text = self._share_names.get(fid) or str(initial.get("text", ""))
+            got: object = item.get("trigger")
+            priced: object = (
+                cast("dict[str, Any]", got).get("price") if isinstance(got, dict) else None
+            )
+            fits = (
+                priced is not None
+                and str(priced) == wanted_price
+                and int(str(initial.get("size", 0))) == wanted_size
+            )
+            if text in STOP_SOURCE_LABELS and fits:
+                text = exact
+                if fid:
+                    self._share_names[fid] = exact
             # 🔴 T328 — 판 표식(앞 6자)이 달라도 꼬리(매매 8자 · sl · 몫)가 같으면 **이 몫의
             #    손절**이다. text 를 통째로 비교하면 펀드 전환 · 되살리기로 표식이 바뀐 옛 손절을
             #    "없다" 로 보고 하나 더 건다(CRV_USDT · 2026-09-29 · 같은 발동가 둘).
             if not same_share(text, key):
                 continue  # 다른 몫(또는 전량) 손절 — 안 건드린다
-            got: object = item.get("trigger")
-            priced: object = (
-                cast("dict[str, Any]", got).get("price") if isinstance(got, dict) else None
-            )
-            same = (
-                priced is not None
-                and str(priced) == wanted_price
-                and int(str(initial.get("size", 0))) == wanted_size
-                and not _stop_expiring_soon(item)
-            )
-            fid: object = item.get("id")
-            mine.append(("" if fid is None else str(fid), same, text == exact))
+            mine.append((fid, fits and not _stop_expiring_soon(item), text == exact))
         # 맞는 것이 여럿이면(T328 겹침) **지금 표식의 것**을 남긴다 — 러너가 붙잡은 id · 되찾기
         #    (`_find_share_stop_id`)가 보는 것과 같은 손절이라 대조가 엇갈리지 않는다. 없으면 첫째.
         fit = [fid for fid, same, _ in mine if same]
@@ -471,8 +494,18 @@ class GatePaperAdapter:
             if keeper is not None
             else await self._trade.place_stop(contract, trigger, long=long, size=size, text=key)
         )
+        if made:
+            self._share_names[str(made)] = exact
         for fid_text in stale:
-            await self._trade.cancel_stop(fid_text)
+            try:
+                await self._trade.cancel_stop(fid_text)
+            except Exception as exc:
+                _logger.warning(
+                    "gate_share_stop_cancel_failed",
+                    payload={"contract": contract, "stop": fid_text, "error": str(exc)[:160]},
+                )
+                continue
+            self._share_names.pop(fid_text, None)
         return made
 
     async def get_market_status(self, instrument: Instrument) -> MarketStatus:
@@ -982,7 +1015,14 @@ class GatePaperAdapter:
         """
         rows = await self._trade.list_stops(to_contract(instrument))
         # ⚠️ 중첩 사전이라 좁혀 준다 — Gate 응답은 · 안에 값을 넣는다 (`stop_row`).
-        return [stop_row(row) for row in rows]
+        out = [stop_row(row) for row in rows]
+        # 🔴 거래소가 이름을 출처 표시로 돌려주므로 아는 id 는 우리 이름으로 되돌린다 —
+        #    점검(`stop_missing`) · 거두기 · 이어받기가 모두 이름으로 찾는다 (`_share_stop`).
+        for row in out:
+            name = self._share_names.get(row["id"])
+            if name:
+                row["text"] = name
+        return out
 
     async def recent_orders(self, instrument: Instrument) -> list[dict[str, str]]:
         """**끝난 주문들** — 체결됐거나 취소된 것.

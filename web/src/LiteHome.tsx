@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { type LiteBrief, type LiteHomeData, liteBrief, liteHome } from "./api";
+import { useOpenRuns } from "./shell/openRuns";
 
 const POLL_MS = 60_000;
 const BRIEF_PERIODS = [
@@ -221,6 +222,7 @@ export function BriefReport() {
 }
 
 export function LiteHome() {
+  const runs = useOpenRuns();
   const [data, setData] = useState<LiteHomeData | null>(null);
   const [error, setError] = useState("");
 
@@ -371,7 +373,17 @@ export function LiteHome() {
                   className="flex items-center justify-between gap-2 py-2"
                 >
                   <span className="flex items-center gap-2 font-medium text-blue-gray-900 dark:text-white">
-                    {p.symbol.replace("_USDT", "")}
+                    {p.run ? (
+                      <Link
+                        to={`/paper/${p.run}`}
+                        className="underline-offset-2 hover:underline"
+                        onClick={() => runs.open(p.run, p.symbol)}
+                      >
+                        {p.symbol.replace("_USDT", "")}
+                      </Link>
+                    ) : (
+                      p.symbol.replace("_USDT", "")
+                    )}
                     <span
                       className={`rounded px-1.5 py-0.5 text-xs font-medium ${
                         p.side === "long"

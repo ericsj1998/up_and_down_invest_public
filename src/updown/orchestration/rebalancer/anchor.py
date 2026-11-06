@@ -256,7 +256,9 @@ def outside_since(
             continue
         if name.startswith("ao-"):
             origin = stop_texts.get(name[3:])
-            if origin is None or origin.startswith("t-"):
+            # 🔴 2026-11-07 — 거래소가 조건부 이름을 출처 표시(`api`)로 돌려준다. API 로 건 것은
+            #    매매법 것이다(사람은 `web` · `app`).
+            if origin is None or origin == "api" or origin.startswith("t-"):
                 continue
         total += change
     return total

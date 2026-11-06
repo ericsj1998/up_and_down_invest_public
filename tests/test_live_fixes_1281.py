@@ -306,7 +306,7 @@ class TestForeignStops:
     def test_a_foreign_stop_is_withdrawn_only_after_our_share_stop_stands(self) -> None:
         """⭐ 우리 손절 id 를 모르면 남의 손절이 유일한 보호다 — 거두지 않는다."""
         held = _record()
-        stops = _Stops([[]])
+        stops = _Stops([[{"id": "ops-1", "text": "api", "trigger_price": "1"}]])
         runner = _orphan_runner(stops, refused=None)
         runner._foreign_stops()[held.trade_id] = ["ops-1"]  # pyright: ignore[reportPrivateUsage]
         asyncio.run(runner._withdraw_foreign_stops(held))  # pyright: ignore[reportPrivateUsage]
@@ -318,9 +318,21 @@ class TestForeignStops:
 
     def test_a_refused_cancel_keeps_the_foreign_stop_for_the_next_step(self) -> None:
         held = _record()
-        stops = _Stops([[]], cancel_fails=True)
+        stops = _Stops([[{"id": "ops-1", "text": "api", "trigger_price": "1"}]], cancel_fails=True)
         runner = _orphan_runner(stops, refused=None)
         runner._foreign_stops()[held.trade_id] = ["ops-1"]  # pyright: ignore[reportPrivateUsage]
         runner._share_stop_ids[held.trade_id] = "s-1"  # pyright: ignore[reportPrivateUsage]
         asyncio.run(runner._withdraw_foreign_stops(held))  # pyright: ignore[reportPrivateUsage]
         assert runner._foreign_stops()[held.trade_id] == ["ops-1"]  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_stop_that_became_ours_or_is_gone_is_not_withdrawn(self) -> None:
+        """🔴 2026-11-07 — 이름이 `api` 라 남의 것으로 적힌 우리 손절을 거두지 않는다."""
+        held = _record()
+        ours = _share_row(held, "ops-1")
+        stops = _Stops([[ours]])
+        runner = _orphan_runner(stops, refused=None)
+        runner._foreign_stops()[held.trade_id] = ["ops-1", "gone"]  # pyright: ignore[reportPrivateUsage]
+        runner._share_stop_ids[held.trade_id] = "ops-1"  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(runner._withdraw_foreign_stops(held))  # pyright: ignore[reportPrivateUsage]
+        assert stops.cancelled == []
+        assert held.trade_id not in runner._foreign_stops()  # pyright: ignore[reportPrivateUsage]
