@@ -216,6 +216,34 @@ def test_missing_snapshot_keeps_last_quarter_and_does_nothing_new(world: dict[st
     assert world["spawned"] == [] and world["dropped"] == []
 
 
+def test_missing_snapshot_keeps_members_and_legs_untouched(world: dict[str, Any]) -> None:
+    fund = world["fund"]
+    before = (dict(fund.handles), fund.legs, fund.universe_quarter, dict(fund.entry_legs))
+    _step(world, now=datetime(2027, 1, 1, 0, 20, tzinfo=UTC))
+    assert (dict(fund.handles), fund.legs, fund.universe_quarter, dict(fund.entry_legs)) == before
+    assert world["sessions"]["hA"].session.entry_legs is None
+
+
+def test_missing_snapshot_warns_once_per_quarter(
+    world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(rb._events, "warning", lambda name, **kw: seen.append(name))
+    rb._NO_SNAPSHOT_WARNED.clear()
+    later = datetime(2027, 1, 1, 0, 20, tzinfo=UTC)
+    _step(world, now=later)
+    _step(world, now=later)
+    assert seen.count("fund_universe_no_snapshot") == 1
+
+
+def test_delisting_still_runs_without_a_snapshot(world: dict[str, Any]) -> None:
+    world["delisted"].update({"A_USDT", "Y_USDT"})
+    out = _step(world, now=datetime(2027, 1, 1, 0, 20, tzinfo=UTC))
+    assert out["action"] == "no_snapshot"
+    assert world["sessions"]["hA"].session.entry_legs == frozenset()
+    assert world["closed"] == ["hY"]
+
+
 def test_delisting_notice_zeroes_entries_and_closes_held_once(world: dict[str, Any]) -> None:
     world["delisted"].update({"A_USDT", "Y_USDT"})
     _step(world)

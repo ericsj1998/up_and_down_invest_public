@@ -215,3 +215,17 @@ bash scripts/ops/remote.sh -- 'bash /tmp/orderflow_server.sh stop'           # �
   거래소 입출금은 유휴로 · 화면 "입금" 은 유휴에서 펀드로 옮김).
 - 확인: `docker logs <api> | grep fund_anchored` (mode·total·before·dnw·idle) · 화면 헤더 "앵커 계좌 HH:MM".
 - 배포 직후 복원 틱이 앵커하므로 옛(샌) 장부는 **배포만 하면** 돌아온다. TWR 도 그 기간 수익률로 스스로 교정된다.
+
+## 분기 종목 목록(`universe_snapshots`) — 언제 기다리나
+
+동적 펀드의 종목은 분기마다 서버가 정해 **DB 표에 남긴다**(지움 · 고침은 트리거로 막힘). 배포해도 지워지지 않고, 같은 분기 · 같은 규칙이면 다시 받지 않는다.
+
+| 언제 | 기다림 | 돌던 펀드 |
+|---|---|---|
+| 평소 배포 · 재기동 | 없음 | 그대로 이어짐 |
+| 새 분기(1 · 4 · 7 · 10 월 1 일) | 그날 09:10 KST 지나 첫 점검 · 몇 분 | 교체 전까지 지난 목록 유지 |
+| `config/universe.yml` 규칙 변경(다리 추가 포함) | 다음 매시 10 분 · 몇 분 | 🔴 규칙 값이 달라 새 행이 필요 · 변경 전 동작을 확인하고 올린다 |
+| 받기 실패 | 1 시간 뒤 재시도 · `universe_snapshot_failed` + 알림 | 이전 목록 유지 |
+
+목록이 없을 때 펀드를 만들면 409("분기 우주 스냅샷이 아직 없다")로 막힌다. 돈에는 영향이 없다.
+확인: `bash scripts/ops/remote.sh scripts/ops/probe_universe_job.sh`(읽기만).

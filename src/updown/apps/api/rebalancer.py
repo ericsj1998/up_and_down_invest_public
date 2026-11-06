@@ -4946,6 +4946,36 @@ async def _delisting_now(now: datetime, cfg: RotationConfig) -> frozenset[str]:
     return names
 
 
+_NO_SNAPSHOT_WARNED: set[tuple[str, date]] = set()
+"""목록 없음 경고를 낸 (펀드, 분기) — 5 분 점검마다 같은 경고를 내지 않는다."""
+
+
+async def _apply_delistings(fund: Fund, now: datetime, cfg: RotationConfig) -> None:
+    """폐지 공지 종목의 신규 진입을 막고 보유를 닫는다(D6 · 리스크 감소 · 쉬는 분에도).
+
+    Args:
+        fund: 우주 펀드(펀드 락 안에서 부른다).
+        now: 지금(UTC).
+        cfg: 교체 실행 설정.
+    """
+    for sym in sorted(await _delisting_now(now, cfg)):
+        handle = fund.handles.get(sym)
+        if handle is None:
+            continue
+        _set_entry(fund, sym, ())
+        if _session_busy(handle) and sym not in _DELIST_CLOSED:
+            _DELIST_CLOSED.add(sym)
+            _events.warning(
+                "universe_delisting_seen",
+                payload={
+                    "fund_id": fund.fund_id,
+                    "symbol": sym,
+                    "note": "폐지 공지 — 진입 0 · 보유 닫음(D6)",
+                },
+            )
+            await _close_live_position(handle)
+
+
 async def _universe_step(fund: Fund, now: datetime, cfg: RotationConfig) -> dict[str, Any]:
     """우주 펀드 한 번 점검 — 계획을 다시 세우고 진입 범위는 바로, 띄우기 · 거두기는 묶음만큼.
 
@@ -4974,6 +5004,21 @@ async def _universe_step(fund: Fund, now: datetime, cfg: RotationConfig) -> dict
         quarter = fund.universe_quarter
         legs_gate = await _universe_legs(fund.universe, date.fromisoformat(quarter))
     if legs_gate is None:
+        # 목록이 없어도(규칙 변경 · 작업 실패) 돌던 펀드는 그대로 둔다. 경고는 낸다(규칙 #8).
+        # 폐지 공지 처리는 리스크 감소라 목록과 상관없이 돈다(규칙 #8-1).
+        if (fund.fund_id, q) not in _NO_SNAPSHOT_WARNED:
+            _NO_SNAPSHOT_WARNED.add((fund.fund_id, q))
+            _events.warning(
+                "fund_universe_no_snapshot",
+                payload={
+                    "fund_id": fund.fund_id,
+                    "quarter": q.isoformat(),
+                    "kept_quarter": fund.universe_quarter,
+                    "note": "지금 규칙의 목록이 없다 — 돌던 종목 · 다리를 그대로 둔다",
+                },
+            )
+        await _apply_delistings(fund, now, cfg)
+        _save_fund(fund)
         return {"action": "no_snapshot", "quarter": q.isoformat()}
     mine = {leg.playbook for leg in fund.legs if leg.engine is None}
     scopes = {k: v for k, v in legs_gate.items() if k in mine}
@@ -5006,22 +5051,7 @@ async def _universe_step(fund: Fund, now: datetime, cfg: RotationConfig) -> dict
         elif a.action in (DROP, RESPAWN) and a.symbol in fund.handles:
             _set_entry(fund, a.symbol, ())
     # ①-2 분기 중 폐지 공지(D6) — 모든 다리 신규 진입 0 · 보유는 닫는다(리스크 감소 · 쉬는 분에도)
-    for sym in sorted(await _delisting_now(now, cfg)):
-        handle = fund.handles.get(sym)
-        if handle is None:
-            continue
-        _set_entry(fund, sym, ())
-        if _session_busy(handle) and sym not in _DELIST_CLOSED:
-            _DELIST_CLOSED.add(sym)
-            _events.warning(
-                "universe_delisting_seen",
-                payload={
-                    "fund_id": fund.fund_id,
-                    "symbol": sym,
-                    "note": "폐지 공지 — 진입 0 · 보유 닫음(D6)",
-                },
-            )
-            await _close_live_position(handle)
+    await _apply_delistings(fund, now, cfg)
     done: list[str] = []
     skipped = ""
     if todo and cfg.quiet(now.minute):
