@@ -210,8 +210,11 @@ export function FundOverview({
       {engineOpen && engineStatus ? (
         <EngineLegPanel
           symbol={engineOpen}
-          market={f.market}
-          name={f.per_symbol[engineOpen]?.position?.name ?? "엔진 다리"}
+          market={f.market ?? ""}
+          name={
+            (f.legs ?? []).find((leg) => leg.symbols.includes(engineOpen))
+              ?.name ?? "엔진 다리"
+          }
           status={engineStatus}
           onClose={() => setEngineOpen(null)}
         />

@@ -48,6 +48,10 @@ export function EngineLegPanel({
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (!market) {
+      setError("펀드 거래소 값이 비어 있다");
+      return;
+    }
     let alive = true;
     analysisFrame({
       symbol,
