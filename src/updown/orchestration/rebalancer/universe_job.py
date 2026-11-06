@@ -17,6 +17,7 @@ T758 §2 · R4).
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -347,7 +348,8 @@ async def run_quarter(
     try:
         daily, src = await fetch_daily(source, q, cfg.rank.lookback_days, cfg.rank.quote)
         t1 = time.monotonic()
-        snap = compute(daily, q, cfg)
+        # 리더 안에서 돌 수 있다(`inproc_engine`) — 계산이 이벤트 루프를 막지 않게 스레드로 보낸다.
+        snap = await asyncio.to_thread(compute, daily, q, cfg)
         src["parse_ms"] = int((time.monotonic() - t1) * 1000)
         if names is None:
             legs_gate, dropped = dict(snap.legs), {}

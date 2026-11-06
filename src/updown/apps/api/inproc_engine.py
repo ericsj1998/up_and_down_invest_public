@@ -4,7 +4,7 @@ engine 이 별도 프로세스였던 이유는 *"웹 재배포가 손절 감시�
 그 전제는 두 번 무너졌다: ① 손절 감시·RUN 은 이제 **api 의 트레이딩 리더** 안에 있고 engine 은
 Upbit 수집·자원 비트만 한다 ② api 재배포는 블루그린(T212)이 RUN 을 끊지 않고 넘긴다.
 남은 것은 파이썬 골격 복제 **112 MiB** 였다 (T47 실측). Gate 전용 라이브에선 Upbit 수집이
-필요 없으므로 자원 비트만 api 안에서 돌린다.
+필요 없으므로 자원 비트와 분기 우주 스냅샷만 api 안에서 돌린다.
 
 - `UPDOWN_ENGINE_INPROC=1` 일 때만 켜진다 (`compose.live.yml`). dev 는 engine 을 따로 둔다 —
   연구용 Upbit 수집이 거기 있다.
@@ -19,7 +19,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from updown.apps.engine.resource_beat import register_resource_beat
-from updown.apps.engine.scheduler import build_scheduler, job_ids
+from updown.apps.engine.scheduler import build_scheduler, job_ids, register_universe_job
 from updown.common.logging.setup import get_logger
 from updown.common.resources import start_loop_lag
 
@@ -29,6 +29,11 @@ if TYPE_CHECKING:
 FLAG = "UPDOWN_ENGINE_INPROC"
 PROC_LABEL = "engine(in api)"
 """자원 카드의 engine 행에 이 이름이 뜬다 — 별도 프로세스가 아님을 화면이 말해야 한다."""
+UNIVERSE_RUN_SOON_S = 120.0
+"""리더가 된 뒤 분기 우주 점검을 먼저 한 번 도는 시각(초).
+
+배포 뒤 다음 정시까지 펀드를 못 만들지 않게 한다.
+되살림이 먼저 끝나게 조금 미룬다. 이미 있으면 DB 한 번 읽고 끝이다."""
 
 _logger = get_logger("apps.api.inproc_engine")
 
@@ -49,13 +54,15 @@ def enabled(environ: dict[str, str] | None = None) -> bool:
 class InprocEngine:
     """리더가 될 때 시작하고 내려갈 때 멈추는 작은 스케줄러."""
 
-    def __init__(self, redis: Any) -> None:
+    def __init__(self, redis: Any, factory: Any = None) -> None:
         """비트를 쓸 Redis 를 받는다. 스케줄러는 `start` 에서 만든다.
 
         Args:
             redis: 자원 비트를 쓸 `redis.asyncio` 클라이언트 — 앱 상태의 것을 그대로 받는다.
+            factory: DB 세션 팩토리 — 있으면 분기 우주 스냅샷 잡을 싣는다.
         """
         self._redis = redis
+        self._factory = factory
         self._scheduler: AsyncIOScheduler | None = None
 
     @property
@@ -69,6 +76,13 @@ class InprocEngine:
             return
         scheduler = build_scheduler()
         register_resource_beat(scheduler, self._redis, proc=PROC_LABEL)
+        if self._factory is not None:
+            try:
+                register_universe_job(scheduler, self._factory, run_soon_s=UNIVERSE_RUN_SOON_S)
+            except (
+                Exception
+            ) as exc:  # 잡 등록 실패가 거래 시작을 막지 않는다 · 조용히 넘기지 않는다
+                _logger.error("universe_job_register_failed", payload={"error": str(exc)[:200]})
         start_loop_lag()  # T265 눈금 — 스냅샷의 `loop_lag_ms`
         scheduler.start()
         self._scheduler = scheduler

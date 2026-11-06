@@ -275,23 +275,27 @@ def register_daily_report(
 def register_universe_job(
     scheduler: AsyncIOScheduler,
     factory: "async_sessionmaker[AsyncSession]",
+    *,
+    run_soon_s: float | None = None,
 ) -> None:
     """분기 우주 스냅샷 잡 (T758 3 단계) — 매시 한 번 점검 · 없을 때만 바이낸스에서 받아 계산한다.
 
     Args:
         scheduler: 엔진 스케줄러.
         factory: DB 세션 팩토리.
+        run_soon_s: 등록 뒤 이 초 뒤에 한 번 먼저 돈다. None 이면 다음 정해진 분까지 기다린다.
 
     Note:
-        🔴 리더(api) 가 아니라 엔진에서 돈다 — 호출 ≈ 660 회 · 파싱이 리더 이벤트 루프를 막지
-        않게(T759).
+        🔴 실계좌(1 GB)는 engine 컨테이너가 없어 `inproc_engine` 이 리더 안에서 부른다(2026-11-06 ·
+        여기만 등록돼 있어 실서버에서 안 돌았다). 호출 ≈ 660 회는 간격을 두고 await 하고, 계산은
+        `run_quarter` 가 스레드로 보내 이벤트 루프를 막지 않는다(T759).
         이미 그 분기 `ok` 행이 있으면 DB 한 번 읽고 끝이라 매시 점검의 비용은 0 에 가깝다.
         실패하면 다음 시각에
         다시 한다(이전 분기 목록은 리더가 그대로 쓴다). 설정 `config/universe.yml` 의
         `job.enabled` 가 거짓이면
         등록하지 않는다.
     """
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
 
     from updown.decision.universe import DEFAULT_CONFIG_PATH, load_universe_config
     from updown.decision.universe_names import load_name_chain
@@ -330,6 +334,9 @@ def register_universe_job(
             },
         )
 
+    soon: dict[str, datetime] = {}
+    if run_soon_s is not None:
+        soon["next_run_time"] = datetime.now(UTC) + timedelta(seconds=run_soon_s)
     scheduler.add_job(  # pyright: ignore[reportUnknownMemberType]
         _traced("universe_snapshot", job),
         trigger=CronTrigger(timezone="UTC", minute=job_cfg.check_minute),
@@ -339,6 +346,7 @@ def register_universe_job(
         coalesce=True,
         misfire_grace_time=1800,
         replace_existing=True,
+        **soon,
     )
     _logger.info(
         "job_registered", payload={"job": "universe_snapshot", "minute": job_cfg.check_minute}

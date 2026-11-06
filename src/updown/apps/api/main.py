@@ -287,7 +287,10 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         from updown.apps.api import inproc_engine, showcase
 
         _inproc = (
-            inproc_engine.InprocEngine(getattr(resolved_state, "redis", None))
+            inproc_engine.InprocEngine(
+                getattr(resolved_state, "redis", None),
+                getattr(resolved_state, "session_factory", None),
+            )
             if inproc_engine.enabled()
             and getattr(resolved_state, "redis", None) is not None
             and not showcase.enabled()
