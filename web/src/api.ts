@@ -1822,7 +1822,31 @@ export function fx(): Promise<Fx> {
 }
 
 // ── 리밸런싱 펀드 (T61) — RUN 과 분리된 능동형 인덱스 ───────────────
+/** 엔진 다리 요약(서버 `status()` 그대로) — 판 없이 도는 다리(나스닥)만 온다. */
+export type FundEngineStatus = {
+  symbol: string;
+  last_day: string | null;
+  zone: boolean;
+  units: {
+    key: string;
+    kind: string;
+    contracts: number;
+    fill: string;
+    ghost: boolean;
+    stop: string | null;
+    opened: string;
+  }[];
+  buy: { slot: number; level: string; contracts: number } | null;
+  contracts: number;
+  realized: string;
+  fees: string;
+  findings: string[];
+  unrealized: string;
+};
+
 export type FundLeg = {
+  /** 엔진 다리면 그 요약 — 이때 `handle` 은 빈 값이다. */
+  engine?: FundEngineStatus;
   handle: string;
   equity?: string;
   weight?: string;

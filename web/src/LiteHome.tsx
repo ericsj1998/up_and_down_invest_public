@@ -124,6 +124,12 @@ export function LiteHome() {
             </span>
           ) : null}
           <Link
+            to="/report"
+            className="rounded-lg border border-blue-gray-200 bg-white px-3.5 py-1.5 font-medium text-blue-gray-900 shadow-sm hover:bg-blue-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:hover:bg-gray-800"
+          >
+            리포트
+          </Link>
+          <Link
             to="/console"
             className="rounded-lg bg-gray-900 px-3.5 py-1.5 font-medium text-white shadow-sm hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-blue-gray-100"
           >

@@ -12,16 +12,28 @@
  * 값은 전부 서버에서 온다 — 펀드 현황(`/rebalancer`) · 종목 순위(`/exchange/ranking`). 못 읽은 칸은 "—" 와 무채색.
  */
 
+import { useState } from "react";
 import type { FundLeg, FundStatus } from "./api";
-import { heatColor, previewText, tickOf, type SymbolGroupView, type Tick } from "./fundLayout";
+import { EngineLegPanel } from "./EngineLegPanel";
+import {
+  heatColor,
+  previewText,
+  tickOf,
+  type SymbolGroupView,
+  type Tick,
+} from "./fundLayout";
 
 function money(v?: string | null): string {
   const n = Number(v);
-  return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—";
+  return Number.isFinite(n)
+    ? n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+    : "—";
 }
 
 function signedPct(n: number | null | undefined): string {
-  return n === null || n === undefined || !Number.isFinite(n) ? "—" : `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
+  return n === null || n === undefined || !Number.isFinite(n)
+    ? "—"
+    : `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
 }
 
 /** 거래대금을 사람 단위로 — 1.2억 · 3,400만 (툴팁 전용). */
@@ -35,13 +47,19 @@ function turnoverText(n: number | null | undefined): string {
 /** 다리 칩의 손익 — 금액 + 펀드 대비 %. 0 은 무채색(0 을 초록으로 칠하면 "수익 중" 으로 읽힌다). */
 function LegPnl({ pnl, pct }: { pnl: string; pct?: string | undefined }) {
   const n = Number(pnl);
-  const color = !Number.isFinite(n) || n === 0 ? "inherit" : n > 0 ? "var(--gain)" : "var(--loss)";
+  const color =
+    !Number.isFinite(n) || n === 0
+      ? "inherit"
+      : n > 0
+        ? "var(--gain)"
+        : "var(--loss)";
   const sign = n > 0 ? "+" : "";
   const p = Number(pct);
   return (
     <b style={{ color, marginLeft: 6 }}>
       {sign}
-      {money(pnl)} USDT{Number.isFinite(p) ? ` (${p > 0 ? "+" : ""}${p.toFixed(2)}%)` : ""}
+      {money(pnl)} USDT
+      {Number.isFinite(p) ? ` (${p > 0 ? "+" : ""}${p.toFixed(2)}%)` : ""}
     </b>
   );
 }
@@ -51,17 +69,20 @@ function Tile({
   tick,
   leg,
   openRun,
+  onEngine,
 }: {
   sym: string;
   tick: Tick | undefined;
   leg: FundLeg | undefined;
   openRun?: (run: string, name?: string) => void;
+  onEngine?: (sym: string) => void;
 }) {
   const color = heatColor(tick?.change);
   const held = leg?.holding === true;
   const soon = !held && leg?.preview ? leg.preview : null;
   const unreal = Number(leg?.unrealized);
-  const canOpen = openRun !== undefined && !!leg?.handle;
+  const canOpen =
+    (openRun !== undefined && !!leg?.handle) || (!!leg?.engine && !!onEngine);
   return (
     <button
       type="button"
@@ -75,17 +96,25 @@ function Tile({
             : "현금"
       }`}
       disabled={!canOpen}
-      onClick={() => (canOpen && leg ? openRun?.(leg.handle, sym) : undefined)}
+      onClick={() => {
+        if (!canOpen || !leg) return;
+        if (leg.engine) onEngine?.(sym);
+        else openRun?.(leg.handle, sym);
+      }}
     >
       <b>{sym.replace("_USDT", "")}</b>
       <span>{signedPct(tick?.change)}</span>
       {held ? (
         <span className="heat-pos">
           {leg?.position?.side ?? "보유"}
-          {Number.isFinite(unreal) ? ` ${unreal > 0 ? "+" : ""}${unreal.toFixed(1)}` : ""}
+          {Number.isFinite(unreal)
+            ? ` ${unreal > 0 ? "+" : ""}${unreal.toFixed(1)}`
+            : ""}
         </span>
       ) : soon ? (
-        <span className="heat-pos">{soon.kind === "waiting" ? "주문" : "예비"} {soon.side}</span>
+        <span className="heat-pos">
+          {soon.kind === "waiting" ? "주문" : "예비"} {soon.side}
+        </span>
       ) : null}
     </button>
   );
@@ -105,8 +134,14 @@ export function FundOverview({
   const order = groups.flatMap((g) => g.symbols);
   const held = order.filter((sym) => f.per_symbol[sym]?.holding === true);
   const cash = order.length - held.length;
-  const soon = order.filter((sym) => !held.includes(sym) && !!f.per_symbol[sym]?.preview);
+  const soon = order.filter(
+    (sym) => !held.includes(sym) && !!f.per_symbol[sym]?.preview,
+  );
   const haveTicks = Object.keys(ticks).length > 0;
+  const [engineOpen, setEngineOpen] = useState<string | null>(null);
+  const engineStatus = engineOpen
+    ? f.per_symbol[engineOpen]?.engine
+    : undefined;
   return (
     <div className="fund-overview">
       <div className="row text-sm" style={{ gap: 8, marginTop: 6 }}>
@@ -134,22 +169,26 @@ export function FundOverview({
           >
             {leg.name} {leg.symbols.length}종 · 자리 {leg.slots}
             {leg.isolated ? " · 브레이크 제외" : ""}
-            {leg.pnl !== undefined ? <LegPnl pnl={leg.pnl} pct={leg.pct} /> : null}
+            {leg.pnl !== undefined ? (
+              <LegPnl pnl={leg.pnl} pct={leg.pct} />
+            ) : null}
           </span>
         ))}
       </div>
 
       {/* ③ 히트맵 */}
       <div className="text-xs faint" style={{ marginTop: 8 }}>
-        종목 히트맵 — 색은 24시간 등락 · 묶음 안은 거래대금 순 · 테두리는 보유 · 호박색 깜빡임은 진입 가능(마감 전
-        예비 신호 · 걸어 둔 진입 주문) · 칸을 누르면 그 판으로
+        종목 히트맵 — 색은 24시간 등락 · 묶음 안은 거래대금 순 · 테두리는 보유 ·
+        호박색 깜빡임은 진입 가능(마감 전 예비 신호 · 걸어 둔 진입 주문) · 칸을
+        누르면 그 판으로
         {haveTicks ? "" : " · 시세를 아직 못 읽었다"}
       </div>
       {groups.map((g) => (
         <section key={g.key} style={{ marginTop: 6 }}>
           {groups.length > 1 ? (
             <div className="text-xs" style={{ marginBottom: 3 }}>
-              <b>{g.label}</b> <span className="faint">· {g.symbols.length}종</span>
+              <b>{g.label}</b>{" "}
+              <span className="faint">· {g.symbols.length}종</span>
             </div>
           ) : null}
           <div className="heat-grid">
@@ -160,11 +199,23 @@ export function FundOverview({
                 tick={tickOf(ticks, sym)}
                 leg={f.per_symbol[sym]}
                 {...(openRun ? { openRun } : {})}
+                onEngine={(pick) =>
+                  setEngineOpen((now) => (now === pick ? null : pick))
+                }
               />
             ))}
           </div>
         </section>
       ))}
+      {engineOpen && engineStatus ? (
+        <EngineLegPanel
+          symbol={engineOpen}
+          market={f.market}
+          name={f.per_symbol[engineOpen]?.position?.name ?? "엔진 다리"}
+          status={engineStatus}
+          onClose={() => setEngineOpen(null)}
+        />
+      ) : null}
     </div>
   );
 }
