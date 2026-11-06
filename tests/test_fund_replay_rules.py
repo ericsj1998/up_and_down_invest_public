@@ -9,6 +9,7 @@ from decimal import Decimal
 from updown.orchestration.fund_replay.runner_rules import (
     ContractSpec,
     add_contracts,
+    add_wanted_spare,
     booked_add,
     dropped_add,
     entry_contracts,
@@ -131,6 +132,13 @@ class TestAddOn:
             ledger_leverage=Decimal(6),
         )
         assert (got, why) == (0, "margin")
+
+    def test_wanted_spare_is_exactly_what_passes_the_margin_door(self) -> None:
+        kw = {"sizing_base": Decimal(70), "spec": XRP, "ledger_leverage": Decimal(6)}
+        want = add_wanted_spare(self.held(), **kw)  # type: ignore[arg-type]
+        assert add_contracts(self.held(), spare=want, **kw) == (8, None)  # type: ignore[arg-type]
+        short = want * Decimal("0.99")
+        assert add_contracts(self.held(), spare=short, **kw) == (0, "margin")  # type: ignore[arg-type]
 
     def test_add_is_written_and_booked(self) -> None:
         held = with_add(self.held(), 8, Decimal(70), Decimal(10))

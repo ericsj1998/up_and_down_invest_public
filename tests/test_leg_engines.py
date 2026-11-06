@@ -150,6 +150,22 @@ def test_live_runner_does_nothing_without_engines() -> None:
     asyncio.run(stub._ask_yield(Decimal(50), Decimal(4), "t1"))  # 엔진 없음 — 조용히 지나간다
 
 
+def test_add_asks_engines_for_the_grossed_up_need_and_rereads_spare() -> None:
+    from updown.orchestration.walkforward.live_runner import MARGIN_HEADROOM
+
+    eng = FakeEngine("IDX_USDT", "idx@0.1.0")
+    leg_engines.register_running("GATE", eng)
+    stub = _runner_stub(Decimal(70), Decimal(6))
+    got = asyncio.run(stub._yield_for_add(Decimal(99), Decimal(30), "t1"))
+    assert eng.asked == [Decimal(99) / MARGIN_HEADROOM]  # 문을 통과하는 목표 가용
+    assert got == Decimal(70)  # 묻기 전 값 30 이 아니라 다시 읽은 가용
+
+
+def test_add_without_engines_keeps_the_spare_it_was_given() -> None:
+    stub = _runner_stub(Decimal(70), Decimal(6))
+    assert asyncio.run(stub._yield_for_add(Decimal(99), Decimal(30), "t1")) == Decimal(30)
+
+
 def test_fund_leg_engine_roundtrip_and_old_saves() -> None:
     leg = FundLeg(
         playbook="idx",

@@ -33,6 +33,7 @@ from updown.decision.allocation import Basket, as_members
 from updown.orchestration.fund_replay.runner_rules import (
     ContractSpec,
     add_contracts,
+    add_wanted_spare,
     booked_add,
     dropped_add,
     entry_contracts,
@@ -436,6 +437,32 @@ class FundReplay:
                     spec=board.spec,
                     ledger_leverage=led.leverage,
                 )
+                if why == "margin" and self.engines:
+                    # 실계좌 `_yield_for_add` 와 같다 — 버리기 전에 엔진 다리에 먼저 묻는다.
+                    want = add_wanted_spare(
+                        rec,
+                        sizing_base=led.sizing_base,
+                        spec=board.spec,
+                        ledger_leverage=led.leverage,
+                    )
+                    spare = self.spare()
+                    freed = Decimal(0)
+                    for leg in self.engines:
+                        freed += self.wait(leg.engine.yield_margin(want))
+                    self._note(
+                        t,
+                        board,
+                        "yield",
+                        tid,
+                        f"add want {want:.2f} spare {spare:.2f} freed {freed:.2f}",
+                    )
+                    n_add, why = add_contracts(
+                        rec,
+                        sizing_base=led.sizing_base,
+                        spare=self.spare(),
+                        spec=board.spec,
+                        ledger_leverage=led.leverage,
+                    )
                 if why is None:
                     led.replace(with_add(rec, n_add, led.sizing_base, mult))
                     self._note(t, board, "add", tid, f"{n_add}")

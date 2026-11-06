@@ -6942,6 +6942,8 @@ class LiveRunner:
         need = Decimal(contracts) * price * multiplier / lev if lev > 0 else Decimal(0)
         spare = await self._spare_margin()
         if spare is not None and need > spare * MARGIN_HEADROOM:
+            spare = await self._yield_for_add(need, spare, held.trade_id)
+        if spare is not None and need > spare * MARGIN_HEADROOM:
             self._drop_add(held, "margin", detail=f"필요 {need:.2f} · 가용 {spare:.2f}")
             return
         # 🔴 **보내기 전에 적는다** — 응답을 못 받으면 이 표시가 "보내려 했다" 의 유일한 흔적이다.
@@ -8398,6 +8400,39 @@ class LiveRunner:
                 "note": "엔진 다리가 늦게 든 몫부터 닫아 증거금을 비켰다(T533)",
             },
         )
+
+    async def _yield_for_add(self, need: Decimal, spare: Decimal, trade_id: str) -> Decimal | None:
+        """불타기 증거금이 모자랄 때 엔진 다리에 먼저 묻고 가용을 다시 읽는다.
+
+        Args:
+            need: 이 불타기에 필요한 증거금.
+            spare: 지금 읽은 계좌 가용.
+            trade_id: 흔적에 남길 매매 id.
+
+        Returns:
+            다시 읽은 가용. 도는 엔진이 없으면 받은 값 그대로.
+
+        Note:
+            진입은 `_ask_yield` 로 묻는데 불타기는 묻지 않아, 엔진 다리가 쥔 증거금이 코인
+            다리의 불타기를 통째로 버리게 했다(펀드 재현에서 확인 · T791). 문은 `need >
+            spare x MARGIN_HEADROOM` 이므로 목표 가용은 `need ÷ MARGIN_HEADROOM` 이다.
+        """
+        market = self.instrument.market.value
+        if not leg_engines.running_on(market):
+            return spare
+        want = need / MARGIN_HEADROOM
+        freed = await leg_engines.request_margin(market, want)
+        self._log.info(
+            "live_margin_yield",
+            payload={
+                "trade_id": trade_id,
+                "want": str(want),
+                "spare": str(spare),
+                "freed": str(freed),
+                "note": "불타기 — 엔진 다리가 늦게 든 몫부터 닫아 증거금을 비켰다",
+            },
+        )
+        return await self._spare_margin()
 
     async def _usable_equity(self, trade_id: str, exposure: Decimal | None = None) -> Decimal:
         """이 주문에 **실제로 쓸 수 있는 돈** — 예산과 계좌 가용의 작은 쪽.

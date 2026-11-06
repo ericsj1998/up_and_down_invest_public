@@ -205,6 +205,35 @@ def add_contracts(
     return contracts, None
 
 
+def add_wanted_spare(
+    record: TradeRecord,
+    *,
+    sizing_base: Decimal,
+    spec: ContractSpec,
+    ledger_leverage: Decimal,
+) -> Decimal:
+    """이 불타기가 통과하려면 계좌 가용이 얼마여야 하나 — 엔진 다리에 묻는 목표값.
+
+    Returns:
+        목표 가용(여유 비율을 되돌린 값). 크기를 못 맞추는 불타기면 0.
+
+    Note:
+        `add_contracts` 의 증거금 문이 `need > spare x MARGIN_HEADROOM` 이므로 목표는
+        `need ÷ MARGIN_HEADROOM` 이다. 실계좌 `_yield_for_add` 와 같은 식이다.
+    """
+    contracts, why = add_contracts(
+        record,
+        sizing_base=sizing_base,
+        spare=None,
+        spec=spec,
+        ledger_leverage=ledger_leverage,
+    )
+    if why is not None:
+        return Decimal(0)
+    price = record.add_price if record.add_price else record.entry
+    return isolated_margin(contracts, price, spec.multiplier, ledger_leverage) / MARGIN_HEADROOM
+
+
 def with_add(
     record: TradeRecord, contracts: int, sizing_base: Decimal, multiplier: Decimal
 ) -> TradeRecord:
