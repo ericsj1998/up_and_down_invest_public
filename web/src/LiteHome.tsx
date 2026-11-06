@@ -10,9 +10,14 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { type LiteHomeData, liteHome } from "./api";
+import { type LiteBrief, type LiteHomeData, liteBrief, liteHome } from "./api";
 
 const POLL_MS = 60_000;
+const BRIEF_PERIODS = [
+  { hours: 24, label: "24시간" },
+  { hours: 168, label: "7일" },
+  { hours: 720, label: "30일" },
+] as const;
 const CARD =
   "rounded-xl border border-blue-gray-100 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900";
 
@@ -65,6 +70,153 @@ function Small({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** 시각을 KST 짧은 꼴로 — 구간 표시 전용. */
+function kst(iso: string): string {
+  return new Date(iso).toLocaleString("ko-KR", {
+    timeZone: "Asia/Seoul",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * 약식 리포트 — 전체 리포트 맨 위 숫자만 기간별로. 열 때와 기간을 바꿀 때만 읽는다(폴링 없음 · 서버 60 초 묶음).
+ * 손익 시작점 때문에 구간이 잘렸으면 그 사실을 적는다 — "30일" 칸의 몇 시간치를 30일 성과로 읽지 않게.
+ */
+export function BriefReport() {
+  const [hours, setHours] = useState<number>(BRIEF_PERIODS[1].hours);
+  const [brief, setBrief] = useState<LiteBrief | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    liteBrief(hours)
+      .then((got) => {
+        if (!alive) return;
+        setBrief(got);
+        setError("");
+      })
+      .catch((exc: unknown) => {
+        if (alive) setError(exc instanceof Error ? exc.message : String(exc));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [hours]);
+
+  const net = num(brief?.net);
+  const fees = num(brief?.fees);
+  const funding = num(brief?.funding);
+  const costs = fees === null || funding === null ? null : fees + funding;
+  const winRate = num(brief?.win_rate);
+  const meanRr = num(brief?.mean_rr);
+  const mdd = num(brief?.max_drawdown_pct);
+
+  return (
+    <section className={`${CARD} p-5`} data-testid="brief-report">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-blue-gray-900 dark:text-white">
+          약식 리포트
+        </h3>
+        <div
+          className="inline-flex rounded-lg border border-blue-gray-100 p-0.5 dark:border-gray-700"
+          role="tablist"
+          aria-label="기간"
+        >
+          {BRIEF_PERIODS.map((p) => (
+            <button
+              key={p.hours}
+              type="button"
+              role="tab"
+              aria-selected={hours === p.hours}
+              className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                hours === p.hours
+                  ? "bg-gray-900 text-white dark:bg-blue-gray-100 dark:text-gray-900"
+                  : "text-blue-gray-700 hover:bg-blue-gray-50 dark:text-blue-gray-200 dark:hover:bg-gray-800"
+              }`}
+              onClick={() => setHours(p.hours)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {error ? (
+        <p role="alert" className="text-sm text-loss">
+          못 읽었다 — {error}
+        </p>
+      ) : null}
+      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div>
+          <dt className="text-xs text-blue-gray-500 dark:text-blue-gray-300">
+            순 실현 손익
+          </dt>
+          <dd className={`mt-1 font-mono text-lg font-semibold ${tone(net)}`}>
+            {money(net, true)}
+          </dd>
+          <dd className="mt-0.5 text-xs text-blue-gray-500 dark:text-blue-gray-300">
+            USDT · 수수료 · 펀딩 포함
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs text-blue-gray-500 dark:text-blue-gray-300">
+            매매 · 승률
+          </dt>
+          <dd className="mt-1 font-mono text-lg font-semibold text-blue-gray-900 dark:text-white">
+            {brief ? `${brief.trades}건` : "—"}
+            {winRate === null ? "" : ` · ${winRate.toFixed(0)}%`}
+          </dd>
+          <dd className="mt-0.5 text-xs text-blue-gray-500 dark:text-blue-gray-300">
+            {brief
+              ? `롱 ${brief.longs} · 숏 ${brief.shorts} · 승 ${brief.wins}${meanRr === null ? "" : ` · 손익비 ${meanRr.toFixed(2)}`}`
+              : "—"}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs text-blue-gray-500 dark:text-blue-gray-300">
+            낙폭
+          </dt>
+          <dd className="mt-1 font-mono text-lg font-semibold text-blue-gray-900 dark:text-white">
+            {mdd === null
+              ? "—"
+              : mdd === 0
+                ? "0.00%"
+                : `−${Math.abs(mdd).toFixed(2)}%`}
+          </dd>
+          <dd className="mt-0.5 text-xs text-blue-gray-500 dark:text-blue-gray-300">
+            건별 손익률 합 기준 · 계좌 낙폭 아님
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs text-blue-gray-500 dark:text-blue-gray-300">
+            수수료 + 펀딩
+          </dt>
+          <dd className={`mt-1 font-mono text-lg font-semibold ${tone(costs)}`}>
+            {money(costs, true)}
+          </dd>
+          <dd className="mt-0.5 text-xs text-blue-gray-500 dark:text-blue-gray-300">
+            USDT
+          </dd>
+        </div>
+      </dl>
+      {brief ? (
+        <p className="mt-3 text-xs text-blue-gray-500 dark:text-blue-gray-300">
+          {kst(brief.since)} ~ {kst(brief.until)} KST
+          {brief.clipped ? " · 손익 시작점부터만 셈" : ""}
+          {brief.net === null ? " · 거래소를 못 읽어 금액 칸이 비었다" : ""}
+        </p>
+      ) : null}
+      {brief?.diverged ? (
+        <p role="alert" className="mt-1 text-xs font-medium text-loss">
+          원장 · 거래소 불일치 — {brief.note}
+        </p>
+      ) : null}
+    </section>
   );
 }
 
@@ -123,12 +275,6 @@ export function LiteHome() {
               {at} 기준
             </span>
           ) : null}
-          <Link
-            to="/report"
-            className="rounded-lg border border-blue-gray-200 bg-white px-3.5 py-1.5 font-medium text-blue-gray-900 shadow-sm hover:bg-blue-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:hover:bg-gray-800"
-          >
-            리포트
-          </Link>
           <Link
             to="/console"
             className="rounded-lg bg-gray-900 px-3.5 py-1.5 font-medium text-white shadow-sm hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-blue-gray-100"
@@ -203,6 +349,8 @@ export function LiteHome() {
           />
         </div>
       </div>
+
+      <BriefReport />
 
       <section className={`${CARD} p-5`}>
         <h3 className="mb-3 text-sm font-semibold text-blue-gray-900 dark:text-white">

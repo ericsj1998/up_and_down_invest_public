@@ -43,7 +43,7 @@ from updown.orchestration.report.daily import (
 )
 from updown.orchestration.report.funds import load_fund_snapshots
 from updown.orchestration.report.html import AccountSummary
-from updown.orchestration.report.lite import lite_payload
+from updown.orchestration.report.lite import brief_payload, lite_payload
 from updown.orchestration.report.performance import (
     Performance,
     Window,
@@ -386,6 +386,34 @@ async def lite(request: Request) -> dict[str, Any]:
     return made
 
 
+BRIEF_TTL_S = 60.0
+"""약식 리포트 다시 만들기 간격(초) — 기간 단추를 오가도 DB · 거래소 조회는 이 간격에 한 벌이다."""
+_brief_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+
+
+@router.get("/brief")
+async def brief(hours: int = 168) -> dict[str, Any]:
+    """첫 화면 약식 리포트 — 전체 리포트 맨 위 숫자만 (사용자 2026-11-06).
+
+    Args:
+        hours: 구간 길이 (1~744).
+
+    Returns:
+        `brief_payload` 모양.
+
+    Note:
+        `/dashboard` 는 판 표 · 곡선 · 지갑 · 펀드까지 읽어 무겁다. 여기는 `build_performance` 만
+        읽고, 화면도 열 때와 기간을 바꿀 때만 부른다(폴링 없음).
+    """
+    now = monotonic()
+    hit = _brief_cache.get(hours)
+    if hit is not None and now - hit[0] < BRIEF_TTL_S:
+        return hit[1]
+    made = brief_payload(await build_performance(_sessions(), _window({"hours": hours})), hours)
+    _brief_cache[hours] = (now, made)
+    return made
+
+
 @router.post("/account-start")
 async def set_account_start(
     request: Request, payload: Annotated[dict[str, Any], Body()]
@@ -407,6 +435,7 @@ async def set_account_start(
         어느 쪽인지 흐려지므로 평평할 때만 받는다.
     """
     global _lite_cache
+    _brief_cache.clear()
     from updown.apps.api.auth import Cap
     from updown.apps.api.exchange import (
         _all_live,  # pyright: ignore[reportPrivateUsage]

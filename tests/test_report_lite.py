@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from updown.orchestration.report.lite import lite_payload
+from updown.orchestration.report.lite import brief_payload, lite_payload
+from updown.orchestration.report.performance import (
+    ExchangeSummary,
+    LedgerSummary,
+    Performance,
+    Window,
+)
 
 AT = datetime(2026, 11, 6, 12, tzinfo=UTC)
 MOVES = [{"change": "300"}, {"change": "408"}, {"change": "-50"}]
@@ -59,3 +65,39 @@ def test_unread_positions_leave_total_blank() -> None:
     assert made["unrealized"] is None
     assert made["earned"] is None
     assert made["positions"] == []
+
+
+def perf(*, hours: int, exchange: ExchangeSummary | None) -> Performance:
+    return Performance(
+        window=Window(since=AT - timedelta(hours=hours), until=AT),
+        ledger=LedgerSummary(trades=4, longs=3, shorts=1, wins=2),
+        exchange=exchange,
+        diverged=False,
+        note="",
+    )
+
+
+def test_brief_net_is_after_fees_and_funding() -> None:
+    made = brief_payload(
+        perf(
+            hours=168,
+            exchange=ExchangeSummary(
+                pnl=Decimal(10), fees=Decimal("-2"), funding=Decimal("-1"), rows=5
+            ),
+        ),
+        168,
+    )
+    assert made["net"] == "7"
+    assert made["trades"] == 4
+    assert Decimal(made["win_rate"]) == Decimal(50)
+    assert made["clipped"] is False
+
+
+def test_brief_marks_window_shortened_by_account_start() -> None:
+    assert brief_payload(perf(hours=2, exchange=None), 720)["clipped"] is True
+
+
+def test_brief_unread_exchange_is_blank_not_zero() -> None:
+    made = brief_payload(perf(hours=24, exchange=None), 24)
+    assert made["net"] is None
+    assert made["fees"] is None

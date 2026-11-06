@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+from updown.orchestration.report.performance import Performance
 
 
 def _dec(value: object) -> Decimal | None:
@@ -93,4 +95,40 @@ def lite_payload(
         "runs": runs,
         "leader": leader,
         "positions": rows,
+    }
+
+
+def brief_payload(perf: Performance, hours: int) -> dict[str, Any]:
+    """첫 화면 약식 리포트 — 전체 리포트 맨 위 숫자와 같은 재료에서 꼭 볼 칸만 고른다.
+
+    Args:
+        perf: 원장 · 거래소 집계(전체 리포트 · 메일과 같은 것).
+        hours: 고른 기간(시간).
+
+    Returns:
+        `{since, until, clipped, net, pnl, fees, funding, trades, longs, shorts, wins, win_rate,
+        mean_rr, max_drawdown_pct, diverged, note}`. 거래소를 못 읽으면 금액 칸은 None.
+
+    Note:
+        `clipped` 는 손익 시작점 때문에 구간이 고른 기간보다 짧아졌다는 뜻이다. 표시 없이 두면
+        "30 일" 칸의 몇 시간치 숫자를 30 일 성과로 읽게 된다.
+    """
+    led, exc = perf.ledger, perf.exchange
+    return {
+        "since": perf.window.since.isoformat(),
+        "until": perf.window.until.isoformat(),
+        "clipped": perf.window.until - perf.window.since < timedelta(hours=hours),
+        "net": None if exc is None else str(exc.net),
+        "pnl": None if exc is None else str(exc.pnl),
+        "fees": None if exc is None else str(exc.fees),
+        "funding": None if exc is None else str(exc.funding),
+        "trades": led.trades,
+        "longs": led.longs,
+        "shorts": led.shorts,
+        "wins": led.wins,
+        "win_rate": _text(led.win_rate),
+        "mean_rr": _text(led.mean_rr),
+        "max_drawdown_pct": str(led.max_drawdown_pct),
+        "diverged": perf.diverged,
+        "note": perf.note,
     }

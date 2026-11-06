@@ -255,6 +255,31 @@ export function liteHome(): Promise<LiteHomeData> {
   return request("/report/lite");
 }
 
+/** 첫 화면 약식 리포트 — 거래소를 못 읽으면 금액 칸은 null. */
+export type LiteBrief = {
+  since: string;
+  until: string;
+  /** 손익 시작점 때문에 구간이 고른 기간보다 짧아졌다. */
+  clipped: boolean;
+  net: string | null;
+  pnl: string | null;
+  fees: string | null;
+  funding: string | null;
+  trades: number;
+  longs: number;
+  shorts: number;
+  wins: number;
+  win_rate: string | null;
+  mean_rr: string | null;
+  max_drawdown_pct: string;
+  diverged: boolean;
+  note: string;
+};
+
+export function liteBrief(hours: number): Promise<LiteBrief> {
+  return request(`/report/brief?hours=${hours}`);
+}
+
 export function modeCookie(): Mode {
   // 🔴 기본은 데모 — 쿠키가 `live` 라고 말할 때만 실계좌 (사용자 2026-09-07 "처음 접속은 데모로 우선").
   //    nginx.conf 의 map · vite.config.ts 의 라우터와 **같은 규칙**이어야 한다 — 어긋나면 화면은 데모라 믿는데
