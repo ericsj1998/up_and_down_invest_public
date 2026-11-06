@@ -149,10 +149,14 @@ class TestDeclaration:
         #    자동 전환
         assert new.listed is False and new.superseded_by == "private_strategy"
         mix40 = books["private_strategy"]
-        # Q1(T783 · 2026-11-04): 혼합 4.4(고정 바구니)는 내리고 분기 우주 묶음 `_u` 가 기본
+        # Q1(T783 · 2026-11-04): 혼합 4.4(고정 바구니)는 내리고 분기 우주 묶음 `_u`
+        # → T788 · T789 · T791 로 `_ad` 가 기본
         assert mix40.listed is False and mix40.recommended is False
         q1 = books["private_strategy"]
-        assert q1.listed is True and q1.recommended is True and q1.universe == "c0_literal"
+        assert q1.listed is False and q1.recommended is False and q1.universe == "c0_literal"
+        ad = books["private_strategy"]
+        assert ad.listed is True and ad.recommended is True and ad.universe == "all_dynamic"
+        assert ad.bundle == (*new.bundle, "private_strategy")
         assert q1.bundle == mix40.bundle
         assert mix40.bundle == (*new.bundle, "private_strategy")
         assert books["private_strategy"].listed is False  # 2.2.0 은 내렸다(귀속 보존)
