@@ -30,7 +30,9 @@ import { ConsoleTab } from "./ConsoleTab";
 import { AuthTroubleNote, Gate, PendingNote, useMe } from "./Gate";
 import { CalendarPage, CalendarPopout } from "./Calendar";
 import { GradingPage } from "./grading/GradingPage";
+import { LiteHome } from "./LiteHome";
 import { PaperTab } from "./PaperTab";
+import type { Who } from "./api";
 // ⭐ 리포트 대시보드는 **늦게 받는다** — apexcharts(~150 kB gz)가 그 화면에만 쓰인다. 콘솔이 홈이라 첫 로딩이
 //    거기에 갇힐 이유가 없다 (T220 6단계 · 번들 1.78 MB 중 차트 몫을 뗀다).
 const ReportDashboard = lazy(() =>
@@ -61,8 +63,9 @@ export function App() {
 //    `step`·`fund_id`)은 **위저드를 쓴 적이 있는가**만 본다. 콘솔에서 직접 펀드를 만들어 온
 //    계정은 펀드가 여럿이어도 영원히 "처음" 으로 분류돼 매번 어시스턴트로 떨어졌다.
 //    위저드는 어시스턴트 탭에 그대로 있으니 길이 막히는 것은 아니다.
-function Home() {
-  return <Navigate to="/console" replace />;
+// 🔵 2026-11-06 사용자: 실계좌는 가벼운 첫 화면(`/home`) · 상세는 고를 때만 콘솔로. 게스트 데모는 콘솔 그대로다.
+function Home({ who }: { who: Who | null }) {
+  return <Navigate to={who?.guest ? "/console" : "/home"} replace />;
 }
 
 function Shell() {
@@ -88,7 +91,8 @@ function Shell() {
         <Boundary where={where} onRetry={refresh}>
           <Routes>
             {/* ⭐ T247 — 초안도 펀드도 없는 사람은 어시스턴트가 첫 화면을 잡는다. 판정은 서버(`/assistant/draft.first`). */}
-            <Route path="/" element={<Home />} />
+            <Route path="/" element={<Home who={who} />} />
+            <Route path="/home" element={<LiteHome />} />
             <Route path="/assistant" element={<AssistantPage who={who} />} />
             <Route path="/console" element={<ConsolePage />} />
             {/* ⭐ T273 — AI 차트 분석 주문. 콘솔 안 접이식이던 것을 화면으로 (사용자 2026-09-11). */}

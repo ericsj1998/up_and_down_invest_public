@@ -12,10 +12,11 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from time import monotonic
 from typing import Annotated, Any, cast
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from updown.common.config import Settings
@@ -30,6 +31,8 @@ from updown.orchestration.report.compose import (
     fund_labels_by_run,
 )
 from updown.orchestration.report.daily import (
+    _capital_rows,  # pyright: ignore[reportPrivateUsage] — 자본금 입출금 같은 길
+    _exchange_rows,  # pyright: ignore[reportPrivateUsage]
     _fund_rows,  # pyright: ignore[reportPrivateUsage] — 미리보기=발송 같은 길 (T35)
     _market_slices,  # pyright: ignore[reportPrivateUsage]
     build_performance,
@@ -40,6 +43,7 @@ from updown.orchestration.report.daily import (
 )
 from updown.orchestration.report.funds import load_fund_snapshots
 from updown.orchestration.report.html import AccountSummary
+from updown.orchestration.report.lite import lite_payload
 from updown.orchestration.report.performance import (
     Performance,
     Window,
@@ -47,6 +51,7 @@ from updown.orchestration.report.performance import (
     render_funds,
     render_market_breakdown,
     render_text,
+    summarize_account_book,
 )
 
 router = APIRouter(prefix="/report", tags=["report"])
@@ -317,6 +322,64 @@ async def vault_balance() -> dict[str, Any]:
     except Exception as exc:  # 외부 상태 — 리포트는 매매를 막지 않는다 (§1.2.1)
         _logger.warning("report_vault_endpoint_failed", payload={"reason": str(exc)[:200]})
         return {"vault": None, "runs": 0}
+
+
+LITE_TTL_S = 30.0
+"""가벼운 첫 화면 다시 만들기 간격(초) — 탭이 여럿이어도 거래소 조회는 이 간격에 한 벌이다."""
+_lite_cache: tuple[float, dict[str, Any]] | None = None
+
+
+@router.get("/lite")
+async def lite(request: Request) -> dict[str, Any]:
+    """가벼운 첫 화면 — 계좌 · 자본금 · 손익 · 열린 포지션만 (사용자 2026-11-06).
+
+    Args:
+        request: 요청 — 거래 리더 여부를 읽는다.
+
+    Returns:
+        `lite_payload` 모양. 읽지 못한 칸은 None(규칙 #8).
+
+    Note:
+        화면 폴링이 서버 CPU 의 큰 몫이다. 한 벌 조회(`_all_live` → 10 초 캐시)와 잔고 · 장부만
+        30 초에 한 번 읽는다. 대시보드(`/dashboard`)처럼 DB · 판 표를 읽지 않는다.
+    """
+    global _lite_cache
+    now = monotonic()
+    if _lite_cache is not None and now - _lite_cache[0] < LITE_TTL_S:
+        return _lite_cache[1]
+    from updown.apps.api.exchange import (
+        _all_live,  # pyright: ignore[reportPrivateUsage]
+        _orders_adapter,  # pyright: ignore[reportPrivateUsage]
+        _tracked,  # pyright: ignore[reportPrivateUsage]
+    )
+    from updown.apps.api.walkforward import SESSIONS
+
+    available: Decimal | None = None
+    positions: list[dict[str, str]] | None = None
+    try:
+        orders = _orders_adapter()
+        available = Decimal(str((await orders.get_balance()).cash))
+        tracked = await _tracked(orders, "GATE")
+        positions = (await _all_live(orders, "GATE", tracked)).get("positions", [])
+    except Exception as exc:  # 외부 I/O — 칸만 비운다
+        _logger.warning("report_lite_account_failed", payload={"reason": str(exc)[:200]})
+    window = window_for(24)
+    realized: Decimal | None = None
+    book = await _exchange_rows(limit=300)
+    if book is not None:
+        realized = summarize_account_book(book, window).net
+    gate = getattr(request.app.state, "trading_leader", None)
+    made = lite_payload(
+        at=datetime.now(UTC),
+        available=available,
+        positions=positions,
+        capital_moves=await _capital_rows("GATE", window.until),
+        realized_24h=realized,
+        runs=len(SESSIONS),
+        leader=None if gate is None else bool(gate.is_leader),
+    )
+    _lite_cache = (now, made)
+    return made
 
 
 @router.get("/dashboard")

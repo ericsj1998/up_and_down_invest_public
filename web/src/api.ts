@@ -238,6 +238,23 @@ export function logout(): Promise<void> {
  */
 export type Mode = "demo" | "live";
 
+/** 가벼운 첫 화면 — 계좌 · 자본금 · 손익 · 열린 포지션만. 못 읽은 칸은 null. */
+export type LiteHomeData = {
+  at: string;
+  total: string | null;
+  unrealized: string | null;
+  capital: string | null;
+  earned: string | null;
+  realized_24h: string | null;
+  runs: number;
+  leader: boolean | null;
+  positions: { symbol: string; side: "long" | "short"; unrealized: string; pct: string | null }[];
+};
+
+export function liteHome(): Promise<LiteHomeData> {
+  return request("/report/lite");
+}
+
 export function modeCookie(): Mode {
   // 🔴 기본은 데모 — 쿠키가 `live` 라고 말할 때만 실계좌 (사용자 2026-09-07 "처음 접속은 데모로 우선").
   //    nginx.conf 의 map · vite.config.ts 의 라우터와 **같은 규칙**이어야 한다 — 어긋나면 화면은 데모라 믿는데

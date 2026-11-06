@@ -35,6 +35,7 @@ export const LABELS_ON = import.meta.env.VITE_LABELS === "1";
 
 export const PAGES: readonly Page[] = [
   // 🔴 **콘솔이 홈이다** (사용자 확정 2026-08-19). 거래소가 말하는 사실이 첫 화면이다.
+  { to: "/home", name: "지금 계좌", icon: BanknotesIcon },
   { to: "/console", name: "거래 콘솔", icon: BanknotesIcon },
   // AI 차트 분석 주문 (T273) — 종목·갈래 → 구조·롱/숏 계획 · AI 비교 · 성적표. 콘솔 안 접이식에서 화면으로 (사용자 2026-09-11).
   { to: "/chart-order", name: "AI 차트 분석 주문", icon: ChartBarSquareIcon },
