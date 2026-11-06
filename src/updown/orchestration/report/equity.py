@@ -237,6 +237,9 @@ class WalletSeries:
         deposits: 구간 **안** 입출금 합 — 이 구간의 잔고 변화 중 번 돈이 아닌 몫.
         reached: 받은 장부가 구간 시작까지 닿았나. 거짓이면 첫 점은 받은 가장 옛 줄에서
             거꾸로 푼 값이다.
+        capital_in: 구간 끝까지 입금 합(자본금 투입 · 손익 아님).
+        capital_out: 구간 끝까지 출금 합(양수).
+        moves: 구간 끝까지 입출금 `(시각, +입금 -출금)` 들.
     """
 
     points: list[WalletPoint]
@@ -244,6 +247,9 @@ class WalletSeries:
     balance: Decimal
     deposits: Decimal
     reached: bool
+    capital_in: Decimal = Decimal(0)
+    capital_out: Decimal = Decimal(0)
+    moves: tuple[tuple[datetime, Decimal], ...] = ()
 
 
 def _when(raw: object) -> datetime | None:
@@ -255,6 +261,73 @@ def _when(raw: object) -> datetime | None:
     if value > 1e12:  # 밀리초
         value /= 1000
     return datetime.fromtimestamp(value, UTC)
+
+
+def capital_path() -> Path:
+    """자본금 입출금 기록 파일 — 거래소 조회 한도(180 일) 밖으로 나가도 넣은 돈을 잃지 않게 쌓는다.
+
+    Returns:
+        `paths.under("equity", "capital_moves.jsonl")`.
+    """
+    return paths.under("equity", "capital_moves.jsonl")
+
+
+def load_capital_moves(path: Path | None = None) -> list[dict[str, str]]:
+    """쌓아 둔 입출금 줄들.
+
+    Args:
+        path: 파일. None 이면 `capital_path()`.
+
+    Returns:
+        못 읽는 줄은 건너뛴 줄들. 파일이 없으면 빈 목록.
+    """
+    target = path or capital_path()
+    if not target.exists():
+        return []
+    found: list[dict[str, str]] = []
+    for line in target.read_text(encoding="utf-8").splitlines():
+        try:
+            raw: object = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(raw, dict):
+            found.append({str(k): str(v) for k, v in cast("dict[str, Any]", raw).items()})
+    return found
+
+
+def _capital_key(row: Mapping[str, str]) -> str:
+    """같은 입출금을 두 번 세지 않는 열쇠 — 줄 번호가 있으면 그것, 없으면 시각 + 변화."""
+    ident = str(row.get("id", "") or "")
+    return ident or f"{row.get('time')}:{row.get('change')}"
+
+
+def merge_capital_moves(
+    fresh: Iterable[Mapping[str, str]], path: Path | None = None
+) -> list[dict[str, str]]:
+    """새로 읽은 입출금 줄을 파일에 더하고 전부 돌려준다.
+
+    Args:
+        fresh: 거래소에서 방금 읽은 줄들.
+        path: 파일. None 이면 `capital_path()`.
+
+    Returns:
+        쌓인 줄 전부(중복 없음). 빈 파일이라도 만들어 두어 다음부터는 최근 조각만 읽게 한다.
+    """
+    target = path or capital_path()
+    known = load_capital_moves(target)
+    seen = {_capital_key(row) for row in known}
+    added: list[dict[str, str]] = []
+    for row in fresh:
+        key = _capital_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        added.append({str(k): str(v) for k, v in row.items()})
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as handle:
+        for row in added:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return known + added
 
 
 def wallet_series(
@@ -330,12 +403,16 @@ def wallet_series(
         out.append(WalletPoint(at=edge, balance=bal, principal=principal_at(edge)))
     inside = sum((c for at, c in moves if since < at <= until), Decimal(0))
     last = out[-1]
+    upto = [(at, c) for at, c in moves if at <= until]
     return WalletSeries(
         points=out,
         principal=last.principal,
         balance=last.balance,
         deposits=inside,
         reached=reached,
+        capital_in=sum((c for _, c in upto if c > 0), Decimal(0)),
+        capital_out=sum((-c for _, c in upto if c < 0), Decimal(0)),
+        moves=tuple(upto),
     )
 
 
@@ -365,4 +442,10 @@ def wallet_payload(series: WalletSeries | None) -> dict[str, Any] | None:
         "earned": str(series.balance - series.principal),
         "deposits": str(series.deposits),
         "reached": series.reached,
+        "capital_in": str(series.capital_in),
+        "capital_out": str(series.capital_out),
+        "capital_moves": [
+            {"at": at.astimezone(UTC).isoformat(), "change": str(change)}
+            for at, change in series.moves
+        ],
     }

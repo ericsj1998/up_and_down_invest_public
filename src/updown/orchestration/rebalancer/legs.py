@@ -278,7 +278,7 @@ def declared_legs(
                 leverage=book.leverage,
                 exposure=book.leverage if book.leg_exposure is None else book.leg_exposure,
                 timeframe=book.timeframe.value,
-                slots=book.slots,
+                slots=book.slots if book.leg_slots is None else book.leg_slots,
                 halt_after_stops=book.halt_after_stops,
                 notional_cap=book.notional_cap,
                 notional_fit=book.notional_fit,

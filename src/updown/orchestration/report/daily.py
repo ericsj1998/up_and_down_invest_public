@@ -10,6 +10,7 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
 
 from updown.common.domain.instrument import Market
@@ -87,6 +88,55 @@ async def _exchange_rows(
         return None
 
 
+CAPITAL_TTL_S = 300.0
+"""입출금 다시 읽기 간격(초) — 화면 폴링이 거래소를 두드리지 않게."""
+CAPITAL_RECENT = timedelta(days=25)
+CAPITAL_FIRST = timedelta(days=175)
+_capital_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
+
+
+async def _capital_rows(market: str, until: datetime) -> list[dict[str, str]] | None:
+    """자본금 입출금 줄 전부 — 거래소에서 읽은 것 + 쌓아 둔 파일.
+
+    Args:
+        market: 거래소.
+        until: 구간 끝.
+
+    Returns:
+        입출금 줄들. 거래소도 못 읽고 쌓아 둔 것도 없으면 None(0 으로 꾸미지 않는다 · 규칙 #8).
+
+    Note:
+        🔴 넣은 돈이 비면 지갑 전체가 번 돈으로 보인다(2026-11-06 실측: 입금 774.58 인데 0).
+        시각 칸 없는 조회는 약 30 일만 주므로 첫 번에 175 일을 거슬러 읽어 파일에 쌓고, 다음부터는
+        최근 조각만 읽는다. 쌓은 파일이 거래소 한도(180 일) 밖 입금도 지킨다.
+        `capital_moves` 가 없는 어댑터(바이낸스 · 페이퍼)는 전처럼 최근 `dnw` 줄을 쓴다.
+    """
+    now = monotonic()
+    hit = _capital_cache.get(market)
+    if hit is not None and now - hit[0] < CAPITAL_TTL_S:
+        return hit[1]
+    try:
+        adapter = order_adapter(MarketDataProvider().adapter_for(Market(market)), user_id="report")
+    except (OrderGatewayError, TypeError, ValueError):
+        return None
+    read = getattr(adapter, "capital_moves", None)
+    if read is None:
+        return await _exchange_rows(market=market, kind="dnw")
+    target = equity_mod.capital_path()
+    reach = CAPITAL_RECENT if target.exists() else CAPITAL_FIRST
+    try:
+        fresh = await read(
+            since=int((until - reach).timestamp()),
+            until=int(until.timestamp()),
+        )
+    except Exception as exc:  # 외부 I/O — 쌓아 둔 줄로 그린다 · 없으면 "못 읽었다"
+        _logger.warning("report_capital_read_failed", payload={"reason": str(exc)[:200]})
+        return equity_mod.load_capital_moves() if target.exists() else None
+    rows = equity_mod.merge_capital_moves(fresh)
+    _capital_cache[market] = (now, rows)
+    return rows
+
+
 async def build_performance(
     factory: async_sessionmaker[AsyncSession],
     window: Window,
@@ -147,7 +197,7 @@ async def load_wallet(window: Window, *, market: str = "GATE") -> dict[str, Any]
         입출금은 몇 줄 안 되지만 최근 1,000줄 밖(오래전 첫 입금)에 있을 수 있어서다.
     """
     book = await _exchange_rows(market=market)
-    moves = await _exchange_rows(market=market, kind="dnw")
+    moves = await _capital_rows(market, window.until)
     if book is None or moves is None:
         return None
     return equity_mod.wallet_payload(

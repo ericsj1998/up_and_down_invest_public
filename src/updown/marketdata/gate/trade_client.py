@@ -49,6 +49,10 @@ from updown.marketdata.ratelimit import note_ban, observe
 from updown.marketdata.speccache import spec as cached_spec
 
 SETTLE: Final = "usdt"
+CAPITAL_SLICE_S: Final = 25 * 86400
+"""입출금 조회 한 조각(초) — 거래소가 한 번에 주는 기간 안."""
+CAPITAL_REACH_S: Final = 175 * 86400
+"""입출금 조회가 닿는 가장 옛날(초) — 거래소 한도 180 일 안(2026-11-06 실측: 넘으면 400)."""
 IDEMPOTENCY_PREFIX: Final = "t-"
 """주문 `text` 접두 — Gate 규격이다. 없으면 400 이다."""
 
@@ -425,6 +429,40 @@ class GateTradeClient:
         if not isinstance(found, list):
             raise GateApiError(f"자금 원장 응답이 배열이 아니다: {type(found).__name__}")
         return cast("list[dict[str, Any]]", found)
+
+    async def capital_moves(self, *, since: int, until: int) -> list[dict[str, Any]]:
+        """입출금 줄을 기간 조각으로 거슬러 읽는다 — 리포트 자본금 투입의 원천.
+
+        Args:
+            since: 시작(UTC 초). 거래소 한도(180 일)보다 옛날이면 한도까지로 줄인다.
+            until: 끝(UTC 초).
+
+        Returns:
+            `dnw` 줄들(시각 칸을 줘서 받은 그대로).
+
+        Raises:
+            GateAuthError: 401.
+            GateApiError: 그 외.
+
+        Note:
+            🔴 시각 칸 없이 받으면 약 30 일 안의 줄만 온다(2026-11-06 실측 `probe_book_kinds.py`:
+            입출금 3 건인데 0 건). 그러면 넣은 돈이 0 이 되어 지갑 전체가 번 돈으로 보인다.
+        """
+        start = max(since, until - CAPITAL_REACH_S)
+        found: list[dict[str, Any]] = []
+        end = until
+        while end > start:
+            begin = max(start, end - CAPITAL_SLICE_S)
+            part = await self._request(
+                "GET",
+                f"/futures/{SETTLE}/account_book",
+                params={"limit": "100", "type": "dnw", "from": str(begin), "to": str(end)},
+            )
+            if not isinstance(part, list):
+                raise GateApiError(f"자금 원장 응답이 배열이 아니다: {type(part).__name__}")
+            found.extend(cast("list[dict[str, Any]]", part))
+            end = begin
+        return found
 
     async def position_closes(self, contract: str, *, limit: int = 30) -> list[dict[str, Any]]:
         """**닫힌 포지션의 실현 손익** (사용자 요구 2026-08-19).

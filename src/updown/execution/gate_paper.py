@@ -682,6 +682,28 @@ class GatePaperAdapter:
             out.append(row)
         return out
 
+    async def capital_moves(self, *, since: int, until: int) -> list[dict[str, str]]:
+        """입출금 줄 — 기간 조각으로 거슬러 읽는다(리포트 자본금 투입).
+
+        Args:
+            since: 시작(UTC 초).
+            until: 끝(UTC 초).
+
+        Returns:
+            `{id, type, change, balance, time}` 목록.
+        """
+        rows = await self._trade.capital_moves(since=since, until=until)
+        return [
+            {
+                "id": str(row.get("id", "")),
+                "type": str(row.get("type", "")),
+                "change": str(row.get("change", "")),
+                "balance": str(row.get("balance", "")),
+                "time": str(row.get("time", "")),
+            }
+            for row in rows
+        ]
+
     async def account_book(self, limit: int = 30, kind: str | None = None) -> list[dict[str, str]]:
         """자금 변동 원장 — **청산을 가르는 근거** (T14-2).
 

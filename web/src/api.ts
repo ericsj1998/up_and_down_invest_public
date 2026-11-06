@@ -1439,6 +1439,9 @@ export type ReportDashboard = {
     earned: string;
     deposits: string;
     reached: boolean;
+    capital_in: string;
+    capital_out: string;
+    capital_moves: { at: string; change: string }[];
   } | null;
   configured: boolean;
   default_to: string[];

@@ -13,10 +13,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
-from updown.orchestration.report.equity import wallet_payload, wallet_series
+from updown.marketdata.gate.trade_client import CAPITAL_REACH_S, GateTradeClient
+from updown.orchestration.report.equity import (
+    load_capital_moves,
+    merge_capital_moves,
+    wallet_payload,
+    wallet_series,
+)
 
 T0 = datetime(2026, 9, 4, 14, tzinfo=UTC)
 
@@ -123,3 +131,55 @@ class TestWalletSeries:
         assert got is not None
         assert got["earned"] == "4" and got["principal"] == "366" and got["balance"] == "370"
         assert len(got["points"]) == 3 and set(got["points"][0]) == {"at", "balance", "principal"}
+
+
+def test_capital_is_split_from_earnings() -> None:
+    series = wallet_series(BOOK, BOOK, T0 - timedelta(hours=1), T0 + timedelta(hours=40))
+    assert series is not None
+    assert series.capital_in == Decimal(366)
+    assert series.capital_out == Decimal(0)
+    assert series.balance - series.principal == Decimal(4)
+    payload = wallet_payload(series)
+    assert payload is not None
+    assert [m["change"] for m in payload["capital_moves"]] == ["300", "66"]
+
+
+def test_withdrawal_counts_as_capital_out() -> None:
+    moves = [row(0, "dnw", "300", "300"), row(5, "dnw", "-50", "250")]
+    series = wallet_series(moves, moves, T0 - timedelta(hours=1), T0 + timedelta(hours=9))
+    assert series is not None
+    assert series.capital_in == Decimal(300)
+    assert series.capital_out == Decimal(50)
+    assert series.principal == Decimal(250)
+
+
+def test_capital_file_keeps_old_moves_without_double_count(tmp_path: Path) -> None:
+    path = tmp_path / "capital.jsonl"
+    first = [{"id": "1", "type": "dnw", "change": "300", "time": "100"}]
+    assert merge_capital_moves(first, path) == first
+    second = [
+        {"id": "2", "type": "dnw", "change": "66", "time": "200"},
+        {"id": "1", "type": "dnw", "change": "300", "time": "100"},
+    ]
+    rows = merge_capital_moves(second, path)
+    assert [r["id"] for r in rows] == ["1", "2"]
+    assert merge_capital_moves([], path) == rows
+    assert load_capital_moves(path) == rows
+
+
+def test_capital_moves_walks_back_in_slices() -> None:
+    calls: list[dict[str, str]] = []
+
+    async def fake(method: str, path: str, *, params: dict[str, str]) -> list[dict[str, str]]:
+        _ = (method, path)
+        calls.append(params)
+        return [{"id": str(len(calls)), "type": "dnw", "change": "1", "time": params["to"]}]
+
+    client = GateTradeClient.__new__(GateTradeClient)
+    client._request = fake  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    until = 10 * CAPITAL_REACH_S
+    rows = asyncio.run(client.capital_moves(since=0, until=until))
+    assert len(rows) == len(calls) == 7
+    assert all(c["type"] == "dnw" for c in calls)
+    assert int(calls[-1]["from"]) == until - CAPITAL_REACH_S
+    assert int(calls[0]["to"]) == until

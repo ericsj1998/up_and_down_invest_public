@@ -156,7 +156,7 @@ class TestDeclaration:
         assert q1.listed is False and q1.recommended is False and q1.universe == "c0_literal"
         ad = books["private_strategy"]
         assert ad.listed is True and ad.recommended is True and ad.universe == "all_dynamic"
-        assert ad.bundle == (*new.bundle, "private_strategy")
+        assert ad.bundle == (*new.bundle, "private_strategy", "private_strategy")
         assert q1.bundle == mix40.bundle
         assert mix40.bundle == (*new.bundle, "private_strategy")
         assert books["private_strategy"].listed is False  # 2.2.0 은 내렸다(귀속 보존)

@@ -329,6 +329,7 @@ class TestLiveDeclaration:
             "private_strategy",  # Q1 — 6 봉 고점 청산 보유 상한 240 봉(T783)
             "private_strategy",
             "private_strategy",
+            "private_strategy",  # T795
         }
 
 

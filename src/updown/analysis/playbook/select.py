@@ -1128,6 +1128,7 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         None if body.get("superseded_by") is None else str(body["superseded_by"])
                     ),
                     leg_exposure=_leg_exposure(body, f"playbooks.{name}"),
+                    leg_slots=_positive_int(body, "leg_slots", f"playbooks.{name}"),
                     risk_pct=(
                         None if body.get("risk_pct") is None else Decimal(str(body["risk_pct"]))
                     ),

@@ -269,7 +269,7 @@ export function ReportDashboard() {
       {/* 차트 */}
       <div className="grid gap-4 xl:grid-cols-3">
         <ChartCard
-          title={`계좌 총액 · ${PERIODS.find((p) => p.hours === hours)?.label ?? `${hours}시간`} (지갑 잔고 · 회색 넣은 돈 · 초록 번 돈 · 빨강 잃은 돈)`}
+          title={`계좌 총액 · ${PERIODS.find((p) => p.hours === hours)?.label ?? `${hours}시간`} (지갑 잔고 · 회색 자본금 투입 · 초록 번 돈 · 빨강 잃은 돈)`}
           className="xl:col-span-3"
         >
           <EquityChart data={data} />
@@ -537,7 +537,7 @@ function EquityChart({ data }: { data: Data | null }) {
           `<div style="padding:6px 8px;font-size:12px">` +
           `<div style="opacity:.7">${when}</div>` +
           `<div>지갑 잔고 <b>${usdt(bal)}</b></div>` +
-          `<div>넣은 돈 <b>${usdt(put)}</b></div>` +
+          `<div>자본금 투입 <b>${usdt(put)}</b></div>` +
           `<div style="color:${gap >= 0 ? GAIN : LOSS}">${gap >= 0 ? "번 돈" : "잃은 돈"} ` +
           `<b>${usdt(Math.abs(gap))}</b></div></div>`
         );
@@ -548,7 +548,10 @@ function EquityChart({ data }: { data: Data | null }) {
     <>
       <div className="flex flex-wrap gap-x-4 gap-y-1 px-1 pb-1 text-sm">
         <span>
-          넣은 돈 <b>{usdt(principal)}</b>
+          자본금 투입 <b>{usdt(principal)}</b>
+          <span className="ml-1 text-xs text-blue-gray-500">
+            입금 {usdt(n(wallet.capital_in))} · 출금 {usdt(n(wallet.capital_out))} · 손익 아님
+          </span>
         </span>
         <span>
           지갑 잔고 <b>{usdt(n(wallet.balance))}</b>
@@ -568,6 +571,19 @@ function EquityChart({ data }: { data: Data | null }) {
           </span>
         ) : null}
       </div>
+      {wallet.capital_moves.length ? (
+        <p className="px-1 pb-1 text-xs text-blue-gray-500">
+          자본금 입출금:{" "}
+          {wallet.capital_moves
+            .map(
+              (m) =>
+                `${new Date(m.at).toLocaleDateString("ko-KR", { month: "2-digit", day: "2-digit" })} ${
+                  Number(m.change) > 0 ? "+" : ""
+                }${usdt(Number(m.change))}`,
+            )
+            .join(" · ")}
+        </p>
+      ) : null}
       {!wallet.reached ? (
         <p className="px-1 pb-1 text-xs text-blue-gray-400">
           받은 장부가 기간 시작까지 닿지 않았다 — 첫 점은 받은 가장 옛 줄에서 거꾸로 푼 값이다.
