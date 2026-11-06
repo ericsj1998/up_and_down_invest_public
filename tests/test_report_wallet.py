@@ -20,8 +20,13 @@ from pathlib import Path
 
 from updown.marketdata.gate.trade_client import CAPITAL_REACH_S, GateTradeClient
 from updown.orchestration.report.equity import (
+    AccountStart,
+    clipped_since,
+    load_account_start,
     load_capital_moves,
     merge_capital_moves,
+    rebased_moves,
+    save_account_start,
     wallet_payload,
     wallet_series,
 )
@@ -183,3 +188,42 @@ def test_capital_moves_walks_back_in_slices() -> None:
     assert all(c["type"] == "dnw" for c in calls)
     assert int(calls[-1]["from"]) == until - CAPITAL_REACH_S
     assert int(calls[0]["to"]) == until
+
+
+def test_account_start_counts_from_zero(tmp_path: Path) -> None:
+    at = T0 + timedelta(hours=25)
+    start = AccountStart(at=at, balance=Decimal(375))
+    path = tmp_path / "start.json"
+    assert load_account_start(path) is None
+    save_account_start(start, path)
+    got = load_account_start(path)
+    assert got is not None and got.balance == Decimal(375) and got.at == at
+    rows = rebased_moves(BOOK, got)
+    series = wallet_series(BOOK, rows, at, T0 + timedelta(hours=40))
+    assert series is not None
+    assert series.principal == Decimal(375)
+    assert series.balance - series.principal == Decimal(-5)  # 시작 뒤 손익만
+    assert series.capital_in == Decimal(375)
+
+
+def test_deposit_after_start_is_capital_not_earnings() -> None:
+    start = AccountStart(at=T0 + timedelta(hours=5), balance=Decimal(300))
+    rows = rebased_moves(BOOK, start)
+    series = wallet_series(BOOK, rows, start.at, T0 + timedelta(hours=40))
+    assert series is not None
+    assert series.principal == Decimal(366)  # 300 + 시작 뒤 입금 66
+    assert series.balance - series.principal == Decimal(4)
+
+
+def test_no_start_leaves_moves_and_window_alone() -> None:
+    assert rebased_moves(BOOK, None) == [dict(r) for r in BOOK]
+    until = T0 + timedelta(hours=9)
+    assert clipped_since(T0, until, None) == T0
+
+
+def test_window_is_clipped_only_when_start_is_inside() -> None:
+    until = T0 + timedelta(hours=9)
+    inside = AccountStart(at=T0 + timedelta(hours=2), balance=Decimal(1))
+    assert clipped_since(T0, until, inside) == inside.at
+    before = AccountStart(at=T0 - timedelta(hours=2), balance=Decimal(1))
+    assert clipped_since(T0, until, before) == T0

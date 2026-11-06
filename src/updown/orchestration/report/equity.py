@@ -263,6 +263,102 @@ def _when(raw: object) -> datetime | None:
     return datetime.fromtimestamp(value, UTC)
 
 
+@dataclass(frozen=True, slots=True)
+class AccountStart:
+    """손익을 0 으로 새로 세는 시작점 (사용자 2026-11-06 "난 이제 0부터 시작하고 싶다").
+
+    Attributes:
+        at: 시작 시각(aware).
+        balance: 그때 계좌 총액 — 이 뒤로는 이 값이 자본금의 출발이다.
+
+    Note:
+        옛 기록은 지우지 않는다(거래소 장부 · 입출금 파일 그대로). 화면 계산만 이 점부터 잰다.
+    """
+
+    at: datetime
+    balance: Decimal
+
+
+def account_start_path() -> Path:
+    """시작점 파일 — 산출물 루트 아래 `equity/account_start.json`."""
+    return paths.under("equity", "account_start.json")
+
+
+def load_account_start(path: Path | None = None) -> AccountStart | None:
+    """시작점을 읽는다.
+
+    Args:
+        path: 파일. None 이면 `account_start_path()`.
+
+    Returns:
+        시작점. 파일이 없거나 못 읽으면 None(지금까지처럼 전 기간으로 잰다).
+    """
+    target = path or account_start_path()
+    if not target.exists():
+        return None
+    try:
+        raw = cast("dict[str, Any]", json.loads(target.read_text(encoding="utf-8")))
+        at = datetime.fromisoformat(str(raw["at"]))
+        return AccountStart(at=at, balance=Decimal(str(raw["balance"])))
+    except (KeyError, ValueError, InvalidOperation):
+        return None
+
+
+def save_account_start(start: AccountStart, path: Path | None = None) -> None:
+    """시작점을 적는다 — 다시 부르면 새 시작점으로 바뀐다.
+
+    Args:
+        start: 시작점.
+        path: 파일. None 이면 `account_start_path()`.
+    """
+    target = path or account_start_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps({"at": start.at.astimezone(UTC).isoformat(), "balance": str(start.balance)}),
+        encoding="utf-8",
+    )
+
+
+def rebased_moves(
+    moves: Sequence[Mapping[str, str]], start: AccountStart | None
+) -> list[dict[str, str]]:
+    """입출금 줄을 시작점 기준으로 — 시작 총액 한 줄 + 그 뒤 입출금.
+
+    Args:
+        moves: 입출금 줄 전부.
+        start: 시작점. None 이면 그대로.
+
+    Returns:
+        자본금 계산에 쓸 줄들.
+    """
+    if start is None:
+        return [dict(row) for row in moves]
+    origin = {
+        "id": "account_start",
+        "type": "dnw",
+        "change": str(start.balance),
+        "time": str(start.at.timestamp()),
+    }
+    later = [dict(r) for r in moves if (at := _when(r.get("time"))) is not None and at > start.at]
+    return [origin, *later]
+
+
+def clipped_since(since: datetime, until: datetime, start: AccountStart | None) -> datetime:
+    """구간 시작을 시작점 뒤로 당긴다 — 옛 손익 · 매매가 구간에 안 들어오게.
+
+    Args:
+        since: 구간 시작.
+        until: 구간 끝.
+        start: 시작점.
+
+    Returns:
+        쓸 구간 시작. 시작점이 구간 밖이면 그대로.
+    """
+    if start is None or not since < start.at < until:
+        return since
+    return start.at
+
+
 def capital_path() -> Path:
     """자본금 입출금 기록 파일 — 거래소 조회 한도(180 일) 밖으로 나가도 넣은 돈을 잃지 않게 쌓는다.
 

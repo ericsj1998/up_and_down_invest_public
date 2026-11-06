@@ -13,7 +13,7 @@
  * 권한: `manage_roles` 가 없으면 배지만 — 버튼 · 입력란은 그리지 않는다(서버가 다시 막는다).
  */
 import { useState } from "react";
-import { setAutoAll, type Who } from "./api";
+import { setAccountStart, setAutoAll, type Who } from "./api";
 import { HaltBanner, announceHaltChanged } from "./HaltBanner";
 
 export function AdminHaltControl({ who }: { who: Who | null }) {
@@ -52,9 +52,10 @@ export function AdminHaltControl({ who }: { who: Who | null }) {
     <div className="card admin-halt" data-testid="admin-halt">
       <h2>모든 펀드 · RUN 신규 진입 스위치</h2>
       <p className="muted">
-        누르면 <b>모든 펀드와 모든 RUN</b> 이 새 포지션을 열지 않는다 — 든 포지션의 손절 · 청산 · 손절 올리기는
-        계속 돈다. 재시작 · 리더 교체 · 매매법 전환 뒤에도 유지된다. 관리자 비밀번호(서버 env <code>ADMIN_PW</code>)와
-        슈퍼관리자 권한이 <b>둘 다</b> 있어야 바뀐다.
+        누르면 <b>모든 펀드와 모든 RUN</b> 이 새 포지션을 열지 않는다 — 든
+        포지션의 손절 · 청산 · 손절 올리기는 계속 돈다. 재시작 · 리더 교체 ·
+        매매법 전환 뒤에도 유지된다. 관리자 비밀번호(서버 env{" "}
+        <code>ADMIN_PW</code>)와 슈퍼관리자 권한이 <b>둘 다</b> 있어야 바뀐다.
       </p>
       {/* 지금 상태 — 콘솔 머리와 같은 배지(누가 · 언제). */}
       <HaltBanner />
@@ -82,7 +83,9 @@ export function AdminHaltControl({ who }: { who: Who | null }) {
             title="모든 펀드 · 모든 RUN 의 신규 진입을 전부 멈춘다 — 든 포지션은 계속 관리된다 · 재시작 뒤에도 유지"
             onClick={() => apply(false)}
           >
-            {busy === "halt" ? "중지 중…" : "모든 펀드 · RUN 신규 진입 전부 중지"}
+            {busy === "halt"
+              ? "중지 중…"
+              : "모든 펀드 · RUN 신규 진입 전부 중지"}
           </button>
           <button
             type="button"
@@ -95,10 +98,76 @@ export function AdminHaltControl({ who }: { who: Who | null }) {
           </button>
         </>
       ) : (
-        <p className="faint">이 스위치는 슈퍼관리자(권한 <code>manage_roles</code>)만 바꿀 수 있다.</p>
+        <p className="faint">
+          이 스위치는 슈퍼관리자(권한 <code>manage_roles</code>)만 바꿀 수 있다.
+        </p>
       )}
       {done ? <p className="notice">{done}</p> : null}
       {error ? <p className="notice bad">{error}</p> : null}
+      {canToggle ? <AccountStartControl /> : null}
+    </div>
+  );
+}
+
+/**
+ * 손익을 0 으로 새로 세는 버튼 (사용자 2026-11-06 "난 이제 0부터 시작하고 싶다").
+ * 지금 계좌 총액이 자본금의 출발이 되고, 옛 기록은 지우지 않는다. 포지션이 있으면 서버가 막는다.
+ */
+function AccountStartControl() {
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [bad, setBad] = useState("");
+
+  const apply = () => {
+    setBusy(true);
+    setNote("");
+    setBad("");
+    setAccountStart(pw)
+      .then((out) =>
+        setNote(
+          `여기부터 손익 0 — 시작 총액 ${Number(out.balance).toFixed(2)} USDT`,
+        ),
+      )
+      .catch((exc: unknown) => setBad(String(exc)))
+      .finally(() => {
+        setPw("");
+        setBusy(false);
+      });
+  };
+
+  return (
+    <div className="mt-4 border-t border-blue-gray-100 pt-4 dark:border-gray-800">
+      <h3 className="mb-1 font-semibold">손익을 0 부터 새로 세기</h3>
+      <p className="muted">
+        지금 계좌 총액을 자본금의 출발로 삼는다. 리포트 · 첫 화면의 손익이 이
+        시점부터 계산되고, 옛 기록은 지우지 않는다. 포지션이 열려 있으면 막힌다.
+      </p>
+      <label className="admin-halt-pw">
+        <span className="faint">관리자 비밀번호</span>
+        <input
+          className="input"
+          type="password"
+          name="account-start-pw"
+          autoComplete="off"
+          spellCheck={false}
+          value={pw}
+          disabled={busy}
+          placeholder="서버 env ADMIN_PW"
+          onChange={(event) => setPw(event.target.value)}
+          aria-label="손익 시작점 관리자 비밀번호"
+        />
+      </label>
+      <button
+        type="button"
+        className="admin-halt-btn resume"
+        disabled={busy || !pw}
+        onClick={apply}
+      >
+        {busy ? "처리 중…" : "여기부터 손익 0"}
+      </button>
+      {note ? <p className="notice">{note}</p> : null}
+      {bad ? <p className="notice bad">{bad}</p> : null}
     </div>
   );
 }

@@ -2678,6 +2678,8 @@ export function fundDefaults(
   members: { symbol: string; weight: string }[];
   /** 이 거래소 testnet 에 계약이 없어 걸러진 종목 — 실계좌에선 포함된다. */
   missing: string[];
+  /** 분기 우주 프로필 — 있으면 고정 바스켓을 안 쓴다(서버 분기 목록). */
+  universe?: string | null;
 }> {
   return request(
     `/rebalancer/defaults?market=${market}&playbook=${encodeURIComponent(playbook)}`,
@@ -3278,4 +3280,13 @@ export function calendarHistory(
     undefined,
     30_000,
   );
+}
+
+/** 손익을 0 으로 새로 센다 — 지금 계좌 총액이 자본금의 출발이 된다. 옛 기록은 지우지 않는다. */
+export function setAccountStart(adminPw: string): Promise<{ at: string; balance: string }> {
+  return request(`/report/account-start`, {
+    method: "POST",
+    headers: JSON_POST,
+    body: JSON.stringify({ admin_pw: adminPw }),
+  });
 }

@@ -9,9 +9,20 @@
 import { Fragment, useEffect, useState } from "react";
 
 import * as api from "./api";
-import type { FundLeg, FundRules, FundStatus, MarketInfo, MemberFrame } from "./api";
+import type {
+  FundLeg,
+  FundRules,
+  FundStatus,
+  MarketInfo,
+  MemberFrame,
+} from "./api";
 import { useMe } from "./Gate";
-import { bookInGroup, groupOfName, marketTradeAllowed, useMarketGroup } from "./shell/marketGroup";
+import {
+  bookInGroup,
+  groupOfName,
+  marketTradeAllowed,
+  useMarketGroup,
+} from "./shell/marketGroup";
 import { when } from "./shell/MarketHours";
 import { CARD_WIDTH, FundMembers, MEMBER_FRAME_SPEC } from "./FundMembers";
 import { unrealizedPct } from "./fundMembers";
@@ -35,7 +46,10 @@ import { ErrorCard, SelectField } from "./ui";
  *
  * 묶음 안 순서 = 지금 상태(`positionRank` · 진입 가능 → 이득 보유 → 이득 실현 → 손해 보유 → 손해 실현 → 현금) → 거래대금.
  */
-function groupsOf(f: FundStatus, ticks: Record<string, Tick>): SymbolGroupView[] {
+function groupsOf(
+  f: FundStatus,
+  ticks: Record<string, Tick>,
+): SymbolGroupView[] {
   return legGroups(f.legs ?? [], Object.keys(f.per_symbol), ticks, (sym) =>
     positionRank(f.per_symbol[sym]),
   );
@@ -61,7 +75,9 @@ function tableRows(
   return groups.flatMap((g) => {
     const rows = g.symbols.flatMap((sym) => {
       const v = f.per_symbol[sym];
-      return v && (!onlyHeld || v.holding === true || !!v.preview) ? [{ sym, v }] : [];
+      return v && (!onlyHeld || v.holding === true || !!v.preview)
+        ? [{ sym, v }]
+        : [];
     });
     if (rows.length === 0) return [];
     return [...(groups.length > 1 ? [{ group: g }] : []), ...rows];
@@ -70,7 +86,9 @@ function tableRows(
 
 /** 접힌 표에도 보일 종목 수 — 보유 + 진입 가능. */
 function heldCount(f: FundStatus): number {
-  return Object.values(f.per_symbol).filter((v) => v.holding === true || !!v.preview).length;
+  return Object.values(f.per_symbol).filter(
+    (v) => v.holding === true || !!v.preview,
+  ).length;
 }
 
 /** 상세보기 시간축 단추 순서. */
@@ -108,7 +126,12 @@ function pct(twr: string): string {
 function BrakeChip({ f }: { f: FundStatus }) {
   const view = brakeChip(f.brake);
   if (!view) return null;
-  const tone = view.tone === "on" ? "chip loss" : view.tone === "ok" ? "chip live" : "chip";
+  const tone =
+    view.tone === "on"
+      ? "chip loss"
+      : view.tone === "ok"
+        ? "chip live"
+        : "chip";
   return (
     <span className={tone} title={view.title} data-testid="fund-brake">
       {view.text}
@@ -208,11 +231,15 @@ export function FundPanel({
   // 상세보기 차트 시간축 · 칸 너비 — 보는 사람 편의라 이 브라우저에만 기억한다(사용자 2026-09-27).
   const [memberTf, setMemberTfState] = useState<MemberFrame>(() => {
     const saved = readPref(PREF_TF);
-    return MEMBER_FRAMES.includes(saved as MemberFrame) ? (saved as MemberFrame) : "1d";
+    return MEMBER_FRAMES.includes(saved as MemberFrame)
+      ? (saved as MemberFrame)
+      : "1d";
   });
   const [memberWidth, setMemberWidthState] = useState<number>(() => {
     const saved = Number(readPref(PREF_WIDTH));
-    return saved >= CARD_WIDTH.min && saved <= CARD_WIDTH.max ? saved : CARD_WIDTH.initial;
+    return saved >= CARD_WIDTH.min && saved <= CARD_WIDTH.max
+      ? saved
+      : CARD_WIDTH.initial;
   });
   const setMemberTf = (tf: MemberFrame) => {
     setMemberTfState(tf);
@@ -250,16 +277,18 @@ export function FundPanel({
   const [playbook, setPlaybook] = useState("");
   const [market, setMarket] = useState("GATE");
   /** 장 마감 중 만들기 — 확인 패널에 띄울 다음 개장 (null 이면 패널 없음). */
-  const [closedAsk, setClosedAsk] = useState<{ nextOpen: string | null } | null>(
-    null,
-  );
+  const [closedAsk, setClosedAsk] = useState<{
+    nextOpen: string | null;
+  } | null>(null);
   // ⭐ T261 — 펀드 하나의 상세(종목마다 일봉 + 상태). 한 번에 하나만 편다.
   const [detail, setDetail] = useState<string | null>(null);
   // ⭐ 40줄 종목 표는 접어 둔다 — 대부분 "현금 · — · 0" 이라 늘 펼칠 까닭이 없다 (사용자 2026-09-27).
   const [tableOpen, setTableOpen] = useState<string | null>(null);
   // 종목 순위(거래대금 · 24시간 등락) — 히트맵 색과 묶음 안 순서. 거래소별로 1분마다.
   const [ticks, setTicks] = useState<Record<string, Record<string, Tick>>>({});
-  const fundMarkets = [...new Set(funds.map((f) => f.market || "GATE"))].join(",");
+  const fundMarkets = [...new Set(funds.map((f) => f.market || "GATE"))].join(
+    ",",
+  );
   useEffect(() => {
     let alive = true;
     const pull = () => {
@@ -269,7 +298,11 @@ export function FundPanel({
           .then((r) => {
             if (!alive) return;
             const map: Record<string, Tick> = {};
-            for (const row of r.rows) map[row.symbol] = { change: row.change ?? null, turnover: row.turnover ?? null };
+            for (const row of r.rows)
+              map[row.symbol] = {
+                change: row.change ?? null,
+                turnover: row.turnover ?? null,
+              };
             setTicks((old) => ({ ...old, [market]: map }));
           })
           .catch(() => undefined); // 시세를 못 읽으면 히트맵이 무채색 · 순서는 이름순 — 화면이 그 사실을 적는다
@@ -282,6 +315,7 @@ export function FundPanel({
       clearInterval(timer);
     };
   }, [fundMarkets]);
+  const [universe, setUniverse] = useState<string | null>(null);
   const [members, setMembers] = useState<{ symbol: string; weight: string }[]>(
     [],
   );
@@ -302,7 +336,8 @@ export function FundPanel({
   const mayTradeHere = marketTradeAllowed(me.who, group);
   const groupBooks = books.filter((b) => bookInGroup(b, group));
   useEffect(() => {
-    if (groupMarkets.length && !groupMarkets.includes(market)) setMarket(groupMarkets[0] ?? market);
+    if (groupMarkets.length && !groupMarkets.includes(market))
+      setMarket(groupMarkets[0] ?? market);
   }, [groupMarkets.join(","), market]);
   // 🔴 **묶음을 바꾸면 매매법도 그 묶음 것으로** (2026-09-11 실측). 코인에서 주식으로 옮겨도
   //    `playbook` 은 코인 것으로 남았는데, `<select>` 는 목록에 없는 값을 **첫 항목처럼**
@@ -355,6 +390,7 @@ export function FundPanel({
       .then((d) => {
         setMembers(d.members);
         setMissing(d.missing);
+        setUniverse(d.universe ?? null);
         setPlaybook((prev) => prev || d.playbook);
       })
       .catch(() => {});
@@ -411,7 +447,9 @@ export function FundPanel({
       const thin = Number(r.create_max) < 1;
       setCreateRoom(
         `계좌 총액 ${fmt(r.total)} · 이미 판들이 잡은 예산 ${fmt(r.budgets ?? "0")} · 남은 ${fmt(r.create_max)} USDT` +
-          (thin ? " — 기존 펀드가 계좌를 거의 다 쓴다. 그 펀드를 지우거나 거래소에 더 넣어야 새 펀드를 만들 수 있다" : ""),
+          (thin
+            ? " — 기존 펀드가 계좌를 거의 다 쓴다. 그 펀드를 지우거나 거래소에 더 넣어야 새 펀드를 만들 수 있다"
+            : ""),
       );
     } catch (e) {
       setErr(String(e));
@@ -450,7 +488,10 @@ export function FundPanel({
 
   // ⭐ 정각 가드 (사용자 2026-09-27) — 매시 정각 ± 30초에 누르면 안내 · 타이머를 띄우고 구간이 끝나면 돈다.
   //    봉 마감 진입이 그 사이에 크기를 정하고 체결된다(`fundLayout.hourGuard`).
-  const [deferred, setDeferred] = useState<{ id: string; until: number } | null>(null);
+  const [deferred, setDeferred] = useState<{
+    id: string;
+    until: number;
+  } | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => {
     if (!deferred) return;
@@ -592,664 +633,811 @@ export function FundPanel({
       </p>
 
       {/* ⭐ 펀드는 시장 하나에 속한다(`market`) — 지금 보는 묶음(코인/주식)의 펀드만 그린다 (사용자 2026-09-10). */}
-      {funds.filter((f) => !f.market || groupOfName(infos, f.market) === group).length === 0 && (
+      {funds.filter((f) => !f.market || groupOfName(infos, f.market) === group)
+        .length === 0 && (
         <p className="empty">아직 펀드가 없다 — 아래에서 만든다</p>
       )}
 
-      {funds.filter((f) => !f.market || groupOfName(infos, f.market) === group).map((f) => (
-        <div key={f.fund_id} className="card" style={{ marginBottom: 8 }}>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <strong>
-              {f.market === "BINANCE" ? (
-                <span style={{ color: "#d29922", marginRight: 6 }}>BN</span>
-              ) : (
-                <span className="faint" style={{ marginRight: 6 }}>
-                  GT
-                </span>
-              )}
-              {f.label}
-            </strong>
-            <span>
-              잔고 <b>{fmt(f.balance)}</b> · TWR{" "}
-              {/* 손익 색은 화면 전체가 한 값(.gain/.loss)이어야 한다 — 인라인 초록·빨강을 걷었다 (T220 UX 점검). */}
-              <b className={Number(f.twr_return) >= 0 ? "gain" : "loss"}>
-                {pct(f.twr_return)}
-              </b>{" "}
-              · 미실현{" "}
-              <b className={fundUnreal(f) >= 0 ? "gain" : "loss"}>
-                {fundUnreal(f).toLocaleString(undefined, {
-                  maximumFractionDigits: 2,
-                })}
-                {Number(f.balance) > 0
-                  ? ` (${fundUnreal(f) >= 0 ? "+" : ""}${((fundUnreal(f) / Number(f.balance)) * 100).toFixed(1)}%)`
-                  : ""}
-              </b>{" "}
-              {/* 🔴 **펀드 전체 낙폭** (사용자 요구 2026-08-30). RUN 별 낙폭은 판마다의
+      {funds
+        .filter((f) => !f.market || groupOfName(infos, f.market) === group)
+        .map((f) => (
+          <div key={f.fund_id} className="card" style={{ marginBottom: 8 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <strong>
+                {f.market === "BINANCE" ? (
+                  <span style={{ color: "#d29922", marginRight: 6 }}>BN</span>
+                ) : (
+                  <span className="faint" style={{ marginRight: 6 }}>
+                    GT
+                  </span>
+                )}
+                {f.label}
+              </strong>
+              <span>
+                잔고 <b>{fmt(f.balance)}</b> · TWR{" "}
+                {/* 손익 색은 화면 전체가 한 값(.gain/.loss)이어야 한다 — 인라인 초록·빨강을 걷었다 (T220 UX 점검). */}
+                <b className={Number(f.twr_return) >= 0 ? "gain" : "loss"}>
+                  {pct(f.twr_return)}
+                </b>{" "}
+                · 미실현{" "}
+                <b className={fundUnreal(f) >= 0 ? "gain" : "loss"}>
+                  {fundUnreal(f).toLocaleString(undefined, {
+                    maximumFractionDigits: 2,
+                  })}
+                  {Number(f.balance) > 0
+                    ? ` (${fundUnreal(f) >= 0 ? "+" : ""}${((fundUnreal(f) / Number(f.balance)) * 100).toFixed(1)}%)`
+                    : ""}
+                </b>{" "}
+                {/* 🔴 **펀드 전체 낙폭** (사용자 요구 2026-08-30). RUN 별 낙폭은 판마다의
                   것이라 백테스트 MDD(포트폴리오 곡선)와 비교가 안 된다 — 펀드 층에서
                   재야 같은 자다. 기준은 **TWR 지수**라 입출금이 낙폭을 왜곡하지 않는다
                   (입금이 낙폭을 지우고 출금이 없는 낙폭을 만드는 일이 없다). */}
-              · 낙폭{" "}
-              <b
-                className={Number(f.drawdown_pct ?? 0) > 0 ? "loss" : undefined}
-                title="펀드 원장 낙폭 — 앵커는 거래소 계좌 총액이지만 같은 계좌의 수동 매매 손익은 입출금으로 빼서 성과에 안 든다(2026-10-15). 브레이크는 옆 칩의 매매법 낙폭을 본다"
-              >
-                {Number(f.drawdown_pct ?? 0).toFixed(1)}%
-              </b>
-              <span className="faint">
-                {" "}
-                (최대 {Number(f.max_drawdown_pct ?? 0).toFixed(1)}%)
-              </span>{" "}
-              {/* 🔴 지금 브레이크가 걸려 있나 (사용자 2026-10-09). 위 낙폭은 펀드 원장(수동 매매는 입출금으로 뺌)이고 브레이크는
+                · 낙폭{" "}
+                <b
+                  className={
+                    Number(f.drawdown_pct ?? 0) > 0 ? "loss" : undefined
+                  }
+                  title="펀드 원장 낙폭 — 앵커는 거래소 계좌 총액이지만 같은 계좌의 수동 매매 손익은 입출금으로 빼서 성과에 안 든다(2026-10-15). 브레이크는 옆 칩의 매매법 낙폭을 본다"
+                >
+                  {Number(f.drawdown_pct ?? 0).toFixed(1)}%
+                </b>
+                <span className="faint">
+                  {" "}
+                  (최대 {Number(f.max_drawdown_pct ?? 0).toFixed(1)}%)
+                </span>{" "}
+                {/* 🔴 지금 브레이크가 걸려 있나 (사용자 2026-10-09). 위 낙폭은 펀드 원장(수동 매매는 입출금으로 뺌)이고 브레이크는
                   매매법 실현만의 낙폭(T387)을 보므로, 한 칸만 있으면 "41% 빠졌는데 왜 x1 이냐" 로 읽힌다.
                   걸림 판정은 서버(`brake_view` · 다리 문과 같은 자)가 하고 화면은 적기만 한다. */}
-              <BrakeChip f={f} />{" "}
-              · 레버 {f.leverage}x · {f.symbols.length}종 · 전략 {f.playbook} ·
-              다음 리밸런싱 <b>{countdown(f.next_tick)}</b>
-              {/* 자동 앵커(T285) — 총자본이 거래소 계좌에 맞춰졌나. 못 맞추면 이유를 그대로 보여 준다. */}
-              {f.anchor ? (
-                f.anchor.skipped ? (
-                  <span className="faint" title={f.anchor.skipped}>
+                <BrakeChip f={f} /> · 레버 {f.leverage}x · {f.symbols.length}종
+                · 전략 {f.playbook} · 다음 리밸런싱{" "}
+                <b>{countdown(f.next_tick)}</b>
+                {/* 자동 앵커(T285) — 총자본이 거래소 계좌에 맞춰졌나. 못 맞추면 이유를 그대로 보여 준다. */}
+                {f.anchor ? (
+                  f.anchor.skipped ? (
+                    <span className="faint" title={f.anchor.skipped}>
+                      {" "}
+                      · 앵커 없음({f.anchor.skipped})
+                    </span>
+                  ) : (
+                    <span className="faint">
+                      {" "}
+                      · 앵커{" "}
+                      {f.anchor.mode === "account" ? "계좌" : "계좌−유휴"}
+                      {f.anchor.at
+                        ? ` ${new Date(f.anchor.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                        : ""}
+                    </span>
+                  )
+                ) : null}
+                {/* 분기 종목 우주(T758) — 어느 분기 목록을 따르나 · 신규 진입 0(청산 대기 · 폐지 공지) 종목. */}
+                {f.universe ? (
+                  <span
+                    className="faint"
+                    title={
+                      f.universe.entry_zero.length
+                        ? `신규 진입 0: ${f.universe.entry_zero.join(", ")}`
+                        : undefined
+                    }
+                    data-testid="fund-universe"
+                  >
                     {" "}
-                    · 앵커 없음({f.anchor.skipped})
+                    · 분기 목록 {f.universe.quarter ?? "없음"} ·{" "}
+                    {Object.keys(f.universe.entry_legs).length}종
+                    {f.universe.entry_zero.length
+                      ? ` · 청산 대기 ${f.universe.entry_zero.length}`
+                      : ""}
                   </span>
-                ) : (
-                  <span className="faint">
-                    {" "}
-                    · 앵커 {f.anchor.mode === "account" ? "계좌" : "계좌−유휴"}
-                    {f.anchor.at ? ` ${new Date(f.anchor.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}
-                  </span>
-                )
-              ) : null}
-              {/* 분기 종목 우주(T758) — 어느 분기 목록을 따르나 · 신규 진입 0(청산 대기 · 폐지 공지) 종목. */}
-              {f.universe ? (
-                <span
-                  className="faint"
-                  title={f.universe.entry_zero.length ? `신규 진입 0: ${f.universe.entry_zero.join(", ")}` : undefined}
-                  data-testid="fund-universe"
-                >
-                  {" "}
-                  · 분기 목록 {f.universe.quarter ?? "없음"} · {Object.keys(f.universe.entry_legs).length}종
-                  {f.universe.entry_zero.length ? ` · 청산 대기 ${f.universe.entry_zero.length}` : ""}
-                </span>
-              ) : null}
-            </span>
-          </div>
-          {/* 🔴 **거래소와 갈린 종목이 있으면 위 잔고·TWR 은 미확정이다** (2026-09-01
+                ) : null}
+              </span>
+            </div>
+            {/* 🔴 **거래소와 갈린 종목이 있으면 위 잔고·TWR 은 미확정이다** (2026-09-01
               사용자 신고). 원장이 거래소보다 앞서 손익을 찍어 두면(예: 안 채워진
               메이커 청산·고아 포지션) 그 값이 여기 헤드라인에 섞인다. 값을 지우지는
               않되(원장이 SSoT) 무엇이 미확정인지 이름을 대 준다 — 콘솔에서 되받거나
               정리하면 사라진다. */}
-          {f.mismatch && f.mismatch.length > 0 ? (
-            <p className="notice bad" style={{ margin: "6px 0" }}>
-              🔴 {f.mismatch.join(", ")} — 거래소와 원장이 갈렸다. 위 잔고·TWR
-              은 아직 거래소가 확인하지 않은 손익을 담고 있다.{" "}
-              <button
-                className="btn small danger"
-                onClick={() => setPending({ id: f.fund_id, kind: "resync" })}
-                disabled={busy === f.fund_id}
-                title="갈린 세션의 원장을 지금 거래소 상태에 앵커한다 — 리셋 아님(계정 안 건드림)"
-                style={{ marginLeft: 4 }}
-              >
-                {busy === f.fund_id ? "재정렬 중…" : "거래소로 원장 재정렬"}
-              </button>
-            </p>
-          ) : null}
-          <FundOverview
-            f={f}
-            groups={groupsOf(f, ticks[f.market || "GATE"] ?? {})}
-            ticks={ticks[f.market || "GATE"] ?? {}}
-            {...(openRun ? { openRun } : {})}
-          />
-          {tableOpen === f.fund_id || heldCount(f) > 0 ? (
-          <>
-          {tableOpen !== f.fund_id ? (
-            <div className="text-xs faint" style={{ marginTop: 8 }}>
-              보유 중 · 진입 가능(깜빡임) 종목 — 40종 전체는 아래 "종목 표"
-            </div>
-          ) : null}
-          <table
-            className="fund-table"
-            style={{
-              width: "100%",
-              fontSize: 13,
-              marginTop: 6,
-              // 🔴 고정 레이아웃 + 명시 폭 — 내용 따라 열이 늘어나면 카드 두 장을 위아래로
-              //    놓았을 때 같은 열이 서로 어긋난다 (사용자 신고 2026-08-25).
-              tableLayout: "fixed",
-              fontVariantNumeric: "tabular-nums",
-            }}
-          >
-            <thead style={{ opacity: 0.6 }}>
-              <tr>
-                <td className="col-sym" style={{ width: "13%" }}>종목</td>
-                <td className="opt" style={{ width: "6%", textAlign: "right" }}>비중</td>
-                <td
-                  className="opt"
-                  style={{ width: "14%", textAlign: "right" }}
-                  title="이 종목에 배정된 예산 + 그 종목의 손익 — 원장의 몫이다. 입금하면 주문 없이도 는다"
+            {f.mismatch && f.mismatch.length > 0 ? (
+              <p className="notice bad" style={{ margin: "6px 0" }}>
+                🔴 {f.mismatch.join(", ")} — 거래소와 원장이 갈렸다. 위 잔고·TWR
+                은 아직 거래소가 확인하지 않은 손익을 담고 있다.{" "}
+                <button
+                  className="btn small danger"
+                  onClick={() => setPending({ id: f.fund_id, kind: "resync" })}
+                  disabled={busy === f.fund_id}
+                  title="갈린 세션의 원장을 지금 거래소 상태에 앵커한다 — 리셋 아님(계정 안 건드림)"
+                  style={{ marginLeft: 4 }}
                 >
-                  몫 (예산+손익)
-                </td>
-                <td
-                  className="opt"
-                  style={{ width: "12%", textAlign: "right" }}
-                  title="거래소가 이 종목 포지션에 실제로 잡고 있는 증거금 — 주문이 들어간 만큼만 는다"
+                  {busy === f.fund_id ? "재정렬 중…" : "거래소로 원장 재정렬"}
+                </button>
+              </p>
+            ) : null}
+            <FundOverview
+              f={f}
+              groups={groupsOf(f, ticks[f.market || "GATE"] ?? {})}
+              ticks={ticks[f.market || "GATE"] ?? {}}
+              {...(openRun ? { openRun } : {})}
+            />
+            {tableOpen === f.fund_id || heldCount(f) > 0 ? (
+              <>
+                {tableOpen !== f.fund_id ? (
+                  <div className="text-xs faint" style={{ marginTop: 8 }}>
+                    보유 중 · 진입 가능(깜빡임) 종목 — 40종 전체는 아래 "종목
+                    표"
+                  </div>
+                ) : null}
+                <table
+                  className="fund-table"
+                  style={{
+                    width: "100%",
+                    fontSize: 13,
+                    marginTop: 6,
+                    // 🔴 고정 레이아웃 + 명시 폭 — 내용 따라 열이 늘어나면 카드 두 장을 위아래로
+                    //    놓았을 때 같은 열이 서로 어긋난다 (사용자 신고 2026-08-25).
+                    tableLayout: "fixed",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
                 >
-                  포지션 증거금
-                </td>
-                <td className="col-pnl" style={{ width: "16%", textAlign: "right" }}>미실현</td>
-                <td className="col-pnl" style={{ width: "18%", textAlign: "right" }}>실현손익</td>
-                <td className="col-pos" style={{ width: "21%", paddingLeft: 16 }}>포지션</td>
-              </tr>
-            </thead>
-            <tbody>
-              {tableRows(
-                groupsOf(f, ticks[f.market || "GATE"] ?? {}),
-                f,
-                tableOpen !== f.fund_id,
-              ).map((item) =>
-                "group" in item ? (
-                  <tr key={`g-${item.group.key}`} className="fund-group-row">
-                    <td colSpan={7}>
-                      {item.group.label} · {item.group.symbols.length}종
-                      {(() => {
-                        // 묶음 손익 — 이 묶음 줄들의 실현 + 미실현 · 그 줄들 몫 합 대비 %(줄마다의 % 와 같은 자).
-                        const g = groupPnl(item.group.symbols, f.per_symbol);
-                        return (
-                          <span style={{ marginLeft: 8, color: pnlColor(String(g.amount)) }}>
-                            {g.amount > 0 ? "+" : ""}
-                            {fmt(String(g.amount))} USDT
-                            {g.pct === null ? "" : ` (${g.pct > 0 ? "+" : ""}${g.pct.toFixed(2)}%)`}
-                          </span>
-                        );
-                      })()}
-                    </td>
-                  </tr>
-                ) : (
-                  ((sym: string, v: FundLeg) => (
-                <Fragment key={sym}>
-                <tr
-                  className={v.preview ? "entry-soon" : undefined}
-                  title={
-                    v.preview
-                      ? previewText(v.preview)
-                      : openRun && v.handle
-                        ? `${sym} 세부(RUN)로 이동`
-                        : undefined
-                  }
-                  // 종목 줄 클릭 = 그 종목의 RUN 세부로 (사용자 2026-10-02 · 히트맵 타일 · 카드 모서리와 같은 통로)
-                  onClick={() => (openRun && v.handle ? openRun(v.handle, sym) : undefined)}
-                  style={openRun && v.handle ? { cursor: "pointer" } : undefined}
-                >
-                  <td>{sym}</td>
-                  <td className="opt" style={{ textAlign: "right" }}>{v.weight}</td>
-                  <td className="opt" style={{ textAlign: "right" }}>{fmt(v.equity)}</td>
-                  <td className="opt" style={{ textAlign: "right" }}>
-                    {v.holding && Number(v.margin) > 0 ? fmt(v.margin) : "—"}
-                  </td>
-                  <td
-                    style={{
-                      textAlign: "right",
-                      color: pnlColor(v.unrealized),
-                    }}
-                  >
-                    {v.holding
-                      ? fmt(v.unrealized) + pnlPct(v.unrealized, v.equity)
-                      : "—"}
-                  </td>
-                  {/* ⚠️ 거래소와 갈린 종목(포지션 갈림 reconciled · 회계 갈림
+                  <thead style={{ opacity: 0.6 }}>
+                    <tr>
+                      <td className="col-sym" style={{ width: "13%" }}>
+                        종목
+                      </td>
+                      <td
+                        className="opt"
+                        style={{ width: "6%", textAlign: "right" }}
+                      >
+                        비중
+                      </td>
+                      <td
+                        className="opt"
+                        style={{ width: "14%", textAlign: "right" }}
+                        title="이 종목에 배정된 예산 + 그 종목의 손익 — 원장의 몫이다. 입금하면 주문 없이도 는다"
+                      >
+                        몫 (예산+손익)
+                      </td>
+                      <td
+                        className="opt"
+                        style={{ width: "12%", textAlign: "right" }}
+                        title="거래소가 이 종목 포지션에 실제로 잡고 있는 증거금 — 주문이 들어간 만큼만 는다"
+                      >
+                        포지션 증거금
+                      </td>
+                      <td
+                        className="col-pnl"
+                        style={{ width: "16%", textAlign: "right" }}
+                      >
+                        미실현
+                      </td>
+                      <td
+                        className="col-pnl"
+                        style={{ width: "18%", textAlign: "right" }}
+                      >
+                        실현손익
+                      </td>
+                      <td
+                        className="col-pos"
+                        style={{ width: "21%", paddingLeft: 16 }}
+                      >
+                        포지션
+                      </td>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows(
+                      groupsOf(f, ticks[f.market || "GATE"] ?? {}),
+                      f,
+                      tableOpen !== f.fund_id,
+                    ).map((item) =>
+                      "group" in item ? (
+                        <tr
+                          key={`g-${item.group.key}`}
+                          className="fund-group-row"
+                        >
+                          <td colSpan={7}>
+                            {item.group.label} · {item.group.symbols.length}종
+                            {(() => {
+                              // 묶음 손익 — 이 묶음 줄들의 실현 + 미실현 · 그 줄들 몫 합 대비 %(줄마다의 % 와 같은 자).
+                              const g = groupPnl(
+                                item.group.symbols,
+                                f.per_symbol,
+                              );
+                              return (
+                                <span
+                                  style={{
+                                    marginLeft: 8,
+                                    color: pnlColor(String(g.amount)),
+                                  }}
+                                >
+                                  {g.amount > 0 ? "+" : ""}
+                                  {fmt(String(g.amount))} USDT
+                                  {g.pct === null
+                                    ? ""
+                                    : ` (${g.pct > 0 ? "+" : ""}${g.pct.toFixed(2)}%)`}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                        </tr>
+                      ) : (
+                        ((sym: string, v: FundLeg) => (
+                          <Fragment key={sym}>
+                            <tr
+                              className={v.preview ? "entry-soon" : undefined}
+                              title={
+                                v.preview
+                                  ? previewText(v.preview)
+                                  : openRun && v.handle
+                                    ? `${sym} 세부(RUN)로 이동`
+                                    : undefined
+                              }
+                              // 종목 줄 클릭 = 그 종목의 RUN 세부로 (사용자 2026-10-02 · 히트맵 타일 · 카드 모서리와 같은 통로)
+                              onClick={() =>
+                                openRun && v.handle
+                                  ? openRun(v.handle, sym)
+                                  : undefined
+                              }
+                              style={
+                                openRun && v.handle
+                                  ? { cursor: "pointer" }
+                                  : undefined
+                              }
+                            >
+                              <td>{sym}</td>
+                              <td
+                                className="opt"
+                                style={{ textAlign: "right" }}
+                              >
+                                {v.weight}
+                              </td>
+                              <td
+                                className="opt"
+                                style={{ textAlign: "right" }}
+                              >
+                                {fmt(v.equity)}
+                              </td>
+                              <td
+                                className="opt"
+                                style={{ textAlign: "right" }}
+                              >
+                                {v.holding && Number(v.margin) > 0
+                                  ? fmt(v.margin)
+                                  : "—"}
+                              </td>
+                              <td
+                                style={{
+                                  textAlign: "right",
+                                  color: pnlColor(v.unrealized),
+                                }}
+                              >
+                                {v.holding
+                                  ? fmt(v.unrealized) +
+                                    pnlPct(v.unrealized, v.equity)
+                                  : "—"}
+                              </td>
+                              {/* ⚠️ 거래소와 갈린 종목(포지션 갈림 reconciled · 회계 갈림
                       accounting_ok)은 원장 실현손익이 **허구**다. 거래소 실측으로 귀속된
                       진짜 값(verified_realized)이 있으면 **그것을** 그린다 — 원장 허구(+21)
                       대신 실측(-4.22)을 보여주고, 색을 죽여 미확정임을 표시 (2026-09-01). */}
-                  {(() => {
-                    const diverged =
-                      v.reconciled === false || v.accounting_ok === false;
-                    const shown =
-                      diverged && v.verified_realized != null
-                        ? v.verified_realized
-                        : v.realized;
-                    return (
-                      <td
-                        style={{
-                          textAlign: "right",
-                          color: diverged ? "#8b949e" : pnlColor(shown),
-                        }}
-                        title={
-                          diverged
-                            ? v.verified_realized != null
-                              ? `거래소 실측 실현손익 ${fmt(v.verified_realized)} (원장 허구 ${fmt(v.realized)} 대신) — 미확정·동결 격리`
-                              : "거래소와 원장이 갈렸다 — 미확정이라 동결 격리됐다"
-                            : undefined
-                        }
-                      >
-                        {fmt(shown)}
-                        {Number(shown) !== 0 ? pnlPct(shown, v.equity) : ""}
-                        {diverged
-                          ? v.verified_realized != null
-                            ? " ⚠︎실측"
-                            : " ⚠︎"
-                          : ""}
-                      </td>
-                    );
-                  })()}
-                  <td
-                    className="col-pos"
-                    style={{
-                      paddingLeft: 16,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {v.position
-                      ? v.shares && v.shares.length > 1
-                        ? `${v.position.side} · 몫 ${v.shares.length}`
-                        : `${v.position.side} @ ${fmtPrice(v.position.entry)}${
-                            v.position.name ? ` · ${v.position.name}` : ""
-                          }`
-                      : v.holding
-                        ? "보유"
-                        : v.preview
-                          ? previewShort(v.preview)
-                          : "현금"}
-                  </td>
-                </tr>
-                {/* ⭐ T320 — 한 종목을 다리 여럿이 나눠 쓰면 몫마다 한 줄(D3 ①): 다리 · 몫 증거금 ·
+                              {(() => {
+                                const diverged =
+                                  v.reconciled === false ||
+                                  v.accounting_ok === false;
+                                const shown =
+                                  diverged && v.verified_realized != null
+                                    ? v.verified_realized
+                                    : v.realized;
+                                return (
+                                  <td
+                                    style={{
+                                      textAlign: "right",
+                                      color: diverged
+                                        ? "#8b949e"
+                                        : pnlColor(shown),
+                                    }}
+                                    title={
+                                      diverged
+                                        ? v.verified_realized != null
+                                          ? `거래소 실측 실현손익 ${fmt(v.verified_realized)} (원장 허구 ${fmt(v.realized)} 대신) — 미확정·동결 격리`
+                                          : "거래소와 원장이 갈렸다 — 미확정이라 동결 격리됐다"
+                                        : undefined
+                                    }
+                                  >
+                                    {fmt(shown)}
+                                    {Number(shown) !== 0
+                                      ? pnlPct(shown, v.equity)
+                                      : ""}
+                                    {diverged
+                                      ? v.verified_realized != null
+                                        ? " ⚠︎실측"
+                                        : " ⚠︎"
+                                      : ""}
+                                  </td>
+                                );
+                              })()}
+                              <td
+                                className="col-pos"
+                                style={{
+                                  paddingLeft: 16,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {v.position
+                                  ? v.shares && v.shares.length > 1
+                                    ? `${v.position.side} · 몫 ${v.shares.length}`
+                                    : `${v.position.side} @ ${fmtPrice(v.position.entry)}${
+                                        v.position.name
+                                          ? ` · ${v.position.name}`
+                                          : ""
+                                      }`
+                                  : v.holding
+                                    ? "보유"
+                                    : v.preview
+                                      ? previewShort(v.preview)
+                                      : "현금"}
+                              </td>
+                            </tr>
+                            {/* ⭐ T320 — 한 종목을 다리 여럿이 나눠 쓰면 몫마다 한 줄(D3 ①): 다리 · 몫 증거금 ·
                     몫 미실현(그 몫 증거금 대비 %) · 진입가 · 계약. 종목 줄의 미실현 = 몫 줄 합. */}
-                {v.shares && v.shares.length > 1
-                  ? v.shares.map((sh) => {
-                      const sp = unrealizedPct(sh.unrealized, v.equity);
-                      return (
-                        <tr key={`${sym}:${sh.leg}`} className="share-row text-sm">
-                          <td className="faint" style={{ paddingLeft: 12 }}>
-                            └ {sh.name}
-                          </td>
-                          <td className="opt" />
-                          <td className="opt" />
-                          <td className="opt faint" style={{ textAlign: "right" }}>
-                            {sh.margin ? fmt(sh.margin) : "—"}
-                          </td>
-                          <td
-                            style={{ textAlign: "right", color: pnlColor(sh.unrealized ?? undefined) }}
-                          >
-                            {sh.unrealized === null || sh.unrealized === undefined
-                              ? "—"
-                              : fmt(sh.unrealized) +
-                                (sp === null ? "" : ` (${sp >= 0 ? "+" : ""}${sp.toFixed(1)}%)`)}
-                          </td>
-                          <td />
-                          <td className="col-pos faint" style={{ paddingLeft: 16 }}>
-                            {`${sh.side} @ ${fmtPrice(sh.entry)} · ${sh.contracts}계약`}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  : null}
-                </Fragment>
-                  ))(item.sym, item.v)
-                ),
-              )}
-            </tbody>
-          </table>
-          </>
-          ) : null}
-          <div
-            className="row"
-            style={{ marginTop: 6, gap: 12, alignItems: "center", flexWrap: "wrap" }}
-          >
-            <button
-              className="btn small"
-              onClick={() => setTableOpen(tableOpen === f.fund_id ? null : f.fund_id)}
-              title="종목마다 비중 · 몫 · 증거금 · 손익 · 포지션 — 매매법 묶음 · 거래대금 순"
-            >
-              {tableOpen === f.fund_id ? "종목 표 접기" : `종목 표 (${f.symbols.length}종)`}
-            </button>
-            <button
-              className="btn small"
-              onClick={() => setDetail(detail === f.fund_id ? null : f.fund_id)}
-              title="종목마다 마감 봉 차트와 몫·포지션·등락을 한눈에"
-            >
-              {detail === f.fund_id ? "상세 접기" : "상세보기"}
-            </button>
-            {/* ⭐ 사용자 2026-09-27: 시간축을 카드 전부 한 번에 · 칸 크기 가로 슬라이더 — "상세 접기" 오른쪽. */}
-            {detail === f.fund_id ? (
-              <>
-                <span className="row" style={{ gap: 4 }} role="group" aria-label="차트 시간축">
-                  {MEMBER_FRAMES.map((tf) => (
-                    <button
-                      key={tf}
-                      type="button"
-                      className={`btn small${memberTf === tf ? " picked" : ""}`}
-                      aria-pressed={memberTf === tf}
-                      onClick={() => setMemberTf(tf)}
-                    >
-                      {MEMBER_FRAME_SPEC[tf].label}
-                    </button>
-                  ))}
-                </span>
-                <label className="row text-sm faint" style={{ gap: 6 }}>
-                  칸 크기
-                  <input
-                    type="range"
-                    min={CARD_WIDTH.min}
-                    max={CARD_WIDTH.max}
-                    step={CARD_WIDTH.step}
-                    value={memberWidth}
-                    onChange={(e) => setMemberWidth(Number(e.target.value))}
-                    aria-label="차트 칸 크기"
-                    style={{ width: 160 }}
-                  />
-                </label>
+                            {v.shares && v.shares.length > 1
+                              ? v.shares.map((sh) => {
+                                  const sp = unrealizedPct(
+                                    sh.unrealized,
+                                    v.equity,
+                                  );
+                                  return (
+                                    <tr
+                                      key={`${sym}:${sh.leg}`}
+                                      className="share-row text-sm"
+                                    >
+                                      <td
+                                        className="faint"
+                                        style={{ paddingLeft: 12 }}
+                                      >
+                                        └ {sh.name}
+                                      </td>
+                                      <td className="opt" />
+                                      <td className="opt" />
+                                      <td
+                                        className="opt faint"
+                                        style={{ textAlign: "right" }}
+                                      >
+                                        {sh.margin ? fmt(sh.margin) : "—"}
+                                      </td>
+                                      <td
+                                        style={{
+                                          textAlign: "right",
+                                          color: pnlColor(
+                                            sh.unrealized ?? undefined,
+                                          ),
+                                        }}
+                                      >
+                                        {sh.unrealized === null ||
+                                        sh.unrealized === undefined
+                                          ? "—"
+                                          : fmt(sh.unrealized) +
+                                            (sp === null
+                                              ? ""
+                                              : ` (${sp >= 0 ? "+" : ""}${sp.toFixed(1)}%)`)}
+                                      </td>
+                                      <td />
+                                      <td
+                                        className="col-pos faint"
+                                        style={{ paddingLeft: 16 }}
+                                      >
+                                        {`${sh.side} @ ${fmtPrice(sh.entry)} · ${sh.contracts}계약`}
+                                      </td>
+                                    </tr>
+                                  );
+                                })
+                              : null}
+                          </Fragment>
+                        ))(item.sym, item.v)
+                      ),
+                    )}
+                  </tbody>
+                </table>
               </>
             ) : null}
-          </div>
-          {detail === f.fund_id ? (
-            <FundMembers
-              fundId={f.fund_id}
-              order={groupedOrder(groupsOf(f, ticks[f.market || "GATE"] ?? {}))}
-              timeframe={memberTf}
-              cardWidth={memberWidth}
-              previews={Object.fromEntries(
-                Object.entries(f.per_symbol).map(([sym, v]) => [sym, v.preview ?? null]),
-              )}
-              {...(openRun ? { openRun } : {})}
-            />
-          ) : null}
-
-          {editing === f.fund_id ? (
             <div
-              className="card"
-              style={{ marginTop: 6, background: "rgba(110,168,254,0.06)" }}
+              className="row"
+              style={{
+                marginTop: 6,
+                gap: 12,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
             >
-              <p className="card-hint" style={{ marginTop: 0 }}>
-                구성 편집 — 종목/비중을 바꾸고 적용. 새 종목은 세션이 뜨고, 뺀
-                종목은 청산된다. 전략을 바꾸면 무중단으로 갈아탄다 — 열린
-                포지션은 새 전략이 이어받는다.
-              </p>
-              <SelectField
-                label="전략"
-                value={editPlaybook}
-                onChange={setEditPlaybook}
-                options={[
-                  // 🔴 도는 전략이 목록(listed)에 없으면 끼운다 — 없으면 React 가 첫 option 을
-                  //    골라 화면이 거짓말한다 (2026-09-01 · 규칙 #8).
-                  ...(books.some((b) => b.id === f.playbook)
-                    ? []
-                    : [
-                        {
-                          value: f.playbook,
-                          label: `${f.playbook} (목록에 없음)`,
-                        },
-                      ]),
-                  ...books.map((b) => ({ value: b.id, label: b.label })),
-                ]}
+              <button
+                className="btn small"
+                onClick={() =>
+                  setTableOpen(tableOpen === f.fund_id ? null : f.fund_id)
+                }
+                title="종목마다 비중 · 몫 · 증거금 · 손익 · 포지션 — 매매법 묶음 · 거래대금 순"
+              >
+                {tableOpen === f.fund_id
+                  ? "종목 표 접기"
+                  : `종목 표 (${f.symbols.length}종)`}
+              </button>
+              <button
+                className="btn small"
+                onClick={() =>
+                  setDetail(detail === f.fund_id ? null : f.fund_id)
+                }
+                title="종목마다 마감 봉 차트와 몫·포지션·등락을 한눈에"
+              >
+                {detail === f.fund_id ? "상세 접기" : "상세보기"}
+              </button>
+              {/* ⭐ 사용자 2026-09-27: 시간축을 카드 전부 한 번에 · 칸 크기 가로 슬라이더 — "상세 접기" 오른쪽. */}
+              {detail === f.fund_id ? (
+                <>
+                  <span
+                    className="row"
+                    style={{ gap: 4 }}
+                    role="group"
+                    aria-label="차트 시간축"
+                  >
+                    {MEMBER_FRAMES.map((tf) => (
+                      <button
+                        key={tf}
+                        type="button"
+                        className={`btn small${memberTf === tf ? " picked" : ""}`}
+                        aria-pressed={memberTf === tf}
+                        onClick={() => setMemberTf(tf)}
+                      >
+                        {MEMBER_FRAME_SPEC[tf].label}
+                      </button>
+                    ))}
+                  </span>
+                  <label className="row text-sm faint" style={{ gap: 6 }}>
+                    칸 크기
+                    <input
+                      type="range"
+                      min={CARD_WIDTH.min}
+                      max={CARD_WIDTH.max}
+                      step={CARD_WIDTH.step}
+                      value={memberWidth}
+                      onChange={(e) => setMemberWidth(Number(e.target.value))}
+                      aria-label="차트 칸 크기"
+                      style={{ width: 160 }}
+                    />
+                  </label>
+                </>
+              ) : null}
+            </div>
+            {detail === f.fund_id ? (
+              <FundMembers
+                fundId={f.fund_id}
+                order={groupedOrder(
+                  groupsOf(f, ticks[f.market || "GATE"] ?? {}),
+                )}
+                timeframe={memberTf}
+                cardWidth={memberWidth}
+                previews={Object.fromEntries(
+                  Object.entries(f.per_symbol).map(([sym, v]) => [
+                    sym,
+                    v.preview ?? null,
+                  ]),
+                )}
+                {...(openRun ? { openRun } : {})}
               />
-              {editRows.map((r, i) => (
-                <div key={i} className="row" style={{ marginBottom: 4 }}>
-                  <input
-                    value={r.symbol}
-                    placeholder="BTC_USDT"
-                    onChange={(e) => {
-                      const next = [...editRows];
-                      next[i] = { symbol: e.target.value, weight: r.weight };
-                      setEditRows(next);
-                    }}
-                    style={{ flex: 2 }}
-                  />
-                  <input
-                    value={r.weight}
-                    placeholder="비중"
-                    onChange={(e) => {
-                      const next = [...editRows];
-                      next[i] = { symbol: r.symbol, weight: e.target.value };
-                      setEditRows(next);
-                    }}
-                    style={{ flex: 1 }}
-                  />
+            ) : null}
+
+            {editing === f.fund_id ? (
+              <div
+                className="card"
+                style={{ marginTop: 6, background: "rgba(110,168,254,0.06)" }}
+              >
+                <p className="card-hint" style={{ marginTop: 0 }}>
+                  구성 편집 — 종목/비중을 바꾸고 적용. 새 종목은 세션이 뜨고, 뺀
+                  종목은 청산된다. 전략을 바꾸면 무중단으로 갈아탄다 — 열린
+                  포지션은 새 전략이 이어받는다.
+                </p>
+                <SelectField
+                  label="전략"
+                  value={editPlaybook}
+                  onChange={setEditPlaybook}
+                  options={[
+                    // 🔴 도는 전략이 목록(listed)에 없으면 끼운다 — 없으면 React 가 첫 option 을
+                    //    골라 화면이 거짓말한다 (2026-09-01 · 규칙 #8).
+                    ...(books.some((b) => b.id === f.playbook)
+                      ? []
+                      : [
+                          {
+                            value: f.playbook,
+                            label: `${f.playbook} (목록에 없음)`,
+                          },
+                        ]),
+                    ...books.map((b) => ({ value: b.id, label: b.label })),
+                  ]}
+                />
+                {editRows.map((r, i) => (
+                  <div key={i} className="row" style={{ marginBottom: 4 }}>
+                    <input
+                      value={r.symbol}
+                      placeholder="BTC_USDT"
+                      onChange={(e) => {
+                        const next = [...editRows];
+                        next[i] = { symbol: e.target.value, weight: r.weight };
+                        setEditRows(next);
+                      }}
+                      style={{ flex: 2 }}
+                    />
+                    <input
+                      value={r.weight}
+                      placeholder="비중"
+                      onChange={(e) => {
+                        const next = [...editRows];
+                        next[i] = { symbol: r.symbol, weight: e.target.value };
+                        setEditRows(next);
+                      }}
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      className="btn small"
+                      onClick={() =>
+                        setEditRows(editRows.filter((_, j) => j !== i))
+                      }
+                    >
+                      빼기
+                    </button>
+                  </div>
+                ))}
+                <div className="row" style={{ marginTop: 4 }}>
                   <button
                     className="btn small"
                     onClick={() =>
-                      setEditRows(editRows.filter((_, j) => j !== i))
+                      setEditRows([...editRows, { symbol: "", weight: "1" }])
                     }
                   >
-                    빼기
+                    + 종목
                   </button>
-                </div>
-              ))}
-              <div className="row" style={{ marginTop: 4 }}>
-                <button
-                  className="btn small"
-                  onClick={() =>
-                    setEditRows([...editRows, { symbol: "", weight: "1" }])
-                  }
-                >
-                  + 종목
-                </button>
-                <button
-                  className="btn small primary"
-                  onClick={() => applyEdit(f)}
-                  disabled={busy === f.fund_id}
-                >
-                  {busy === f.fund_id ? "적용 중…" : "적용"}
-                </button>
-                <button className="btn small" onClick={() => setEditing("")}>
-                  취소
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              {deferred?.id === f.fund_id ? (
-                <div className="notice" style={{ marginTop: 6 }} role="status">
-                  ⏳ 매시 정각 앞뒤 30초는 봉 마감 진입이 크기를 정하고 체결되는 시간이라 리밸런싱을 미룹니다 —{" "}
-                  {deferred.until - clock > 30_000 ? (
-                    <>
-                      정각까지 <b>{clockText(deferred.until - 30_000 - clock)}</b> · 정각 30초 뒤 자동으로 리밸런싱
-                    </>
-                  ) : (
-                    <>
-                      리밸런싱까지 <b>{clockText(deferred.until - clock)}</b>
-                    </>
-                  )}
                   <button
-                    type="button"
-                    className="btn small"
-                    style={{ marginLeft: 8 }}
-                    onClick={() => setDeferred(null)}
+                    className="btn small primary"
+                    onClick={() => applyEdit(f)}
+                    disabled={busy === f.fund_id}
                   >
+                    {busy === f.fund_id ? "적용 중…" : "적용"}
+                  </button>
+                  <button className="btn small" onClick={() => setEditing("")}>
                     취소
                   </button>
                 </div>
-              ) : null}
-              <div className="row" style={{ marginTop: 6 }}>
-                <button
-                  className="btn small"
-                  onClick={() => tick(f.fund_id)}
-                  disabled={busy === f.fund_id || deferred?.id === f.fund_id}
-                >
-                  {busy === f.fund_id ? "…" : deferred?.id === f.fund_id ? "대기 중" : "지금 리밸런싱"}
-                </button>
-                <button
-                  className="btn small primary"
-                  onClick={() => openFlow(f, "in")}
-                  disabled={busy === f.fund_id}
-                >
-                  입금
-                </button>
-                <button
-                  className="btn small"
-                  onClick={() => openFlow(f, "out")}
-                  disabled={busy === f.fund_id}
-                >
-                  출금
-                </button>
-                <button
-                  className="btn small"
-                  onClick={() => startEdit(f)}
-                  disabled={busy === f.fund_id}
-                >
-                  구성 편집
-                </button>
-                <span className="card-hint" style={{ margin: 0 }}>
-                  전략:{" "}
-                  {books.find((b) => b.id === f.playbook)?.label ?? f.playbook}
-                  {" · 바꾸려면 구성 편집"}
-                </span>
-                <button
-                  className="btn small danger"
-                  onClick={() => setPending({ id: f.fund_id, kind: "drop" })}
-                  disabled={busy === f.fund_id}
-                  style={{ marginLeft: "auto" }}
-                >
-                  삭제
-                </button>
               </div>
-              {pending?.id === f.fund_id ? (
-                <div
-                  className="card"
-                  style={{ marginTop: 6, background: "rgba(110,168,254,0.06)" }}
-                >
-                  {pending.kind === "in" || pending.kind === "out" ? (
-                    <>
-                      <p className="card-hint" style={{ marginTop: 0 }}>
-                        {pending.kind === "in"
-                          ? "입금 — 거래소에 실제로 넣은 만큼 적는다. 잔고와 종목별 예산만 늘고 성과(TWR)는 안 오른다. 주문은 나가지 않는다."
-                          : `출금 — 지금 잔고 ${fmt(f.balance)} USDT. 열린 포지션은 그대로고 다음 진입부터 예산이 준다. 거래소 이체는 따로 한다.`}
-                      </p>
-                      <div className="row" style={{ alignItems: "flex-end" }}>
-                        <label className="field">
-                          금액 (USDT)
-                          <input
-                            type="number"
-                            min="0"
-                            step="any"
-                            value={flowAmount}
-                            onChange={(e) => {
-                              setFlowAmount(e.target.value);
-                              setFlowRoom("");
-                            }}
-                            placeholder="0"
-                            autoFocus
-                          />
-                        </label>
-                        {pending.kind === "in" ? (
+            ) : (
+              <>
+                {deferred?.id === f.fund_id ? (
+                  <div
+                    className="notice"
+                    style={{ marginTop: 6 }}
+                    role="status"
+                  >
+                    ⏳ 매시 정각 앞뒤 30초는 봉 마감 진입이 크기를 정하고
+                    체결되는 시간이라 리밸런싱을 미룹니다 —{" "}
+                    {deferred.until - clock > 30_000 ? (
+                      <>
+                        정각까지{" "}
+                        <b>{clockText(deferred.until - 30_000 - clock)}</b> ·
+                        정각 30초 뒤 자동으로 리밸런싱
+                      </>
+                    ) : (
+                      <>
+                        리밸런싱까지 <b>{clockText(deferred.until - clock)}</b>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      className="btn small"
+                      style={{ marginLeft: 8 }}
+                      onClick={() => setDeferred(null)}
+                    >
+                      취소
+                    </button>
+                  </div>
+                ) : null}
+                <div className="row" style={{ marginTop: 6 }}>
+                  <button
+                    className="btn small"
+                    onClick={() => tick(f.fund_id)}
+                    disabled={busy === f.fund_id || deferred?.id === f.fund_id}
+                  >
+                    {busy === f.fund_id
+                      ? "…"
+                      : deferred?.id === f.fund_id
+                        ? "대기 중"
+                        : "지금 리밸런싱"}
+                  </button>
+                  <button
+                    className="btn small primary"
+                    onClick={() => openFlow(f, "in")}
+                    disabled={busy === f.fund_id}
+                  >
+                    입금
+                  </button>
+                  <button
+                    className="btn small"
+                    onClick={() => openFlow(f, "out")}
+                    disabled={busy === f.fund_id}
+                  >
+                    출금
+                  </button>
+                  <button
+                    className="btn small"
+                    onClick={() => startEdit(f)}
+                    disabled={busy === f.fund_id}
+                  >
+                    구성 편집
+                  </button>
+                  <span className="card-hint" style={{ margin: 0 }}>
+                    전략:{" "}
+                    {books.find((b) => b.id === f.playbook)?.label ??
+                      f.playbook}
+                    {" · 바꾸려면 구성 편집"}
+                  </span>
+                  <button
+                    className="btn small danger"
+                    onClick={() => setPending({ id: f.fund_id, kind: "drop" })}
+                    disabled={busy === f.fund_id}
+                    style={{ marginLeft: "auto" }}
+                  >
+                    삭제
+                  </button>
+                </div>
+                {pending?.id === f.fund_id ? (
+                  <div
+                    className="card"
+                    style={{
+                      marginTop: 6,
+                      background: "rgba(110,168,254,0.06)",
+                    }}
+                  >
+                    {pending.kind === "in" || pending.kind === "out" ? (
+                      <>
+                        <p className="card-hint" style={{ marginTop: 0 }}>
+                          {pending.kind === "in"
+                            ? "입금 — 거래소에 실제로 넣은 만큼 적는다. 잔고와 종목별 예산만 늘고 성과(TWR)는 안 오른다. 주문은 나가지 않는다."
+                            : `출금 — 지금 잔고 ${fmt(f.balance)} USDT. 열린 포지션은 그대로고 다음 진입부터 예산이 준다. 거래소 이체는 따로 한다.`}
+                        </p>
+                        <div className="row" style={{ alignItems: "flex-end" }}>
+                          <label className="field">
+                            금액 (USDT)
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={flowAmount}
+                              onChange={(e) => {
+                                setFlowAmount(e.target.value);
+                                setFlowRoom("");
+                              }}
+                              placeholder="0"
+                              autoFocus
+                            />
+                          </label>
+                          {pending.kind === "in" ? (
+                            <button
+                              className="btn small"
+                              onClick={() => fillDepositAll(f)}
+                              disabled={
+                                busy === f.fund_id ||
+                                f.anchor?.mode === "account"
+                              }
+                              title={
+                                f.anchor?.mode === "account"
+                                  ? "이 펀드는 계좌 전체를 굴려 거래소 입금을 자동으로 읽는다 — 거래소에 넣고 '지금 리밸런싱'"
+                                  : "거래소 계좌에서 아직 원장에 안 들어간 돈 전부를 칸에 채운다"
+                              }
+                            >
+                              전액
+                            </button>
+                          ) : null}
+                          <label className="field" style={{ flex: 1 }}>
+                            메모 (선택)
+                            <input
+                              value={flowNote}
+                              onChange={(e) => setFlowNote(e.target.value)}
+                              placeholder="예: 9/7 거래소 입금"
+                            />
+                          </label>
                           <button
-                            className="btn small"
-                            onClick={() => fillDepositAll(f)}
-                            disabled={busy === f.fund_id || f.anchor?.mode === "account"}
-                            title={
-                              f.anchor?.mode === "account"
-                                ? "이 펀드는 계좌 전체를 굴려 거래소 입금을 자동으로 읽는다 — 거래소에 넣고 '지금 리밸런싱'"
-                                : "거래소 계좌에서 아직 원장에 안 들어간 돈 전부를 칸에 채운다"
+                            className={
+                              pending.kind === "in"
+                                ? "btn small primary"
+                                : "btn small danger"
+                            }
+                            onClick={() =>
+                              submitFlow(
+                                f,
+                                pending.kind === "in" ? "in" : "out",
+                              )
+                            }
+                            disabled={
+                              busy === f.fund_id || flowAmount.trim() === ""
                             }
                           >
-                            전액
+                            {busy === f.fund_id
+                              ? "…"
+                              : pending.kind === "in"
+                                ? `${fmt(flowAmount || "0")} 입금 확인`
+                                : `${fmt(flowAmount || "0")} 출금 확인`}
                           </button>
+                          <button
+                            className="btn small"
+                            onClick={() => {
+                              setPending(null);
+                              setFlowAmount("");
+                              setFlowNote("");
+                              setFlowRoom("");
+                            }}
+                          >
+                            취소
+                          </button>
+                        </div>
+                        {flowRoom ? (
+                          <p className="card-hint" style={{ marginBottom: 0 }}>
+                            {flowRoom}
+                          </p>
                         ) : null}
-                        <label className="field" style={{ flex: 1 }}>
-                          메모 (선택)
-                          <input
-                            value={flowNote}
-                            onChange={(e) => setFlowNote(e.target.value)}
-                            placeholder="예: 9/7 거래소 입금"
-                          />
-                        </label>
-                        <button
-                          className={
-                            pending.kind === "in"
-                              ? "btn small primary"
-                              : "btn small danger"
-                          }
-                          onClick={() =>
-                            submitFlow(f, pending.kind === "in" ? "in" : "out")
-                          }
-                          disabled={
-                            busy === f.fund_id || flowAmount.trim() === ""
-                          }
+                      </>
+                    ) : pending.kind === "drop" ? (
+                      <div className="row">
+                        <span
+                          className="card-hint"
+                          style={{ margin: 0, flex: 1 }}
                         >
-                          {busy === f.fund_id
-                            ? "…"
-                            : pending.kind === "in"
-                              ? `${fmt(flowAmount || "0")} 입금 확인`
-                              : `${fmt(flowAmount || "0")} 출금 확인`}
+                          펀드를 접는다 — 소유한 세션이 모두 청산·정리되고
+                          되돌릴 수 없다.
+                        </span>
+                        <button
+                          className="btn small danger"
+                          onClick={() => {
+                            setPending(null);
+                            drop(f.fund_id);
+                          }}
+                          disabled={busy === f.fund_id}
+                        >
+                          정말 삭제
                         </button>
                         <button
                           className="btn small"
-                          onClick={() => {
-                            setPending(null);
-                            setFlowAmount("");
-                            setFlowNote("");
-                            setFlowRoom("");
-                          }}
+                          onClick={() => setPending(null)}
                         >
                           취소
                         </button>
                       </div>
-                      {flowRoom ? (
-                        <p className="card-hint" style={{ marginBottom: 0 }}>
-                          {flowRoom}
-                        </p>
-                      ) : null}
-                    </>
-                  ) : pending.kind === "drop" ? (
-                    <div className="row">
-                      <span
-                        className="card-hint"
-                        style={{ margin: 0, flex: 1 }}
-                      >
-                        펀드를 접는다 — 소유한 세션이 모두 청산·정리되고 되돌릴
-                        수 없다.
-                      </span>
-                      <button
-                        className="btn small danger"
-                        onClick={() => {
-                          setPending(null);
-                          drop(f.fund_id);
-                        }}
-                        disabled={busy === f.fund_id}
-                      >
-                        정말 삭제
-                      </button>
-                      <button
-                        className="btn small"
-                        onClick={() => setPending(null)}
-                      >
-                        취소
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="row">
-                      <span
-                        className="card-hint"
-                        style={{ margin: 0, flex: 1 }}
-                      >
-                        갈린 세션의 원장을 지금 거래소 상태에 앵커한다 — 복구
-                        불가한 과거는 버리고 지금부터 정확히 추적한다. 리셋이
-                        아니다(거래소 계정·돈·포지션은 안 건드림).
-                      </span>
-                      <button
-                        className="btn small danger"
-                        onClick={() => {
-                          setPending(null);
-                          resync(f.fund_id);
-                        }}
-                        disabled={busy === f.fund_id}
-                      >
-                        재정렬 실행
-                      </button>
-                      <button
-                        className="btn small"
-                        onClick={() => setPending(null)}
-                      >
-                        취소
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </>
-          )}
-        </div>
-      ))}
+                    ) : (
+                      <div className="row">
+                        <span
+                          className="card-hint"
+                          style={{ margin: 0, flex: 1 }}
+                        >
+                          갈린 세션의 원장을 지금 거래소 상태에 앵커한다 — 복구
+                          불가한 과거는 버리고 지금부터 정확히 추적한다. 리셋이
+                          아니다(거래소 계정·돈·포지션은 안 건드림).
+                        </span>
+                        <button
+                          className="btn small danger"
+                          onClick={() => {
+                            setPending(null);
+                            resync(f.fund_id);
+                          }}
+                          disabled={busy === f.fund_id}
+                        >
+                          재정렬 실행
+                        </button>
+                        <button
+                          className="btn small"
+                          onClick={() => setPending(null)}
+                        >
+                          취소
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </>
+            )}
+          </div>
+        ))}
 
       <div className="row" style={{ marginTop: 8, alignItems: "flex-end" }}>
         <label className="field">
@@ -1296,9 +1484,17 @@ export function FundPanel({
           className="btn primary"
           onClick={() => create()}
           disabled={busy === "create" || !mayTradeHere}
-          title={mayTradeHere ? undefined : "이 시장에서 거래할 권한이 없다 — 관리자가 준다"}
+          title={
+            mayTradeHere
+              ? undefined
+              : "이 시장에서 거래할 권한이 없다 — 관리자가 준다"
+          }
         >
-          {mayTradeHere ? (busy === "create" ? "만드는 중…" : "펀드 만들기") : "🔒 거래 권한 없음"}
+          {mayTradeHere
+            ? busy === "create"
+              ? "만드는 중…"
+              : "펀드 만들기"
+            : "🔒 거래 권한 없음"}
         </button>
       </div>
       {createRoom ? (
@@ -1311,9 +1507,11 @@ export function FundPanel({
           <span className="card-name">지금은 장 마감이다</span>
           <p className="muted">
             펀드를 만들면 종목마다 RUN 이 뜨지만, 판정은
-            {closedAsk.nextOpen ? ` 다음 개장(${when(closedAsk.nextOpen)})` : " 다음 개장"}
-            부터 시작한다. <b>예약 주문이 아니라 대기다</b> — 그때까지 주문은 나가지 않고, 개장하면
-            매매법이 스스로 자리를 찾는다.
+            {closedAsk.nextOpen
+              ? ` 다음 개장(${when(closedAsk.nextOpen)})`
+              : " 다음 개장"}
+            부터 시작한다. <b>예약 주문이 아니라 대기다</b> — 그때까지 주문은
+            나가지 않고, 개장하면 매매법이 스스로 자리를 찾는다.
           </p>
           <div className="row">
             <button
@@ -1350,16 +1548,18 @@ export function FundPanel({
                   ? ` · 같은 날 연속 손절 ${selBook.fund_rules.halt_after_stops} 이면 정지`
                   : ""}
                 {/* T286 — 화면에 입력칸이 없는 규칙이다. 여기가 사람이 볼 수 있는 유일한 자리다. */}
-                {selBook.fund_rules.notional_fit ? " · 상한에 걸리면 줄여서 진입" : ""}
+                {selBook.fund_rules.notional_fit
+                  ? " · 상한에 걸리면 줄여서 진입"
+                  : ""}
               </span>
             )}
             {/* 🔴 낙폭 브레이크는 **자리 배분과 무관한** 펀드 층 장치라 위 칩 밖에 있다.
                 안에 두면 비중 배분 매매법이 브레이크를 선언해도 화면에 한 글자도 안 나온다. */}
             {selBook.fund_rules?.drawdown_brake && (
               <span className="book-chip strong">
-                {`낙폭 ${(
-                  Number(selBook.fund_rules.drawdown_brake.at) * 100
-                ).toFixed(1).replace(/\.0$/, "")}% 아래면 신규 x${
+                {`낙폭 ${(Number(selBook.fund_rules.drawdown_brake.at) * 100)
+                  .toFixed(1)
+                  .replace(/\.0$/, "")}% 아래면 신규 x${
                   selBook.fund_rules.drawdown_brake.scale
                 }`}
               </span>
@@ -1375,18 +1575,26 @@ export function FundPanel({
           </div>
         </div>
       )}
-      <p className="card-hint">
-        기본 바스켓{" "}
-        {members.length > 0
-          ? members
-              .map((m) => `${m.symbol.replace("_USDT", "")} ${m.weight}`)
-              .join(" · ")
-          : "(서버에서 불러오는 중…)"}
-        {missing.length > 0 &&
-          ` — testnet 제외: ${missing.map((s) => s.replace("_USDT", "")).join("·")} (실계좌에선 포함)`}
-        . 구성의 SSoT 는 config/baskets.yml 이다. 각 종목에 비중대로 세션이
-        뜬다. ⚠️ 같은 종목 RUN 이 돌고 있으면 먼저 종료해야 한다.
-      </p>
+      {universe ? (
+        <p className="card-hint">
+          종목은 분기마다 서버가 정한다(거래대금 순위 · 이번 분기 목록). 고정
+          바스켓을 쓰지 않는다. ⚠️ 같은 종목 RUN 이 돌고 있으면 먼저 종료해야
+          한다.
+        </p>
+      ) : (
+        <p className="card-hint">
+          기본 바스켓{" "}
+          {members.length > 0
+            ? members
+                .map((m) => `${m.symbol.replace("_USDT", "")} ${m.weight}`)
+                .join(" · ")
+            : "(서버에서 불러오는 중…)"}
+          {missing.length > 0 &&
+            ` — testnet 제외: ${missing.map((s) => s.replace("_USDT", "")).join("·")} (실계좌에선 포함)`}
+          . 구성의 SSoT 는 config/baskets.yml 이다. 각 종목에 비중대로 세션이
+          뜬다. ⚠️ 같은 종목 RUN 이 돌고 있으면 먼저 종료해야 한다.
+        </p>
+      )}
       {err ? (
         <ErrorCard
           message={err}

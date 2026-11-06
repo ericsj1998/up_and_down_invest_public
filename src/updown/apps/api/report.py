@@ -144,7 +144,11 @@ def _window(payload: dict[str, Any]) -> Window:
         end = datetime.fromisoformat(str(until))
         if start.tzinfo is None or end.tzinfo is None:
             raise HTTPException(400, "since/until 은 tz 가 있는 ISO8601 이어야 한다 (UTC)")
-        return Window(since=start.astimezone(UTC), until=end.astimezone(UTC))
+        finish = end.astimezone(UTC)
+        return Window(
+            since=equity.clipped_since(start.astimezone(UTC), finish, equity.load_account_start()),
+            until=finish,
+        )
     hours = int(payload.get("hours", 24))
     if hours <= 0 or hours > 24 * 31:
         raise HTTPException(400, f"hours 는 1~744 — 받은 값 {hours}")
@@ -382,6 +386,60 @@ async def lite(request: Request) -> dict[str, Any]:
     return made
 
 
+@router.post("/account-start")
+async def set_account_start(
+    request: Request, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
+    """손익을 0 으로 새로 센다 — 지금 계좌 총액을 자본금의 출발로 삼는다 (사용자 2026-11-06).
+
+    Args:
+        request: 요청 — 슈퍼관리자(`manage_roles`)만. 호출자가 없으면(시험 · 내부) 통과한다.
+        payload: `{admin_pw}` — 전 판 정지 스위치와 같은 관리자 비밀번호.
+
+    Returns:
+        `{at, balance}`.
+
+    Raises:
+        HTTPException: 권한 · 비밀번호(403 · 429 · 503) · 포지션 있음(409) · 계좌를 못 읽음(502).
+
+    Note:
+        옛 기록은 지우지 않고 화면 계산의 시작점만 옮긴다. 포지션이 열려 있으면 그 손익이
+        어느 쪽인지 흐려지므로 평평할 때만 받는다.
+    """
+    global _lite_cache
+    from updown.apps.api.auth import Cap
+    from updown.apps.api.exchange import (
+        _all_live,  # pyright: ignore[reportPrivateUsage]
+        _orders_adapter,  # pyright: ignore[reportPrivateUsage]
+        _tracked,  # pyright: ignore[reportPrivateUsage]
+    )
+    from updown.apps.api.walkforward import (
+        _check_admin_pw,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    who = getattr(request.state, "caller", None)
+    if who is not None and not who.has(Cap.MANAGE_ROLES):
+        raise HTTPException(403, "손익 시작점은 슈퍼관리자만 옮길 수 있다")
+    _check_admin_pw(payload)
+    try:
+        orders = _orders_adapter()
+        available = Decimal(str((await orders.get_balance()).cash))
+        tracked = await _tracked(orders, "GATE")
+        positions = (await _all_live(orders, "GATE", tracked)).get("positions", [])
+    except Exception as exc:
+        raise HTTPException(502, f"계좌를 못 읽었다: {str(exc)[:120]}") from exc
+    if any(Decimal(str(p.get("size", "0"))) != 0 for p in positions):
+        raise HTTPException(409, "포지션이 열려 있다 — 평평할 때만 손익을 0 으로 새로 센다")
+    start = equity.AccountStart(at=datetime.now(UTC), balance=available)
+    equity.save_account_start(start)
+    _lite_cache = None
+    _logger.info(
+        "report_account_start_set",
+        payload={"at": start.at.isoformat(), "balance": str(start.balance)},
+    )
+    return {"at": start.at.isoformat(), "balance": str(start.balance)}
+
+
 @router.get("/dashboard")
 async def dashboard(hours: int = 24) -> dict[str, Any]:
     """리포트 **대시보드** JSON — 한 화면 (T220 2단계 · 사용자 2026-09-05).
@@ -399,6 +457,8 @@ async def dashboard(hours: int = 24) -> dict[str, Any]:
         `hours` 는 1~744 (미리보기와 같은 범위).
     """
     window = _window({"hours": hours})
+    began = equity.load_account_start()
+    start_at = None if began is None else began.at
     perf = await build_performance(_sessions(), window)
     account: AccountSummary | None
     try:
@@ -419,7 +479,7 @@ async def dashboard(hours: int = 24) -> dict[str, Any]:
         configured=mail_settings_of(settings) is not None,
         default_to=[name.strip() for name in (settings.report_to or "").split(",") if name.strip()],
         funds=dash.fund_rows(load_fund_snapshots()),
-        equity=equity.monthly(equity.load()),
+        equity=equity.monthly(equity.load(since=start_at)),
         wallet=await load_wallet(window),
     )
 

@@ -52,7 +52,10 @@ def window_for(hours: int, *, until: datetime | None = None) -> Window:
         구간.
     """
     end = until or datetime.now(UTC)
-    return Window(since=end - timedelta(hours=hours), until=end)
+    since = equity_mod.clipped_since(
+        end - timedelta(hours=hours), end, equity_mod.load_account_start()
+    )
+    return Window(since=since, until=end)
 
 
 async def _exchange_rows(
@@ -96,6 +99,23 @@ _capital_cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
 
 
 async def _capital_rows(market: str, until: datetime) -> list[dict[str, str]] | None:
+    """자본금 계산에 쓸 입출금 줄 — 시작점이 있으면 시작 총액 + 그 뒤 입출금.
+
+    Args:
+        market: 거래소.
+        until: 구간 끝.
+
+    Returns:
+        줄들. 읽지 못했으면 None. 시작점이 있으면 옛 입출금을 못 읽어도 시작 총액으로 잰다.
+    """
+    start = equity_mod.load_account_start()
+    rows = await _capital_rows_all(market, until)
+    if rows is None:
+        return None if start is None else equity_mod.rebased_moves([], start)
+    return equity_mod.rebased_moves(rows, start)
+
+
+async def _capital_rows_all(market: str, until: datetime) -> list[dict[str, str]] | None:
     """자본금 입출금 줄 전부 — 거래소에서 읽은 것 + 쌓아 둔 파일.
 
     Args:

@@ -2639,6 +2639,7 @@ async def defaults(market: str = "GATE", playbook: str = "") -> dict[str, Any]:
         "leverage": None if found is None or found.leverage is None else str(found.leverage),
         "members": members,
         "missing": missing,
+        "universe": None if found is None else found.universe,
     }
 
 
