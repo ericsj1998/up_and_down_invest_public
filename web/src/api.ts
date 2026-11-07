@@ -246,16 +246,34 @@ export type LiteHomeData = {
   capital: string | null;
   earned: string | null;
   realized_24h: string | null;
+  /** 쓸 수 있는 돈 · 잡힌 증거금 · 열린 명목 · 계좌 배율(명목 ÷ 총액). */
+  available: string | null;
+  margin_used: string | null;
+  notional: string | null;
+  account_leverage: string | null;
   runs: number;
   leader: boolean | null;
-  positions: {
-    symbol: string;
-    /** 그 판 id — 판이 없는 다리(나스닥)는 빈 값. */
-    run: string;
-    side: "long" | "short";
-    unrealized: string;
-    pct: string | null;
-  }[];
+  /** 신규 진입 정지 스위치 — 못 읽으면 null. */
+  halted: boolean | null;
+  positions: LitePosition[];
+};
+
+export type LitePosition = {
+  symbol: string;
+  /** 그 판 id — 판이 없는 다리(나스닥)는 빈 값. */
+  run: string;
+  side: "long" | "short";
+  contracts: string;
+  margin: string;
+  notional: string | null;
+  entry: string | null;
+  mark: string | null;
+  unrealized: string;
+  pct: string | null;
+  /** 어느 다리로 들어갔나 · 손절 — 몫마다 한 줄. `stop` 빈 값 = 모른다. */
+  shares: { name: string; stop: string; opened_at: string | null }[];
+  /** 거래소에 걸린 조건부 수 — 못 읽으면 null. */
+  exchange_stops: number | null;
 };
 
 export function liteHome(): Promise<LiteHomeData> {
@@ -993,6 +1011,8 @@ export type Trade = {
   playbook?: string;
   /** 진입 체결 계약 수 (T320) — 거래소 미실현을 몫마다 나누는 무게. 0 · 없음 = 모른다. */
   contracts?: number;
+  /** 진입을 낸 다리의 짧은 이름 — 차트 상자 · 매매 표가 적는다. */
+  leg?: string;
   outcome: string;
   direction: string;
   entry: string;

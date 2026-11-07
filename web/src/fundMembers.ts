@@ -144,5 +144,6 @@ export function memberMarks(m: FundMember): TradeMark[] {
     pos.opened_at,
     unrealizedPct(m.unrealized, m.equity),
   );
-  return one ? [one] : [];
+  if (!one) return [];
+  return [pos.name ? { ...one, leg: pos.name } : one];
 }

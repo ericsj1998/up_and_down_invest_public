@@ -37,12 +37,14 @@ export function EngineLegPanel({
   name,
   status,
   onClose,
+  closeLabel = "접기",
 }: {
   symbol: string;
   market: string;
   name: string;
   status: FundEngineStatus;
   onClose: () => void;
+  closeLabel?: string;
 }) {
   const [frame, setFrame] = useState<AnalysisFrame | null>(null);
   const [error, setError] = useState("");
@@ -83,7 +85,7 @@ export function EngineLegPanel({
           {name} · {symbol.replace("_USDT", "")}
         </b>
         <button type="button" className="btn" onClick={onClose}>
-          접기
+          {closeLabel}
         </button>
       </div>
       <div

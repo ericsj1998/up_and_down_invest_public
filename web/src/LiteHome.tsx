@@ -10,7 +10,15 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { type LiteBrief, type LiteHomeData, liteBrief, liteHome } from "./api";
+import {
+  type LiteBrief,
+  type LiteHomeData,
+  type LitePosition,
+  liteBrief,
+  liteHome,
+} from "./api";
+import { fmtPrice } from "./chart/trades";
+import { heldText, legNames, liteFacts } from "./liteFacts";
 import { useOpenRuns } from "./shell/openRuns";
 
 const POLL_MS = 60_000;
@@ -221,8 +229,125 @@ export function BriefReport() {
   );
 }
 
-export function LiteHome() {
+/** 가격 — 못 읽으면 대시. */
+function price(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? fmtPrice(parsed) : "—";
+}
+
+/**
+ * 포지션 한 줄 — 먼저 볼 것은 다리 · 증거금 · 손절이다 (사용자 2026-11-07 "잡힌 증거금 금액 등 필수로 봐야 하는 값").
+ * 몫이 여럿이면 손절이 몫마다 달라 다리 이름 옆에 한 줄씩 적는다.
+ */
+function PositionRow({ p, nowMs }: { p: LitePosition; nowMs: number }) {
   const runs = useOpenRuns();
+  const pnl = num(p.unrealized);
+  const pct = num(p.pct);
+  const facts = liteFacts(p);
+  const held = heldText(p, nowMs);
+  const legs = legNames(p);
+  const name = p.symbol.replace("_USDT", "");
+  const cells: { label: string; value: string; className?: string }[] = [
+    { label: "증거금", value: `${money(num(p.margin))} USDT` },
+    {
+      label: "명목",
+      value: `${money(num(p.notional))} USDT${facts.leverage === null ? "" : ` · ${facts.leverage.toFixed(1)}배`}`,
+    },
+    { label: "진입 → 지금", value: `${price(p.entry)} → ${price(p.mark)}` },
+  ];
+  if (p.shares.length <= 1) {
+    cells.push({
+      label: "손절",
+      value:
+        facts.stop === null
+          ? "—"
+          : `${fmtPrice(facts.stop)}${facts.stopDistancePct === null ? "" : ` (${facts.stopDistancePct.toFixed(1)}%)`}`,
+    });
+    cells.push({
+      label: "손절 시",
+      value:
+        facts.stopPnl === null ? "—" : `${money(facts.stopPnl, true)} USDT`,
+      className: tone(facts.stopPnl),
+    });
+  }
+  cells.push({ label: "계약", value: p.contracts });
+  if (held) cells.push({ label: "보유", value: held });
+  return (
+    <li className="py-3" data-testid="lite-position">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex flex-wrap items-center gap-2 font-medium text-blue-gray-900 dark:text-white">
+          {/* 판이 있으면 그 판 화면 · 없으면(나스닥) 엔진 다리 화면 */}
+          {p.run ? (
+            <Link
+              to={`/paper/${p.run}`}
+              className="underline-offset-2 hover:underline"
+              onClick={() => runs.open(p.run, p.symbol)}
+            >
+              {name}
+            </Link>
+          ) : (
+            <Link
+              to={`/leg/${p.symbol}`}
+              className="underline-offset-2 hover:underline"
+            >
+              {name}
+            </Link>
+          )}
+          <span
+            className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+              p.side === "long"
+                ? "bg-gain/10 text-gain"
+                : "bg-loss-wash text-loss"
+            }`}
+          >
+            {p.side === "long" ? "롱" : "숏"}
+          </span>
+          {legs ? (
+            <span className="text-xs font-normal text-blue-gray-500 dark:text-blue-gray-300">
+              {legs}
+            </span>
+          ) : null}
+        </span>
+        <span className={`font-mono ${tone(pnl)}`}>
+          {money(pnl, true)} USDT
+          {pct === null ? "" : ` (${pct > 0 ? "+" : ""}${pct.toFixed(1)}%)`}
+        </span>
+      </div>
+      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-4">
+        {cells.map((cell) => (
+          <div key={cell.label} className="min-w-0">
+            <dt className="text-blue-gray-500 dark:text-blue-gray-300">
+              {cell.label}
+            </dt>
+            <dd
+              className={`break-words font-mono font-medium ${cell.className ?? "text-blue-gray-900 dark:text-white"}`}
+            >
+              {cell.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {p.shares.length > 1 ? (
+        <ul className="mt-1.5 text-xs text-blue-gray-500 dark:text-blue-gray-300">
+          {p.shares.map((share, index) => (
+            <li key={`${share.name}:${index}`}>
+              {share.name} · 손절{" "}
+              <span className="font-mono">{price(share.stop)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {facts.stopWarning ? (
+        <p role="alert" className="mt-1.5 text-xs font-medium text-loss">
+          ⚠ {facts.stopWarning}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
+export function LiteHome() {
   const [data, setData] = useState<LiteHomeData | null>(null);
   const [error, setError] = useState("");
 
@@ -255,6 +380,12 @@ export function LiteHome() {
   const capital = num(data?.capital);
   const realized = num(data?.realized_24h);
   const unrealized = num(data?.unrealized);
+  const marginUsed = num(data?.margin_used);
+  const available = num(data?.available);
+  const notional = num(data?.notional);
+  const accountLeverage = num(data?.account_leverage);
+  const halted = data?.halted === true;
+  const nowMs = data ? Date.parse(data.at) : 0;
   const earnedPct =
     earned !== null && capital ? (earned / capital) * 100 : null;
   const notLeader = data?.leader === false;
@@ -340,13 +471,41 @@ export function LiteHome() {
           value={`${money(unrealized, true)} USDT`}
           className={tone(unrealized)}
         />
+        <Small
+          label="잡힌 증거금"
+          value={`${money(marginUsed)} USDT`}
+          hint={`쓸 수 있는 돈 ${money(available)} USDT`}
+        />
+        <Small
+          label="열린 명목"
+          value={`${money(notional)} USDT`}
+          hint={
+            accountLeverage === null
+              ? "계좌 배율 —"
+              : `계좌 배율 ${accountLeverage.toFixed(2)}배`
+          }
+        />
         <div className="col-span-2 sm:col-span-1">
           <Small
             label="매매 상태"
-            value={data ? (notLeader ? "리더 아님" : `판 ${data.runs}개`) : "—"}
-            className={notLeader ? "text-loss" : ""}
+            value={
+              data
+                ? notLeader
+                  ? "리더 아님"
+                  : halted
+                    ? "진입 정지"
+                    : `판 ${data.runs}개`
+                : "—"
+            }
+            className={notLeader || halted ? "text-loss" : ""}
             hint={
-              notLeader ? "이 서버가 주문을 내지 않는다" : "주문을 내는 서버"
+              notLeader
+                ? "이 서버가 주문을 내지 않는다"
+                : halted
+                  ? `판 ${data?.runs ?? 0}개 · 새 진입만 멈춤 · 보유분 관리는 계속`
+                  : data?.halted === null
+                    ? "정지 스위치를 못 읽었다"
+                    : "새 진입 켜짐"
             }
           />
         </div>
@@ -364,45 +523,9 @@ export function LiteHome() {
           </p>
         ) : (
           <ul className="flex flex-col divide-y divide-blue-gray-50 text-sm dark:divide-gray-800">
-            {(data?.positions ?? []).map((p) => {
-              const pnl = num(p.unrealized);
-              const pct = num(p.pct);
-              return (
-                <li
-                  key={p.symbol}
-                  className="flex items-center justify-between gap-2 py-2"
-                >
-                  <span className="flex items-center gap-2 font-medium text-blue-gray-900 dark:text-white">
-                    {p.run ? (
-                      <Link
-                        to={`/paper/${p.run}`}
-                        className="underline-offset-2 hover:underline"
-                        onClick={() => runs.open(p.run, p.symbol)}
-                      >
-                        {p.symbol.replace("_USDT", "")}
-                      </Link>
-                    ) : (
-                      p.symbol.replace("_USDT", "")
-                    )}
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-xs font-medium ${
-                        p.side === "long"
-                          ? "bg-gain/10 text-gain"
-                          : "bg-loss-wash text-loss"
-                      }`}
-                    >
-                      {p.side === "long" ? "롱" : "숏"}
-                    </span>
-                  </span>
-                  <span className={`font-mono ${tone(pnl)}`}>
-                    {money(pnl, true)} USDT
-                    {pct === null
-                      ? ""
-                      : ` (${pct > 0 ? "+" : ""}${pct.toFixed(1)}%)`}
-                  </span>
-                </li>
-              );
-            })}
+            {(data?.positions ?? []).map((p) => (
+              <PositionRow key={p.symbol} p={p} nowMs={nowMs} />
+            ))}
           </ul>
         )}
       </section>

@@ -356,15 +356,24 @@ async def lite(request: Request) -> dict[str, Any]:
         _orders_adapter,  # pyright: ignore[reportPrivateUsage]
         _tracked,  # pyright: ignore[reportPrivateUsage]
     )
-    from updown.apps.api.walkforward import LIVE_RUNNERS, SESSIONS
+    from updown.apps.api.rebalancer import engine_shares
+    from updown.apps.api.walkforward import (
+        LIVE_RUNNERS,
+        SESSIONS,
+        entries_halted,
+        live_shares,
+    )
 
     available: Decimal | None = None
     positions: list[dict[str, str]] | None = None
+    stops: list[dict[str, str]] | None = None
     try:
         orders = _orders_adapter()
         available = Decimal(str((await orders.get_balance()).cash))
         tracked = await _tracked(orders, "GATE")
-        positions = (await _all_live(orders, "GATE", tracked)).get("positions", [])
+        book_now = await _all_live(orders, "GATE", tracked)
+        positions = book_now.get("positions", [])
+        stops = book_now.get("stops", [])
     except Exception as exc:  # 외부 I/O — 칸만 비운다
         _logger.warning("report_lite_account_failed", payload={"reason": str(exc)[:200]})
     window = window_for(24)
@@ -382,6 +391,9 @@ async def lite(request: Request) -> dict[str, Any]:
         runs=len(SESSIONS),
         leader=None if gate is None else bool(gate.is_leader),
         run_of={runner.instrument.symbol: key for key, runner in LIVE_RUNNERS.items()},
+        shares_of=live_shares() | engine_shares(),
+        stops=stops,
+        halted=await entries_halted(),
     )
     _lite_cache = (now, made)
     return made

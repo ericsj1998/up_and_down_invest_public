@@ -305,10 +305,13 @@ export function PaperTab({ run, home, named }: Props) {
               ),
           add: addLabel(row.add),
           base,
-          // T320 — 열린 몫 여럿이면 상자 끝 딱지 머리에 다리 이름(끝이 같은 자리라 줄지어 선다).
-          ...(open && shared
-            ? { leg: state?.positions?.find((one) => one.trade_id === row.trade_id)?.leg }
-            : {}),
+          // 어느 다리로 들어갔나 — 원장 행이 적은 이름이 먼저(닫힌 매매도 있다 · 사용자 2026-11-07),
+          // 옛 서버 응답이면 열린 몫 줄에서 찾는다(T320).
+          ...(row.leg
+            ? { leg: row.leg }
+            : open && shared
+              ? { leg: state?.positions?.find((one) => one.trade_id === row.trade_id)?.leg }
+              : {}),
           reason: row.outcome,
           open,
           // ⭐ 손익 **금액**의 분모 — 없으면(백테스트·옛 행) 화면이 % 만 적는다.
@@ -1070,11 +1073,12 @@ export function PaperTab({ run, home, named }: Props) {
             <tbody>
               {state.log.map((trade) => {
                 const sent = health?.placed?.[trade.trade_id];
-                // T320 — 열린 몫이 여럿이면 어느 다리 것인지(몫 두 줄이 같은 모양이라 못 가른다).
+                // 어느 다리로 들어갔나(원장 행 → 옛 응답이면 T320 열린 몫 줄).
                 const leg =
-                  (state.positions?.length ?? 0) > 1
+                  trade.leg ??
+                  ((state.positions?.length ?? 0) > 1
                     ? state.positions?.find((one) => one.trade_id === trade.trade_id)?.leg
-                    : undefined;
+                    : undefined);
                 // 열린 매매는 상자와 같은 값(거래소 미실현 · 몫이면 몫마다 · 증거금 대비) — 전에는 "—" 였다.
                 const held = trade.exit === null;
                 const gain = held

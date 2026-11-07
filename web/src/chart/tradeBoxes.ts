@@ -165,19 +165,30 @@ export function pnlText(trade: TradeMark): string {
   return `${money} · ${signed(trade.pnl)}`;
 }
 
+/**
+ * 진입 딱지 — 어느 다리로 들어갔나 (사용자 2026-11-07 "그냥 롱 진입 형태로만 되어 있네").
+ *
+ * 이름에 방향이 이미 들어 있으면(`돌파 롱`) 겹쳐 적지 않고, 없으면 방향을 붙인다.
+ */
+export function entryLabel(trade: TradeMark): string {
+  const side = sideLabel(trade.side);
+  if (!trade.leg) return `${side} 진입`;
+  return /롱|숏/.test(trade.leg) ? `${trade.leg} 진입` : `${trade.leg} ${side} 진입`;
+}
+
 /** 매매 하나 → 양쪽 세로 경계 (시작 = 진입 · 끝 = 결말 + 손익). */
 export function edgesOf(trade: TradeMark, step: number): TradeEdge[] {
   const from = snap(trade.openedTs, step);
   const to = Math.max(snap(trade.closedTs, step) + step, from + step);
   const done = verdictOfTrade(trade.pnl, trade.open === true);
   const money = pnlText(trade);
-  // T320 — 열린 몫 여럿은 끝이 같은 자리(지금)라 딱지가 줄지어 선다. 어느 다리 것인지 머리에 적는다.
+  // T320 — 열린 몫은 끝이 같은 자리(지금)라 딱지가 줄지어 선다. 어느 다리 것인지 머리에 적는다.
   const who = trade.open === true && trade.leg ? `${trade.leg} ` : "";
   return [
     {
       id: trade.id,
       at: from,
-      label: `${sideLabel(trade.side)} 진입`,
+      label: entryLabel(trade),
       tone: "entry",
       side: "open",
     },

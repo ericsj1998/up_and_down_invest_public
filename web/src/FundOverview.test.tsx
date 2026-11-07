@@ -5,6 +5,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { FundEngineStatus, FundLeg, FundStatus } from "./api";
+import { fundOfEngine } from "./EngineLegPage";
 import { EngineLegPanel } from "./EngineLegPanel";
 import { FundOverview } from "./FundOverview";
 
@@ -59,6 +60,22 @@ describe("FundOverview 엔진 다리", () => {
     expect(overview("BTC_USDT", { handle: "" })).toMatch(
       /<button[^>]*disabled/,
     );
+  });
+});
+
+describe("fundOfEngine", () => {
+  const coin = { per_symbol: { BTC_USDT: { handle: "a" } } } as never;
+  const nas = {
+    per_symbol: { NAS100_USDT: { handle: "", engine: ENGINE } },
+  } as never;
+
+  it("그 종목을 엔진으로 돌리는 펀드를 찾는다", () => {
+    expect(fundOfEngine([coin, nas], "NAS100_USDT")).toBe(nas);
+  });
+
+  it("판 종목 · 없는 종목은 엔진 다리가 아니다", () => {
+    expect(fundOfEngine([coin, nas], "BTC_USDT")).toBeUndefined();
+    expect(fundOfEngine([coin, nas], "ETH_USDT")).toBeUndefined();
   });
 });
 

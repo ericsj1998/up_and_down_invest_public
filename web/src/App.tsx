@@ -27,6 +27,7 @@ import { AssistantPage } from "./AssistantPage";
 import { Boundary } from "./Boundary";
 import { ChatPopout } from "./chat/ChatShell";
 import { ConsoleTab } from "./ConsoleTab";
+import { EngineLegPage } from "./EngineLegPage";
 import { AuthTroubleNote, Gate, PendingNote, useMe } from "./Gate";
 import { CalendarPage, CalendarPopout } from "./Calendar";
 import { GradingPage } from "./grading/GradingPage";
@@ -121,6 +122,8 @@ function Shell() {
               }
             />
             <Route path="/paper/:run" element={<PaperPage />} />
+            {/* 판이 없는 엔진 다리(나스닥) 상세 — 사용자 2026-11-07. */}
+            <Route path="/leg/:symbol" element={<EngineLegPage />} />
             <Route path="/paper" element={<Navigate to="/console" replace />} />
             <Route path="/accounts" element={<Accounts who={who} />} />
             <Route path="/tokens" element={<ApiTokens who={who} />} />

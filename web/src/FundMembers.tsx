@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { fundMembers, type FundMember, type FundPreview, type MemberFrame } from "./api";
 import { DEFAULT_SETTINGS } from "./chart/indicators";
 import { PriceChart } from "./chart/PriceChart";
@@ -190,6 +191,14 @@ function MemberCard({
           title={`${m.symbol} RUN 상세로`}
           aria-label={`${m.symbol} RUN 상세로`}
           onClick={() => openRun?.(m.handle, m.symbol)}
+        />
+      ) : m.engine ? (
+        // 판이 없는 엔진 다리(나스닥)는 같은 모서리로 엔진 다리 화면을 연다(사용자 2026-11-07).
+        <Link
+          to={`/leg/${m.symbol}`}
+          className="corner-fold"
+          title={`${m.symbol} 엔진 다리 상세로`}
+          aria-label={`${m.symbol} 엔진 다리 상세로`}
         />
       ) : null}
     </div>

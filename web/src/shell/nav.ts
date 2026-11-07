@@ -52,11 +52,18 @@ export const PAGES: readonly Page[] = [
   { to: "/tokens", name: "MCP 토큰", icon: KeyIcon },
   { to: "/accounts", name: "관리", icon: UsersIcon, admin: true },
   // 🔬 차트 채점(T281 · 2026-09-14) — 연구 매매를 차트에 놓고 O/X·수기 포지션. dev 빌드 + 관리자만. 성과 채점이 아니라 규칙 추출용.
-  { to: "/grading", name: "차트 채점 (dev)", icon: PencilSquareIcon, admin: true, dev: true },
+  {
+    to: "/grading",
+    name: "차트 채점 (dev)",
+    icon: PencilSquareIcon,
+    admin: true,
+    dev: true,
+  },
 ];
 
 /** 주소의 첫 칸으로 화면 이름을 찾는다. 판 주소면 null — 판 이름은 열린 판 목록이 안다. */
 export function pageTitle(pathname: string): string | null {
   const head = `/${pathname.split("/").filter(Boolean)[0] ?? ""}`;
+  if (head === "/leg") return "엔진 다리"; // 메뉴에 없는 상세 화면(포지션 · 카드에서 들어온다)
   return PAGES.find((page) => page.to === head)?.name ?? null;
 }

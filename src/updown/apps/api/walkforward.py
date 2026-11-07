@@ -6501,7 +6501,11 @@ def _state(key: str, at: datetime | None = None, only: Timeframe | None = None) 
             "mean_achievement": None if mean is None else float(mean),
             "detections": session.detections,
         },
-        "log": [_record(item) for item in reversed(book.records)],
+        # ⭐ 어느 다리로 들어갔나 — 차트 상자 · 매매 표가 적는다(사용자 2026-11-07).
+        "log": [
+            {**(_record(item) or {}), "leg": leg_label(session, item.playbook)}
+            for item in reversed(book.records)
+        ],
         # ⭐ T378(2026-10-05 사용자 "화면에 탐지기가 신호 때 본 선을 그대로") —
         #    일봉 채널 · 삼각수렴 매매의 신호봉에서 탐지기가 본 선. 차트 캐시(봉 열쇠)와
         #    섞지 않는다 — 매매마다 한 번 재고 바뀌지 않는다.
@@ -6575,10 +6579,48 @@ def leg_label(session: Session, attribution: str) -> str:
         화면에 적을 이름.
     """
     pid = attribution.split("@")[0]
-    book = next((b for b in session.playbooks if b.attribution == attribution), None)
+    # ⭐ 옛 버전으로 닫힌 매매도 지금 그 다리의 이름으로 — 선언 버전이 오르면 id 가 그대로 찍혔다.
+    book = next(
+        (b for b in session.playbooks if b.attribution == attribution),
+        next((b for b in session.playbooks if b.attribution.split("@")[0] == pid), None),
+    )
     if book is None:
         return pid
     return book.short_label or book.label or pid
+
+
+def live_shares() -> dict[str, list[dict[str, Any]]]:
+    """실계좌 판의 보유 몫 — 첫 화면이 다리 이름 · 손절을 적는다 (사용자 2026-11-07).
+
+    Returns:
+        `{종목: [{name, stop, opened_at}]}` — 메모리만 읽는다(첫 화면 폴링에 호출을 안 얹는다).
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for key, runner in LIVE_RUNNERS.items():
+        live = SESSIONS.get(key)
+        if live is None:
+            continue
+        session = live.session
+        out[runner.instrument.symbol] = [
+            {
+                "name": leg_label(session, item.playbook),
+                "stop": str(item.planned_stop),
+                "opened_at": None if item.opened_at is None else item.opened_at.isoformat(),
+            }
+            for item in session.positions
+        ]
+    return out
+
+
+async def entries_halted() -> bool | None:
+    """신규 진입 정지 스위치 — 못 읽으면 None(풀렸다고 말하지 않는다 · 규칙 #8)."""
+    if _settings is None:
+        return None
+    try:
+        return await _settings.get(HALT_KEY) == "1"
+    except Exception as exc:  # 외부 I/O — 칸만 비운다
+        _logger.warning("entries_halted_unreadable", payload={"reason": str(exc)[:200]})
+        return None
 
 
 def share_row(session: Session, item: TradeRecord) -> dict[str, Any]:

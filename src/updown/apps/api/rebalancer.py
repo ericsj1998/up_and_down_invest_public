@@ -2031,6 +2031,35 @@ def engine_row(status: Mapping[str, Any], weight: str, name: str, leg: str) -> d
     return row
 
 
+def _engine_name(fund: Fund, sym: str) -> str:
+    """엔진 다리의 짧은 이름 — 선언에서 못 찾으면 빈 값."""
+    leg = _engine_leg(fund.legs, sym)
+    books = {b.playbook_id: b for b in load_playbooks()}
+    book = books.get(leg.playbook) if leg is not None else None
+    return (book.short_label or book.label) if book is not None else ""
+
+
+def engine_shares() -> dict[str, list[dict[str, Any]]]:
+    """엔진 다리의 보유 몫 — 첫 화면이 세션 판과 같은 꼴로 적는다 (사용자 2026-11-07).
+
+    Returns:
+        `{종목: [{name, stop, opened_at}]}`. 체결을 엔진이 아직 안 잡았으면 몫이 비어도 이름은
+        있어야 하므로 손절 빈 줄 하나를 낸다 — 거래소 포지션의 다리 이름이 사라지지 않게.
+        메모리만 읽는다.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for fund in FUNDS.values():
+        for sym, engine in fund.engines.items():
+            name = _engine_name(fund, sym) or sym
+            units = cast("list[dict[str, Any]]", engine.status().get("units") or [])
+            out[sym] = [
+                {"name": name, "stop": str(u.get("stop") or ""), "opened_at": u.get("opened")}
+                for u in units
+                if not u.get("ghost") and int(u.get("contracts") or 0) > 0
+            ] or [{"name": name, "stop": "", "opened_at": None}]
+    return out
+
+
 async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
     """한 종목의 상세 — 평가금액·비중·실현손익·미실현손익·현재 포지션."""
     weight_of = next(
@@ -2038,9 +2067,7 @@ async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:
     )
     if sym in fund.engines:
         leg = _engine_leg(fund.legs, sym)
-        books = {b.playbook_id: b for b in load_playbooks()}
-        book = books.get(leg.playbook) if leg is not None else None
-        name = (book.short_label or book.label) if book is not None else ""
+        name = _engine_name(fund, sym)
         await fund.engines[sym].refresh()
         status = fund.engines[sym].status()
         return engine_row(status, weight_of, name or sym, "" if leg is None else leg.playbook)

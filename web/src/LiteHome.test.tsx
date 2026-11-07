@@ -25,6 +25,13 @@ describe("LiteHome 약식 리포트", () => {
     expect(html).toContain("매매 · 승률");
   });
 
+  it("잡힌 증거금 · 열린 명목 칸이 첫 화면에 있다", () => {
+    expect(html).toContain("잡힌 증거금");
+    expect(html).toContain("쓸 수 있는 돈");
+    expect(html).toContain("열린 명목");
+    expect(html).toContain("계좌 배율");
+  });
+
   it("기본 기간은 7일이다", () => {
     expect(html).toMatch(/aria-selected="true"[^>]*>7일</);
   });

@@ -38,6 +38,9 @@ def lite_payload(
     runs: int,
     leader: bool | None,
     run_of: Mapping[str, str] | None = None,
+    shares_of: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    stops: Sequence[Mapping[str, Any]] | None = None,
+    halted: bool | None = None,
 ) -> dict[str, Any]:
     """첫 화면 한 덩어리를 만든다.
 
@@ -51,10 +54,13 @@ def lite_payload(
         runs: 살아 있는 판 수.
         leader: 이 프로세스가 거래 리더인가. 모르면 None.
         run_of: 종목 → 판 id — 포지션을 눌러 그 판 화면으로 간다. 판이 없는 다리(나스닥)는 빈 값.
+        shares_of: 종목 → 보유 몫들(`name` · `stop` · `opened_at`) — 어느 다리 · 어느 손절인가.
+        stops: 거래소에 걸린 조건부 줄들(`symbol`). 못 읽으면 None.
+        halted: 신규 진입 정지 스위치. 모르면 None.
 
     Returns:
-        `{at, total, unrealized, capital, earned, realized_24h, runs, leader, positions}`.
-        재료가 빠진 칸은 None 이다.
+        `{at, total, available, margin_used, notional, account_leverage, unrealized, capital,
+        earned, realized_24h, runs, leader, halted, positions}`. 재료가 빠진 칸은 None 이다.
 
     Note:
         🔴 `earned` 는 입출금을 뺀 값이다 — 입금은 손익이 아니다. 입출금을 못 읽었으면 지갑 전체가
@@ -63,23 +69,38 @@ def lite_payload(
     rows: list[dict[str, Any]] = []
     locked: Decimal | None = None
     unrealized: Decimal | None = None
+    notional: Decimal | None = None
+    stop_counts: dict[str, int] = {}
+    for row in stops or ():
+        key = str(row.get("symbol", ""))
+        stop_counts[key] = stop_counts.get(key, 0) + 1
     if positions is not None:
-        locked, unrealized = Decimal(0), Decimal(0)
+        locked, unrealized, notional = Decimal(0), Decimal(0), Decimal(0)
         for item in positions:
             size = _dec(item.get("size")) or Decimal(0)
             if size == 0:
                 continue
+            symbol = str(item.get("symbol", ""))
             margin = _dec(item.get("margin")) or Decimal(0)
             pnl = _dec(item.get("unrealised_pnl")) or Decimal(0)
+            value = _dec(item.get("value"))
             locked += margin
             unrealized += pnl
+            notional += abs(value) if value is not None else Decimal(0)
             rows.append(
                 {
-                    "symbol": str(item.get("symbol", "")),
-                    "run": (run_of or {}).get(str(item.get("symbol", "")), ""),
+                    "symbol": symbol,
+                    "run": (run_of or {}).get(symbol, ""),
                     "side": "long" if size > 0 else "short",
+                    "contracts": str(abs(size)),
+                    "margin": str(margin),
+                    "notional": None if value is None else str(abs(value)),
+                    "entry": _text(_dec(item.get("entry_price"))),
+                    "mark": _text(_dec(item.get("mark_price"))),
                     "unrealized": str(pnl),
                     "pct": None if margin <= 0 else str(pnl / margin * Decimal(100)),
+                    "shares": [dict(share) for share in (shares_of or {}).get(symbol, ())],
+                    "exchange_stops": None if stops is None else stop_counts.get(symbol, 0),
                 }
             )
         rows.sort(key=lambda r: Decimal(r["unrealized"]))
@@ -91,12 +112,19 @@ def lite_payload(
     return {
         "at": at.isoformat(),
         "total": _text(total),
+        "available": _text(available),
+        "margin_used": _text(locked),
+        "notional": _text(notional),
+        "account_leverage": (
+            None if total is None or notional is None or total <= 0 else str(notional / total)
+        ),
         "unrealized": _text(unrealized),
         "capital": _text(capital),
         "earned": _text(earned),
         "realized_24h": _text(realized_24h),
         "runs": runs,
         "leader": leader,
+        "halted": halted,
         "positions": rows,
     }
 

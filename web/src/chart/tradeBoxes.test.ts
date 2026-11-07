@@ -96,6 +96,12 @@ describe("edgesOf — 세로 경계 둘 (점 대신)", () => {
   it("숏은 진입 딱지가 '숏 진입' 이다", () => {
     expect(edgesOf(mark({ side: -1 }), STEP)[0]!.label).toBe("숏 진입");
   });
+
+  it("진입 딱지에 다리 이름 — 닫힌 매매도 · 이름에 방향이 있으면 겹쳐 적지 않는다", () => {
+    expect(edgesOf(mark({ leg: "다리 A" }), STEP)[0]!.label).toBe("다리 A 롱 진입");
+    expect(edgesOf(mark({ leg: "돌파 롱" }), STEP)[0]!.label).toBe("돌파 롱 진입");
+    expect(edgesOf(mark({ side: -1, leg: "다리 B 숏" }), STEP)[0]!.label).toBe("다리 B 숏 진입");
+  });
 });
 
 describe("tagsOf — 호버하면 상자 선 좌측에 뜨는 가격", () => {

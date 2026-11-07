@@ -64,6 +64,53 @@ def test_position_carries_its_run_and_engine_leg_has_none() -> None:
     assert rows == {"NEAR_USDT": "abc", "NAS100_USDT": ""}
 
 
+def test_position_shows_money_at_work_leg_and_exchange_stops() -> None:
+    made = make(
+        positions=[
+            {
+                "symbol": "NEAR_USDT",
+                "size": "12",
+                "margin": "11.3",
+                "unrealised_pnl": "-1",
+                "value": "45.05",
+                "entry_price": "3.7538",
+                "mark_price": "3.7",
+            },
+            {
+                "symbol": "XRP_USDT",
+                "size": "-4",
+                "margin": "20",
+                "unrealised_pnl": "2",
+                "value": "-80",
+            },
+        ],
+        shares_of={"NEAR_USDT": [{"name": "다리 A", "stop": "3.3895", "opened_at": None}]},
+        stops=[{"symbol": "NEAR_USDT"}, {"symbol": "NEAR_USDT"}],
+        halted=True,
+    )
+    assert made["margin_used"] == "31.3"
+    assert made["available"] == "500"
+    assert made["notional"] == "125.05"
+    assert Decimal(str(made["account_leverage"])) == Decimal("125.05") / Decimal("531.3")
+    assert made["halted"] is True
+    rows = {r["symbol"]: r for r in made["positions"]}  # type: ignore[union-attr]
+    near = rows["NEAR_USDT"]
+    assert (near["contracts"], near["margin"], near["notional"]) == ("12", "11.3", "45.05")
+    assert (near["entry"], near["mark"]) == ("3.7538", "3.7")
+    assert near["shares"][0]["name"] == "다리 A"
+    assert near["exchange_stops"] == 2
+    assert rows["XRP_USDT"]["notional"] == "80"
+    assert rows["XRP_USDT"]["contracts"] == "4"
+    assert rows["XRP_USDT"]["shares"] == []
+    assert rows["XRP_USDT"]["exchange_stops"] == 0
+
+
+def test_unread_stops_are_not_counted_as_no_stops() -> None:
+    made = make(positions=[{"symbol": "A", "size": "1", "margin": "1", "unrealised_pnl": "0"}])
+    assert made["positions"][0]["exchange_stops"] is None  # type: ignore[index]
+    assert made["positions"][0]["notional"] is None  # type: ignore[index]
+
+
 def test_unread_capital_leaves_earnings_blank() -> None:
     made = make(capital_moves=None)
     assert made["capital"] is None
