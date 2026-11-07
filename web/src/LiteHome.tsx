@@ -9,7 +9,7 @@
  * 맨 위 큰 칸은 사람이 먼저 묻는 것 — 지금 얼마이고 번 돈은 얼마인가.
  */
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   type LiteBrief,
   type LiteHomeData,
@@ -242,6 +242,7 @@ function price(value: string | number | null | undefined): string {
  */
 function PositionRow({ p, nowMs }: { p: LitePosition; nowMs: number }) {
   const runs = useOpenRuns();
+  const navigate = useNavigate();
   const pnl = num(p.unrealized);
   const pct = num(p.pct);
   const facts = liteFacts(p);
@@ -274,7 +275,21 @@ function PositionRow({ p, nowMs }: { p: LitePosition; nowMs: number }) {
   cells.push({ label: "계약", value: p.contracts });
   if (held) cells.push({ label: "보유", value: held });
   return (
-    <li className="py-3" data-testid="lite-position">
+    <li
+      className="-mx-2 cursor-pointer rounded-lg px-2 py-3 hover:bg-blue-gray-50 dark:hover:bg-gray-800"
+      data-testid="lite-position"
+      onClick={(event) => {
+        // 이름 링크는 스스로 옮겨 간다 · 값을 드래그해 복사하는 중이면 옮기지 않는다.
+        if ((event.target as HTMLElement).closest("a")) return;
+        if (window.getSelection()?.toString()) return;
+        if (p.run) {
+          runs.open(p.run, p.symbol);
+          navigate(`/paper/${p.run}`);
+        } else {
+          navigate(`/leg/${p.symbol}`);
+        }
+      }}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex flex-wrap items-center gap-2 font-medium text-blue-gray-900 dark:text-white">
           {/* 판이 있으면 그 판 화면 · 없으면(나스닥) 엔진 다리 화면 */}
