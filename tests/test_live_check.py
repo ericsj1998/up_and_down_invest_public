@@ -20,6 +20,7 @@ from updown.orchestration.live_review.check import (
     Health,
     PositionCheck,
     active_audits,
+    engine_symbols,
     macd_hist,
     now_rows,
     outside_row,
@@ -132,6 +133,40 @@ def test_stop_far_from_plan_and_partial_size_are_flagged() -> None:
     exchange = {"positions": [_pos()], "price_orders": [_stop(price="4.5", size=-5)]}
     probs = " ".join(position_checks(_snap([_trade()], exchange))[0][0].problems)
     assert "다 못 닫는다" in probs and "계획 손절" in probs
+
+
+def _engine_snap(positions: list[dict[str, Any]], stops: list[dict[str, Any]]) -> Snapshot:
+    fund = {
+        "legs": [
+            {"attribution": "pb@1", "symbols": ["NEAR_USDT"], "engine": None},
+            {"attribution": "eng@1", "symbols": ["NAS100_USDT"], "engine": "private_strategy"},
+        ]
+    }
+    exchange = {"positions": positions, "price_orders": stops}
+    return Snapshot(Path(), NOW, [], [], [], fund, [], exchange)
+
+
+def _nas_pos(size: int = 29) -> dict[str, Any]:
+    return {**_pos(size), "contract": "NAS100_USDT"}
+
+
+def _nas_stop(size: int) -> dict[str, Any]:
+    return {"initial": {"contract": "NAS100_USDT", "size": size}, "trigger": {"price": "18993"}}
+
+
+def test_engine_leg_position_is_not_an_orphan_and_stops_are_summed() -> None:
+    assert engine_symbols(_engine_snap([], []).fund) == {"NAS100_USDT"}
+    # 몫마다 손절 — 합이 맞으면 문제없다(여섯 줄이어도 겹침이 아니다)
+    stops = [_nas_stop(-4)] * 6 + [_nas_stop(-5)]
+    checks, _ = position_checks(_engine_snap([_nas_pos()], stops))
+    assert checks[0].problems == ()
+
+
+def test_engine_leg_still_flags_missing_or_short_stops() -> None:
+    checks, _ = position_checks(_engine_snap([_nas_pos()], []))
+    assert "손절이 없다" in " ".join(checks[0].problems)
+    checks, _ = position_checks(_engine_snap([_nas_pos()], [_nas_stop(-20)]))
+    assert "포지션 29" in " ".join(checks[0].problems)
 
 
 def test_ledger_open_without_position_is_a_ghost() -> None:

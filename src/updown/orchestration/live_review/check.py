@@ -214,6 +214,18 @@ def _problems(
     return out
 
 
+def _engine_problems(size: int, stop_sum: int | None) -> list[str]:
+    """엔진 다리 포지션 — 원장 대신 엔진 장부가 주인이고, 손절은 몫마다 따로 걸린다.
+
+    몫마다 손절이 있으니 한 줄 크기로 재면 멀쩡해도 "다 못 닫는다" 가 된다. 합으로 잰다.
+    """
+    if stop_sum is None:
+        return ["거래소에 걸린 손절이 없다"]
+    if stop_sum != -size:
+        return [f"손절 합 {stop_sum} 이 포지션 {size} 과 다르다"]
+    return []
+
+
 STOP_COUNT_LIMIT = 5
 """한 종목 조건부 손절이 이보다 많으면 문제로 적는다(2026-11-07 NEAR 100 건)."""
 
@@ -228,10 +240,13 @@ def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
     positions = [p for p in _rows_of(ex.get("positions")) if (_int(p.get("size", 0)) or 0) != 0]
     stops: dict[str, tuple[Decimal | None, int | None]] = {}
     stop_count: dict[str, int] = {}
+    stop_sum: dict[str, int] = {}
     for o in _rows_of(ex.get("price_orders")):
         contract, trig, ssize = _stop_of(o)
         stops.setdefault(contract, (trig, ssize))
         stop_count[contract] = stop_count.get(contract, 0) + 1
+        stop_sum[contract] = stop_sum.get(contract, 0) + (ssize or 0)
+    engines = engine_symbols(snap.fund)
     by_sym: dict[str, Trade] = {}
     for t in open_trades(snap):
         by_sym.setdefault(t.symbol, t)
@@ -254,11 +269,15 @@ def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
                 trade=trade,
                 stop_trigger=stop[0] if stop else None,
                 stop_size=stop[1] if stop else None,
-                problems=tuple(_problems(trade, size, stop))
-                + (
-                    (f"조건부 손절 {stop_count[sym]}건 — 겹쳐 쌓였다",)
-                    if stop_count.get(sym, 0) > STOP_COUNT_LIMIT
-                    else ()
+                problems=(
+                    tuple(_engine_problems(size, stop_sum.get(sym)))
+                    if sym in engines
+                    else tuple(_problems(trade, size, stop))
+                    + (
+                        (f"조건부 손절 {stop_count[sym]}건 — 겹쳐 쌓였다",)
+                        if stop_count.get(sym, 0) > STOP_COUNT_LIMIT
+                        else ()
+                    )
                 ),
             )
         )
@@ -305,6 +324,15 @@ def fund_symbols(fund: Mapping[str, Any]) -> set[str]:
     out: set[str] = set()
     for leg in _rows_of(fund.get("legs")):
         out.update(str(s) for s in cast("list[object]", leg.get("symbols") or []))
+    return out
+
+
+def engine_symbols(fund: Mapping[str, Any]) -> set[str]:
+    """판 없이 엔진으로 도는 다리의 종목 — 판 · 원장 대조에서 뺀다(주인은 엔진 장부다)."""
+    out: set[str] = set()
+    for leg in _rows_of(fund.get("legs")):
+        if leg.get("engine"):
+            out.update(str(s) for s in cast("list[object]", leg.get("symbols") or []))
     return out
 
 
@@ -446,10 +474,12 @@ def now_rows(
             "1 이면 신규 진입 정지(손절 · 청산은 돈다)",
         )
     )
-    want = fund_symbols(snap.fund)
+    engines = engine_symbols(snap.fund)
+    want = fund_symbols(snap.fund) - engines
     have = {r.symbol for r in snap.runs if r.closed_at is None}
     miss, extra = sorted(want - have), sorted(have - want)
     runs_value = f"열린 판 {len(have)} · 펀드 종목 {len(want)}"
+    runs_value += f" · 엔진 다리 {sorted(engines)}(판 없이 돈다)" if engines else ""
     runs_value += f" · 판 없음 {miss[:8]}" if miss else ""
     runs_value += f" · 선언 밖 판 {extra[:8]}" if extra else ""
     runs_ok = bool(want) and not miss and not extra

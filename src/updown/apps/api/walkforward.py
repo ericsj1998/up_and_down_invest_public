@@ -3295,7 +3295,8 @@ async def reconcile_once() -> list[Finding]:
         }
         # ⭐ 엔진 다리 — 장부가 아는 계약이 있으면 보유 중 · 진입 지정가를 걸었으면 반영 대기
         for symbol, engine in leg_engines.running_on(market).items():
-            if engine.held_contracts() > 0:
+            # 낮에 찬 계약도 손절을 받았으면 보유다 — 마감까지 며칠 "반영 대기" 경보가 울리지 않게.
+            if engine.held_contracts() > 0 or engine.guarded_fill() > 0:
                 on_book.add(symbol)
             if engine.waiting_entry():
                 pending.add(symbol)

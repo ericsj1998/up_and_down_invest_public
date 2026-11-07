@@ -64,6 +64,9 @@ class _Engine:
     def waiting_entry(self) -> bool:
         return False
 
+    def guarded_fill(self) -> int:
+        return 0
+
     def status(self) -> dict[str, Any]:
         return {}
 

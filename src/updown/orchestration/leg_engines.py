@@ -63,6 +63,10 @@ class LegEngine(Protocol):
         """걸어 둔 진입 지정가가 있나(거래소에만 보이는 주문이 고아가 아니라 대기임을 안다)."""
         ...
 
+    def guarded_fill(self) -> int:
+        """다음 마감에 몫이 될 찬 계약 중 재난 손절을 이미 받은 수 — 대조가 보유로 센다."""
+        ...
+
     def status(self) -> dict[str, Any]:
         """화면 · 점검용 요약."""
         ...
