@@ -1888,7 +1888,14 @@ export type FundEngineStatus = {
     stop: string | null;
     opened: string;
   }[];
-  buy: { slot: number; level: string; contracts: number } | null;
+  buy: {
+    slot: number;
+    level: string;
+    contracts: number;
+    /** 낮에 찬 계약(마감에 몫이 된다) · 그 계약을 지키는 재난 손절. */
+    filled?: number;
+    stop?: string | null;
+  } | null;
   contracts: number;
   realized: string;
   fees: string;

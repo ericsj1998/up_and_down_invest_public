@@ -111,6 +111,13 @@ export function EngineLegPanel({
         <div className="text-sm" style={{ marginTop: 4 }}>
           걸어 둔 매수 <b>{fixed(status.buy.level)}</b> · {status.buy.contracts}
           계약
+          {status.buy.filled ? (
+            <>
+              {" · "}
+              <b>{status.buy.filled}계약 찼다</b>(다음 마감에 몫이 된다) · 재난
+              손절 <b>{fixed(status.buy.stop)}</b>
+            </>
+          ) : null}
         </div>
       ) : null}
       {status.findings.length > 0 ? (

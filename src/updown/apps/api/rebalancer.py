@@ -2051,12 +2051,17 @@ def engine_shares() -> dict[str, list[dict[str, Any]]]:
     for fund in FUNDS.values():
         for sym, engine in fund.engines.items():
             name = _engine_name(fund, sym) or sym
-            units = cast("list[dict[str, Any]]", engine.status().get("units") or [])
-            out[sym] = [
+            status = engine.status()
+            units = cast("list[dict[str, Any]]", status.get("units") or [])
+            buy = cast("dict[str, Any]", status.get("buy") or {})
+            rows: list[dict[str, Any]] = [
                 {"name": name, "stop": str(u.get("stop") or ""), "opened_at": u.get("opened")}
                 for u in units
                 if not u.get("ghost") and int(u.get("contracts") or 0) > 0
-            ] or [{"name": name, "stop": "", "opened_at": None}]
+            ]
+            if int(buy.get("filled") or 0) > 0:  # 낮에 찼고 마감에 몫이 될 계약
+                rows.append({"name": name, "stop": str(buy.get("stop") or ""), "opened_at": None})
+            out[sym] = rows or [{"name": name, "stop": "", "opened_at": None}]
     return out
 
 
