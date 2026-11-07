@@ -20,6 +20,7 @@ from updown.orchestration.live_review.check import (
     Health,
     PositionCheck,
     active_audits,
+    brake_threshold,
     engine_symbols,
     macd_hist,
     now_rows,
@@ -167,6 +168,13 @@ def test_engine_leg_still_flags_missing_or_short_stops() -> None:
     assert "손절이 없다" in " ".join(checks[0].problems)
     checks, _ = position_checks(_engine_snap([_nas_pos()], [_nas_stop(-20)]))
     assert "포지션 29" in " ".join(checks[0].problems)
+
+
+def test_brake_threshold_reads_the_leg_not_the_unused_bundle_field() -> None:
+    fund = {"drawdown_brake": {"at": "0.055"}, "legs": [{"drawdown_brake": {"at": "0.10"}}]}
+    assert brake_threshold(fund) == "0.10"
+    assert brake_threshold({"drawdown_brake": {"at": "0.055"}, "legs": [{}]}) == "0.055"
+    assert brake_threshold({}) == ""
 
 
 def test_ledger_open_without_position_is_a_ghost() -> None:

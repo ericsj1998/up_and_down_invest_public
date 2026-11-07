@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from updown.apps.api.rebalancer import _held_units, engine_row
 from updown.orchestration.report.lite import brief_payload, lite_payload
 from updown.orchestration.report.performance import (
     ExchangeSummary,
@@ -103,6 +104,40 @@ def test_position_shows_money_at_work_leg_and_exchange_stops() -> None:
     assert rows["XRP_USDT"]["contracts"] == "4"
     assert rows["XRP_USDT"]["shares"] == []
     assert rows["XRP_USDT"]["exchange_stops"] == 0
+
+
+def test_engine_units_include_the_filled_buy_and_skip_ghosts() -> None:
+    """나스닥 줄 · 카드가 낮에 찬 계약도 몫으로 보여 준다(다음 마감 전에도)."""
+    got = _held_units(
+        {
+            "units": [
+                {"key": "c1", "name": "계단", "contracts": 3, "ghost": False, "fill": "1"},
+                {"key": "c2", "name": "계단", "contracts": 0, "ghost": True, "fill": "1"},
+            ],
+            "buy": {
+                "slot": 2,
+                "name": "계단",
+                "filled": 29,
+                "fill": "27132",
+                "stop": "18993",
+                "filled_at": "2026-11-06T21:01:30+00:00",
+            },
+        }
+    )
+    assert [(u["key"], u["contracts"]) for u in got] == [("c1", 3), ("계단 2", 29)]
+    assert got[1]["fill"] == "27132" and got[1]["stop"] == "18993"
+    row = engine_row(
+        {
+            "units": [],
+            "buy": {"slot": 2, "name": "계단", "filled": 29, "fill": "27132", "stop": "18993"},
+        },
+        "1",
+        "다리",
+        "pb",
+    )
+    assert row["holding"] is True
+    assert row["shares"][0]["name"] == "다리 계단"
+    assert row["position"]["stop"] == "18993"
 
 
 def test_unread_stops_are_not_counted_as_no_stops() -> None:

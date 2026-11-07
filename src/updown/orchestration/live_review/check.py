@@ -327,6 +327,19 @@ def fund_symbols(fund: Mapping[str, Any]) -> set[str]:
     return out
 
 
+def brake_threshold(fund: Mapping[str, Any]) -> str:
+    """실제로 쓰는 브레이크 문턱 — 다리 선언이 쓰이고 묶음 칸은 다리를 나눈 펀드에서 안 쓰인다.
+
+    Note:
+        본 다리(첫 다리)의 문턱을 적는다. 다리 값이 없을 때만 묶음 칸으로 떨어진다(옛 펀드).
+    """
+    for leg in _rows_of(fund.get("legs")):
+        at = _dict(leg.get("drawdown_brake")).get("at")
+        if at not in (None, ""):
+            return str(at)
+    return str(_dict(fund.get("drawdown_brake")).get("at", ""))
+
+
 def engine_symbols(fund: Mapping[str, Any]) -> set[str]:
     """판 없이 엔진으로 도는 다리의 종목 — 판 · 원장 대조에서 뺀다(주인은 엔진 장부다)."""
     out: set[str] = set()
@@ -581,7 +594,7 @@ def now_rows(
     rows.append(universe_row(snap.fund, now))
     core_dd = twr_drawdown(snap.fund.get("core_twr"))
     fund_dd = twr_drawdown(snap.fund.get("twr"))
-    at_s = str(_dict(snap.fund.get("drawdown_brake")).get("at", ""))
+    at_s = brake_threshold(snap.fund)
     at_v = dec(at_s)
     braking = core_dd is not None and at_v is not None and core_dd >= at_v * 100
     rows.append(

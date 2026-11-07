@@ -1981,9 +1981,7 @@ def engine_row(status: Mapping[str, Any], weight: str, name: str, leg: str) -> d
     Returns:
         `_per_symbol` 과 같은 꼴 + `engine`(엔진 요약 그대로).
     """
-    units = [
-        u for u in cast("list[dict[str, Any]]", status.get("units") or []) if not u.get("ghost")
-    ]
+    units = _held_units(status)
     contracts = sum(int(u.get("contracts") or 0) for u in units)
     cost = sum(
         (Decimal(str(u.get("fill") or 0)) * int(u.get("contracts") or 0) for u in units),
@@ -2017,7 +2015,7 @@ def engine_row(status: Mapping[str, Any], weight: str, name: str, leg: str) -> d
         row["shares"] = [
             {
                 "leg": leg,
-                "name": f"{name} {u.get('key')}",
+                "name": f"{name} {u.get('name') or u.get('key')}",
                 "side": "롱",
                 "entry": str(u.get("fill")),
                 "stop": str(u.get("stop") or ""),
@@ -2029,6 +2027,28 @@ def engine_row(status: Mapping[str, Any], weight: str, name: str, leg: str) -> d
             for u in units
         ]
     return row
+
+
+def _held_units(status: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """돈이 들어간 몫들 — 유령은 빼고, 낮에 찼고 다음 마감에 몫이 될 계약은 넣는다(순수)."""
+    units = [
+        u
+        for u in cast("list[dict[str, Any]]", status.get("units") or [])
+        if not u.get("ghost") and int(u.get("contracts") or 0) > 0
+    ]
+    buy = cast("dict[str, Any]", status.get("buy") or {})
+    if int(buy.get("filled") or 0) > 0:
+        units.append(
+            {
+                "key": f"계단 {buy.get('slot')}",
+                "name": buy.get("name"),
+                "contracts": int(buy["filled"]),
+                "fill": buy.get("fill") or buy.get("level"),
+                "stop": buy.get("stop"),
+                "opened": buy.get("filled_at"),
+            }
+        )
+    return units
 
 
 def _engine_name(fund: Fund, sym: str) -> str:
@@ -2051,16 +2071,14 @@ def engine_shares() -> dict[str, list[dict[str, Any]]]:
     for fund in FUNDS.values():
         for sym, engine in fund.engines.items():
             name = _engine_name(fund, sym) or sym
-            status = engine.status()
-            units = cast("list[dict[str, Any]]", status.get("units") or [])
-            buy = cast("dict[str, Any]", status.get("buy") or {})
             rows: list[dict[str, Any]] = [
-                {"name": name, "stop": str(u.get("stop") or ""), "opened_at": u.get("opened")}
-                for u in units
-                if not u.get("ghost") and int(u.get("contracts") or 0) > 0
+                {
+                    "name": f"{name} {u.get('name')}".strip(),
+                    "stop": str(u.get("stop") or ""),
+                    "opened_at": u.get("opened"),
+                }
+                for u in _held_units(engine.status())
             ]
-            if int(buy.get("filled") or 0) > 0:  # 낮에 찼고 마감에 몫이 될 계약
-                rows.append({"name": name, "stop": str(buy.get("stop") or ""), "opened_at": None})
             out[sym] = rows or [{"name": name, "stop": "", "opened_at": None}]
     return out
 

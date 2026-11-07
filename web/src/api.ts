@@ -1882,6 +1882,8 @@ export type FundEngineStatus = {
   units: {
     key: string;
     kind: string;
+    /** 화면 이름(돌파 · 계단 · 되돌림). */
+    name?: string;
     contracts: number;
     fill: string;
     ghost: boolean;
@@ -1895,7 +1897,23 @@ export type FundEngineStatus = {
     /** 낮에 찬 계약(마감에 몫이 된다) · 그 계약을 지키는 재난 손절. */
     filled?: number;
     stop?: string | null;
+    /** 낮 체결 평단 · 체결 시각 · 몫 종류 이름. */
+    fill?: string | null;
+    filled_at?: string | null;
+    name?: string;
   } | null;
+  /** 최근 닫힌 몫 — 옛 줄은 `opened` 가 없다. */
+  closed?: {
+    unit: string;
+    kind: string;
+    fill: string;
+    exit: string;
+    pnl: string;
+    how: string;
+    opened?: string;
+    at: string;
+  }[];
+  leverage?: string;
   contracts: number;
   realized: string;
   fees: string;

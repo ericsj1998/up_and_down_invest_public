@@ -14,6 +14,7 @@ import {
   type FundEngineStatus,
 } from "./api";
 import { Chart } from "./Chart";
+import { engineMarks } from "./engineMarks";
 
 function num(value: string | number | null | undefined): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -72,6 +73,7 @@ export function EngineLegPanel({
     };
   }, [symbol, market]);
 
+  const marks = frame ? engineMarks(status, symbol, name, frame.candles) : [];
   const real = status.units.filter((u) => !u.ghost);
   const ghosts = status.units.filter((u) => u.ghost);
   return (
@@ -109,15 +111,24 @@ export function EngineLegPanel({
       </div>
       {status.buy ? (
         <div className="text-sm" style={{ marginTop: 4 }}>
-          걸어 둔 매수 <b>{fixed(status.buy.level)}</b> · {status.buy.contracts}
-          계약
+          {status.buy.name ?? "계단"} {status.buy.slot}번 지정가{" "}
+          <b>{fixed(status.buy.level)}</b> · {status.buy.contracts}계약
           {status.buy.filled ? (
             <>
-              {" · "}
-              <b>{status.buy.filled}계약 찼다</b>(다음 마감에 몫이 된다) · 재난
-              손절 <b>{fixed(status.buy.stop)}</b>
+              {" → "}
+              <b>
+                {status.buy.filled}계약 체결 @{fixed(status.buy.fill)}
+              </b>
+              {num(status.buy.fill) !== null &&
+              (num(status.buy.fill) ?? 0) < (num(status.buy.level) ?? 0)
+                ? "(걸 때 값이 이미 아래라 바로 찼다)"
+                : ""}
+              {" · 재난 손절 "}
+              <b>{fixed(status.buy.stop)}</b> · 다음 마감에 몫이 된다
             </>
-          ) : null}
+          ) : (
+            " · 대기 중"
+          )}
         </div>
       ) : null}
       {status.findings.length > 0 ? (
@@ -125,7 +136,7 @@ export function EngineLegPanel({
           확인 필요: {status.findings.join(" · ")}
         </div>
       ) : null}
-      {status.units.length > 0 ? (
+      {status.units.length > 0 || status.buy?.filled ? (
         <div style={{ overflowX: "auto", marginTop: 6 }}>
           <table className="text-sm" style={{ width: "100%" }}>
             <thead>
@@ -140,10 +151,23 @@ export function EngineLegPanel({
               </tr>
             </thead>
             <tbody>
+              {status.buy?.filled ? (
+                <tr>
+                  <td>
+                    {status.buy.name ?? "계단"} {status.buy.slot}번
+                  </td>
+                  <td>{status.buy.name ?? "계단"}</td>
+                  <td>실제 · 다음 마감에 몫</td>
+                  <td>{fixed(status.buy.fill)}</td>
+                  <td>{status.buy.filled}</td>
+                  <td>{fixed(status.buy.stop)}</td>
+                  <td>{status.buy.filled_at?.slice(0, 10) ?? "—"}</td>
+                </tr>
+              ) : null}
               {status.units.map((u) => (
                 <tr key={u.key} className={u.ghost ? "faint" : ""}>
                   <td>{u.key}</td>
-                  <td>{u.kind}</td>
+                  <td>{u.name ?? u.kind}</td>
                   <td>{u.ghost ? "가상" : "실제"}</td>
                   <td>{fixed(u.fill)}</td>
                   <td>{u.contracts}</td>
@@ -160,7 +184,7 @@ export function EngineLegPanel({
           <p className="notice bad">차트를 못 읽었다 — {error}</p>
         ) : null}
         {frame ? (
-          <Chart frame={frame} />
+          <Chart frame={frame} trades={marks} />
         ) : error ? null : (
           <p className="faint">차트 불러오는 중…</p>
         )}
