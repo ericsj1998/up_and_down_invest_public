@@ -4582,10 +4582,66 @@ class LiveRunner:
                 "live_position_closed",
                 payload={"contracts": abs(size), "status": done.status.value, "reason": "RUN 삭제"},
             )
+            if done.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                await self._close_ledger_on_drop(done, held)
         # ⭐ **포지션이 없어도 여기까지 온다** — 이 한 줄이 XRP 조건부를 남겼던 자리다.
         #   `sweep` 이 스스로 포지션을 다시 확인하므로 위에서 못 닫았으면 아무것도 안 거둔다.
         result["swept"] = len(await sweep(self._orders, self.instrument, why="RUN 삭제"))
         return result
+
+    async def _close_ledger_on_drop(self, done: OrderResult, held: Mapping[str, str]) -> None:
+        """RUN 삭제로 거래소 포지션을 닫았으면 **원장의 보유중 줄도 닫는다**.
+
+        Args:
+            done: 청산 주문 결과(평균 체결가).
+            held: 닫기 전 거래소 포지션 스냅샷 — 체결가를 모를 때 표시가로 쓴다.
+
+        Note:
+            🔴 2026-11-02 새 출발 때 ONE_USDT 판을 지우며 숏 2654 계약을 거래소에서 닫았는데
+            원장 줄은 "보유중" 으로 남았다(11-08 라이브 점검 · 손으로 정리). 포지션은 닫혔는데
+            장부가 안 닫히면 화면 · 점검이 없는 포지션을 들고 있다고 말한다.
+
+            결과는 `TIME_EXIT`("마감 청산" · 판이 끝나 닫음) · 시각은 지금 · 가격은 평균
+            체결가(없으면 표시가 → 진입가). 판이 곧 지워지므로 먼저 멈춰 다음 걸음이 옛 상태를
+            다시 쓰지 않게 한다.
+            ⛔ 실패해도 던지지 않는다 — 삭제는 끝나야 한다(§1.2.1). 남기고 넘어간다.
+        """
+        try:
+            self._session.paused = True
+            avg = done.average_price
+            mark = held.get("mark_price") if held else None
+            now = datetime.now(UTC)
+            closed: list[str] = []
+            for item in list(self._session.ledger.records):
+                if item.outcome is not Outcome.OPEN:
+                    continue
+                price = (
+                    avg
+                    if avg is not None and avg > 0
+                    else (Decimal(str(mark)) if mark else item.entry)
+                )
+                self._session.ledger.replace(
+                    item.closed(at=now, price=price, outcome=Outcome.TIME_EXIT)
+                )
+                closed.append(item.trade_id)
+            if closed:
+                await self._persist()
+                self._log.info(
+                    "live_ledger_closed_on_drop",
+                    payload={
+                        "trades": closed,
+                        "price": None if avg is None else str(avg),
+                        "note": "RUN 삭제 — 거래소 청산과 같이 원장 줄도 닫았다",
+                    },
+                )
+        except Exception as exc:
+            self._log.error(
+                "live_ledger_close_on_drop_failed",
+                payload={
+                    "error": str(exc)[:200],
+                    "note": "거래소는 닫혔는데 원장 줄이 보유중으로 남을 수 있다 — 사람이 확인한다",
+                },
+            )
 
     def watch(self, frame: Timeframe) -> None:
         """이 축을 **누가 보고 있다** — 화면이 부를 때마다 알린다.
