@@ -136,6 +136,7 @@ FUNNEL_GLOSSARY: dict[str, str] = {
     "ref_band": "기준(BTC) 수익률이 띠 밖(T290 · 삼각 숏 다리의 문)",
     "ref_volpct": "BTC 4H 변동성 백분위 < 0.816(T329 · 급락 되돌림의 문 · 급락장 아니면 안 든다)",
     "ref_surge": "기준(BTC) 급등 문",
+    "warm_hold": "판 시작 전부터 켜진 조건 — 연구라면 보유 중인 봉이라 안 듦(T811)",
     "stop_too_tight": "손절 거리가 너무 좁아 버림",
     "stop_liq_cap": "손절이 청산선 밖이라 버림",
     "wick_stop": "꼬리 손절 규칙",

@@ -216,6 +216,28 @@ def test_blocked_hold_and_holding_are_not_signals(monkeypatch: pytest.MonkeyPatc
     assert session.preview({Timeframe.H1: _forming(session, Timeframe.H1, SPIKE)}) == ()
 
 
+def test_warm_hold_blocks_only_inside_the_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T811 — 판 시작 전 몫: 판정 봉 J 가 `진입 < J < 청산` 일 때만 보류.
+
+    진입 봉 · 청산 봉은 연구도 사는 봉이라 막지 않는다.
+    """
+    session = _session()
+    book = session.playbooks[0]
+    judged = session.feed.judged(book.timeframe)[-1].ts
+    hour = timedelta(hours=1)
+    assert session.entry_hold(book, Direction.LONG) is None
+    session.warm_holds = {"pv": ((judged - hour, judged + hour),)}
+    assert session.entry_hold(book, Direction.LONG) == "warm_hold"
+    monkeypatch.setattr(session_mod, "propose", Spy())
+    assert session.preview({Timeframe.H1: _forming(session, Timeframe.H1, SPIKE)}) == ()
+    session.warm_holds = {"pv": ((judged, judged + hour),)}
+    assert session.entry_hold(book, Direction.LONG) is None
+    session.warm_holds = {"pv": ((judged - hour, judged),)}
+    assert session.entry_hold(book, Direction.LONG) is None
+    session.warm_holds = {"other": ((judged - hour, judged + hour),)}
+    assert session.entry_hold(book, Direction.LONG) is None
+
+
 def test_spot_market_drops_short(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _session()
     session.short_allowed = False

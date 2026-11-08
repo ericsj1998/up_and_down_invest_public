@@ -71,6 +71,66 @@ def inject(runner: Any) -> None:
     asyncio.run(cast("Any", LiveRunner)._inject_ref_regime(runner))
 
 
+class TestWarmHoldInjection:
+    """T811 — 판이 열린 뒤 첫 주입 때 한 번만 "연구라면 들고 있었을 몫" 을 세션에 넣는다."""
+
+    def test_crash_leg_gets_spans_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from updown.common.domain.candle import Candle
+        from updown.common.domain.instrument import Timeframe
+        from updown.orchestration.walkforward import live_runner as runner_mod
+
+        bars = closed_bars(700)
+        t0 = bars[-46].ts
+        closes = [100.0] * 40 + [92.0] * 6  # 첫 급락 봉 = 40 · 24 봉 -8%
+        window = [
+            Candle(
+                instrument=BTC,
+                timeframe=Timeframe.H4,
+                ts=t0 + timedelta(hours=4 * i),
+                open=Decimal(str(c)),
+                high=Decimal(str(c)),
+                low=Decimal(str(c)),
+                close=Decimal(str(c)),
+                volume=Decimal(1),
+            )
+            for i, c in enumerate(closes)
+        ]
+
+        # BTC 문 값은 늘 통과(0.9)로 — 백분위 계산 자체는 test_private_strategy 가 본다
+        def all_open(*_args: object, **_kw: object) -> dict[datetime, Decimal]:
+            return {c.ts: Decimal("0.9") for c in window}
+
+        def quiet(*_args: object, **_kw: object) -> None:
+            return None
+
+        monkeypatch.setattr(runner_mod, "btc_vol_pct_series", all_open)
+        runner: Any = fake_runner(("private_strategy",), bars)
+        empty: dict[str, tuple[tuple[datetime, datetime], ...]] = {}
+
+        def judged(_frame: object) -> list[Candle]:
+            return window
+
+        def warm(*args: object) -> None:
+            cast("Any", LiveRunner)._inject_warm_holds(runner, *args)
+
+        runner._session.feed = SimpleNamespace(judged=judged)
+        runner._session.warm_holds = dict(empty)
+        runner._warm_pending = True
+        runner._log.info = quiet
+        runner._inject_warm_holds = warm
+        inject(runner)
+        got: dict[str, tuple[tuple[datetime, datetime], ...]] = runner._session.warm_holds
+        assert got["private_strategy"][0] == (
+            window[40].ts,
+            window[40].ts + timedelta(hours=4 * 12),
+        )
+        assert runner._warm_pending is False
+        runner._session.warm_holds = dict(empty)
+        runner._ref_regime_at = None
+        inject(runner)  # 두 번째 주입엔 다시 안 만든다
+        assert runner._session.warm_holds == empty
+
+
 class TestLiveInjection:
     """지금 러너가 넣는 값 — 옮기기 전과 뒤에 똑같아야 한다."""
 

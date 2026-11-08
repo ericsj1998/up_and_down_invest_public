@@ -24,7 +24,7 @@ import pandas as pd
 
 from updown.analysis.detectors.base import MarketContext, RuleParams
 from updown.analysis.detectors.private_strategy import CrashBounceDetector
-from updown.analysis.indicators.reference import btc_vol_pct, needs_of
+from updown.analysis.indicators.reference import btc_vol_pct, btc_vol_pct_series, needs_of
 from updown.analysis.playbook.select import load_playbooks
 from updown.analysis.playbook.types import RefVolPct
 from updown.common.domain.candle import Candle
@@ -93,7 +93,63 @@ class TestDetector:
         assert detector().detect(ctx_of(candles([100.0] * 20))) == []
 
 
+FOUR = timedelta(hours=4)
+
+
+def crash_closes(after: int) -> list[float]:
+    """평평 40 봉 → 첫 급락 봉(-8%) → 그 뒤 `after` 봉 평평 — 첫 급락 봉 = 40."""
+    return [100.0] * 40 + [92.0] + [92.0] * after
+
+
+class TestWarmHolds:
+    """T811 — 판이 열리기 전 "연구라면 들고 있었을 몫"(`t685 walk` 와 같은 규칙)."""
+
+    def test_first_crash_bar_opens_a_twelve_bar_hold(self) -> None:
+        bars = candles(crash_closes(5))
+        spans = detector().warm_holds(bars, hold_bars=12, ref_ok=lambda _ts: True)
+        assert spans[0] == (bars[40].ts, bars[40].ts + 12 * FOUR)
+
+    def test_closed_btc_gate_makes_no_hold(self) -> None:
+        bars = candles(crash_closes(5))
+        assert detector().warm_holds(bars, hold_bars=12, ref_ok=lambda _ts: False) == ()
+
+    def test_hold_starts_where_btc_gate_first_opens(self) -> None:
+        bars = candles(crash_closes(5))
+        open_from = bars[43].ts
+        spans = detector().warm_holds(bars, hold_bars=12, ref_ok=lambda ts: ts >= open_from)
+        assert spans[0][0] == open_from
+
+    def test_stop_touch_ends_the_hold_and_exit_bar_can_reenter(self) -> None:
+        # 진입 92 · 손절 82.8 — 3 봉 뒤 82 로 닿고 그 봉도 24 봉 조건이 켜져 있다
+        closes = [*crash_closes(2), 82.0, 82.0]
+        bars = candles(closes)
+        spans = detector().warm_holds(bars, hold_bars=12, ref_ok=lambda _ts: True)
+        assert spans[0] == (bars[40].ts, bars[43].ts)
+        assert spans[1][0] == bars[43].ts  # 청산 봉부터 다시 살 수 있다(SKIP 0)
+
+    def test_quiet_window_has_no_hold(self) -> None:
+        bars = candles([100.0] * 60)
+        assert detector().warm_holds(bars, hold_bars=12, ref_ok=lambda _ts: True) == ()
+
+
 class TestVolPct:
+    def test_series_matches_single_value_for_each_bar(self) -> None:
+        rnd = random.Random(811)
+        price = 50_000.0
+        closes: list[float] = []
+        for _ in range(660):
+            price *= math.exp(rnd.gauss(0.0, 0.01 * rnd.choice([0.5, 1.0, 2.0])))
+            closes.append(price)
+        bars = [
+            SimpleNamespace(ts=T0 + timedelta(hours=4 * i), close=Decimal(str(c)))
+            for i, c in enumerate(closes)
+        ]
+        series = btc_vol_pct_series(cast("Any", bars), 120, 500, last=30)
+        assert len(series) == 30
+        for i in range(len(bars) - 30, len(bars)):
+            want = float(btc_vol_pct(cast("Any", bars[: i + 1]), 120, 500))
+            assert math.isclose(float(series[bars[i].ts]), want, abs_tol=1e-9)
+
     def test_matches_pandas_rolling_rank(self) -> None:
         rnd = random.Random(329)
         price = 50_000.0

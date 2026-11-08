@@ -394,6 +394,52 @@ def btc_vol_pct(bars: Sequence[Candle], n: int, rank: int) -> Decimal:
     return Decimal(str(avg_rank / rank))
 
 
+def btc_vol_pct_series(
+    bars: Sequence[Candle], n: int, rank: int, last: int
+) -> dict[datetime, Decimal]:
+    """`btc_vol_pct` 를 **마지막 `last` 봉 각각**에 대해 낸다 — 봉 시작 시각 → 백분위 (T811).
+
+    판이 새로 열릴 때 "연구라면 들고 있었을 몫" 을 거꾸로 걸으려면 지난 봉마다 그때의 문 값이
+    필요하다. 봉마다 `btc_vol_pct` 를 부르면 (500 x 120) x `last` 번 계산이라 판 57 개가 한꺼번에
+    열릴 때 이벤트 루프를 막는다 — 누적합으로 표준편차를 한 번에 내고 순위만 창마다 센다.
+
+    Args:
+        bars: 마감된 4H 봉(오름차순).
+        n: 로그수익 개수(120).
+        rank: 백분위 창(500).
+        last: 낼 봉 수(마지막 마감 봉부터 거꾸로).
+
+    Returns:
+        `{봉 시작 시각: 백분위}` — 창이 모자란 봉은 빠진다(모름 = 부르는 쪽이 문 닫힘으로 읽는다).
+
+    Note:
+        모표준편차를 누적합(Σx · Σx²)으로 낸다 — `statistics.pstdev` 와 부동소수 끝자리만 다를 수
+        있다(순위가 바뀌는 것은 같은 값 동점일 때뿐 · 판정 문의 마지막 값은 여전히 `btc_vol_pct`).
+    """
+    closes = [float(c.close) for c in bars]
+    if len(closes) < n + 2 or any(x <= 0 for x in closes):
+        return {}
+    rets = [math.log(after / before) for before, after in itertools.pairwise(closes)]
+    s1 = [0.0]
+    s2 = [0.0]
+    for r in rets:
+        s1.append(s1[-1] + r)
+        s2.append(s2[-1] + r * r)
+    # vol[b] = 봉 b 까지의 로그수익 n 개(rets[b-n:b]) 모표준편차 — `btc_vol_pct` 의 k 와 같은 자리
+    vol: dict[int, float] = {}
+    for b in range(n, len(rets) + 1):
+        mean = (s1[b] - s1[b - n]) / n
+        vol[b] = math.sqrt(max(0.0, (s2[b] - s2[b - n]) / n - mean * mean))
+    out: dict[datetime, Decimal] = {}
+    for b in range(max(n + rank - 1, len(closes) - last), len(closes)):
+        win = [vol[k] for k in range(b - rank + 1, b + 1)]
+        here = vol[b]
+        below = sum(1 for v in win if v < here)
+        ties = sum(1 for v in win if v == here)
+        out[bars[b].ts] = Decimal(str((below + (ties + 1) / 2) / rank))
+    return out
+
+
 def btc_daily_vol(
     bars: Sequence[Candle], days: int, keep: int = 3
 ) -> tuple[tuple[datetime, Decimal], ...]:

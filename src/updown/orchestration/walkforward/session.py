@@ -653,6 +653,18 @@ class Session:
     """
     ref_vol_pct_held: int = 0
     """변동성 백분위 문(`entry_ref_vol_pct`)이 보류시킨 진입 수 — 관측용 (§1-0s)."""
+    warm_holds: dict[str, tuple[tuple[datetime, datetime], ...]] = field(
+        default_factory=dict[str, tuple[tuple[datetime, datetime], ...]]
+    )
+    """판 시작 전부터 켜진 조건의 "연구라면 들고 있었을 몫" — 매매법 id → (진입 봉, 청산 봉) (T811).
+
+    러너가 판을 연 뒤 한 번 넣는다(탐지기 `warm_holds`). 판정 봉 J 가 `진입 < J < 청산` 이면
+    그 다리는 새로 안 든다 — 판 재시작 · 분기 우주 교체 직후 연구에 없는 늦은 진입
+    (2026-11-07 RIVER · NEAR · ENA)을 막는다. 비어 있으면 아무것도 안 한다(백테스트 · 재현은
+    먼 과거에서 한 번 시작하므로 안 쓴다).
+    """
+    warm_held: int = 0
+    """`warm_holds` 가 보류시킨 진입 수 — 관측용 (§1-0s)."""
     ref_pivot_s1: str | None = None
     """기준 종목(BTC) 일봉 전고점 국면 S1(안착 · 되밀림 · 없음) — 러너가 주입한다 (T436 · 혼합 4.3).
 
@@ -1769,8 +1781,8 @@ class Session:
             direction: 계획 기하가 말한 방향.
 
         Returns:
-            `ref_gate` · `ref_band` · `ref_surge` · `ref_sma` · `ref_volpct` · `funding` 중 처음
-            걸린 것. 없으면 None.
+            `ref_gate` · `ref_band` · `ref_surge` · `ref_sma` · `ref_volpct` · `warm_hold` ·
+            `funding` 중 처음 걸린 것. 없으면 None.
 
         Note:
             `_enter` 가 이 순서 그대로 읽고 센다 · 적는다. 마감 전 예비 신호(`preview`)도 같은
@@ -1790,9 +1802,33 @@ class Session:
         vpct = book.entry_ref_vol_pct
         if vpct is not None and (self.ref_vol_pct is None or not vpct.holds(self.ref_vol_pct)):
             return "ref_volpct"
+        if self.warm_holds and self._warm_held_now(book):
+            return "warm_hold"
         if funding_blocks(direction, self.recent_funding, book.funding_cap):
             return "funding"
         return None
+
+    def _warm_held_now(self, book: Playbook) -> bool:
+        """판정 봉이 판 시작 전 "연구라면 들고 있었을 몫" 의 보유 안인가 (T811 · 부작용 없음).
+
+        Args:
+            book: 후보를 낸 매매법.
+
+        Returns:
+            마지막 마감 판정 봉 J 가 어느 몫의 `진입 < J < 청산` 이면 참. 몫이 없거나 봉을
+            못 읽으면 거짓.
+        """
+        spans = self.warm_holds.get(book.playbook_id)
+        if not spans:
+            return False
+        try:
+            rows = self.feed.judged(book.timeframe)
+        except KeyError:
+            return False
+        if not rows:
+            return False
+        judged = rows[-1].ts
+        return any(entered < judged < exited for entered, exited in spans)
 
     def preview(self, forming: Mapping[Timeframe, Candle]) -> tuple[Proposal, ...]:
         """**마감 전 예비 신호** — 형성 중 봉이 지금 값으로 닫힌다면 나올 후보 (화면 전용).
@@ -5236,6 +5272,22 @@ class Session:
                     "ref_vol_pct": None if self.ref_vol_pct is None else str(self.ref_vol_pct),
                     "gate": [vpct.bars, vpct.rank, str(vpct.low)],
                     "note": "기준(BTC) 변동성 백분위가 하한 아래다 — 이 봉엔 새로 안 든다 (T329)",
+                },
+            )
+            return None
+        if hold == "warm_hold":
+            # T811 — 판이 열리기 전부터 켜져 있던 조건: 연구라면 이미 들고 있어 이 봉엔 안 산다.
+            self.warm_held += 1
+            self._count("warm_hold")
+            _logger.info(
+                "session_entry_warm_held",
+                payload={
+                    "playbook": chosen.playbook.playbook_id,
+                    "spans": [
+                        [a.isoformat(), b.isoformat()]
+                        for a, b in self.warm_holds.get(chosen.playbook.playbook_id, ())
+                    ],
+                    "note": "판 시작 전 조건 — 연구라면 보유 중인 봉이라 새로 안 든다 (T811)",
                 },
             )
             return None

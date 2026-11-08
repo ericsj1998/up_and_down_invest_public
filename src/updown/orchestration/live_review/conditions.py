@@ -280,6 +280,7 @@ def session_hold(book: Playbook, regime: RefRegime | None) -> str | None:
         ref_sma_down=None if regime is None else regime.sma_down,
         ref_vol_pct=None if regime is None else regime.vol_pct,
         recent_funding=None,
+        warm_holds={},  # T811 — 판 시작 몫은 러너 상태라 여기선 모른다(기준 문만 본다)
     )
     return Session.entry_hold(cast("Session", state), book, Direction.LONG)
 

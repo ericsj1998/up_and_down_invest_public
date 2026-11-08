@@ -27,6 +27,7 @@
 
 import asyncio
 import contextlib
+import functools
 import json
 import os
 import time
@@ -40,9 +41,12 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 import structlog
 
+from updown.analysis.detectors.registry import SetupRegistry
+from updown.analysis.detectors.rules import load_rules
+from updown.analysis.indicators.reference import RefNeeds, btc_vol_pct_series, reference_regime
 from updown.analysis.indicators.reference import btc_daily_vol as btc_daily_vol
 from updown.analysis.indicators.reference import needs_of as ref_needs_of
-from updown.analysis.indicators.reference import reference_regime
+from updown.analysis.playbook.types import RefVolPct
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.db.models.enums import LogLevel
 from updown.common.domain.candle import Candle
@@ -104,6 +108,17 @@ from updown.orchestration.walkforward.session import STEP_FRAME, Session
 from updown.orchestration.walkforward.store import RunStore
 
 _logger = get_logger("walkforward.live_runner")
+
+
+@functools.cache
+def _warm_registry() -> SetupRegistry:
+    """판 시작 가상 보유(T811)가 탐지기를 꺼낼 레지스트리 — 프로세스에서 한 번만 만든다.
+
+    판 57 개가 한꺼번에 열릴 때 판마다 룰 YAML · entry point 를 다시 읽으면 시작 부하가 겹친다
+    (T759 — 판마다 선언 파싱이 루프를 43 ~ 50 초 막았다). 룰은 배포 사이에 안 바뀐다.
+    """
+    return SetupRegistry.from_plugins(load_rules())
+
 
 WARM_BARS = 5
 """이미 데워진 축을 새로고침할 때 받는 봉 수.
@@ -1310,6 +1325,8 @@ class LiveRunner:
         """
         self._ref_regime_at: datetime | None = None
         """기준(BTC) 레짐을 마지막으로 계산한 4h 마감봉 ts (T66-e F1 · 봉당 1회)."""
+        self._warm_pending = True
+        """판 시작 몫(T811)을 아직 안 넣었다 — 첫 국면값 주입 때 한 번만."""
         """매매별 마지막 재레버 봉 순번 (0.8.0) — 같은 봉에 두 번 조정하지 않는다."""
         self._spec: dict[str, str] | None = None
         self._bars_at_step = 0
@@ -6238,15 +6255,25 @@ class LiveRunner:
             return
         ref = dc_replace(self.instrument, symbol="BTC_USDT", name="BTC 무기한 (기준)")
         need = needs.bars
+        # T811 — 첫 주입 때만 지난 봉마다 변동성 문 값이 필요해 창을 더 받는다(보유 x 3 + 여유).
+        #   칸이 없는 대역(시험의 자리표)은 "안 함" 으로 읽는다.
+        warm = bool(getattr(self, "_warm_pending", False))
+        warm_extra = (
+            3 * max((b.max_hold_bars or 0 for b in self._session.playbooks), default=0) + 4
+            if warm and needs.vol_pct_bars is not None
+            else 0
+        )
         try:
             end = datetime.now(UTC)
             rows = await self._quotes.get_candles(
-                ref, Timeframe.H4, end - timedelta(hours=4 * (need + 20)), end
+                ref, Timeframe.H4, end - timedelta(hours=4 * (need + 20 + warm_extra)), end
             )
             # 마감봉만 (마지막 봉이 진행 중이면 제외 — 판정은 닫힌 봉으로)
             closed = [c for c in rows if c.ts + timedelta(hours=4) <= end]
             if len(closed) <= need:
                 raise ValueError(f"기준 캔들 부족: {len(closed)} <= {need}")
+            if warm:
+                self._inject_warm_holds(closed, needs, warm_extra)
             last_ts = closed[-1].ts
             if self._ref_regime_at == last_ts:
                 return  # 같은 4h 봉 — 재계산 불필요 (주입값 유지)
@@ -6283,6 +6310,68 @@ class LiveRunner:
             self._session.ref_vol_sd_pct = None  # 모름 = 막지 않음 (T612 SV1)
             self._ref_regime_at = None
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
+
+    def _inject_warm_holds(self, closed: Sequence[Candle], needs: RefNeeds, extra: int) -> None:
+        """판이 열린 뒤 한 번 — "연구라면 들고 있었을 몫" 을 세션에 넣는다 (T811).
+
+        Args:
+            closed: 마감된 기준(BTC) 4H 봉.
+            needs: 국면값 필요(`RefNeeds`).
+            extra: 기준 봉을 더 받은 수(지난 봉 문 값을 낼 창).
+
+        Note:
+            🔴 판 재시작(11-06 21:48 KST) 뒤 첫 판정 봉에 급락 조건이 이미 켜져 있어
+            RIVER · NEAR · ENA 가 연구에 없는 늦은 진입을 했다. 탐지기가 `warm_holds` 를 내주는
+            다리 · 변동성 문을 선언한 다리만 본다. 계산은 analysis 쪽(누적합 백분위 · 탐지기
+            걷기)이고 여기는 조립만 한다.
+
+            ⚡ 성능: 판 57 개가 한꺼번에 열려도 판마다 기준 봉 수백 개 누적합 한 번 + 걷기
+            수십 봉이다. 레지스트리는 프로세스에서 한 번만 만든다(`_warm_registry`). 진입 봉이
+            아직 안 쌓였으면 다음 주입 때 다시 본다. 실패는 지금까지 동작(막지 않음)으로 두고
+            남긴다(규칙 #8).
+        """
+        try:
+            window: list[Candle] | None = None
+            out: dict[str, tuple[tuple[datetime, datetime], ...]] = {}
+            for book in self._session.playbooks:
+                vpct = book.entry_ref_vol_pct
+                hold = book.max_hold_bars
+                if vpct is None or not hold or needs.vol_pct_bars is None:
+                    continue
+                window = list(self._session.feed.judged(book.timeframe))
+                if len(window) < 2:
+                    return  # 봉이 아직 안 쌓였다 — 다음 주입 때 다시
+                pct = btc_vol_pct_series(closed, vpct.bars, vpct.rank, last=extra + 2)
+
+                def ref_ok(
+                    ts: datetime, pct: Mapping[datetime, Decimal] = pct, gate: RefVolPct = vpct
+                ) -> bool:
+                    value = pct.get(ts)
+                    return value is not None and gate.holds(value)
+
+                spans: list[tuple[datetime, datetime]] = []
+                for rule_id in book.setups:
+                    walker = getattr(_warm_registry().get(rule_id).detector, "warm_holds", None)
+                    if walker is not None:
+                        spans += walker(window, hold_bars=hold, ref_ok=ref_ok)
+                if spans:
+                    out[book.playbook_id] = tuple(sorted(spans))
+            self._session.warm_holds = out
+            self._warm_pending = False
+            if out:
+                self._log.info(
+                    "live_warm_holds",
+                    payload={
+                        "spans": {
+                            k: [[a.isoformat(), b.isoformat()] for a, b in v]
+                            for k, v in out.items()
+                        },
+                        "note": "판 시작 전 조건 — 연구라면 보유 중인 봉에서는 새로 안 든다 (T811)",
+                    },
+                )
+        except Exception as exc:
+            self._warm_pending = False
+            self._log.warning("live_warm_holds_failed", payload={"error": str(exc)[:160]})
 
     async def _pump_fills(self) -> None:
         """거래소에 **채워졌나** 물어 우편함에 넣는다 (T19 ⑤).
