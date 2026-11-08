@@ -32,6 +32,12 @@ describe("LiteHome 약식 리포트", () => {
     expect(html).toContain("계좌 배율");
   });
 
+  it("계좌 총액은 미실현 제외라고 적고 미실현 포함 평가 줄을 따로 낸다", () => {
+    expect(html).toContain("계좌 총액");
+    expect(html).toContain('data-testid="lite-equity"');
+    expect(html).toContain("미실현 제외 · 미실현 포함 평가");
+  });
+
   it("기본 기간은 7일이다", () => {
     expect(html).toMatch(/aria-selected="true"[^>]*>7일</);
   });

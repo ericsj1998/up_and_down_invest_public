@@ -403,6 +403,12 @@ export function LiteHome() {
   const nowMs = data ? Date.parse(data.at) : 0;
   const earnedPct =
     earned !== null && capital ? (earned / capital) * 100 : null;
+  // 🔴 `total` 은 거래소 지갑 총액이라 **미실현이 이미 빠져 있다**(쓸 수 있는 돈 + 잡힌 증거금 ·
+  //    11-07 실측 730.49 + 92.77 = 823.25 · 미실현 −4.38 은 따로). 총액에서 미실현을 또 빼면 두 번 빠진다.
+  //    그래서 헤드라인은 그대로 두고 "미실현 제외" 라고 적고, 미실현을 넣은 평가액을 아래 줄로 낸다
+  //    (사용자 2026-11-08 · 콘솔의 "지금 다 닫으면" 과 같은 원칙 · 여기는 청산 수수료 전).
+  const equity =
+    total !== null && unrealized !== null ? total + unrealized : null;
   const notLeader = data?.leader === false;
   const at = data
     ? new Date(data.at).toLocaleTimeString("ko-KR", {
@@ -453,7 +459,17 @@ export function LiteHome() {
               USDT
             </span>
           </div>
-          <div className="mt-1 text-xs text-blue-gray-500 dark:text-blue-gray-300">
+          <div
+            className="mt-1 text-xs text-blue-gray-500 dark:text-blue-gray-300"
+            data-testid="lite-equity"
+          >
+            미실현 제외 · 미실현 포함 평가{" "}
+            <span className="font-mono font-semibold text-blue-gray-700 dark:text-blue-gray-100">
+              {money(equity)}
+            </span>{" "}
+            USDT
+          </div>
+          <div className="mt-0.5 text-xs text-blue-gray-500 dark:text-blue-gray-300">
             자본금 투입 {money(capital)} USDT · 손익 아님
           </div>
         </div>
