@@ -16,14 +16,15 @@ with e as (
   where o.role like '진입%' and o.status='filled' and o.price is not null and o.price > 0
     and (o.raw_json->>'fill_price') is not null and (o.raw_json->>'fill_price')::numeric > 0
 ), s as (
-  select direction, case when direction='long' then (fp/p - 1) else (1 - fp/p) end * 10000 as bp from e
+  select direction, case when direction in ('long','롱') then (fp/p - 1) else (1 - fp/p) end * 10000 as bp from e
 )
 select 'n ' || count(*) || ' · 중앙 ' || round(percentile_cont(0.5) within group (order by bp)::numeric, 3)
     || ' · p90 ' || round(percentile_cont(0.9) within group (order by bp)::numeric, 3)
     || ' · 최악 ' || round(max(bp)::numeric, 3) || ' · 지정가와 같은 체결 ' || sum(case when abs(bp) < 0.001 then 1 else 0 end) from s;
 select '=== 손절 체결 — 계획 손절가 대비 미끄러짐 bp (exit_price vs planned_stop · 양수 = 불리)';
 with s as (
-  select case when direction='long' then (1 - exit_price/planned_stop) else (exit_price/planned_stop - 1) end * 10000 as bp,
+  -- ⚠️ 원장 방향 값은 '롱' · '숏'(한글) — 'long' 만 비교하면 롱 부호가 뒤집힌다(2026-11-08 고침)
+  select case when direction in ('long','롱') then (1 - exit_price/planned_stop) else (exit_price/planned_stop - 1) end * 10000 as bp,
          extract(epoch from (closed_at - opened_at))/3600 as hrs
   from wf_trades where outcome='손절' and exit_price is not null and planned_stop > 0
 )
