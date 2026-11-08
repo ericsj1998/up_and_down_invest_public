@@ -72,7 +72,7 @@ def inject(runner: Any) -> None:
 
 
 class TestWarmHoldInjection:
-    """T811 — 판이 열린 뒤 첫 주입 때 한 번만 "연구라면 들고 있었을 몫" 을 세션에 넣는다."""
+    """T811 · T812 — "연구라면 들고 있었을 몫" 을 첫 주입 + 기준 4H 봉이 새로 닫힐 때마다 넣는다."""
 
     def test_crash_leg_gets_spans_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from updown.common.domain.candle import Candle
@@ -125,10 +125,13 @@ class TestWarmHoldInjection:
             window[40].ts + timedelta(hours=4 * 12),
         )
         assert runner._warm_pending is False
+        assert runner._ref_regime_at == bars[-1].ts
         runner._session.warm_holds = dict(empty)
-        runner._ref_regime_at = None
-        inject(runner)  # 두 번째 주입엔 다시 안 만든다
+        inject(runner)  # 같은 기준 4H 봉 안 — 다시 안 건다(성능)
         assert runner._session.warm_holds == empty
+        runner._ref_regime_at = bars[-2].ts  # 기준 4H 봉이 새로 닫힘(T812) — 다시 건다
+        inject(runner)
+        assert runner._session.warm_holds["private_strategy"][0][0] == window[40].ts
 
 
 class TestLiveInjection:

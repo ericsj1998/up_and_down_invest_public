@@ -6311,12 +6311,13 @@ class LiveRunner:
             return
         ref = dc_replace(self.instrument, symbol="BTC_USDT", name="BTC 무기한 (기준)")
         need = needs.bars
-        # T811 — 첫 주입 때만 지난 봉마다 변동성 문 값이 필요해 창을 더 받는다(보유 x 3 + 여유).
-        #   칸이 없는 대역(시험의 자리표)은 "안 함" 으로 읽는다.
+        # T811 — 가상 보유는 지난 봉마다 변동성 문 값이 필요해 창을 더 받는다(보유 x 3 + 여유).
+        #   판이 열린 뒤 첫 주입 + 그 뒤 기준 4H 봉이 새로 닫힐 때마다 다시 건다(T812 — 펀드 문이
+        #   첫 급락 봉을 막은 뒤 늦은 진입). 칸이 없는 대역(시험의 자리표)은 "안 함" 으로 읽는다.
         warm = bool(getattr(self, "_warm_pending", False))
         warm_extra = (
             3 * max((b.max_hold_bars or 0 for b in self._session.playbooks), default=0) + 4
-            if warm and needs.vol_pct_bars is not None
+            if needs.vol_pct_bars is not None and hasattr(self, "_warm_pending")
             else 0
         )
         try:
@@ -6328,9 +6329,9 @@ class LiveRunner:
             closed = [c for c in rows if c.ts + timedelta(hours=4) <= end]
             if len(closed) <= need:
                 raise ValueError(f"기준 캔들 부족: {len(closed)} <= {need}")
-            if warm:
-                self._inject_warm_holds(closed, needs, warm_extra)
             last_ts = closed[-1].ts
+            if warm_extra and (warm or self._ref_regime_at != last_ts):
+                self._inject_warm_holds(closed, needs, warm_extra)
             if self._ref_regime_at == last_ts:
                 return  # 같은 4h 봉 — 재계산 불필요 (주입값 유지)
             got = reference_regime(closed, needs)
@@ -6368,7 +6369,7 @@ class LiveRunner:
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
 
     def _inject_warm_holds(self, closed: Sequence[Candle], needs: RefNeeds, extra: int) -> None:
-        """판이 열린 뒤 한 번 — "연구라면 들고 있었을 몫" 을 세션에 넣는다 (T811).
+        """연구라면 들고 있었을 몫을 세션에 넣는다 (T811 · T812).
 
         Args:
             closed: 마감된 기준(BTC) 4H 봉.
@@ -6381,10 +6382,15 @@ class LiveRunner:
             다리 · 변동성 문을 선언한 다리만 본다. 계산은 analysis 쪽(누적합 백분위 · 탐지기
             걷기)이고 여기는 조립만 한다.
 
-            ⚡ 성능: 판 57 개가 한꺼번에 열려도 판마다 기준 봉 수백 개 누적합 한 번 + 걷기
-            수십 봉이다. 레지스트리는 프로세스에서 한 번만 만든다(`_warm_registry`). 진입 봉이
-            아직 안 쌓였으면 다음 주입 때 다시 본다. 실패는 지금까지 동작(막지 않음)으로 두고
-            남긴다(규칙 #8).
+            🔴 T812 — 판이 열린 뒤 첫 한 번만이 아니라 **기준 4H 봉이 새로 닫힐 때마다** 다시
+            건다. 판이 도는 중에 펀드 문(자금 대기 등)이 첫 급락 봉을 막으면, 연구 줄은 그 봉에서
+            사서 보유 구간 동안 다시 안 사지만 세션은 다음 봉에 조건이 켜져 있으면 늦게 샀다.
+            연구에서 새로 사는 봉은 `진입 = J` 라 막히지 않는다(`진입 < J < 청산` 만 막음).
+
+            ⚡ 성능: 4H 에 한 번 · 판마다 기준 봉 수백 개 누적합 한 번 + 걷기 수십 봉(판당 약
+            1 ms). 레지스트리는 프로세스에서 한 번만 만든다(`_warm_registry`). 로그는 구간이
+            바뀔 때만 남긴다. 진입 봉이 아직 안 쌓였으면 다음 주입 때 다시 본다. 실패는 지금까지
+            동작(막지 않음)으로 두고 남긴다(규칙 #8).
         """
         try:
             window: list[Candle] | None = None
@@ -6412,9 +6418,10 @@ class LiveRunner:
                         spans += walker(window, hold_bars=hold, ref_ok=ref_ok)
                 if spans:
                     out[book.playbook_id] = tuple(sorted(spans))
+            changed = out != self._session.warm_holds
             self._session.warm_holds = out
             self._warm_pending = False
-            if out:
+            if out and changed:
                 self._log.info(
                     "live_warm_holds",
                     payload={
@@ -6422,7 +6429,7 @@ class LiveRunner:
                             k: [[a.isoformat(), b.isoformat()] for a, b in v]
                             for k, v in out.items()
                         },
-                        "note": "판 시작 전 조건 — 연구라면 보유 중인 봉에서는 새로 안 든다 (T811)",
+                        "note": "연구라면 보유 중인 봉에서는 새로 안 든다 (T811 · T812 4H 마다)",
                     },
                 )
         except Exception as exc:
