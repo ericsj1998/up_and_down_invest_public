@@ -98,6 +98,8 @@ bash scripts/ops/pull_logs.sh --delete   # 받고 · 파일마다 sha256 이 서
 받은 목록은 `manifest-<UTC>.tsv`(이름 · 크기 · sha256 · 지움 여부). 이미 받은 파일은 다시 안 받는다. 2 GB 가 gzip 으로 약 125 MB.
 메모리 · 디스크 실측은 `probe_memory_and_logs.sh` · `probe_disk_detail.sh`(T310).
 
+**주 1 회 자동 정리** (2026-11-10) — 윈도 예약 작업 `UpDownServerTidy`(일요일 04:00 · PC 가 꺼져 있었으면 켤 때 · 창 없음)가 `scripts/ops/weekly_server_tidy.sh` 를 부른다: ① `pull_logs.sh --delete` ② `prune_old_images.sh`(앱 · 화면 이미지 만든 시각 기준 최근 3 개와 컨테이너가 쓰는 것을 남기고 지움). 결과 `logs/ops/weekly_tidy.log`. 미리 보기는 `bash scripts/ops/remote.sh scripts/ops/prune_old_images.sh dry`. 되돌리기는 남은 3 개 안에서만 된다.
+
 `.py` 는 api 컨테이너 안 python 으로 돈다(앱 코드·`.env.live` 가 거기 있다). 새 프로브가 필요하면
 `scripts/ops/` 에 파일로 만들고 커밋한다 — scratchpad 에 두면 다음 세션이 못 쓴다.
 
