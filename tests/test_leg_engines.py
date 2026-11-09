@@ -229,6 +229,89 @@ def test_spawn_engine_adopts_same_funds_running_engine(monkeypatch: pytest.Monke
     assert leg_engines.RUNNING[("GATE", "IDX_USDT")] is eng  # 표는 그대로
 
 
+def test_repromotion_restore_keeps_running_engine_leg(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """L1 · T818 — 리더 상실 뒤 재승격 복원(`_restore_one` 을 도는 엔진 위에서 다시 돌림).
+
+    ① 같은 저장본: 도는 엔진을 새로 띄우지 않고 이어 받는다 · 멤버가 빠지지 않는다.
+    ② 바스켓에서 엔진 종목이 빠진 저장본(11-09 실사고 꼴): 선언에서 되살려 멤버로 넣는다.
+    실제 `_spawn_engine` 을 돈다 — 바깥 의존(시세 어댑터 · 주문 어댑터 · 달력)만 대역.
+    """
+    from types import SimpleNamespace
+
+    from updown.apps.api import rebalancer as mod
+
+    class LongEngine(FakeEngine):
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+    def factory(ctx: Any) -> Any:
+        return LongEngine(ctx.instrument.symbol, ctx.attribution)
+
+    monkeypatch.setattr(leg_engines, "discovered_leg_engines", lambda: {"some_engine": factory})
+    monkeypatch.setattr(
+        mod, "MarketDataProvider", lambda: SimpleNamespace(adapter_for=lambda _venue: object())
+    )
+    monkeypatch.setattr(mod, "engine_order_adapter", lambda *_a, **_k: object())
+    monkeypatch.setattr(mod, "load_calendar", lambda: None)
+    monkeypatch.setattr(mod, "FUNDS_ROOT", tmp_path)
+
+    async def no_session(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("엔진 다리 종목에 세션을 띄우면 안 된다")
+
+    async def fake_tick(fund: Any, flow: Any = None) -> Any:
+        del flow
+        return fund.coordinator.tick()
+
+    monkeypatch.setattr(mod, "_spawn_session", no_session)
+    monkeypatch.setattr(mod, "_tick", fake_tick)
+    leg = _leg(("IDX_USDT", "GLD_USDT"))
+    basket = Basket(as_members([("IDX_USDT", Decimal(1)), ("GLD_USDT", Decimal(1))]), version="v1")
+
+    async def main() -> None:
+        fund = await mod._create_fund(  # pyright: ignore[reportPrivateUsage]
+            basket=basket,
+            total_cash=Decimal(1000),
+            leverage=Decimal(3),
+            playbook="idx_bundle",
+            label="t",
+            weight_mode="slots",
+            slots=6,
+            legs=[leg],
+        )
+        fid = fund.fund_id
+        try:
+            idx, gld = fund.engines["IDX_USDT"], fund.engines["GLD_USDT"]
+            assert leg_engines.RUNNING[("GATE", "IDX_USDT")] is idx
+            # ① 재승격 복원 — 같은 저장본. 강등은 엔진을 안 멈추므로 둘 다 아직 돈다.
+            await mod._restore_one(mod._fund_data(fund))  # pyright: ignore[reportPrivateUsage]
+            again = mod.FUNDS[fid]
+            assert again is not fund
+            assert again.engines["IDX_USDT"] is idx and again.engines["GLD_USDT"] is gld
+            assert again.coordinator.ports["IDX_USDT"] is idx
+            assert set(again.coordinator.engine.basket.symbols) == {"IDX_USDT", "GLD_USDT"}
+            assert len(leg_engines.running_on("GATE")) == 2  # 두 벌로 안 돈다
+            # ② 바스켓에서 엔진 종목 하나가 빠진 저장본 — 선언이 되살린다.
+            data = mod._fund_data(again)  # pyright: ignore[reportPrivateUsage]
+            data["basket"]["members"] = [
+                m for m in data["basket"]["members"] if m["symbol"] != "IDX_USDT"
+            ]
+            await mod._restore_one(data)  # pyright: ignore[reportPrivateUsage]
+            healed = mod.FUNDS[fid]
+            assert set(healed.coordinator.engine.basket.symbols) == {"IDX_USDT", "GLD_USDT"}
+            assert healed.engines["IDX_USDT"] is idx  # 되살리면서도 도는 엔진을 이어 받는다
+            assert healed.coordinator.ports["IDX_USDT"] is idx
+        finally:
+            for key, task in list(mod._ENGINE_TASKS.items()):  # pyright: ignore[reportPrivateUsage]
+                if key[0] == fid:
+                    task.cancel()
+                    mod._ENGINE_TASKS.pop(key, None)  # pyright: ignore[reportPrivateUsage]
+            mod.FUNDS.pop(fid, None)
+
+    asyncio.run(main())
+
+
 def test_missing_engine_symbols_lists_declared_but_absent_only() -> None:
     """T818 — 선언은 했는데 바스켓에 없는 엔진 다리 종목만, 선언 순서로."""
     from updown.apps.api.rebalancer import missing_engine_symbols
