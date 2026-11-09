@@ -615,6 +615,42 @@ def _is_sentinel_target(record: TradeRecord, price: Decimal) -> bool:
     return abs(price - record.entry) / risk >= SENTINEL_RR
 
 
+def has_real_target(record: TradeRecord) -> bool:
+    """닿을 수 있는 진짜 목표가 있는 매매인가 — 형식상 먼 목표(`SENTINEL_RR`)면 거짓 (T814)."""
+    return record.planned_target > 0 and not _is_sentinel_target(record, record.planned_target)
+
+
+def share_target_order(
+    record: TradeRecord, instrument: Instrument, contracts: int, *, run: str = ""
+) -> OrderRequest:
+    """몫 하나의 목표가 지정가 — reduce-only · 그 몫 크기 하나 (T814).
+
+    Args:
+        record: 몫 기록.
+        instrument: 대상 종목.
+        contracts: 몫 계약 수.
+        run: 판 표식.
+
+    Returns:
+        주문 요청. 이름에 매매 id 와 `tp` 가 들어가 대조가 그 몫의 체결을 찾는다.
+
+    Note:
+        몫 모드는 full_ride 라 반익이 없다 — 다리 둘로 나누지 않는다.
+    """
+    return OrderRequest(
+        instrument=instrument,
+        side=_exit_side(record.direction),
+        order_kind=OrderKind.TAKE_PROFIT,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal(contracts),
+        price=record.planned_target,
+        idempotency_key=order_key(record.trade_id, OrderKind.TAKE_PROFIT.value, 2, run),
+        approved_order_id=record.trade_id,
+        leg_index=2,
+        revision_id=None,
+    )
+
+
 def take_profit_orders(
     record: TradeRecord,
     instrument: Instrument,

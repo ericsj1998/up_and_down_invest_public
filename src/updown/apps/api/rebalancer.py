@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -1276,6 +1276,25 @@ async def _restore_one(data: dict[str, Any]) -> None:
         handles[member.symbol] = handle
         ports[member.symbol] = port
         kept.append(member)
+    # 🔴 T818 — 엔진 다리가 선언한 종목이 저장된 바스켓에 없으면 선언에서 되살린다(위 Note 참고 ·
+    #    2026-11-09 NAS100). 바스켓에 있다가 못 뜬 종목은 여기서 다시 시도하지 않는다(위 루프가 이미
+    #    경고를 남겼다).
+    for leg, sym in missing_engine_symbols(legs, (m.symbol for m in basket.members)):
+        await asyncio.sleep(0)
+        try:
+            engines[sym] = await _spawn_engine(str(data["fund_id"]), leg, sym, fund_market)
+        except Exception as exc:
+            _logger.warning(
+                "fund_member_skipped: %s %s — %s", data.get("fund_id"), sym, str(exc)[:160]
+            )
+            continue
+        ports[sym] = engines[sym]
+        kept.append(BasketMember(symbol=sym, weight=Decimal(1)))
+        _logger.warning(
+            "fund_engine_member_restored: %s %s — 바스켓에 없던 엔진 다리 종목을 선언에서 되살렸다",
+            data.get("fund_id"),
+            sym,
+        )
     # ⭐ T759 ④' 관측 규약 — 새로 재는 값은 분포를 남긴다. 배포 뒤 이 값이 43,000 → 1,000 아래로
     #    내려갔는지가 캐시 가설(선언 파싱 반복)의 검증이다.
     _events.info(
@@ -1552,6 +1571,29 @@ def _engine_leg(legs: Sequence[FundLeg], symbol: str) -> FundLeg | None:
     return next((leg for leg in legs if leg.engine and symbol in leg.symbols), None)
 
 
+def missing_engine_symbols(
+    legs: Sequence[FundLeg], basket_symbols: Iterable[str]
+) -> list[tuple[FundLeg, str]]:
+    """엔진 다리가 선언했는데 바스켓에 없는 종목 — 복원이 선언에서 되살린다 (T818 · 순수).
+
+    Args:
+        legs: 펀드 다리 선언.
+        basket_symbols: 저장된 바스켓의 종목.
+
+    Returns:
+        `(엔진 다리, 종목)` — 선언 순서.
+
+    Note:
+        2026-11-09 리더 재승격 복원이 "이미 엔진이 돈다" 로 NAS100 멤버를 건너뛰고 그 바스켓을
+        저장해, 펀드가 자기 엔진 다리 종목을 잃었다(화면 "엔진 다리가 아니다" · 실현이 총자본에
+        안 듦 · 다음 재기동 뒤엔 포지션이 고아). 엔진 다리는 종목을 선언에 명시하므로 선언이
+        바스켓을 고칠 수 있다 — 세션 다리(분기 우주)는 반대로 바스켓이 선언을 고친다
+        (`_apply_carry`).
+    """
+    have = set(basket_symbols)
+    return [(leg, sym) for leg in legs if leg.engine for sym in leg.symbols if sym not in have]
+
+
 def _fund_capital(fund_id: str) -> Decimal:
     """펀드 총자본(엔진 몫 크기의 바탕) — 펀드가 아직 등록 전이면 0(진입 안 함)."""
     fund = FUNDS.get(fund_id)
@@ -1571,8 +1613,47 @@ async def _spawn_engine(fund_id: str, leg: FundLeg, symbol: str, market: str) ->
         도는 엔진(`leg_engines.LegEngine`).
 
     Raises:
-        RuntimeError: 그 이름의 엔진이 설치돼 있지 않다(조용히 빼지 않는다 · 규칙 #8).
+        RuntimeError: 그 이름의 엔진이 설치돼 있지 않다(조용히 빼지 않는다 · 규칙 #8) · 그 종목의
+            엔진을 **다른** 펀드가 돌리고 있다.
+
+    Note:
+        🔴 T818 — 같은 펀드의 엔진이 이미 돌고 있으면(리더 상실 → 재승격 복원 · 2026-11-09)
+        새로 띄우지 않고 **그 엔진을 이어 받는다**. 강등은 관리 루프만 거두고 엔진 태스크는 살려
+        두는데(`main._stop_trading`), 복원이 새 엔진을 등록하려다 "이미 돈다" 로 멤버를 건너뛰어
+        펀드가 자기 엔진을 잃었다. 끝난(죽은) 엔진이 표에 남았으면 치우고 새로 띄운다.
     """
+    running = leg_engines.RUNNING.get((market, symbol))
+    if running is not None:
+        mine = _ENGINE_TASKS.get((fund_id, symbol))
+        if mine is not None and not mine.done():
+            _events.info(
+                "fund_engine_adopted",
+                payload={
+                    "fund_id": fund_id,
+                    "symbol": symbol,
+                    "engine": str(leg.engine),
+                    "leg": leg.attribution,
+                    "note": "같은 펀드의 엔진이 이미 돈다 — 새로 띄우지 않고 이어 받는다(T818)",
+                },
+            )
+            return running
+        others = [
+            key[0]
+            for key, task in _ENGINE_TASKS.items()
+            if key[1] == symbol and key[0] != fund_id and not task.done()
+        ]
+        if others:
+            raise RuntimeError(f"{market}:{symbol} 엔진은 다른 펀드 {others[0]} 가 돌리고 있다")
+        leg_engines.unregister_running(market, symbol)
+        _ENGINE_TASKS.pop((fund_id, symbol), None)
+        _events.warning(
+            "fund_engine_stale_cleared",
+            payload={
+                "fund_id": fund_id,
+                "symbol": symbol,
+                "note": "끝난 엔진이 도는 표에 남아 있었다 — 치우고 새로 띄운다(T818)",
+            },
+        )
     factory = leg_engines.discovered_leg_engines().get(str(leg.engine))
     if factory is None:
         raise RuntimeError(

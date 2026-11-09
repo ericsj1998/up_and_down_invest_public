@@ -85,6 +85,7 @@ from updown.orchestration.walkforward.ledger import (
     new_trade_id,
     plan_fault,
 )
+from updown.orchestration.walkforward.order_mapping import has_real_target
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping, Sequence
@@ -789,6 +790,18 @@ class Session:
     그 봉이 닫힐 때 마감 룰을 못 채우면 마감 종가에 나간다.
     """
 
+    target_seen: dict[str, datetime] = field(default_factory=lambda: dict[str, datetime]())
+    """매매별로 목표 닿음을 어느 봉까지 봤나 (T814) — 봉을 두 번 안 본다."""
+
+    target_touch_at: dict[str, datetime] = field(default_factory=lambda: dict[str, datetime]())
+    """목표에 닿은 봉이 끝난 시각 (T814) — 한 번 닿으면 다시 안 잰다."""
+
+    target_dead: set[str] = field(default_factory=lambda: set[str]())
+    """목표보다 손절에 먼저 닿은 매매 (T814 · 같은 봉은 손절 먼저 · touch 매매법만)."""
+
+    tick_observed: bool = False
+    """봉 사이 걸음(`step_early`) 동안 체결가를 관측 창의 최신 봉에서 읽는다 (T814)."""
+
     early_entered: int = 0
     """조기 진입 수 (관측용 · §1-0s)."""
 
@@ -1472,6 +1485,19 @@ class Session:
                 self._open = None
             return
         self._open = None
+
+    def rehold(self, record: TradeRecord) -> None:
+        """놓았던 보유 표시를 되돌린다 — 원장만 닫히고 거래소 청산이 안 나갔을 때 (T815).
+
+        Args:
+            record: 다시 보유 중으로 둘 OPEN 기록. 원장에는 먼저 되돌려 넣은 뒤 부른다.
+
+        Note:
+            `release(leg=...)` 의 역이다. `adopt` 는 다른 몫이 하나라도 있으면 거부하므로 몫
+            모드에서 쓸 수 없다. 여기서도 값은 만들지 않는다 — 기록은 러너가 준 그대로다(규칙 #4).
+        """
+        with self._on_leg(record.playbook):
+            self._open = record
 
     def forget_frame(self, frame: Timeframe) -> None:
         """급전에서 내린 보기용 축의 계산 캐시를 버린다 (T313).
@@ -2604,6 +2630,9 @@ class Session:
               신선해져 백테스트와 갈라진다 (§5.6.2 동결).
         """
         frame = self.price_frame
+        if self.tick_observed:
+            live = list(self.feed.observed(frame or self.step_frame))
+            return live[-1] if live else None
         if frame is None:
             rows = list(self.feed.judged(self.step_frame))
             if not rows:
@@ -2637,6 +2666,108 @@ class Session:
         else:
             rows = list(self.feed.observed(frame))
         return rows[-1] if rows else None
+
+    def target_touched(self, held: TradeRecord) -> datetime | None:
+        """이 매매가 목표에 닿은 봉이 끝난 시각 (T814 · T816).
+
+        Args:
+            held: 보유 기록.
+
+        Returns:
+            닿았으면 그 봉의 끝 시각. 아직이면 None.
+
+        Note:
+            지난번 뒤의 가격 축 봉을 오래된 것부터 본다. touch 매매법은 손절에 먼저 닿았으면
+            그 뒤로 목표를 안 본다(같은 봉은 손절 먼저 · 연구와 같다). 재시작하면 기억이 비어
+            진입 뒤 봉을 다시 보므로, 죽은 사이 또는 예전에 닿은 것도 찾는다(T816 — 닿았는데
+            아직 들고 있으면 빼는 쪽이 같거나 낫다). 먼 형식 목표는 안 본다.
+        """
+        tid = held.trade_id
+        if tid in self.target_touch_at:
+            return self.target_touch_at[tid]
+        if tid in self.target_dead or held.opened_at is None or not has_real_target(held):
+            return None
+        long = held.direction is Direction.LONG
+        frame = self.price_frame or self.step_frame
+        since = self.target_seen.get(tid, held.opened_at)
+        stop_first = self._book_of(held).stop_mode == "touch"
+        target = held.planned_target
+        for row in self.feed.observed(frame):
+            if row.ts <= since:
+                continue
+            since = row.ts
+            if stop_first and (
+                row.low <= held.planned_stop if long else row.high >= held.planned_stop
+            ):
+                self.target_dead.add(tid)
+                return None
+            if self.strict_fills:
+                hit = row.high > target if long else row.low < target
+            else:
+                hit = row.high >= target if long else row.low <= target
+            if hit:
+                self.target_touch_at[tid] = row.ts + interval(frame)
+                return self.target_touch_at[tid]
+        self.target_seen[tid] = since
+        return None
+
+    def close_touched(self, held: TradeRecord, *, at: datetime, price: Decimal) -> TradeRecord:
+        """목표에 닿았는데 거래소가 안 닫은 매매를 원장에서 닫는다 (T816 · 러너가 시장가로 옮긴다).
+
+        Args:
+            held: 보유 기록.
+            at: 닫는 시각.
+            price: 지금 가격(체결 뒤 러너가 실제 평단으로 고친다).
+
+        Returns:
+            닫힌 기록.
+        """
+        gained = price > held.entry if held.direction is Direction.LONG else price < held.entry
+        outcome = Outcome.TAKE_PROFIT if gained else Outcome.SIGNAL_EXIT
+        done = held.closed(
+            at=at, price=price, outcome=outcome, cost_pct=self._exit_cost(held, outcome)
+        )
+        self.ledger.replace(done)
+        self.release(leg=held.playbook)
+        self.journal()
+        return done
+
+    def step_early(self) -> Snapshot | None:
+        """봉 사이 조기 진입만 판정한다 (T345 · T814 — 라이브의 :30 걸음).
+
+        Returns:
+            스냅샷. 일시정지면 None.
+
+        Note:
+            ⚠️ `step()` 을 부르지 않는다 — 청산 판정과 닫힌 봉의 진입 후보를 봉 사이에 다시
+            돌리면 연구에 없는 재진입이 생긴다. 커서도 안 민다. 재현(15 분 걸음)은 기존 `step()`
+            안의 `_early_enter` 로 돌고, 이 길은 라이브에서 러너가 정해진 분에 부른다.
+        """
+        if self.paused:
+            return None
+        self._sync_open()
+        shot = self.look()
+        idle = (len(self._held) <= 1 and self._open is None and self._waiting is None) or (
+            self._share_room()
+        )
+        tripped = self.breaker_tripped_at is not None
+        opened: TradeRecord | None = None
+        self.tick_observed = True
+        try:
+            if self._may_enter(idle=idle, tripped=tripped):
+                opened = self._early_enter(shot)
+        finally:
+            self.tick_observed = False
+        if opened is not None:
+            self.journal()
+        return Snapshot(
+            at=shot.at,
+            proposals=shot.proposals,
+            trend=shot.trend,
+            has_box=shot.has_box,
+            opened=opened,
+            closed=(),
+        )
 
     def _engulf_reversal(self, *, against: bool) -> bool:
         """보유 방향에 **거스르는 장악형 또는 도지**가 확인됐는가 (flip_on_engulf).
@@ -2906,11 +3037,13 @@ class Session:
         #    `SealedFiller` 가 `<` 엄격인데 익절만 `>=` 면 들어갈 땐 엄격, 나갈 땐 후하다 —
         #    고가가 내 지정가와 같으면 앞 줄이 먼저 채워지고 나는 못 판다. 라이브는 거래소 체결이
         #    답이라 이 플래그가 꺼져 있고(기본), 옛 동작 그대로다.
+        # 🔴 T814 — 목표는 지난 판단 뒤의 봉을 **전부** 본다. 라이브 4H 판은 4 시간에 한 번 마지막
+        #    5 분봉 하나만 봐서 봉 사이 꼬리를 놓쳤다(DOT · XLM · PENGU). 봉인 급전은 새 봉이 하나라
+        #    결과가 같다.
+        hit_target = self.target_touched(held) is not None
         if self.strict_fills:
-            hit_target = bar.high > held.planned_target if long else bar.low < held.planned_target
             hit_half = bar.high > held.planned_first if long else bar.low < held.planned_first
         else:
-            hit_target = bar.high >= held.planned_target if long else bar.low <= held.planned_target
             hit_half = bar.high >= held.planned_first if long else bar.low <= held.planned_first
         # 🔴 **이 매매를 낸 플레이북의 청산 규칙을 쓴다** (T42 ③). 세트에서 대표
         #    플레이북의 플래그로 모든 매매를 닫으면, 돌파 매매가 박스의 규칙으로 닫힌다.
@@ -5036,7 +5169,9 @@ class Session:
             if not finer:
                 continue
             source = min(finer, key=interval)
-            rows_src = list(self.feed.judged(source))
+            # T814 — 라이브는 커서가 진입축 마감에 묶여 있어 `judged` 로는 봉 안의 5 분봉이 안
+            #    보인다. 봉인 급전의 `observed` 는 `judged` 와 같다.
+            rows_src = list(self.feed.observed(source))
             # 🔴 "지금" = 재료 축의 마지막 마감 봉이 끝난 시각(T345 결함 ① · 2026-10-02).
             #    예전엔 커서 + 걸음이었는데 커서가 이미 그 봉의 끝이라 한 걸음 일렀다 —
             #    :30 선언이 :15 에 15분짜리 부분 봉으로 샀다(DOGE 2022-07-20 탐침 ·

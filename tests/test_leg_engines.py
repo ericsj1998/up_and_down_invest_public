@@ -187,6 +187,59 @@ def test_fund_leg_engine_roundtrip_and_old_saves() -> None:
     assert FundLeg.from_dict(old).engine is None
 
 
+def _leg(symbols: tuple[str, ...] = ("IDX_USDT",), engine: str | None = "some_engine") -> FundLeg:
+    return FundLeg(
+        playbook="idx",
+        attribution="idx@0.1.0",
+        symbols=symbols,
+        leverage=Decimal(3),
+        exposure=Decimal(3),
+        timeframe="1d",
+        slots=6,
+        isolated=True,
+        engine=engine,
+    )
+
+
+def test_spawn_engine_adopts_same_funds_running_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T818 — 재승격 복원: 같은 펀드의 엔진이 돌고 있으면 새로 띄우지 않고 그 엔진을 돌려준다."""
+    from updown.apps.api import rebalancer as mod
+
+    eng = FakeEngine("IDX_USDT", "idx@0.1.0")
+
+    def no_factory() -> dict[str, Any]:
+        raise AssertionError("이어 받을 엔진이 있으면 팩토리를 찾지 않는다")
+
+    monkeypatch.setattr(leg_engines, "discovered_leg_engines", no_factory)
+
+    async def main() -> Any:
+        leg_engines.register_running("GATE", eng)
+        alive = asyncio.create_task(asyncio.sleep(3600))
+        mod._ENGINE_TASKS[("f1", "IDX_USDT")] = alive  # pyright: ignore[reportPrivateUsage]
+        try:
+            got = await mod._spawn_engine("f1", _leg(), "IDX_USDT", "GATE")  # pyright: ignore[reportPrivateUsage]
+            with pytest.raises(RuntimeError, match="다른 펀드"):
+                await mod._spawn_engine("f2", _leg(), "IDX_USDT", "GATE")  # pyright: ignore[reportPrivateUsage]
+            return got
+        finally:
+            alive.cancel()
+            mod._ENGINE_TASKS.pop(("f1", "IDX_USDT"), None)  # pyright: ignore[reportPrivateUsage]
+
+    assert asyncio.run(main()) is eng
+    assert leg_engines.RUNNING[("GATE", "IDX_USDT")] is eng  # 표는 그대로
+
+
+def test_missing_engine_symbols_lists_declared_but_absent_only() -> None:
+    """T818 — 선언은 했는데 바스켓에 없는 엔진 다리 종목만, 선언 순서로."""
+    from updown.apps.api.rebalancer import missing_engine_symbols
+
+    engine_leg = _leg(("IDX_USDT", "GLD_USDT"))
+    session_leg = _leg(("BTC_USDT",), engine=None)
+    got = missing_engine_symbols([session_leg, engine_leg], ["BTC_USDT", "GLD_USDT"])
+    assert got == [(engine_leg, "IDX_USDT")]
+    assert missing_engine_symbols([session_leg], []) == []  # 세션 다리는 바스켓이 선언을 고친다
+
+
 def test_create_fund_runs_engine_legs_as_ports_not_sessions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
