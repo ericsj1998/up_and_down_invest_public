@@ -308,10 +308,64 @@ export type LiteBrief = {
   max_drawdown_pct: string;
   diverged: boolean;
   note: string;
+  /** 엔진 다리(판 없는 다리)의 순 실현 — 금액 칸에는 들어 있고 원장 대조에서만 뺐다 (T829). */
+  engine_net?: string | null;
 };
 
 export function liteBrief(hours: number): Promise<LiteBrief> {
   return request(`/report/brief?hours=${hours}`);
+}
+
+/** 최근 실현 주문 한 줄 — 분할 체결은 한 줄로 합쳐져 온다 (T829). */
+export type LiteRecentRow = {
+  symbol: string;
+  /** 그 주문의 마지막 체결 시각(UTC ISO). */
+  at: string;
+  pnl: string;
+  /** 그 종목의 앞 실현 뒤부터 쌓인 수수료(진입 + 청산) · 음수. */
+  fees: string;
+  funding: string;
+  /** pnl + fees + funding. */
+  net: string;
+  /** 그 주문 직후의 지갑 잔고(미실현 제외) · 거래소가 안 적으면 null. */
+  balance: string | null;
+  fills: number;
+};
+
+/** 최근 매매 합계 한 벌 — 목록 전체, 또는 손익 시작점 뒤만. */
+export type LiteRecentTotals = {
+  count: number;
+  wins: number;
+  net: string;
+  pnl: string;
+  fees: string;
+  funding: string;
+};
+
+/** 첫 화면 최근 매매 — 장부를 못 읽으면 `rows` 가 null 이고 나머지 칸은 없다. */
+export type LiteRecent = {
+  rows: LiteRecentRow[] | null;
+  count?: number;
+  wins?: number;
+  net?: string;
+  pnl?: string;
+  fees?: string;
+  funding?: string;
+  /** 손익 시작점(UTC ISO) — 안 정했으면 null. */
+  since?: string | null;
+  /** 시작점 뒤 줄만의 합계 — 홈의 다른 숫자와 같은 기준. 시작점이 없으면 null. */
+  after?: LiteRecentTotals | null;
+  /** 마지막 실현 뒤에 쌓여 아직 어느 줄에도 안 붙은 몫(열린 포지션). */
+  open_fees?: string;
+  open_funding?: string;
+  /** 받은 장부의 가장 옛 줄 — 거래소는 약 30 일치만 준다. */
+  oldest?: string | null;
+  unreadable?: number;
+  at?: string;
+};
+
+export function liteRecent(): Promise<LiteRecent> {
+  return request("/report/recent");
 }
 
 export function modeCookie(): Mode {

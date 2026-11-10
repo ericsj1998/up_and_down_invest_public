@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from updown.apps.api.rebalancer import _held_units, engine_note, engine_row
-from updown.orchestration.report.lite import brief_payload, lite_payload
+from updown.orchestration.report.lite import brief_payload, lite_payload, recent_payload
 from updown.orchestration.report.performance import (
     ExchangeSummary,
     LedgerSummary,
@@ -262,3 +262,123 @@ def test_brief_unread_exchange_is_blank_not_zero() -> None:
     made = brief_payload(perf(hours=24, exchange=None), 24)
     assert made["net"] is None
     assert made["fees"] is None
+    assert made["engine_net"] is None
+
+
+def test_brief_carries_the_engine_leg_share() -> None:
+    whole = perf(hours=24, exchange=ExchangeSummary(pnl=Decimal(1), rows=3, pnl_rows=2))
+    with_engine = Performance(
+        window=whole.window,
+        ledger=whole.ledger,
+        exchange=whole.exchange,
+        diverged=False,
+        note="",
+        engine=ExchangeSummary(pnl=Decimal("2.58"), fees=Decimal("-0.02"), rows=2, pnl_rows=1),
+    )
+    assert brief_payload(with_engine, 24)["engine_net"] == "2.56"
+    # 전체 금액 칸은 엔진 몫을 빼지 않는다 — 빼는 것은 원장 대조뿐이다.
+    assert brief_payload(with_engine, 24)["net"] == "1"
+
+
+def _book(*rows: tuple[str, str, str, int, str, str]) -> list[dict[str, str]]:
+    """자금 원장 줄 — `(종류, 금액, text, 분, 잔고, id)`. 거래소처럼 최신을 먼저 준다."""
+    made = [
+        {
+            "type": kind,
+            "change": change,
+            "text": text,
+            "contract": text.partition(":")[0],
+            "time": str(int((AT + timedelta(minutes=minute)).timestamp())),
+            "balance": balance,
+            "id": serial,
+        }
+        for kind, change, text, minute, balance, serial in rows
+    ]
+    return made[::-1]
+
+
+def test_recent_groups_a_close_with_its_entry_fee_and_funding() -> None:
+    book = _book(
+        ("fee", "-0.10", "PAXG_USDT:1", 0, "999.90", "1"),  # 진입 수수료
+        ("fund", "-0.03", "PAXG_USDT", 30, "999.87", "2"),
+        ("fee", "-0.11", "PAXG_USDT:2", 60, "999.76", "3"),  # 청산 수수료(같은 초 · 앞 번호)
+        ("pnl", "-1.50", "PAXG_USDT:2", 60, "998.26", "4"),
+    )
+    made = recent_payload(book)
+    assert made["count"] == 1 and made["wins"] == 0
+    row = made["rows"][0]
+    assert (row["symbol"], row["pnl"], row["fees"], row["funding"]) == (
+        "PAXG_USDT",
+        "-1.50",
+        "-0.21",
+        "-0.03",
+    )
+    assert row["net"] == "-1.74"
+    assert row["balance"] == "998.26"
+    assert row["at"] == (AT + timedelta(minutes=60)).isoformat()
+    assert (made["open_fees"], made["open_funding"]) == ("0", "0")
+    assert made["oldest"] == AT.isoformat()
+
+
+def test_recent_merges_split_fills_of_one_order_into_one_row() -> None:
+    book = _book(
+        ("fee", "-0.05", "DOT_USDT:9", 5, "1000.95", "10"),
+        ("pnl", "1.00", "DOT_USDT:9", 5, "1001.95", "11"),
+        ("fee", "-0.05", "DOT_USDT:9", 6, "1001.90", "12"),
+        ("pnl", "1.27", "DOT_USDT:9", 6, "1003.17", "13"),
+    )
+    made = recent_payload(book)
+    assert made["count"] == 1 and made["wins"] == 1
+    row = made["rows"][0]
+    assert (row["fills"], row["pnl"], row["fees"], row["net"]) == (2, "2.27", "-0.10", "2.17")
+    # 그 주문의 마지막 줄 직후 잔고다 — 첫 체결 뒤 값이 아니다.
+    assert row["balance"] == "1003.17"
+
+
+def test_recent_keeps_costs_of_open_positions_apart_and_cuts_to_limit() -> None:
+    book = _book(
+        ("pnl", "1", "A_USDT:1", 1, "101", "1"),
+        ("pnl", "-2", "B_USDT:2", 2, "99", "2"),
+        ("pnl", "3", "A_USDT:3", 3, "102", "3"),
+        ("fee", "-0.2", "C_USDT:4", 4, "101.8", "4"),  # 아직 열린 포지션의 진입 수수료
+        ("fund", "0.01", "C_USDT", 5, "101.81", "5"),
+        ("dnw", "50", "", 6, "151.81", "6"),  # 입금은 매매가 아니다
+    )
+    made = recent_payload(book, limit=2)
+    assert [r["symbol"] for r in made["rows"]] == ["A_USDT", "B_USDT"]  # 최신 먼저
+    assert made["count"] == 2 and made["wins"] == 1
+    assert made["net"] == "1"
+    assert (made["open_fees"], made["open_funding"]) == ("-0.2", "0.01")
+
+
+def test_recent_totals_after_the_account_start_leave_older_rows_listed() -> None:
+    book = _book(
+        ("pnl", "-300", "OLD_USDT:1", 1, "78", "1"),  # 손익 시작점 앞 매매
+        ("fee", "-0.1", "A_USDT:2", 20, "799.9", "2"),
+        ("pnl", "2", "A_USDT:2", 20, "801.9", "3"),
+        ("pnl", "-1", "B_USDT:3", 30, "800.9", "4"),
+    )
+    made = recent_payload(book, since=AT + timedelta(minutes=10))
+    # 목록은 자르지 않는다 — 옛 매매도 그대로 보인다. 합계만 가른다.
+    assert [r["symbol"] for r in made["rows"]] == ["B_USDT", "A_USDT", "OLD_USDT"]
+    assert (made["count"], made["net"]) == (3, "-299.1")
+    assert made["since"] == (AT + timedelta(minutes=10)).isoformat()
+    assert made["after"] == {
+        "count": 2,
+        "wins": 1,
+        "net": "0.9",
+        "pnl": "1",
+        "fees": "-0.1",
+        "funding": "0",
+    }
+
+
+def test_recent_without_an_account_start_has_no_split() -> None:
+    made = recent_payload(_book(("pnl", "1", "A_USDT:1", 1, "101", "1")))
+    assert made["since"] is None and made["after"] is None
+
+
+def test_recent_unread_book_is_not_an_empty_list() -> None:
+    assert recent_payload(None) == {"rows": None}
+    made = recent_payload([{"type": "pnl", "change": "x", "time": "?"}])
+    assert made["rows"] == [] and made["unreadable"] == 1 and made["oldest"] is None

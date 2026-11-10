@@ -14,8 +14,10 @@ import {
   type LiteBrief,
   type LiteHomeData,
   type LitePosition,
+  type LiteRecent,
   liteBrief,
   liteHome,
+  liteRecent,
 } from "./api";
 import { fmtPrice } from "./chart/trades";
 import { exitText, noteText } from "./engineFacts";
@@ -126,6 +128,7 @@ export function BriefReport() {
   const winRate = num(brief?.win_rate);
   const meanRr = num(brief?.mean_rr);
   const mdd = num(brief?.max_drawdown_pct);
+  const engineNet = num(brief?.engine_net);
 
   return (
     <section className={`${CARD} p-5`} data-testid="brief-report">
@@ -225,6 +228,196 @@ export function BriefReport() {
         <p role="alert" className="mt-1 text-xs font-medium text-loss">
           원장 · 거래소 불일치 — {brief.note}
         </p>
+      ) : engineNet !== null && engineNet !== 0 ? (
+        <p
+          className="mt-1 text-xs text-blue-gray-500 dark:text-blue-gray-300"
+          data-testid="brief-engine"
+        >
+          위 금액에 엔진 다리(판 없는 다리) 순 실현 {money(engineNet, true)}{" "}
+          USDT 포함 · 원장에 줄이 없어 원장 대조에서는 뺌
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * 최근 매매 목록의 몸통 — 받은 값을 그리기만 한다(시험이 이것을 직접 그린다).
+ * 한 줄 = 손익을 실현한 주문 하나. 순손익 = 실현 손익 + 그 매매의 수수료(진입 + 청산) + 펀딩.
+ */
+export function RecentRows({ data }: { data: LiteRecent }) {
+  if (data.rows === null) {
+    return (
+      <p role="alert" className="text-sm text-loss">
+        거래소 장부를 못 읽었다 — 목록이 비어 있는 것이 아니다
+      </p>
+    );
+  }
+  if (data.rows.length === 0) {
+    return (
+      <p className="text-sm text-blue-gray-500 dark:text-blue-gray-300">
+        거래소 장부(약 30일치)에 실현 매매가 없다
+      </p>
+    );
+  }
+  // 합계는 손익 시작점 뒤만 — 홈의 다른 숫자와 같은 기준이다. 그 앞 매매는 목록에 남기되
+  // 흐리게 두고 합계에서 뺀다(새 출발 앞 손익이 지금 성적처럼 읽히지 않게).
+  const since = data.since ?? null;
+  const sums = since && data.after ? data.after : data;
+  const sinceMs = since ? Date.parse(since) : null;
+  const before =
+    sinceMs === null
+      ? 0
+      : data.rows.filter((row) => Date.parse(row.at) < sinceMs).length;
+  const net = num(sums.net);
+  const fees = num(sums.fees);
+  const funding = num(sums.funding);
+  const openFees = num(data.open_fees);
+  const openFunding = num(data.open_funding);
+  return (
+    <>
+      <p
+        className="mb-2 text-xs text-blue-gray-700 dark:text-blue-gray-100"
+        data-testid="recent-summary"
+      >
+        {since ? `손익 시작점(${kst(since)}) 뒤 ` : ""}
+        {sums.count ?? data.rows.length}건 · 이긴 매매 {sums.wins ?? 0}건 ·
+        순손익 합{" "}
+        <span className={`font-mono font-semibold ${tone(net)}`}>
+          {money(net, true)}
+        </span>{" "}
+        USDT · 수수료 합{" "}
+        <span className="font-mono font-semibold">{money(fees, true)}</span> ·
+        펀딩 합{" "}
+        <span className="font-mono font-semibold">{money(funding, true)}</span>
+        {before > 0
+          ? ` · 시작점 앞 ${before}건은 아래에 흐리게 두고 합계에서 뺐다`
+          : ""}
+      </p>
+      <ul className="flex flex-col divide-y divide-blue-gray-50 text-sm dark:divide-gray-800">
+        {data.rows.map((row) => {
+          const rowNet = num(row.net);
+          const old = sinceMs !== null && Date.parse(row.at) < sinceMs;
+          return (
+            <li
+              key={`${row.symbol}:${row.at}`}
+              className={old ? "py-2 opacity-50" : "py-2"}
+              data-testid={old ? "recent-row-before" : "recent-row"}
+            >
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="font-medium text-blue-gray-900 dark:text-white">
+                  {row.symbol.replace("_USDT", "")}
+                  <span className="ml-2 text-xs font-normal text-blue-gray-500 dark:text-blue-gray-300">
+                    {kst(row.at)}
+                    {row.fills > 1 ? ` · 체결 ${row.fills}번` : ""}
+                  </span>
+                </span>
+                <span className={`font-mono font-semibold ${tone(rowNet)}`}>
+                  {money(rowNet, true)} USDT
+                </span>
+              </div>
+              <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-blue-gray-500 dark:text-blue-gray-300">
+                <span>
+                  실현{" "}
+                  <span className="font-mono">
+                    {money(num(row.pnl), true)}
+                  </span>
+                </span>
+                <span>
+                  수수료{" "}
+                  <span className="font-mono">
+                    {money(num(row.fees), true)}
+                  </span>
+                </span>
+                <span>
+                  펀딩{" "}
+                  <span className="font-mono">
+                    {money(num(row.funding), true)}
+                  </span>
+                </span>
+                <span>
+                  그 뒤 계좌{" "}
+                  <span className="font-mono font-medium text-blue-gray-700 dark:text-blue-gray-100">
+                    {money(num(row.balance))}
+                  </span>
+                </span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-3 text-xs text-blue-gray-500 dark:text-blue-gray-300">
+        순손익 = 실현 손익 + 그 매매의 수수료(진입 + 청산) + 펀딩 · 그 뒤 계좌
+        = 그 체결 직후 지갑 잔고(미실현 제외) · 시각은 KST
+        {data.oldest
+          ? ` · 거래소 장부는 약 30일치(${kst(data.oldest)}부터) — 그보다 앞서 들어간 매매는 진입 수수료가 빠져 있을 수 있다`
+          : ""}
+        {openFees !== null && openFunding !== null
+          ? ` · 열린 포지션에 쌓인 수수료 ${money(openFees, true)} · 펀딩 ${money(openFunding, true)} 는 아직 어느 줄에도 안 들어갔다`
+          : ""}
+        {data.unreadable
+          ? ` · 못 읽은 장부 줄 ${data.unreadable}개는 빠졌다`
+          : ""}
+      </p>
+    </>
+  );
+}
+
+/**
+ * 최근 매매 50 건 — 접힌 채로 뜨고 열 때만 읽는다(폴링 없음 · 서버 60 초 묶음).
+ * 사용자 2026-11-10: 종목 · 손익(색) · 총 수수료 · 체결 시각 · 그때의 계좌.
+ */
+export function RecentTrades() {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<LiteRecent | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    liteRecent()
+      .then((got) => {
+        if (!alive) return;
+        setData(got);
+        setError("");
+      })
+      .catch((exc: unknown) => {
+        if (alive) setError(exc instanceof Error ? exc.message : String(exc));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open]);
+
+  return (
+    <section className={`${CARD} p-5`} data-testid="recent-trades">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-blue-gray-900 dark:text-white">
+          최근 매매 50건
+        </h3>
+        <button
+          type="button"
+          aria-expanded={open}
+          className="rounded-lg border border-blue-gray-100 px-3 py-1 text-xs font-medium text-blue-gray-700 hover:bg-blue-gray-50 dark:border-gray-700 dark:text-blue-gray-200 dark:hover:bg-gray-800"
+          onClick={() => setOpen((was) => !was)}
+        >
+          {open ? "접기" : "펼치기"}
+        </button>
+      </div>
+      {open ? (
+        <div className="mt-3">
+          {error ? (
+            <p role="alert" className="text-sm text-loss">
+              못 읽었다 — {error}
+            </p>
+          ) : data ? (
+            <RecentRows data={data} />
+          ) : (
+            <p className="text-sm text-blue-gray-500 dark:text-blue-gray-300">
+              읽는 중…
+            </p>
+          )}
+        </div>
       ) : null}
     </section>
   );
@@ -424,8 +617,8 @@ export function LiteHome() {
     earned !== null && capital ? (earned / capital) * 100 : null;
   // 🔴 `total` 은 거래소 지갑 총액이라 **미실현이 이미 빠져 있다**(쓸 수 있는 돈 + 잡힌 증거금 ·
   //    11-07 실측 730.49 + 92.77 = 823.25 · 미실현 −4.38 은 따로). 총액에서 미실현을 또 빼면 두 번 빠진다.
-  //    그래서 헤드라인은 그대로 두고 "미실현 제외" 라고 적고, 미실현을 넣은 평가액을 아래 줄로 낸다
-  //    (사용자 2026-11-08 · 콘솔의 "지금 다 닫으면" 과 같은 원칙 · 여기는 청산 수수료 전).
+  //    미실현을 넣은 평가액이 큰 숫자이고(사용자 2026-11-10), 지갑 총액은 "미실현 제외" 라고 적어
+  //    아래 줄에 낸다(콘솔의 "지금 다 닫으면" 과 같은 원칙 · 여기는 청산 수수료 전).
   const equity =
     total !== null && unrealized !== null ? total + unrealized : null;
   const notLeader = data?.leader === false;
@@ -466,30 +659,38 @@ export function LiteHome() {
         </div>
       ) : null}
 
-      {/* 사람이 먼저 묻는 것 둘 — 지금 얼마 · 번 돈 */}
+      {/* 사람이 먼저 묻는 것 둘 — 지금 닫으면 얼마 · 번 돈.
+          큰 숫자 = 미실현 포함 평가(사용자 2026-11-10 "크기를 키워주고 이득이면 초록 손해면 빨강").
+          색은 지갑 총액(미실현 제외)보다 큰가 작은가 = 미실현의 부호다. */}
       <section className={`${CARD} grid gap-4 p-5 sm:grid-cols-2`}>
         <div>
           <div className="text-sm font-medium text-blue-gray-500 dark:text-blue-gray-300">
-            계좌 총액
+            미실현 포함 평가
           </div>
-          <div className="mt-1 break-words font-mono text-3xl font-bold text-blue-gray-900 dark:text-white">
-            {money(total)}
+          <div
+            className={`mt-1 break-words font-mono text-4xl font-bold sm:text-5xl ${tone(equity === null ? null : unrealized)}`}
+            data-testid="lite-equity"
+          >
+            {money(equity)}
             <span className="ml-1.5 text-base font-medium text-blue-gray-500 dark:text-blue-gray-300">
               USDT
             </span>
           </div>
           <div
-            className="mt-1 text-xs text-blue-gray-500 dark:text-blue-gray-300"
-            data-testid="lite-equity"
+            className="mt-1.5 text-xs text-blue-gray-500 dark:text-blue-gray-300"
+            data-testid="lite-total"
           >
-            미실현 제외 · 미실현 포함 평가{" "}
+            계좌 총액(미실현 제외){" "}
             <span className="font-mono font-semibold text-blue-gray-700 dark:text-blue-gray-100">
-              {money(equity)}
+              {money(total)}
             </span>{" "}
-            USDT
+            USDT · 미실현{" "}
+            <span className={`font-mono font-semibold ${tone(unrealized)}`}>
+              {money(unrealized, true)}
+            </span>
           </div>
           <div className="mt-0.5 text-xs text-blue-gray-500 dark:text-blue-gray-300">
-            자본금 투입 {money(capital)} USDT · 손익 아님
+            자본금 투입 {money(capital)} USDT · 손익 아님 · 청산 수수료 전
           </div>
         </div>
         <div className="border-t border-blue-gray-100 pt-4 sm:border-l sm:border-t-0 sm:pl-5 sm:pt-0 dark:border-gray-700">
@@ -562,6 +763,8 @@ export function LiteHome() {
       </div>
 
       <BriefReport />
+
+      <RecentTrades />
 
       <section className={`${CARD} p-5`}>
         <h3 className="mb-3 text-sm font-semibold text-blue-gray-900 dark:text-white">

@@ -11,7 +11,12 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from updown.orchestration.report.performance import Performance
+from updown.orchestration.report.performance import (
+    Performance,
+    book_kind,
+    book_row_time,
+    book_symbol,
+)
 
 
 def _dec(value: object) -> Decimal | None:
@@ -143,7 +148,7 @@ def brief_payload(perf: Performance, hours: int) -> dict[str, Any]:
 
     Returns:
         `{since, until, clipped, net, pnl, fees, funding, trades, longs, shorts, wins, win_rate,
-        mean_rr, max_drawdown_pct, diverged, note}`. 거래소를 못 읽으면 금액 칸은 None.
+        mean_rr, max_drawdown_pct, diverged, note, engine_net}`. 거래소를 못 읽으면 금액 칸은 None.
 
     Note:
         `clipped` 는 손익 시작점 때문에 구간이 고른 기간보다 짧아졌다는 뜻이다. 표시 없이 두면
@@ -167,4 +172,131 @@ def brief_payload(perf: Performance, hours: int) -> dict[str, Any]:
         "max_drawdown_pct": str(led.max_drawdown_pct),
         "diverged": perf.diverged,
         "note": perf.note,
+        # 엔진 다리(판 없는 다리)의 순 실현 — 금액 칸에는 들어 있고 원장 대조에서만 뺐다 (T829).
+        "engine_net": None if perf.engine is None else str(perf.engine.net),
+    }
+
+
+def recent_payload(
+    book: Sequence[Mapping[str, str]] | None,
+    *,
+    limit: int = 50,
+    since: datetime | None = None,
+) -> dict[str, Any]:
+    """최근 실현 매매 목록 — 거래소 자금 원장을 **실현 주문 단위**로 묶는다 (T829 · 순수 함수).
+
+    한 줄 = 손익을 실현한 주문 하나(청산 · 감축). 분할 체결은 한 줄로 합친다. 그 종목의 앞
+    실현 뒤부터 쌓인 수수료(진입 + 청산)와 펀딩을 그 줄에 붙여 순손익을 낸다.
+
+    Args:
+        book: `account_book` 줄들(`type` · `change` · `time` · `text` · `contract` · `balance`).
+            못 읽었으면 None.
+        limit: 보여 줄 건수(최신부터).
+        since: 손익 시작점(aware). 주면 그 뒤 줄만의 합계를 `after` 에 따로 낸다 — 목록은
+            자르지 않는다(옛 매매도 본 일이므로 보여 주고, 합계만 섞이지 않게 가른다).
+
+    Returns:
+        `{rows, count, wins, net, pnl, fees, funding, since, after, open_fees, open_funding,
+        oldest, unreadable}`. `rows` 의 한 줄은 `{symbol, at, pnl, fees, funding, net, balance,
+        fills}`, `after` 는 `{count, wins, net, pnl, fees, funding}`(시작점이 없으면 None).
+        장부를 못 읽었으면 `rows` 는 None 이다(빈 목록으로 꾸미지 않는다 · 규칙 #8).
+
+    Note:
+        - `balance` 는 그 주문의 마지막 줄이 적힌 **직후의 지갑 잔고**(거래소가 적은 값)다.
+          미실현은 들어 있지 않다 — 그 시각의 미실현 포함 평가는 어디에도 기록이 없다.
+        - 방향 · 다리 이름은 자금 원장에 없다. 원장(`wf_trades`)과 시각으로 맞대면 추정이
+          끼므로 싣지 않는다.
+        - 거래소가 주는 장부는 약 30 일치다. `oldest` 보다 앞서 들어간 매매는 진입 수수료 ·
+          앞 펀딩이 빠진 채로 나온다.
+        - `open_*` 는 마지막 실현 뒤에 쌓여 아직 어느 줄에도 안 붙은 몫(열린 포지션의 진입
+          수수료 · 펀딩)이다.
+    """
+    if book is None:
+        return {"rows": None}
+    ordered: list[tuple[datetime, int, int, Mapping[str, str], Decimal]] = []
+    unreadable = 0
+    for index, row in enumerate(book):
+        when = book_row_time(row)
+        change = _dec(row.get("change"))
+        if when is None or change is None:
+            unreadable += 1
+            continue
+        try:
+            serial = int(str(row.get("id", "")))
+        except ValueError:
+            serial = 0
+        # 같은 초 · 번호 없는 줄은 받은 순서(최신 먼저)를 뒤집어 옛 → 새 로 둔다.
+        ordered.append((when, serial, -index, row, change))
+    ordered.sort(key=lambda item: item[:3])
+    zero = Decimal(0)
+    fees: dict[str, Decimal] = {}
+    funding: dict[str, Decimal] = {}
+    closes: dict[str, dict[str, Any]] = {}
+    for when, _, _, row, change in ordered:
+        kind = book_kind(row)
+        symbol = book_symbol(row)
+        key = str(row.get("text", "")) or f"{symbol}@{when.isoformat()}"
+        open_close = closes.get(key)
+        if kind == "fund":
+            funding[symbol] = funding.get(symbol, zero) + change
+            continue
+        if kind == "fee":
+            if open_close is None:
+                fees[symbol] = fees.get(symbol, zero) + change
+                continue
+            open_close["fees"] += change
+        elif kind == "pnl":
+            if open_close is None:
+                open_close = closes[key] = {
+                    "symbol": symbol,
+                    "pnl": zero,
+                    "fees": zero,
+                    "funding": zero,
+                    "fills": 0,
+                }
+            open_close["pnl"] += change
+            open_close["fees"] += fees.pop(symbol, zero)
+            open_close["funding"] += funding.pop(symbol, zero)
+            open_close["fills"] += 1
+        else:
+            continue
+        open_close["at"] = when
+        open_close["balance"] = _dec(row.get("balance"))
+    shown = sorted(closes.values(), key=lambda item: item["at"], reverse=True)[: max(limit, 0)]
+    rows = [
+        {
+            "symbol": item["symbol"],
+            "at": item["at"].isoformat(),
+            "pnl": str(item["pnl"]),
+            "fees": str(item["fees"]),
+            "funding": str(item["funding"]),
+            "net": str(item["pnl"] + item["fees"] + item["funding"]),
+            "balance": _text(item["balance"]),
+            "fills": item["fills"],
+        }
+        for item in shown
+    ]
+
+    def totals(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        pnl_sum = sum((item["pnl"] for item in items), zero)
+        fee_sum = sum((item["fees"] for item in items), zero)
+        fund_sum = sum((item["funding"] for item in items), zero)
+        return {
+            "count": len(items),
+            "wins": sum(1 for item in items if item["pnl"] + item["fees"] + item["funding"] > 0),
+            "net": str(pnl_sum + fee_sum + fund_sum),
+            "pnl": str(pnl_sum),
+            "fees": str(fee_sum),
+            "funding": str(fund_sum),
+        }
+
+    return {
+        "rows": rows,
+        **totals(shown),
+        "since": None if since is None else since.isoformat(),
+        "after": None if since is None else totals([i for i in shown if i["at"] >= since]),
+        "open_fees": str(sum(fees.values(), zero)),
+        "open_funding": str(sum(funding.values(), zero)),
+        "oldest": ordered[0][0].isoformat() if ordered else None,
+        "unreadable": unreadable,
     }

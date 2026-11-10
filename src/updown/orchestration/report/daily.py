@@ -17,6 +17,7 @@ from updown.common.domain.instrument import Market
 from updown.common.logging.setup import get_logger
 from updown.execution.gateway import OrderGatewayError, order_adapter
 from updown.marketdata.provider import MarketDataProvider
+from updown.orchestration import leg_engines
 from updown.orchestration.report import equity as equity_mod
 from updown.orchestration.report.mail import MailSettings, send_mail
 from updown.orchestration.report.performance import (
@@ -27,12 +28,13 @@ from updown.orchestration.report.performance import (
     render_funds,
     render_market_breakdown,
     render_text,
+    split_engine_rows,
     summarize_account_book,
     summarize_records,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -164,6 +166,7 @@ async def build_performance(
     exchange_rows: Sequence[dict[str, str]] | None = None,
     fetch_exchange: bool = True,
     market: str | None = None,
+    engine_symbols: Collection[str] | None = None,
 ) -> Performance:
     """원장 + 거래소를 나란히 모은다.
 
@@ -172,6 +175,8 @@ async def build_performance(
         window: 구간.
         exchange_rows: 이미 읽은 거래소 행들 (시험·미리보기용). None 이면 읽는다.
         fetch_exchange: 거짓이면 거래소를 안 읽는다.
+        engine_symbols: 엔진 다리 종목(원장 대조에서 뺄 몫). None 이면 지금 도는 엔진의 종목
+            (`leg_engines.RUNNING`) — 엔진이 멈춰 있으면 빼지 않는다.
         market: 거래소 범위. None 이면 전체 — 원장은 전 거래소, 거래소 쪽은 라이브
             거래소들의 원장을 **합쳐** 대조한다 (Gate 만 읽던 시절엔 바이낸스 매매가
             늘 "갈렸다"로 나올 운명이었다).
@@ -195,9 +200,25 @@ async def build_performance(
                     readable += 1
             rows = merged if readable else None
     exchange = summarize_account_book(rows, window) if rows is not None else None
-    diverged, note = compare(ledger, exchange)
+    # ⭐ T829 — 엔진 다리(판 없이 도는 다리)의 실현은 거래소에만 있고 원장에는 줄이 없다. 섞어서
+    #    부호를 맞대면 원장이 맞아도 "갈렸다" 가 뜬다 → 도는 엔진의 종목만 갈라 대조에서 뺀다.
+    #    금액 칸(`exchange`)은 전부 그대로다 — 빼는 것은 대조뿐이고 뺀 금액은 이유에 적힌다.
+    engine = None
+    symbols = (
+        {sym for (mkt, sym) in leg_engines.RUNNING if market is None or mkt == market}
+        if engine_symbols is None
+        else set(engine_symbols)
+    )
+    if rows is not None and symbols:
+        engine = summarize_account_book(split_engine_rows(rows, symbols)[1], window)
+    diverged, note = compare(ledger, exchange, engine)
     return Performance(
-        window=window, ledger=ledger, exchange=exchange, diverged=diverged, note=note
+        window=window,
+        ledger=ledger,
+        exchange=exchange,
+        diverged=diverged,
+        note=note,
+        engine=engine,
     )
 
 

@@ -43,7 +43,7 @@ from updown.orchestration.report.daily import (
 )
 from updown.orchestration.report.funds import load_fund_snapshots
 from updown.orchestration.report.html import AccountSummary
-from updown.orchestration.report.lite import brief_payload, lite_payload
+from updown.orchestration.report.lite import brief_payload, lite_payload, recent_payload
 from updown.orchestration.report.performance import (
     Performance,
     Window,
@@ -428,6 +428,38 @@ async def brief(hours: int = 168) -> dict[str, Any]:
     return made
 
 
+RECENT_TTL_S = 60.0
+"""최근 매매 목록 다시 만들기 간격(초) — 약식 리포트와 같은 값(관습값 · 잰 값이 아니다)."""
+RECENT_LIMIT = 50
+"""보여 줄 실현 주문 수 (사용자 2026-11-10 "최근 50건")."""
+_recent_cache: tuple[float, dict[str, Any]] | None = None
+
+
+@router.get("/recent")
+async def recent() -> dict[str, Any]:
+    """첫 화면 최근 매매 — 실현 주문 50 건의 손익 · 수수료 · 그 뒤 잔고 (T829).
+
+    Returns:
+        `recent_payload` 모양 + `at`. 장부를 못 읽으면 `rows` 는 None.
+
+    Note:
+        거래소 자금 원장을 한 번 읽는다(DB · 판 표는 안 읽는다). 화면은 패널을 열 때만 부르고
+        (폴링 없음) 여기서도 60 초에 한 벌만 읽는다. 못 읽은 결과는 캐시하지 않는다.
+    """
+    global _recent_cache
+    now = monotonic()
+    if _recent_cache is not None and now - _recent_cache[0] < RECENT_TTL_S:
+        return _recent_cache[1]
+    book = await _exchange_rows(limit=1000)
+    began = equity.load_account_start()
+    made = recent_payload(
+        book, limit=RECENT_LIMIT, since=None if began is None else began.at.astimezone(UTC)
+    ) | {"at": datetime.now(UTC).isoformat()}
+    if book is not None:
+        _recent_cache = (now, made)
+    return made
+
+
 @router.post("/account-start")
 async def set_account_start(
     request: Request, payload: Annotated[dict[str, Any], Body()]
@@ -448,8 +480,9 @@ async def set_account_start(
         옛 기록은 지우지 않고 화면 계산의 시작점만 옮긴다. 포지션이 열려 있으면 그 손익이
         어느 쪽인지 흐려지므로 평평할 때만 받는다.
     """
-    global _lite_cache
+    global _lite_cache, _recent_cache
     _brief_cache.clear()
+    _recent_cache = None
     from updown.apps.api.auth import Cap
     from updown.apps.api.exchange import (
         _all_live,  # pyright: ignore[reportPrivateUsage]
