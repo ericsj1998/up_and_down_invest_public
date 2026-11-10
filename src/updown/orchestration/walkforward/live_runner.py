@@ -1366,6 +1366,9 @@ class LiveRunner:
         """정해진 분에 돈 조기 판정 수 (T814 · E1 이 센다 · 선언 판에서 0 이면 배선이 죽었다)."""
         self._exit_backoff: dict[str, float] = {}
         """매매 → 청산 재시도를 미룰 monotonic 시각 (T815 C1 · 거부 뒤 `EXIT_RETRY_BACKOFF_S`)."""
+        self._share_tp_seen: set[str] = set()
+        """익절 지정가를 걸었거나 걸린 것을 본 몫 — "걸려 있다 사라짐" 과 "한 번도 안 걸림" 을
+        가른다 (T826 A1 · `_touch_wait_reason`). 기억만 한다 — 재기동 뒤 첫 점검이 다시 채운다."""
         """매매별 마지막 재레버 봉 순번 (0.8.0) — 같은 봉에 두 번 조정하지 않는다."""
         self._spec: dict[str, str] | None = None
         self._bars_at_step = 0
@@ -3752,20 +3755,24 @@ class LiveRunner:
                 ):
                     # 🔴 T826 A1 — 계약 수 모르는 몫이 열려 있으면 "남은 내 몫" 계산
                     #    (`거래소 - 다른 몫 합`)이 넘친다. 이 몫의 익절 지정가가 이미 체결됐는데
-                    #    조회가 늦으면 시장가가 **모르는 몫의 물량**을 판다. 익절 지정가는 거래소에
-                    #    그대로 걸려 있으니 쉰다(손절 놓침 · 신호 청산 · 패닉은 안 막는다 · #8-1).
-                    self._exit_backoff[now.trade_id] = time.monotonic() + EXIT_RETRY_BACKOFF_S
-                    self._log.warning(
-                        "live_target_touch_held",
-                        payload={
-                            "trade_id": held.trade_id,
-                            "target": str(held.planned_target),
-                            "last": str(last),
-                            "note": "계약 수 모르는 몫이 열려 있다 — 시장가로 빼지 않고 "
-                            "익절 지정가 체결을 기다린다(T826 A1)",
-                        },
-                    )
-                    return
+                    #    조회가 늦으면 시장가가 **모르는 몫의 물량**을 판다. 그래서 익절 지정가가
+                    #    걸려 있으면(또는 걸려 있다 사라졌으면) 쉬고, 한 번도 안 걸린 몫만 그 몫
+                    #    크기만큼 시장가로 뺀다(손절 놓침 · 신호 청산 · 패닉은 안 막는다 · #8-1).
+                    wait = await self._touch_wait_reason(now)
+                    if wait is not None:
+                        self._exit_backoff[now.trade_id] = time.monotonic() + EXIT_RETRY_BACKOFF_S
+                        self._log.warning(
+                            "live_target_touch_held",
+                            payload={
+                                "trade_id": held.trade_id,
+                                "target": str(held.planned_target),
+                                "last": str(last),
+                                "reason": wait,
+                                "note": "계약 수 모르는 몫이 열려 있다 — 시장가로 빼지 않고 "
+                                "익절 지정가 체결을 기다린다(T826 A1)",
+                            },
+                        )
+                        return
                 self._log.warning(
                     "live_target_not_filled",
                     payload={
@@ -3787,6 +3794,43 @@ class LiveRunner:
                 await self._persist()
             finally:
                 _notice_closes(self, before)
+
+    async def _touch_wait_reason(self, held: TradeRecord) -> str | None:
+        """계약 수 모르는 몫이 열려 있을 때, 목표에 닿은 이 몫의 시장가를 **쉴 까닭** (T826 A1).
+
+        Args:
+            held: 목표에 닿은 몫(대조를 거쳐 아직 열려 있다).
+
+        Returns:
+            쉴 까닭. 이 몫 크기만큼 시장가로 빼도 되면 None.
+
+        Note:
+            사용자 결정(2026-11-10): 익절 지정가가 걸려 있으면 쉬고(거래소가 체결한다), 안 걸려
+            있으면 **계약 수를 아는 이 몫만큼만** 시장가로 닫는다.
+
+            🔴 "걸려 있다 사라졌다" 는 "안 걸려 있다" 와 다르다. 익절 지정가가 방금 체결됐는데 체결
+            기록 조회가 늦으면 걸린 목록에도 기록에도 없다 — 그때 시장가를 내면 모르는 몫의 물량이
+            나간다(A1 결함이 되살아난다). 그래서 이 러너가 걸었거나 걸린 것을 본 몫은 쉰다: 체결이면
+            다음 대조가 이름으로 닫고, 누가 거둔 것이면 1 분 안에 `_ensure_share_target` 이 다시
+            건다(가격이 목표를 지났으면 그 지정가가 바로 체결된다). 다시 걸기가 실패하면 표식을
+            지우므로 다음 닿음에서 시장가가 나간다. 이 가름은 추론이다 — 체결 기록이 얼마나 늦는지는
+            재지 않았다.
+        """
+        if self._share_contracts(held) <= 0:
+            return "이 몫의 계약 수를 모른다"
+        if not isinstance(self._orders, OrdersAware):
+            return None
+        try:
+            rows = await self._orders.open_orders(self.instrument)
+        except Exception as exc:
+            self._log.warning("live_reconcile_unreadable", payload={"error": str(exc)[:140]})
+            return "걸린 주문을 못 읽었다"
+        if any(self._names_mine(str(row.get("text", "")), held, "tp") for row in rows):
+            self._share_tp_seen.add(held.trade_id)
+            return "익절 지정가가 걸려 있다"
+        if held.trade_id in self._share_tp_seen:
+            return "걸려 있던 익절 지정가가 사라졌다"
+        return None
 
     def _rehold_unfilled(
         self, shares: Sequence[TradeRecord], *, outcomes: tuple[Outcome, ...]
@@ -3876,6 +3920,7 @@ class LiveRunner:
         mine = [r for r in rows if self._names_mine(str(r.get("text", "")), held, "tp")]
         left = sum(abs(int(str(r.get("left") or 0))) for r in mine)
         if mine:
+            self._share_tp_seen.add(held.trade_id)
             if left == contracts or any(
                 abs(int(str(r.get("left") or 0))) != abs(int(str(r.get("size") or 0))) for r in mine
             ):
@@ -3896,7 +3941,9 @@ class LiveRunner:
                     "note": "목표 주문을 못 걸었다 — 1 분 뒤 다시 걸고 감시가 받친다",
                 },
             )
+            self._share_tp_seen.discard(held.trade_id)
             return
+        self._share_tp_seen.add(held.trade_id)
         self.orders += 1
         await self._note_order(
             held.trade_id,

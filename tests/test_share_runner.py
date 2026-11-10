@@ -165,6 +165,7 @@ class _Runner(LiveRunner):
         self._stop_id = ""
         self._share_stop_ids: dict[str, str] = {}
         self._share_misses: dict[str, int] = {}
+        self._share_tp_seen: set[str] = set()
         self.stop_misses = 0
         self.orders = 0
         self.failures = 0
@@ -520,6 +521,21 @@ def tp_fill(record: TradeRecord, *, size: int, left: int = 0, price: str = "104"
     }
 
 
+def _never_closed(*args: Any, **kwargs: Any) -> None:
+    del args, kwargs
+    raise AssertionError("쉬는 길에서는 목표 닿음 청산을 원장에 적지 않는다")
+
+
+def _touched_by(run: _Runner) -> Any:
+    """세션의 `close_touched` 흉내 — 원장에서 그 몫을 목표 익절로 닫는다."""
+
+    def touched(record: TradeRecord, *, at: datetime, price: Decimal) -> None:
+        del at, price
+        run._session.ledger.replace(closed(record, Outcome.TAKE_PROFIT))  # pyright: ignore[reportPrivateUsage]
+
+    return touched
+
+
 class TestUnknownShareDoesNotBlindTheReconcile:
     """T826 A1 — 계약 수 모르는 몫이 있으면 수량 산수 대신 **이름 있는 체결**로만 닫는다.
 
@@ -573,20 +589,92 @@ class TestUnknownShareDoesNotBlindTheReconcile:
         assert reconcile(run) is False
         assert now_of(run, a).outcome is Outcome.OPEN
 
-    def test_a_touched_target_is_left_to_the_resting_order(self) -> None:
-        """체결 조회가 늦는 사이 목표 닿음 감시가 시장가를 내면 B 의 물량이 나간다 — 쉰다."""
+    def test_a_vanished_target_order_is_not_chased_with_a_market_close(self) -> None:
+        """걸려 있던 익절 지정가가 사라졌다 — 체결됐는데 기록이 늦은 것일 수 있어 쉰다.
+
+        이때 시장가를 내면 B 의 물량이 나간다(A1 결함). 체결이면 다음 대조가 이름으로 닫고, 누가
+        거둔 것이면 1 분 안에 다시 걸린다.
+        """
         run, exch, a, b = a_known_b_unknown()
+        run._share_tp_seen.add(a.trade_id)  # pyright: ignore[reportPrivateUsage]
         exch.size = 2  # 익절 지정가는 체결됐는데 체결 이력에는 아직 안 보인다
-
-        def never(*args: Any, **kwargs: Any) -> None:
-            del args, kwargs
-            raise AssertionError("모르는 몫이 열려 있으면 목표 닿음 청산을 원장에 적지 않는다")
-
-        run._session.close_touched = never  # pyright: ignore[reportPrivateUsage]
+        run._session.close_touched = _never_closed  # pyright: ignore[reportPrivateUsage]
         asyncio.run(run._exit_touched(a, Decimal(101)))  # pyright: ignore[reportPrivateUsage]
         assert exch.closes == []
         assert {now_of(run, r).outcome for r in (a, b)} == {Outcome.OPEN}
         assert a.trade_id in run._exit_backoff, "틱마다 거래소를 다시 묻지 않는다"  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_resting_target_order_is_left_to_the_exchange(self) -> None:
+        """익절 지정가가 걸려 있으면 쉰다 — 거래소가 체결한다(사용자 결정 2026-11-10)."""
+        run, exch, a, b = a_known_b_unknown()
+        exch.open = [{"id": "tp-a", "text": tp_fill(a, size=2)["text"], "size": "-2", "left": "-2"}]
+        run._session.close_touched = _never_closed  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(run._exit_touched(a, Decimal(101)))  # pyright: ignore[reportPrivateUsage]
+        assert exch.closes == [] and exch.cancelled == []
+        assert {now_of(run, r).outcome for r in (a, b)} == {Outcome.OPEN}
+        assert a.trade_id in run._exit_backoff  # pyright: ignore[reportPrivateUsage]
+        assert a.trade_id in run._share_tp_seen, "본 것을 기억한다"  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_share_that_never_had_a_target_order_takes_its_own_size(self) -> None:
+        """익절 지정가가 한 번도 안 걸렸으면 아는 몫 크기만큼만 시장가로 뺀다."""
+        run, exch, a, b = a_known_b_unknown()
+        run._session.close_touched = _touched_by(run)  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(run._exit_touched(a, Decimal(101)))  # pyright: ignore[reportPrivateUsage]
+        assert exch.closes == [Decimal(2)], "🔴 A 의 2 계약만 — B 의 물량은 그대로"
+        assert exch.size == 2
+        assert now_of(run, a).outcome is Outcome.TAKE_PROFIT
+        assert now_of(run, b).outcome is Outcome.OPEN
+        assert key(a) not in exch.stops, "나간 몫의 손절은 거둔다"
+
+    def test_another_shares_target_order_does_not_count_as_mine(self) -> None:
+        """걸려 있는 것이 B 의 익절 지정가뿐이면 A 는 "안 걸려 있음" 이다."""
+        run, exch, a, b = a_known_b_unknown()
+        exch.open = [{"id": "tp-b", "text": tp_fill(b, size=2)["text"], "size": "-2", "left": "-2"}]
+        run._session.close_touched = _touched_by(run)  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(run._exit_touched(a, Decimal(101)))  # pyright: ignore[reportPrivateUsage]
+        assert exch.closes == [Decimal(2)] and exch.cancelled == []
+
+    def test_the_unknown_share_itself_is_never_market_closed(self) -> None:
+        """닿은 것이 계약 수 모르는 몫이면 크기를 정할 수 없다 — 쉰다(경보가 사람을 부른다)."""
+        run, exch, a, b = a_known_b_unknown()
+        run._session.close_touched = _never_closed  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(run._exit_touched(b, Decimal(101)))  # pyright: ignore[reportPrivateUsage]
+        assert exch.closes == []
+        assert {now_of(run, r).outcome for r in (a, b)} == {Outcome.OPEN}
+
+    def test_unreadable_open_orders_wait_instead_of_guessing(self) -> None:
+        """걸린 주문을 못 읽으면 "안 걸려 있음" 으로 읽지 않는다."""
+        run, exch, a, b = a_known_b_unknown()
+
+        async def broken(instrument: Instrument) -> list[dict[str, str]]:
+            del instrument
+            raise RuntimeError("timeout")
+
+        exch.open_orders = broken  # type: ignore[method-assign]
+        run._session.close_touched = _never_closed  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(run._exit_touched(a, Decimal(101)))  # pyright: ignore[reportPrivateUsage]
+        assert exch.closes == []
+        assert {now_of(run, r).outcome for r in (a, b)} == {Outcome.OPEN}
+
+    def test_placing_the_target_order_marks_it_seen(self) -> None:
+        run, exch, a, _b = a_known_b_unknown()
+
+        async def rest(order: Any) -> Any:
+            del order
+            exch.open.append({"id": "tp-a", "text": tp_fill(a, size=2)["text"]})
+            return SimpleNamespace(status=OrderStatus.SUBMITTED, broker_order_id="tp-a")
+
+        exch.submit_order = rest  # type: ignore[method-assign]
+        asyncio.run(run._ensure_share_target(a))  # pyright: ignore[reportPrivateUsage]
+        assert a.trade_id in run._share_tp_seen  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_failed_placement_clears_the_mark(self) -> None:
+        """다시 걸기가 실패하면 표식을 지운다 — 다음 닿음에서 그 몫만큼 시장가가 나간다."""
+        run, exch, a, _b = a_known_b_unknown()
+        run._share_tp_seen.add(a.trade_id)  # pyright: ignore[reportPrivateUsage]
+        exch.refuse = True
+        asyncio.run(run._ensure_share_target(a))  # pyright: ignore[reportPrivateUsage]
+        assert a.trade_id not in run._share_tp_seen  # pyright: ignore[reportPrivateUsage]
 
     def test_known_shares_still_take_the_market_close(self) -> None:
         """모르는 몫이 없으면 예전 길 그대로 — 닿았는데 안 닫혔으면 그 몫만 시장가로 뺀다."""
