@@ -2834,12 +2834,24 @@ class LiveRunner:
         owed = sum(self._share_contracts(item) for item in shares)
         if size:
             self._zero_seen_at = None
-        if size == owed and size > 0:
+        # 🔴 T826 A1 — 계약 수를 모르는(0) 몫이 섞이면 `size` 대 `owed` 산수가 뜻을 잃는다. 다른
+        #    몫의 익절 지정가가 체결돼 줄어든 크기가 "아는 몫 합" 과 우연히 같아져 일치로 읽혔다.
+        #    그때는 수량을 안 보고 **이름 있는 체결**이 있는 몫만 닫는다.
+        proven: dict[str, Decimal] = {}
+        if size > 0 and any(self._share_contracts(item) <= 0 for item in shares):
+            proven = await self._shares_closed_by_name(
+                [item for item in shares if self._share_contracts(item) > 0]
+            )
+            if not proven:
+                return False  # 증거 없음 — 경보(`panic_share_unknown` 등)는 그대로 둔다
+        elif size == owed and size > 0:
             self._share_mismatch = ""
             return False
-        if size > owed:
+        elif size > owed:
             return False  # 주인 없는 계약 — 감사(`share_size_mismatch`)가 연속으로 보면 막는다
-        if size == 0:
+        if proven:
+            gone = [item for item in shares if item.trade_id in proven]
+        elif size == 0:
             gone = shares
             # 🔴 T599 — 몫마다 이름 있는 청산 체결(발동한 손절 `ao-` · 우리 청산)이 없으면 0 이
             #    이어질 때까지 기다린다. 조회 지연에 진입 체결을 청산가로 잡은 사고(10-23 SUSHI).
@@ -2859,18 +2871,15 @@ class LiveRunner:
             #    모르면(재시작) 판 표식이 달라진 손절도 "살아 있다" 로 센다(꼬리 비교).
             alive_ids = {str(row.get("id", "")) for row in stops} - {""}
             alive = [str(row.get("text", "")) for row in stops]
-
-            def stop_gone(item: TradeRecord) -> bool:
-                tracked = self._share_stop_ids.get(item.trade_id, "")
-                if tracked:
-                    return tracked not in alive_ids
-                return not any(same_share(text, self._share_stop_key(item)) for text in alive)
-
             # T814 — 목표 지정가로 나간 몫은 손절이 남아 있다. 그 몫 이름의 체결로 가린다.
             target_done = {
                 item.trade_id for item in shares if await self._share_target_filled(item)
             }
-            gone = [item for item in shares if stop_gone(item) or item.trade_id in target_done]
+            gone = [
+                item
+                for item in shares
+                if self._share_stop_gone(item, alive_ids, alive) or item.trade_id in target_done
+            ]
             if not gone:
                 return False  # 조회 지연 — 손절은 다 걸려 있다
             dropped = owed - size
@@ -2889,11 +2898,16 @@ class LiveRunner:
                     },
                 )
                 return False
-        self._share_mismatch = ""
+        if not proven:
+            self._share_mismatch = ""  # 모르는 몫이 남아 있으면 합은 여전히 안 맞는다 — 안 지운다
         liquidated = size == 0 and await self._was_liquidated()
         closed_any = False
         for held in gone:
-            fill = await self._share_closing_fill(held, sole=len(gone) == 1 and len(shares) == 1)
+            fill = proven.get(held.trade_id)
+            if fill is None:
+                fill = await self._share_closing_fill(
+                    held, sole=len(gone) == 1 and len(shares) == 1
+                )
             if fill is None:
                 self._log.error(
                     "live_reconcile_no_fill",
@@ -2944,6 +2958,128 @@ class LiveRunner:
             await self._book_adds()
         return closed_any
 
+    def _share_stop_gone(self, item: TradeRecord, alive_ids: set[str], alive: list[str]) -> bool:
+        """이 몫의 조건부 손절이 거래소에 걸린 목록에서 사라졌나 (T328).
+
+        Args:
+            item: 몫 기록.
+            alive_ids: 걸려 있는 조건부 id 들.
+            alive: 걸려 있는 조건부 text 들.
+
+        Returns:
+            러너가 붙잡은 id 가 있으면 그 id 가 없을 때 True. id 를 모르면(재시작) 같은 몫 키의
+            text 가 없을 때 True.
+        """
+        tracked = self._share_stop_ids.get(item.trade_id, "")
+        if tracked:
+            return tracked not in alive_ids
+        return not any(same_share(text, self._share_stop_key(item)) for text in alive)
+
+    async def _fired_stop_owners(self, filled: Sequence[Mapping[str, str]]) -> dict[str, str]:
+        """발동한 조건부(`ao-{id}`) id → 그 손절의 주인 몫 id — 기억과 저장소(`stop_owners`)에서."""
+        fired = [str(row.get("text", ""))[3:] for row in filled]
+        fired = [item for item in fired if item]
+        owners = {stop_id: trade for trade, stop_id in self._share_stop_ids.items() if stop_id}
+        if self._store is not None:
+            with contextlib.suppress(Exception):
+                owners.update(await self._store.stop_owners(fired))
+        return owners
+
+    async def _shares_closed_by_name(self, known: Sequence[TradeRecord]) -> dict[str, Decimal]:
+        """계약 수 모르는 몫이 섞였을 때 **이름 있는 체결**이 있는 몫만 나간 것으로 본다 (T826 A1).
+
+        Args:
+            known: 계약 수를 아는 열린 몫들.
+
+        Returns:
+            나간 몫 id → 그 몫을 닫은 체결가. 증거가 없는 몫은 빠진다.
+
+        Note:
+            🔴 계약 수 0(모름)인 몫이 있으면 거래소 크기와 몫 합을 맞대는 산수가 뜻을 잃는다. 다른
+            몫의 익절 지정가가 체결돼 줄어든 크기가 우연히 "아는 몫 합" 과 같아져 일치로 읽혔고,
+            감시가 같은 몫을 시장가로 한 번 더 닫아 **모르는 몫의 물량**을 팔았다(T826 4 번 A1 ·
+            합성). 손절이 발동해도 같은 꼴이다 — 못 알아보고 그 손절을 남의 물량에 다시 건다.
+            그래서 이 길은 수량을 안 보고 증거 둘만 받는다:
+
+            - 이 몫 이름의 목표 지정가(`-tp-`)가 몫 크기만큼 체결됐다.
+            - 이 몫의 손절이 걸린 목록에서 사라졌고, 발동한 그 손절(`ao-{조건부 id}` · 주인이 이
+              몫)의 체결이 있다.
+
+            ⛔ 반익 · 옛 청산처럼 매매 id 만 든 체결로는 닫지 않는다 — 원장만 닫고 그 몫의 손절을
+            거두는 쪽이 더 위험하다(규칙 #4 · #8). 조회가 실패하면 아무것도 닫지 않는다.
+        """
+        if not known or not hasattr(self._orders, "recent_orders"):
+            return {}
+        try:
+            rows = cast(
+                "list[dict[str, str]]",
+                await self._orders.recent_orders(self.instrument),  # type: ignore[attr-defined]
+            )
+        except Exception as exc:
+            self._log.warning("live_reconcile_unreadable", payload={"error": str(exc)[:140]})
+            return {}
+        filled = [row for row in rows if row.get("fill_price")]
+        alive_ids: set[str] | None = None
+        alive: list[str] = []
+        if isinstance(self._orders, StopAware):
+            try:
+                stops = await self._orders.open_stops(self.instrument)
+            except Exception as exc:
+                self._log.warning("live_reconcile_unreadable", payload={"error": str(exc)[:140]})
+            else:
+                alive_ids = {str(row.get("id", "")) for row in stops} - {""}
+                alive = [str(row.get("text", "")) for row in stops]
+        owners = await self._fired_stop_owners(filled)
+        out: dict[str, Decimal] = {}
+        for held in known:
+            price = self._share_target_fill(held, filled)
+            if (
+                price is None
+                and alive_ids is not None
+                and self._share_stop_gone(held, alive_ids, alive)
+            ):
+                for row in filled:
+                    text = str(row.get("text", ""))
+                    if (
+                        closes_side(row, held.direction)
+                        and text.startswith("ao-")
+                        and owners.get(text[3:]) == held.trade_id
+                    ):
+                        with contextlib.suppress(Exception):
+                            price = Decimal(str(row["fill_price"]))
+                        break
+            if price is not None:
+                out[held.trade_id] = price
+        return out
+
+    def _share_target_fill(
+        self, held: TradeRecord, filled: Sequence[Mapping[str, str]]
+    ) -> Decimal | None:
+        """이 몫의 목표 지정가가 몫 크기만큼 체결됐으면 그 체결가 (T814 · T826 A1).
+
+        Args:
+            held: 몫 기록.
+            filled: 체결가가 있는 `recent_orders` 줄들(최근 순).
+
+        Returns:
+            가장 최근 목표 체결 줄의 체결가. 체결 합이 몫 크기에 못 미치면 None.
+        """
+        mine = [
+            row
+            for row in filled
+            if self._names_mine(str(row.get("text", "")), held, "tp")
+            and closes_side(row, held.direction)
+        ]
+        done = sum(
+            abs(int(str(row.get("size") or 0))) - abs(int(str(row.get("left") or 0)))
+            for row in mine
+        )
+        if not mine or done <= 0 or done < self._share_contracts(held):
+            return None
+        with contextlib.suppress(Exception):
+            return Decimal(str(mine[0]["fill_price"]))
+        return None
+
     async def _share_closing_fill(self, held: TradeRecord, *, sole: bool) -> Decimal | None:
         """그 **몫**을 닫은 체결가 — 몫 모드(T320 P4)의 `_closing_fill`.
 
@@ -2974,12 +3110,7 @@ class LiveRunner:
             )
             return None
         filled = [row for row in rows if row.get("fill_price")]
-        fired = [str(row.get("text", ""))[3:] for row in filled]
-        fired = [item for item in fired if item]
-        owners = {stop_id: trade for trade, stop_id in self._share_stop_ids.items() if stop_id}
-        if self._store is not None:
-            with contextlib.suppress(Exception):
-                owners.update(await self._store.stop_owners(fired))
+        owners = await self._fired_stop_owners(filled)
         for row in filled:
             text = str(row.get("text", ""))
             if not closes_side(row, held.direction):
@@ -3613,6 +3744,27 @@ class LiveRunner:
             try:
                 now = await self._still_open(held)
                 if now is None:
+                    return
+                if self._shared and any(
+                    self._share_contracts(item) <= 0
+                    for item in self._session.ledger.records
+                    if item.outcome is Outcome.OPEN
+                ):
+                    # 🔴 T826 A1 — 계약 수 모르는 몫이 열려 있으면 "남은 내 몫" 계산
+                    #    (`거래소 - 다른 몫 합`)이 넘친다. 이 몫의 익절 지정가가 이미 체결됐는데
+                    #    조회가 늦으면 시장가가 **모르는 몫의 물량**을 판다. 익절 지정가는 거래소에
+                    #    그대로 걸려 있으니 쉰다(손절 놓침 · 신호 청산 · 패닉은 안 막는다 · #8-1).
+                    self._exit_backoff[now.trade_id] = time.monotonic() + EXIT_RETRY_BACKOFF_S
+                    self._log.warning(
+                        "live_target_touch_held",
+                        payload={
+                            "trade_id": held.trade_id,
+                            "target": str(held.planned_target),
+                            "last": str(last),
+                            "note": "계약 수 모르는 몫이 열려 있다 — 시장가로 빼지 않고 "
+                            "익절 지정가 체결을 기다린다(T826 A1)",
+                        },
+                    )
                     return
                 self._log.warning(
                     "live_target_not_filled",

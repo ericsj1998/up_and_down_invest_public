@@ -491,6 +491,119 @@ class TestReconcileFindsTheShare:
         assert now_of(run, b).outcome is Outcome.OPEN
 
 
+def a_known_b_unknown() -> tuple[_Runner, ShareExchange, TradeRecord, TradeRecord]:
+    """A 는 2 계약 · B 는 계약 수 모름(0). 거래소는 B 의 진짜 2 계약까지 4 를 들고 있다.
+
+    A 가 나가면 거래소 2 = "아는 몫 합" 2 — 산수로는 아무 일도 없던 것처럼 보이는 꼴이다(T826 A1).
+    """
+    led = Ledger()
+    a = share("aaaaaaaa1111", stop="95", contracts=2, playbook="breakout@0.1.0")
+    b = share("bbbbbbbb2222", stop="90", contracts=0, playbook="channel@0.1.0")
+    led.add(a)
+    led.add(b)
+    exch = ShareExchange(size=4)
+    run = _Runner(exch, led)
+    run._stepping = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
+    run._exit_backoff = {}  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    return run, exch, a, b
+
+
+def tp_fill(record: TradeRecord, *, size: int, left: int = 0, price: str = "104") -> dict[str, str]:
+    """그 몫 이름의 목표 지정가 체결 줄(롱을 닫는 매도 = 음수 크기)."""
+    return {
+        "text": gate_text(f"{order_root(record.trade_id, RUN)}:tp:1"),
+        "fill_price": price,
+        "size": str(-size),
+        "left": str(-left),
+        "finish_as": "filled",
+    }
+
+
+class TestUnknownShareDoesNotBlindTheReconcile:
+    """T826 A1 — 계약 수 모르는 몫이 있으면 수량 산수 대신 **이름 있는 체결**로만 닫는다.
+
+    합성 재현에서 나온 결함: 다른 몫의 익절 지정가가 체결돼 거래소 크기가 "아는 몫 합" 과
+    같아지자 대조가 일치로 읽었고, 목표 닿음 감시가 같은 몫을 시장가로 한 번 더 닫아 모르는 몫의
+    물량을 팔았다.
+    """
+
+    def test_a_named_target_fill_closes_that_share(self) -> None:
+        run, exch, a, b = a_known_b_unknown()
+        exch.size = 2  # A 의 익절 지정가 2 계약이 체결됐다 — 남은 2 는 B 것
+        exch.history.insert(0, tp_fill(a, size=2))
+        assert reconcile(run) is True
+        assert now_of(run, a).outcome is Outcome.TAKE_PROFIT
+        assert now_of(run, a).exit_price == Decimal(104)
+        assert now_of(run, b).outcome is Outcome.OPEN
+        assert exch.closes == [], "🔴 시장가로 한 번 더 닫으면 B 의 물량이 나간다"
+        assert key(a) not in exch.stops, "나간 몫의 손절은 거둔다 — 남으면 B 의 계약을 닫는다"
+
+    def test_a_fired_stop_closes_that_share(self) -> None:
+        run, exch, a, b = a_known_b_unknown()
+        exch.fire(key(a), 2, "94.9")
+        assert exch.size == 2
+        assert reconcile(run) is True
+        assert now_of(run, a).outcome is Outcome.STOP_LOSS
+        assert now_of(run, a).exit_price == Decimal("94.9")
+        assert now_of(run, b).outcome is Outcome.OPEN
+        asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+        assert key(a) not in exch.stops, "🔴 A 손절을 다시 걸면 B 의 계약을 A 손절가에서 닫는다"
+
+    def test_a_matching_size_without_a_named_fill_closes_nothing(self) -> None:
+        run, exch, a, b = a_known_b_unknown()
+        run._share_mismatch = "앞서 남긴 어긋남"  # pyright: ignore[reportPrivateUsage]
+        exch.size = 2
+        assert reconcile(run) is False
+        assert {now_of(run, r).outcome for r in (a, b)} == {Outcome.OPEN}
+        assert run._share_mismatch == "앞서 남긴 어긋남"  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_partial_target_fill_is_not_enough(self) -> None:
+        run, exch, a, _b = a_known_b_unknown()
+        exch.size = 3
+        exch.history.insert(0, tp_fill(a, size=2, left=1))
+        assert reconcile(run) is False
+        assert now_of(run, a).outcome is Outcome.OPEN
+
+    def test_a_vanished_stop_without_its_fill_is_not_enough(self) -> None:
+        """손절이 사라졌어도(사람이 거둠 · 만료) 그 손절의 체결이 없으면 닫지 않는다."""
+        run, exch, a, _b = a_known_b_unknown()
+        exch.fire(key(a), 2, "94.9")
+        exch.history = [{"text": "ao-999", "fill_price": "94.9", "finish_as": "filled"}]
+        assert reconcile(run) is False
+        assert now_of(run, a).outcome is Outcome.OPEN
+
+    def test_a_touched_target_is_left_to_the_resting_order(self) -> None:
+        """체결 조회가 늦는 사이 목표 닿음 감시가 시장가를 내면 B 의 물량이 나간다 — 쉰다."""
+        run, exch, a, b = a_known_b_unknown()
+        exch.size = 2  # 익절 지정가는 체결됐는데 체결 이력에는 아직 안 보인다
+
+        def never(*args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            raise AssertionError("모르는 몫이 열려 있으면 목표 닿음 청산을 원장에 적지 않는다")
+
+        run._session.close_touched = never  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(run._exit_touched(a, Decimal(101)))  # pyright: ignore[reportPrivateUsage]
+        assert exch.closes == []
+        assert {now_of(run, r).outcome for r in (a, b)} == {Outcome.OPEN}
+        assert a.trade_id in run._exit_backoff, "틱마다 거래소를 다시 묻지 않는다"  # pyright: ignore[reportPrivateUsage]
+
+    def test_known_shares_still_take_the_market_close(self) -> None:
+        """모르는 몫이 없으면 예전 길 그대로 — 닿았는데 안 닫혔으면 그 몫만 시장가로 뺀다."""
+        run, exch, a, b = armed()
+        run._stepping = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
+        run._exit_backoff = {}  # pyright: ignore[reportPrivateUsage]
+
+        def touched(record: TradeRecord, *, at: datetime, price: Decimal) -> None:
+            del at, price
+            run._session.ledger.replace(closed(record, Outcome.TAKE_PROFIT))  # pyright: ignore[reportPrivateUsage]
+
+        run._session.close_touched = touched  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(run._exit_touched(a, Decimal(101)))  # pyright: ignore[reportPrivateUsage]
+        assert exch.closes == [Decimal(2)] and exch.size == 3
+        assert now_of(run, b).outcome is Outcome.OPEN
+
+
 class TestRestartKeepsTheShares:
     def test_guarding_again_recovers_the_stop_ids(self) -> None:
         """재시작으로 id 기억이 비어도 다시 점검하면 거래소 목록에서 text 로 되찾는다."""
