@@ -356,7 +356,7 @@ async def lite(request: Request) -> dict[str, Any]:
         _orders_adapter,  # pyright: ignore[reportPrivateUsage]
         _tracked,  # pyright: ignore[reportPrivateUsage]
     )
-    from updown.apps.api.rebalancer import engine_shares
+    from updown.apps.api.rebalancer import engine_notes, engine_shares
     from updown.apps.api.walkforward import (
         LIVE_RUNNERS,
         SESSIONS,
@@ -394,6 +394,7 @@ async def lite(request: Request) -> dict[str, Any]:
         shares_of=live_shares() | engine_shares(),
         stops=stops,
         halted=await entries_halted(),
+        engine_of=engine_notes(),
     )
     _lite_cache = (now, made)
     return made

@@ -2104,6 +2104,8 @@ def engine_row(status: Mapping[str, Any], weight: str, name: str, leg: str) -> d
                 "opened_at": u.get("opened"),
                 "unrealized": None,
                 "margin": None,
+                "exit": u.get("exit"),
+                "exit_how": str(u.get("exit_how") or ""),
             }
             for u in units
         ]
@@ -2144,8 +2146,9 @@ def engine_shares() -> dict[str, list[dict[str, Any]]]:
     """엔진 다리의 보유 몫 — 첫 화면이 세션 판과 같은 꼴로 적는다 (사용자 2026-11-07).
 
     Returns:
-        `{종목: [{name, stop, opened_at}]}`. 체결을 엔진이 아직 안 잡았으면 몫이 비어도 이름은
-        있어야 하므로 손절 빈 줄 하나를 낸다 — 거래소 포지션의 다리 이름이 사라지지 않게.
+        `{종목: [{name, stop, opened_at, exit, exit_how}]}`. 체결을 엔진이 아직 안 잡았으면 몫이
+        비어도 이름은 있어야 하므로 손절 빈 줄 하나를 낸다 — 거래소 포지션의 다리 이름이 사라지지
+        않게. `exit` · `exit_how` 는 그 몫이 팔리는 자리와 방식(엔진 요약 그대로 · T822).
         메모리만 읽는다.
     """
     out: dict[str, list[dict[str, Any]]] = {}
@@ -2157,11 +2160,42 @@ def engine_shares() -> dict[str, list[dict[str, Any]]]:
                     "name": f"{name} {u.get('name')}".strip(),
                     "stop": str(u.get("stop") or ""),
                     "opened_at": u.get("opened"),
+                    "exit": u.get("exit"),
+                    "exit_how": str(u.get("exit_how") or ""),
                 }
                 for u in _held_units(engine.status())
             ]
             out[sym] = rows or [{"name": name, "stop": "", "opened_at": None}]
     return out
+
+
+def engine_note(status: Mapping[str, Any]) -> dict[str, Any]:
+    """엔진 요약 → 첫 화면 한 줄 요약(순수 · T822).
+
+    Args:
+        status: 엔진 `status()`.
+
+    Returns:
+        `{step_units, max_units, next_step, next_close}`. 걸린 지정가가 없거나 다 찼으면
+        `next_step` 은 None 이다. 요약에 없는 칸은 None.
+    """
+    buy = cast("dict[str, Any]", status.get("buy") or {})
+    pending = bool(buy) and int(buy.get("filled") or 0) < int(buy.get("contracts") or 0)
+    return {
+        "step_units": status.get("step_units"),
+        "max_units": status.get("max_units"),
+        "next_step": str(buy.get("level")) if pending else None,
+        "next_close": status.get("next_close"),
+    }
+
+
+def engine_notes() -> dict[str, dict[str, Any]]:
+    """엔진 다리마다 한 줄 요약 — 첫 화면 포지션 줄이 쓴다. 메모리만 읽는다 (T822)."""
+    return {
+        sym: engine_note(engine.status())
+        for fund in FUNDS.values()
+        for sym, engine in fund.engines.items()
+    }
 
 
 async def _per_symbol(fund: Fund, sym: str) -> dict[str, Any]:

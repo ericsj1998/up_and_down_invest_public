@@ -271,9 +271,18 @@ export type LitePosition = {
   unrealized: string;
   pct: string | null;
   /** 어느 다리로 들어갔나 · 손절 — 몫마다 한 줄. `stop` 빈 값 = 모른다. */
-  shares: { name: string; stop: string; opened_at: string | null }[];
+  shares: {
+    name: string;
+    stop: string;
+    opened_at: string | null;
+    /** 엔진 다리 몫이 팔리는 자리 · 방식 — 판 몫에는 없다. */
+    exit?: string | null;
+    exit_how?: string;
+  }[];
   /** 거래소에 걸린 조건부 수 — 못 읽으면 null. */
   exchange_stops: number | null;
+  /** 엔진 다리(판 없는 다리)면 그 한 줄 요약. */
+  engine?: EngineNote;
 };
 
 export function liteHome(): Promise<LiteHomeData> {
@@ -1889,6 +1898,10 @@ export type FundEngineStatus = {
     ghost: boolean;
     stop: string | null;
     opened: string;
+    /** 이 몫이 팔리는 자리 — 모르면 null(다음 마감 뒤 정해진다). */
+    exit?: string | null;
+    /** 파는 방식 — `limit` 걸린 지정가 · `close_below` 종가가 이 아래면 · `close_above` 종가가 이 위면. */
+    exit_how?: string;
   }[];
   buy: {
     slot: number;
@@ -1919,6 +1932,22 @@ export type FundEngineStatus = {
   fees: string;
   findings: string[];
   unrealized: string;
+  /** 거래소 포지션의 증거금 · 표시가 — 포지션이 없으면 빈 값. */
+  margin?: string;
+  mark?: string;
+  /** 계단 몫 상한과 지금 든 계단 몫 수(가상 포함). */
+  max_units?: number;
+  step_units?: number;
+  /** 다음 일봉 마감(ISO · UTC) — 달력을 못 읽으면 null. */
+  next_close?: string | null;
+};
+
+/** 엔진 다리 한 줄 요약 — 첫 화면 포지션 줄이 쓴다. */
+export type EngineNote = {
+  step_units?: number;
+  max_units?: number;
+  next_step?: string | null;
+  next_close?: string | null;
 };
 
 export type FundLeg = {
@@ -1981,6 +2010,9 @@ export type FundShare = {
   unrealized?: string | null;
   /** 몫 증거금(USDT) — 포지션 증거금을 진입 명목 비로 나눈 값. 몫 % 의 분모. */
   margin?: string | null;
+  /** 엔진 다리 몫이 팔리는 자리 · 방식(`FundEngineStatus.units` 와 같은 뜻). */
+  exit?: string | null;
+  exit_how?: string;
 };
 
 export type FundPreview = {

@@ -3,8 +3,9 @@
  *
  * 목록 · 히트맵은 코인 판과 같은 `per_symbol` 줄을 쓰지만, RUN 상세 화면은 세션 하나에 묶여 있어 엔진을 못 연다.
  * 그래서 값은 서버가 준 `engine` 요약을 그대로 쓰고, 차트는 종목 차트와 같은 `analysisFrame` · `Chart` 를 재사용한다.
- * 차트는 펼칠 때 한 번만 받는다(화면 폴링을 늘리지 않는다).
+ * 차트는 펼칠 때 · 시간축을 바꿀 때 한 번씩만 받는다(화면 폴링을 늘리지 않는다).
  *
+ * 엔진은 일봉 마감으로 판정한다 — 1시간 · 4시간 봉은 보기용이다(T822).
  * 가상 몫 = 펀드 시작 전 신호나 증거금 양보로 실제 주문 없이 계산만 잇는 몫 — 돈이 들어가 있지 않다.
  */
 import { useEffect, useState } from "react";
@@ -12,9 +13,31 @@ import {
   type AnalysisFrame,
   analysisFrame,
   type FundEngineStatus,
+  type MemberFrame,
 } from "./api";
 import { Chart } from "./Chart";
+import { fmtPrice } from "./chart/trades";
+import {
+  engineFacts,
+  engineLines,
+  exitText,
+  untilText,
+} from "./engineFacts";
 import { engineMarks } from "./engineMarks";
+
+const FRAMES: { tf: MemberFrame; label: string }[] = [
+  { tf: "1h", label: "1시간" },
+  { tf: "4h", label: "4시간" },
+  { tf: "1d", label: "일봉" },
+];
+
+function signedPct(value: number | null): string {
+  return value === null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function pctTone(value: number | null): string {
+  return value === null || value === 0 ? "" : value > 0 ? "gain" : "loss";
+}
 
 function num(value: string | number | null | undefined): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -47,6 +70,7 @@ export function EngineLegPanel({
   onClose: () => void;
   closeLabel?: string;
 }) {
+  const [tf, setTf] = useState<MemberFrame>("1d");
   const [frame, setFrame] = useState<AnalysisFrame | null>(null);
   const [error, setError] = useState("");
 
@@ -56,11 +80,13 @@ export function EngineLegPanel({
       return;
     }
     let alive = true;
+    setFrame(null);
+    setError("");
     analysisFrame({
       symbol,
       market,
       flags: ["trend.structure"],
-      timeframe: "1d",
+      timeframe: tf,
     })
       .then((got) => {
         if (alive) setFrame(got);
@@ -71,11 +97,14 @@ export function EngineLegPanel({
     return () => {
       alive = false;
     };
-  }, [symbol, market]);
+  }, [symbol, market, tf]);
 
   const marks = frame ? engineMarks(status, symbol, name, frame.candles) : [];
   const real = status.units.filter((u) => !u.ghost);
   const ghosts = status.units.filter((u) => u.ghost);
+  const lastBar = frame?.candles[frame.candles.length - 1];
+  const facts = engineFacts(status, lastBar ? Number(lastBar.close) : null);
+  const lines = engineLines(status);
   return (
     <div
       className="member-card"
@@ -108,6 +137,39 @@ export function EngineLegPanel({
           미실현 <b>{fixed(status.unrealized)}</b> USDT
         </span>
         <span className="faint">마지막 처리 {status.last_day ?? "—"}</span>
+      </div>
+      {/* T822 — 지금 상태 한 줄: 평균 진입 · 증거금 대비 · 계단 몫 · 다음 계단 · 다음 마감 */}
+      <div
+        className="row text-sm"
+        data-testid="engine-facts"
+        style={{ gap: 12, marginTop: 4, flexWrap: "wrap" }}
+      >
+        <span>
+          평균 진입{" "}
+          <b>{facts.avgEntry === null ? "—" : fmtPrice(facts.avgEntry)}</b> 대비{" "}
+          <b className={pctTone(facts.vsEntryPct)}>
+            {signedPct(facts.vsEntryPct)}
+          </b>
+        </span>
+        <span>
+          증거금 대비{" "}
+          <b className={pctTone(facts.vsMarginPct)}>
+            {signedPct(facts.vsMarginPct)}
+          </b>
+        </span>
+        <span>
+          계단 몫{" "}
+          <b>
+            {facts.stepUnits ?? "—"}/{facts.maxUnits ?? "—"}
+          </b>
+        </span>
+        <span>
+          다음 계단{" "}
+          <b>{facts.nextStep === null ? "없음" : fmtPrice(facts.nextStep)}</b>
+        </span>
+        <span>
+          다음 마감까지 <b>{untilText(facts.nextCloseMs, Date.now())}</b>
+        </span>
       </div>
       {status.buy ? (
         <div className="text-sm" style={{ marginTop: 4 }}>
@@ -147,6 +209,7 @@ export function EngineLegPanel({
                 <th>진입가</th>
                 <th>계약</th>
                 <th>손절</th>
+                <th>청산 자리</th>
                 <th>진입일</th>
               </tr>
             </thead>
@@ -161,6 +224,7 @@ export function EngineLegPanel({
                   <td>{fixed(status.buy.fill)}</td>
                   <td>{status.buy.filled}</td>
                   <td>{fixed(status.buy.stop)}</td>
+                  <td>다음 마감 뒤 표시</td>
                   <td>{status.buy.filled_at?.slice(0, 10) ?? "—"}</td>
                 </tr>
               ) : null}
@@ -172,6 +236,7 @@ export function EngineLegPanel({
                   <td>{fixed(u.fill)}</td>
                   <td>{u.contracts}</td>
                   <td>{fixed(u.stop)}</td>
+                  <td>{exitText(u.exit, u.exit_how, fmtPrice) || "—"}</td>
                   <td>{u.opened.slice(0, 10)}</td>
                 </tr>
               ))}
@@ -180,11 +245,27 @@ export function EngineLegPanel({
         </div>
       ) : null}
       <div style={{ marginTop: 8 }}>
+        <div className="row text-sm" style={{ gap: 6, marginBottom: 4 }}>
+          {FRAMES.map((one) => (
+            <button
+              key={one.tf}
+              type="button"
+              className={`btn small${tf === one.tf ? " picked" : ""}`}
+              aria-pressed={tf === one.tf}
+              onClick={() => setTf(one.tf)}
+            >
+              {one.label}
+            </button>
+          ))}
+          <span className="faint">
+            판정은 일봉 마감 — 1시간 · 4시간은 보기용
+          </span>
+        </div>
         {error ? (
           <p className="notice bad">차트를 못 읽었다 — {error}</p>
         ) : null}
         {frame ? (
-          <Chart frame={frame} trades={marks} />
+          <Chart frame={frame} trades={marks} lines={lines} />
         ) : error ? null : (
           <p className="faint">차트 불러오는 중…</p>
         )}

@@ -18,6 +18,7 @@ import {
   liteHome,
 } from "./api";
 import { fmtPrice } from "./chart/trades";
+import { exitText, noteText } from "./engineFacts";
 import { heldText, legNames, liteFacts } from "./liteFacts";
 import { useOpenRuns } from "./shell/openRuns";
 
@@ -271,7 +272,13 @@ function PositionRow({ p, nowMs }: { p: LitePosition; nowMs: number }) {
         facts.stopPnl === null ? "—" : `${money(facts.stopPnl, true)} USDT`,
       className: tone(facts.stopPnl),
     });
+    // T822 — 몫이 하나여도 서버가 청산 자리를 줬으면 손절 옆에 적는다.
+    const only = p.shares[0];
+    const exit = only ? exitText(only.exit, only.exit_how, fmtPrice) : "";
+    if (exit) cells.push({ label: "청산 자리", value: exit });
   }
+  // T822 — 엔진 다리 한 줄 요약(계단 몫 · 다음 계단 · 다음 마감). 상세 화면과 같은 값이다.
+  const note = p.engine ? noteText(p.engine, nowMs, fmtPrice) : "";
   cells.push({ label: "계약", value: p.contracts });
   if (held) cells.push({ label: "보유", value: held });
   return (
@@ -345,13 +352,25 @@ function PositionRow({ p, nowMs }: { p: LitePosition; nowMs: number }) {
       </dl>
       {p.shares.length > 1 ? (
         <ul className="mt-1.5 text-xs text-blue-gray-500 dark:text-blue-gray-300">
-          {p.shares.map((share, index) => (
-            <li key={`${share.name}:${index}`}>
-              {share.name} · 손절{" "}
-              <span className="font-mono">{price(share.stop)}</span>
-            </li>
-          ))}
+          {p.shares.map((share, index) => {
+            const exit = exitText(share.exit, share.exit_how, fmtPrice);
+            return (
+              <li key={`${share.name}:${index}`}>
+                {share.name} · 손절{" "}
+                <span className="font-mono">{price(share.stop)}</span>
+                {exit ? ` · ${exit}` : ""}
+              </li>
+            );
+          })}
         </ul>
+      ) : null}
+      {note ? (
+        <p
+          className="mt-1.5 text-xs text-blue-gray-500 dark:text-blue-gray-300"
+          data-testid="lite-engine-note"
+        >
+          {note}
+        </p>
       ) : null}
       {facts.stopWarning ? (
         <p role="alert" className="mt-1.5 text-xs font-medium text-loss">

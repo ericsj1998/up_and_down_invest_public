@@ -19,6 +19,8 @@ import { Link } from "react-router-dom";
 import { fundMembers, type FundMember, type FundPreview, type MemberFrame } from "./api";
 import { DEFAULT_SETTINGS } from "./chart/indicators";
 import { PriceChart } from "./chart/PriceChart";
+import { fmtPrice } from "./chart/trades";
+import { engineFacts, exitText, noteOf, noteText } from "./engineFacts";
 import {
   cardTone,
   changeText,
@@ -56,6 +58,27 @@ function signed(v?: string | null): string {
   return `${n > 0 ? "+" : ""}${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
 
+function signedPct(v: number | null): string {
+  return v === null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
+}
+
+/**
+ * 엔진 다리 한 줄 — 상세 화면 · 첫 화면과 같은 값(T822). 판이 없는 다리라 카드에 이 줄이 없으면
+ * 다음 계단 · 다음 마감을 상세를 열어야만 안다.
+ */
+function engineLine(m: FundMember): string {
+  if (!m.engine) return "";
+  const last = Number(m.last);
+  const facts = engineFacts(m.engine, Number.isFinite(last) && last > 0 ? last : null);
+  const parts: string[] = [];
+  if (facts.avgEntry !== null)
+    parts.push(`평균 진입 ${fmtPrice(facts.avgEntry)} 대비 ${signedPct(facts.vsEntryPct)}`);
+  if (facts.vsMarginPct !== null) parts.push(`증거금 대비 ${signedPct(facts.vsMarginPct)}`);
+  const note = noteText(noteOf(m.engine), Date.now(), fmtPrice);
+  if (note) parts.push(note);
+  return parts.join(" · ");
+}
+
 function MemberCard({
   m,
   step,
@@ -76,6 +99,10 @@ function MemberCard({
   const marks = memberMarks(m);
   const pct = unrealizedPct(m.unrealized, m.equity);
   const shares = m.shares && m.shares.length > 1 ? m.shares : null;
+  // T822 — 엔진 다리 요약 한 줄 · 몫이 하나일 때의 청산 자리(여럿이면 몫 줄마다 적는다).
+  const engineText = engineLine(m);
+  const only = !shares ? m.shares?.[0] : undefined;
+  const onlyExit = only ? exitText(only.exit, only.exit_how, fmtPrice) : "";
   // 🔴 **목표가 익절선이 아닐 수 있다** (사용자 지적 2026-09-21). 추세추종은 고정 익절이 없고
   //    `target` 은 진입+100R 자리표시자다 — 그것을 '목표' 로 적으면 화면이 거짓말한다.
   const showTarget = m.position !== undefined && m.position.full_ride !== true;
@@ -130,6 +157,7 @@ function MemberCard({
         <div className="text-sm" style={{ marginBottom: 2 }}>
           {shares.map((s) => {
             const sp = unrealizedPct(s.unrealized, m.equity);
+            const exit = exitText(s.exit, s.exit_how, fmtPrice);
             return (
               <div key={s.leg} className="share-line">
                 <span className="faint">└</span> <b>{s.name}</b>{" "}
@@ -144,6 +172,7 @@ function MemberCard({
                 <span className="faint">
                   {" · 손절 "}
                   {money(s.stop)} · {s.contracts}계약
+                  {exit ? ` · ${exit}` : ""}
                 </span>
               </div>
             );
@@ -162,8 +191,14 @@ function MemberCard({
             {showTarget ? ` · 목표 ${money(m.position.target)}` : " · 익절선 없음(추세 추종)"}
           </>
         ) : null}
+        {onlyExit ? ` · ${onlyExit}` : ""}
         {m.reconciled === false || m.accounting_ok === false ? " · ⚠︎ 거래소와 갈림" : ""}
       </div>
+      {engineText ? (
+        <div className="text-sm faint" data-testid="member-engine-line" style={{ marginBottom: 6 }}>
+          {engineText}
+        </div>
+      ) : null}
 
       {bars.length > 1 ? (
         <PriceChart

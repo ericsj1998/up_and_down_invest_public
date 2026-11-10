@@ -99,4 +99,65 @@ describe("EngineLegPanel", () => {
   it("차트 칸은 받기 전 안내를 보인다", () => {
     expect(html).toContain("차트 불러오는 중");
   });
+
+  it("시간축 단추 셋 중 일봉이 먼저 골라져 있다", () => {
+    expect(html.match(/aria-pressed="true"/g)).toHaveLength(1);
+    expect(html).toMatch(/aria-pressed="true"[^>]*>일봉</);
+    expect(html).toContain("1시간");
+    expect(html).toContain("4시간");
+  });
+
+  it("청산 자리 칸 · 상태 한 줄은 서버가 준 값만 적고 모르면 대시다", () => {
+    expect(html).toContain("청산 자리");
+    expect(html).toContain('data-testid="engine-facts"');
+    expect(html).toContain("다음 계단");
+    expect(html).toContain("없음");
+  });
+
+  it("몫마다 파는 방식과 자리를 적는다", () => {
+    const held = renderToStaticMarkup(
+      <EngineLegPanel
+        symbol="NAS100_USDT"
+        market="GATE"
+        name="나스닥"
+        status={{
+          ...ENGINE,
+          units: [
+            {
+              key: "u2",
+              kind: "k",
+              contracts: 3,
+              fill: "100",
+              ghost: false,
+              stop: "70",
+              opened: "2026-11-01T21:00:00+00:00",
+              exit: "104",
+              exit_how: "limit",
+            },
+            {
+              key: "u3",
+              kind: "k",
+              contracts: 3,
+              fill: "100",
+              ghost: false,
+              stop: "70",
+              opened: "2026-11-02T21:00:00+00:00",
+              exit: null,
+              exit_how: "close_below",
+            },
+          ],
+          mark: "102",
+          margin: "60",
+          unrealized: "3",
+          step_units: 1,
+          max_units: 5,
+        }}
+        onClose={() => undefined}
+      />,
+    );
+    expect(held).toContain("매도 지정가");
+    expect(held).toContain("종가가 이 아래면 청산 — 값은 다음 마감 뒤 표시");
+    expect(held).toContain("+2.00%");
+    expect(held).toContain("+5.00%");
+  });
 });

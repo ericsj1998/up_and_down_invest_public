@@ -41,6 +41,7 @@ def lite_payload(
     shares_of: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     stops: Sequence[Mapping[str, Any]] | None = None,
     halted: bool | None = None,
+    engine_of: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """첫 화면 한 덩어리를 만든다.
 
@@ -57,6 +58,7 @@ def lite_payload(
         shares_of: 종목 → 보유 몫들(`name` · `stop` · `opened_at`) — 어느 다리 · 어느 손절인가.
         stops: 거래소에 걸린 조건부 줄들(`symbol`). 못 읽으면 None.
         halted: 신규 진입 정지 스위치. 모르면 None.
+        engine_of: 종목 → 엔진 다리 한 줄 요약 — 있는 종목의 포지션 줄에만 `engine` 칸이 붙는다.
 
     Returns:
         `{at, total, available, margin_used, notional, account_leverage, unrealized, capital,
@@ -103,6 +105,9 @@ def lite_payload(
                     "exchange_stops": None if stops is None else stop_counts.get(symbol, 0),
                 }
             )
+            note = (engine_of or {}).get(symbol)
+            if note is not None:
+                rows[-1]["engine"] = dict(note)
         rows.sort(key=lambda r: Decimal(r["unrealized"]))
     total = None if available is None or locked is None else available + locked
     capital: Decimal | None = None

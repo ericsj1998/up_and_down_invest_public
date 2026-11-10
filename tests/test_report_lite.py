@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from updown.apps.api.rebalancer import _held_units, engine_row
+from updown.apps.api.rebalancer import _held_units, engine_note, engine_row
 from updown.orchestration.report.lite import brief_payload, lite_payload
 from updown.orchestration.report.performance import (
     ExchangeSummary,
@@ -138,6 +138,73 @@ def test_engine_units_include_the_filled_buy_and_skip_ghosts() -> None:
     assert row["holding"] is True
     assert row["shares"][0]["name"] == "다리 계단"
     assert row["position"]["stop"] == "18993"
+
+
+def test_engine_note_rides_only_on_its_own_position_row() -> None:
+    """엔진 다리 요약은 그 종목 줄에만 붙는다 — 다른 줄에 빈 칸을 만들지 않는다."""
+    note = engine_note(
+        {
+            "step_units": 2,
+            "max_units": 5,
+            "buy": {"slot": 3, "level": "25480", "contracts": 4, "filled": 0},
+            "next_close": "2026-11-10T21:00:00+00:00",
+        }
+    )
+    assert note == {
+        "step_units": 2,
+        "max_units": 5,
+        "next_step": "25480",
+        "next_close": "2026-11-10T21:00:00+00:00",
+    }
+    made = make(
+        positions=[
+            {"symbol": "NEAR_USDT", "size": "12", "margin": "11", "unrealised_pnl": "-1"},
+            {"symbol": "NAS100_USDT", "size": "29", "margin": "26", "unrealised_pnl": "1"},
+        ],
+        engine_of={"NAS100_USDT": note},
+    )
+    rows = {r["symbol"]: r for r in made["positions"]}  # type: ignore[union-attr]
+    assert rows["NAS100_USDT"]["engine"] == note
+    assert "engine" not in rows["NEAR_USDT"]
+
+
+def test_engine_note_has_no_next_step_once_the_order_is_full_or_absent() -> None:
+    full = engine_note({"buy": {"slot": 3, "level": "25480", "contracts": 4, "filled": 4}})
+    assert full["next_step"] is None
+    assert engine_note({})["next_step"] is None
+
+
+def test_engine_row_passes_each_share_exit_through() -> None:
+    row = engine_row(
+        {
+            "units": [
+                {
+                    "key": "u1",
+                    "name": "몫",
+                    "contracts": 3,
+                    "fill": "100",
+                    "stop": "70",
+                    "ghost": False,
+                    "opened": "t1",
+                    "exit": "104",
+                    "exit_how": "limit",
+                },
+                {
+                    "key": "u2",
+                    "name": "몫",
+                    "contracts": 3,
+                    "fill": "98",
+                    "stop": "68.6",
+                    "ghost": False,
+                    "opened": "t2",
+                },
+            ],
+        },
+        "1",
+        "다리",
+        "pb",
+    )
+    assert [(s["exit"], s["exit_how"]) for s in row["shares"]] == [("104", "limit"), (None, "")]
 
 
 def test_unread_stops_are_not_counted_as_no_stops() -> None:
