@@ -1046,6 +1046,11 @@ class LiveRunner:
     _revived_open: frozenset[str] = frozenset()
     _unsent_open: frozenset[str] = frozenset()
     """되살아난 보유 기록 중 거래소에 포지션도 체결 조각도 없던 것 (T254 ③) — 감사 `unsent_open`."""
+    _panic_unknown: frozenset[str] = frozenset()
+    """닫아야 했는데 계약 수를 몰라 못 던진 몫 (T826) — 감사 `panic_share_unknown`.
+
+    사용자 결정 2026-11-10: 거래소 포지션 크기로 추정해 던지는 폴백은 **두지 않고**(남의 몫을
+    닫는다) 대신 경보를 띄운다. 감사 항목이 되면 화면 점검 줄과 웹 푸시가 같이 읽는다."""
     """클래스 기본값 —  로 조립하는 테스트 더블이 옛 경로를 그대로 타게 한다.
     실제 러너는 생성자가 원장을 보고 인스턴스 값으로 덮는다."""
 
@@ -5464,6 +5469,9 @@ class LiveRunner:
         # ⭐ T254 ③ — 주문이 나가기 전 재시작으로 원장만 보유중인 기록. 재전송하지 않으니
         #    사람이 봐야 한다.
         found.extend(unsent_open_findings(self._unsent_open))
+        # ⭐ T826 — 못 던진 몫은 원장에서 열려 있는 동안만 말한다(사람이 닫으면 사라진다).
+        #    여기서 집합을 고치지 않는다 — 감사는 보기만 한다.
+        found.extend(panic_unknown_findings(self._panic_unknown_open()))
 
         # ① 축이 흐르는가 — 판정 축과 진입 축은 **반드시**.
         #
@@ -8599,6 +8607,18 @@ class LiveRunner:
         base = held.contracts - (held.contracts // 2 if held.half_at is not None else 0)
         return max(0, base) + held.add_contracts
 
+    def _panic_unknown_open(self) -> frozenset[str]:
+        """못 던진 몫 중 원장에서 **아직 열려 있는** 것 — 감사 `panic_share_unknown` 의 재료 (T826).
+
+        Returns:
+            몫 id 들. 사람이 닫아 원장이 닫히면 빠진다 — 지난 일이 경보를 끌지 않게.
+        """
+        if not self._panic_unknown:
+            return frozenset()
+        return self._panic_unknown & {
+            item.trade_id for item in self._session.ledger.records if item.outcome is Outcome.OPEN
+        }
+
     def _share_stop_key(self, held: TradeRecord) -> str:
         """몫 손절의 멱등키 — 몫을 찾는 열쇠 (T320 P3)."""
         return order_key(held.trade_id, OrderKind.STOP_LOSS.value, 0, self._run_key)
@@ -8896,6 +8916,8 @@ class LiveRunner:
             self.last_error = f"🔴 몫 {held.trade_id} 계약 수를 몰라 못 던졌다 — 사람이 닫는다"[
                 :200
             ]
+            # ⭐ 한 줄 오류는 다음 실패가 덮는다 — 감사 항목으로 올려 그 몫이 닫힐 때까지 남긴다.
+            self._panic_unknown = self._panic_unknown | {held.trade_id}
             self._log.error(
                 "live_runner_panic_share_unknown",
                 payload={"trade_id": held.trade_id, "why": why},
@@ -9818,6 +9840,32 @@ def unsent_open_findings(trade_ids: Iterable[str]) -> list[dict[str, str]]:
             "detail": (
                 f"{trade_id[:8]} 원장은 보유중인데 거래소에 포지션도 체결 조각도 없다 — "
                 "주문이 나가기 전에 재시작된 기록이다. 재전송하지 않는다: 원장을 닫거나 손으로 낸다"
+            ),
+        }
+        for trade_id in sorted(trade_ids)
+    ]
+
+
+def panic_unknown_findings(trade_ids: Iterable[str]) -> list[dict[str, str]]:
+    """감사 항목 `panic_share_unknown` — 닫아야 하는데 계약 수를 몰라 못 던진 몫들 (T826).
+
+    Args:
+        trade_ids: 그런 몫의 id 들(원장에서 아직 열려 있는 것만 넘긴다).
+
+    Returns:
+        `{code, level, detail}` 목록 — 비어 있으면 빈 목록. 순서는 id 정렬.
+
+    Note:
+        사용자 결정 2026-11-10: 거래소 포지션 크기로 대신 던지지 않는다 — 같은 방향 포지션은
+        한 줄로 합쳐져 있어 남의 몫까지 닫는다. 대신 사람이 볼 때까지 경보를 남긴다.
+    """
+    return [
+        {
+            "code": "panic_share_unknown",
+            "level": "error",
+            "detail": (
+                f"{trade_id[:8]} 닫아야 하는 몫인데 계약 수를 몰라 시장가로 못 던졌다 — "
+                "추정해 던지지 않는다(남의 몫을 닫는다): 거래소에서 이 몫을 손으로 닫는다"
             ),
         }
         for trade_id in sorted(trade_ids)
