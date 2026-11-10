@@ -607,16 +607,44 @@ SENTINEL_RR = Decimal(50)
 """
 
 
+FORMAL_MOVE = Decimal("0.5")
+"""진입가의 이 비율 이상 떨어진 목표도 **형식 목표**로 본다 (T823 · 사용자 결정 2026-11-10).
+
+숏 다리는 "목표 없음" 을 진입가 x 0.05 로 적는다(가격이 95% 움직여야 닿는다). 리스크 배수로만
+가르면 그 값이 0.95 ÷ 손절 거리가 되어, 손절이 1.9% 보다 넓은 매매에서는 `SENTINEL_RR` 아래로
+내려와 진짜 목표로 읽혔다(실계좌: 진입가의 5% 값에 reduce-only 지정가가 걸렸다).
+이 값은 **관습값**이다 — 재어 고른 문턱이 아니라 벌어진 틈의 가운데다: 진짜 목표가 있는 다리는
+목표까지 가격 이동이 최대 약 25%(실측), 형식 목표는 95% 다. 진짜 목표가 진입가의 절반보다
+멀리 놓이는 다리가 생기면 이 줄부터 다시 본다.
+"""
+
+
 def _is_sentinel_target(record: TradeRecord, price: Decimal) -> bool:
-    """계획가가 "익절 없음" 센티널인지 — 리스크 대비 SENTINEL_RR 배 이상 멀면 참."""
+    """계획가가 "익절 없음" 센티널인지 — 리스크 배수 또는 가격 이동 비율이 문턱 이상이면 참.
+
+    Args:
+        record: 매매 기록(진입가 · 계획 손절).
+        price: 판정할 계획가(반익 값 또는 목표 값).
+
+    Returns:
+        리스크 대비 `SENTINEL_RR` 배 이상 멀거나, 진입가의 `FORMAL_MOVE` 이상 떨어졌으면 참.
+
+    Note:
+        두 조건을 함께 보는 이유는 형식 목표를 적는 법이 다리마다 달라서다 — 롱 타기 다리는
+        리스크의 100 배, 숏 다리는 진입가의 5% (T823).
+    """
     risk = abs(record.entry - record.planned_stop)
     if record.entry <= 0 or risk <= 0:
         return False
-    return abs(price - record.entry) / risk >= SENTINEL_RR
+    move = abs(price - record.entry)
+    return move / risk >= SENTINEL_RR or move / record.entry >= FORMAL_MOVE
 
 
 def has_real_target(record: TradeRecord) -> bool:
-    """닿을 수 있는 진짜 목표가 있는 매매인가 — 형식상 먼 목표(`SENTINEL_RR`)면 거짓 (T814)."""
+    """닿을 수 있는 진짜 목표가 있는 매매인가 — 형식상 먼 목표면 거짓 (T814 · T823).
+
+    형식 목표의 두 꼴(`SENTINEL_RR` · `FORMAL_MOVE`)은 `_is_sentinel_target` 이 가른다.
+    """
     return record.planned_target > 0 and not _is_sentinel_target(record, record.planned_target)
 
 
