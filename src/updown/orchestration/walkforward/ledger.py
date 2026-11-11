@@ -329,6 +329,16 @@ class TradeRecord:
     planned_stop: Decimal = Decimal(0)
     planned_target: Decimal = Decimal(0)
     planned_first: Decimal = Decimal(0)
+    initial_stop: Decimal | None = None
+    """원장에 처음 들어간 순간의 손절가(T820 · 표시 전용).
+
+    `planned_stop` 은 트레일 · 본전 이동으로 덮어써진다. 예상 청산 띠 · 앞날 부채꼴은
+    "처음 손절까지 거리 = 1R" 로 잰다(연구 매매 줄의 손절 거리와 같은 자).
+    세션이 원장에 넣기 직전에 채운다(`pin_initial_stop`) — 조인(β 상한) · 몫 맞춤 뒤의 값이라
+    실제로 건 첫 손절이다. 원장 안에서 사본을 만들면 세션이 든 기록과 원장 기록이 갈린다(2026-11-11
+    시험이 잡음) — 그래서 원장은 채우지 않는다. 되살린 기록은 DB 값 그대로(옛 기록은 None) ·
+    이어받은 포지션은 처음 값을 몰라 None.
+    판정 · 주문 · 청산에 쓰지 않는다."""
     direction: Direction = Direction.LONG
     outcome: Outcome = Outcome.PENDING
     closed_at: datetime | None = None
@@ -715,6 +725,7 @@ class TradeRecord:
             planned_stop=self.planned_stop,
             planned_target=self.planned_target,
             planned_first=self.planned_first,
+            initial_stop=self.initial_stop,  # T820 — 닫혀도 처음 손절을 잃지 않는다
             outcome=outcome,
             closed_at=at,
             exit_price=price,
@@ -777,6 +788,23 @@ class TradeRecord:
             fee_actual=self.fee_actual,
             contract_adjust=self.contract_adjust,  # T606 — 청산가 보정 뒤 다시 닫을 때도 잇는다
         )
+
+
+def pin_initial_stop(record: TradeRecord) -> TradeRecord:
+    """처음 손절을 박은 사본 — 세션이 원장에 넣기 직전에 부른다(T820 · 표시 전용).
+
+    Args:
+        record: 막 확정된 기록(조인 · 몫 맞춤 뒤).
+
+    Returns:
+        `initial_stop` 이 채워진 사본. 이미 있거나 · 이어받은 포지션(처음 값을 모름)이거나 ·
+        손절이 없으면 그대로.
+    """
+    if record.initial_stop is not None or record.actor is Actor.ADOPTED:
+        return record
+    if record.planned_stop <= 0:
+        return record
+    return replace(record, initial_stop=record.planned_stop)
 
 
 def contract_adjust_of(
@@ -1177,11 +1205,15 @@ class Ledger:
         Note:
             ⚠️ 새 기록에 `margin_used` 가 없으면 있던 값을 잇는다 — 세션이 들고 있던 옛 참조로 사본을
             만들면 진입 때 적힌 증거금이 사라지고, 그 매매의 손익이 다시 걷기 증거금으로 돌아간다.
+            `initial_stop`(T820)도 같은 까닭으로 잇는다.
         """
         for index, item in enumerate(self.records):
             if item.trade_id == record.trade_id:
                 if record.margin_used is None and item.margin_used is not None:
                     record = replace(record, margin_used=item.margin_used)
+                # T820 — 같은 이유로 처음 손절도 잇는다(세션의 옛 참조에는 `add` 가 채운 값이 없다).
+                if record.initial_stop is None and item.initial_stop is not None:
+                    record = replace(record, initial_stop=item.initial_stop)
                 self.records[index] = record
                 return
         raise KeyError(f"{record.trade_id} 가 원장에 없다")

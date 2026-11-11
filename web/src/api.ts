@@ -1230,6 +1230,50 @@ export function state(key: string, frame?: string): Promise<State> {
   return request(`/walkforward/state/${key}${frame ? `?frame=${frame}` : ""}`);
 }
 
+/* ══ 예측(T820 · T825 · 표시 전용) ══════════════════════════ */
+
+/** 시각 · 가격 한 점. */
+export type ForecastPoint = { at: string; price: number };
+
+/**
+ * 열린 매매 하나의 예측 — 띠(청산 자리 분포) · 꼬리선 · 부채꼴(12 · 24 · 48 시간 뒤) · 갈래(확률 + 선).
+ * `ok` 가 거짓이면 `reason` 만 온다(그리지 않는다).
+ */
+export type ForecastTrade = {
+  trade_id: string;
+  leg: string;
+  ok: boolean;
+  reason?: string;
+  basis?: {
+    at: string;
+    hold_h: number;
+    /** 연구가 잰 간격(진입 뒤 4 시간 배수)인가 — 아니면 화면이 "검증 간격 아님" 을 적는다. */
+    on_grid: boolean;
+    cur_r: number;
+    entry_ref: number;
+    stop_pct: number;
+    /** initial = 기록된 처음 손절 · assumed = 지금 손절을 처음으로 침 · adopted = 이어받은 포지션. */
+    stop_source: "initial" | "assumed" | "adopted";
+    btc_known: boolean;
+  };
+  band?: { q25: number; q50: number; q75: number; q90: number | null; note: string | null };
+  fan?: { origin: ForecastPoint; points: { at: string; p: number[] }[]; qs: number[] };
+  branch?: { p: number[]; lines: { name: string; p: number; points: ForecastPoint[] }[] };
+};
+
+export type Forecast = {
+  available: boolean;
+  reason?: string;
+  version?: string;
+  now: boolean;
+  trades: ForecastTrade[];
+};
+
+/** 예측 — 차트를 열 때 · "지금 기준으로 예측" 단추를 누를 때만 부른다(폴링 안 함). */
+export function forecast(key: string, now = false): Promise<Forecast> {
+  return request(`/walkforward/forecast/${key}${now ? "?now=true" : ""}`);
+}
+
 /* ══ 라이브 ════════════════════════════════════════════ */
 
 /**

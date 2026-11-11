@@ -22,6 +22,8 @@
  */
 
 import { useEffect, useMemo, useRef } from "react";
+import type { ForecastTrade } from "./api";
+import { ForecastPrimitive, forecastShapes, futureBars } from "./chart/forecast";
 import type { TradeMark } from "./chart/trades";
 import {
   boxesOf,
@@ -103,12 +105,13 @@ export const RIGHT_PAD = 3;
  * ⚠️ 이미 붙어 있으면 **아무것도 안 한다.** 같은 값을 다시 넣으면 라이브러리가
  * 다시 그리고, 그것이 초당 한 번이면 눈에 띈다.
  */
-export function pinRight(chart: IChartApi, count: number): boolean {
+export function pinRight(chart: IChartApi, count: number, pad: number = RIGHT_PAD): boolean {
   if (count === 0) return false;
   const scale = chart.timeScale();
   const range = scale.getVisibleLogicalRange();
   if (range === null) return false;
-  const edge = count - 1 + RIGHT_PAD;
+  // ⭐ 예측(T825)을 그릴 때는 부채꼴이 들어갈 만큼 여백을 넓힌다(`pad`) — 기본은 RIGHT_PAD.
+  const edge = count - 1 + pad;
   // ⚠️ 반 봉 안이면 붙은 것으로 친다. 정확히 0 을 요구하면 봉이 닫힐 때마다
   //    깜빡거린다 (마지막 봉이 여백만큼 밀려나기 때문이다).
   if (Math.abs(range.to - edge) < 0.5) return false;
@@ -331,6 +334,12 @@ type Props = {
    * 다르다 — 그쪽은 최신 봉까지 다시 그려 돌파봉까지 감싼다.
    */
   geometry?: SignalGeometry[];
+  /**
+   * **보유 매매의 예측** (T820 · T825 · 표시 전용) — 청산 띠 · 꼬리선 · 부채꼴 · 갈래 선.
+   * 서버가 연구 모형으로 낸 가격 · 시각 그대로 긋는다(`chart/forecast.ts`). 있으면 오른쪽 여백을
+   * 부채꼴 끝(48 시간 뒤)까지 넓힌다.
+   */
+  forecast?: ForecastTrade[];
 };
 
 /** 상자를 칠할 지난 매매의 최대 개수 — 라이브 판은 보통 한 자리다. 넘으면 최근 것부터. */
@@ -363,6 +372,7 @@ export function Chart({
   trades,
   focusTradeId,
   geometry,
+  forecast,
 }: Props) {
   const holder = useRef<HTMLDivElement | null>(null);
   const chart = useRef<IChartApi | null>(null);
@@ -379,6 +389,10 @@ export function Chart({
    * 판을 넘나드는 선은 없으니 사본을 하나 더 붙여 한 줄처럼 보이게 한다.
    */
   const tradeLines = useRef<TradeBoxPrimitive | null>(null);
+  /** 예측 그림(T825) — 띠 · 부채꼴 · 갈래. */
+  const forecastRug = useRef<ForecastPrimitive | null>(null);
+  /** 라이브 추종 때 오른쪽에 남길 봉 수 — 예측이 있으면 부채꼴 끝까지 넓힌다. */
+  const rightPad = useRef(RIGHT_PAD);
   const badges = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const planLines = useRef<IPriceLine[]>([]);
   // 🔴 **추세강도는 가격이 아니다** — 같은 축에 그리면 0~100 이 캔들 옆에 눌려 붙어
@@ -456,6 +470,10 @@ export function Chart({
     // 🔴 지난 매매 상자는 **먼저** 붙인다 — 나중에 붙은 것이 위에 그려지므로 분석 띠가 상자를 덮지 않는다.
     const tradeRug = new TradeBoxPrimitive();
     candles.attachPrimitive(tradeRug);
+    // ⭐ 예측(T825)은 매매 상자 위에 — 상자가 부채꼴 시작점을 덮지 않게.
+    const fc = new ForecastPrimitive();
+    candles.attachPrimitive(fc);
+    forecastRug.current = fc;
     // 🔴 **트레일 청산선(SMA)** — full_ride 전략의 실제 청산 경로. 캔들 뒤에 얇게 깐다.
     //    가격선·마지막값 라벨은 끈다(오른쪽 축이 계획선으로 이미 붐빈다).
     const ma = made.addSeries(LineSeries, {
@@ -516,7 +534,7 @@ export function Chart({
     made.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (!follows.current || range === null || pinning.current) return;
       pinning.current = true;
-      pinRight(made, series.current?.data().length ?? 0);
+      pinRight(made, series.current?.data().length ?? 0, rightPad.current);
       pinning.current = false;
     });
     chart.current = made;
@@ -699,9 +717,40 @@ export function Chart({
     const made = chart.current;
     if (follow === false || made === null) return;
     pinning.current = true;
-    pinRight(made, series.current?.data().length ?? 0);
+    pinRight(made, series.current?.data().length ?? 0, rightPad.current);
     pinning.current = false;
   }, [follow, frame.candles]);
+
+  // ── 예측(T820 · T825 · 표시 전용) ────────────────────────────────────
+  //
+  // 서버 값 그대로 긋는다. 있으면 오른쪽 여백을 부채꼴 끝까지 넓히고(라이브 추종 중이면 바로 붙인다),
+  // 없으면 기본 여백으로 돌아간다.
+  useEffect(() => {
+    const fc = forecastRug.current;
+    const made = chart.current;
+    if (fc === null || made === null) return;
+    const step = frameSeconds(frame.timeframe);
+    const shapes = forecastShapes(forecast ?? []);
+    fc.set(shapes, step, {
+      fan: tone("--forecast", "#4f6bed"),
+      gain: tone("--gain", "#0f7b6c"),
+      loss: tone("--loss", "#b4423a"),
+      flat: tone("--warm-gray", "#78716c"),
+      paper: tone("--pure-white", "#ffffff"),
+      text: tone("--warm-gray", "#78716c"),
+    });
+    const data = series.current?.data() ?? [];
+    const last = data[data.length - 1];
+    const lastTs = last === undefined ? 0 : (last.time as number);
+    const pad = RIGHT_PAD + futureBars(shapes, lastTs, step);
+    if (pad === rightPad.current) return;
+    rightPad.current = pad;
+    if (follow !== false) {
+      pinning.current = true;
+      pinRight(made, data.length, pad);
+      pinning.current = false;
+    }
+  }, [forecast, frame.timeframe, frame.candles, follow]);
 
   // ── 끌 수 있는 계획선 (차트 주문) ───────────────────────────────────
   //

@@ -83,6 +83,7 @@ from updown.orchestration.walkforward.ledger import (
     evidence_rows,
     liquidation_price,
     new_trade_id,
+    pin_initial_stop,
     plan_fault,
 )
 from updown.orchestration.walkforward.order_mapping import has_real_target
@@ -2846,6 +2847,7 @@ class Session:
             cost_pct=cost.round_trip_pct,
             leverage=self.ledger.leverage,
         )
+        record = pin_initial_stop(record)  # T820 — 처음 손절(표시 전용)
         self.ledger.add(record)
         self._open = record
         self._count(f"entered:flip_{record.playbook.split('@')[0]}")
@@ -5009,6 +5011,7 @@ class Session:
         self._tickets = ()
         self._waiting_until = None
         self._close_probe(waiting, filled=True)
+        waiting = pin_initial_stop(waiting)  # T820 — 처음 손절(표시 전용)
         self.ledger.add(waiting)
         self._hold(waiting)  # T320 — 다른 다리 몫이 있으면 더한다
         self._count(f"entered:{waiting.playbook}")
@@ -5122,6 +5125,7 @@ class Session:
             entry_fills=((price, ratio),),
             outcome=Outcome.OPEN,
         )
+        record = pin_initial_stop(record)  # T820 — 처음 손절(표시 전용)
         self.ledger.add(record)
         self._hold(record)
         self._last_expired = None
@@ -5628,7 +5632,7 @@ class Session:
         fitted = self._fit_merged_share(record)
         if fitted is None:
             return None
-        record = fitted
+        record = pin_initial_stop(fitted)  # T820 — 조인 · 몫 맞춤 뒤 처음 손절(표시 전용)
         self.ledger.add(record)
         self._hold(record)  # T320 — 다른 다리 몫이 있으면 더한다(`_may_share` 를 지난 후보)
         self._count(f"entered:{record.playbook}")
@@ -5692,6 +5696,7 @@ class Session:
             cost_pct=cost.round_trip_pct,
             leverage=self.ledger.leverage,
         )
+        record = pin_initial_stop(record)  # T820 — 처음 손절(표시 전용)
         self.ledger.add(record)
         self._open = record
         self._count(f"entered:{record.playbook}")

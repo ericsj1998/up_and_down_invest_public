@@ -9,7 +9,8 @@
  */
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { dropSession, probe as runProbe, type Probe } from "./api";
+import { dropSession, forecast as askForecast, probe as runProbe, type Forecast, type Probe } from "./api";
+import { ForecastNotes } from "./ForecastNotes";
 import { Live } from "./Live";
 import { Chart, type MarkTone } from "./Chart";
 import { fmtPrice, type TradeMark } from "./chart/trades";
@@ -148,6 +149,42 @@ export function PaperTab({ run, home, named }: Props) {
   );
   const polled = useForming(streamed.live ? undefined : current?.session_id, frame);
   const forming = pick(streamed, polled);
+
+  // ⭐ T820 · T825 — 보유 매매의 예측(표시 전용). 화면을 열 때 · 열린 매매가 바뀔 때 한 번(연구가 잰
+  //    4 시간 간격 시점) · "지금 기준으로 예측" 단추를 누를 때만 부른다 — 폴링하지 않는다.
+  const [fc, setFc] = useState<Forecast | null>(null);
+  const [fcBusy, setFcBusy] = useState(false);
+  const [fcShow, setFcShow] = useState(true);
+  const sessionId = current?.session_id;
+  const openIds = (state?.log ?? [])
+    .filter((row) => row.exit === null && row.opened_at !== null)
+    .map((row) => row.trade_id)
+    .join(",");
+  useEffect(() => {
+    if (!sessionId || openIds === "") {
+      setFc(null);
+      return;
+    }
+    let alive = true;
+    askForecast(sessionId)
+      .then((got) => {
+        if (alive) setFc(got);
+      })
+      .catch(() => {
+        if (alive) setFc(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [sessionId, openIds]);
+  const forecastNow = () => {
+    if (!sessionId) return;
+    setFcBusy(true);
+    askForecast(sessionId, true)
+      .then(setFc)
+      .catch(() => undefined)
+      .finally(() => setFcBusy(false));
+  };
   const board = state?.dashboard;
   const account = health?.exchange;
   const position = account?.position ?? {};
@@ -1036,7 +1073,18 @@ export function PaperTab({ run, home, named }: Props) {
             focusTradeId={focusTrade}
             // ⭐ T378 — 일봉 채널 · 삼각수렴 매매는 신호 때 탐지기가 본 선을 그대로 긋는다.
             geometry={state?.signal_geometry}
+            // ⭐ T820 · T825 — 보유 매매의 청산 띠 · 부채꼴 · 갈래(표시 전용).
+            {...(fcShow && fc?.available ? { forecast: fc.trades } : {})}
           />
+          {fc !== null ? (
+            <ForecastNotes
+              forecast={fc}
+              shown={fcShow}
+              busy={fcBusy}
+              onToggle={() => setFcShow((was) => !was)}
+              onNow={forecastNow}
+            />
+          ) : null}
           {state?.signal_geometry && state.signal_geometry.length > 0 ? (
             <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 12, opacity: 0.8 }}>
               {state.signal_geometry.map((g) => (

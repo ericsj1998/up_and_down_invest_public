@@ -219,6 +219,12 @@ class WalkforwardTrade(Base):
     entry: Mapped[Decimal]
     exit_price: Mapped[Decimal | None]
     planned_stop: Mapped[Decimal]
+    initial_stop: Mapped[Decimal | None] = mapped_column(default=None)
+    """원장에 처음 들어간 순간의 손절가(T820 · 0138 · 표시 전용).
+
+    `planned_stop` 은 트레일로 덮어써진다.
+
+    NULL = 옛 행 · 이어받은 포지션(처음 값을 모름)."""
     planned_first: Mapped[Decimal]
     planned_target: Mapped[Decimal]
     cost_pct: Mapped[Decimal] = mapped_column(RATIO)

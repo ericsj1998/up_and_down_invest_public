@@ -975,6 +975,7 @@ class RunStore:
                 "entry": item.entry,
                 "exit_price": item.exit_price,
                 "planned_stop": item.planned_stop,
+                "initial_stop": item.initial_stop,  # T820 · 0138 — 처음 손절(표시 전용)
                 "planned_first": item.planned_first,
                 "planned_target": item.planned_target,
                 "cost_pct": item.cost_pct,
@@ -1768,6 +1769,7 @@ def _to_record(row: WalkforwardTrade) -> TradeRecord:
         contracts=row.contracts or 0,
         margin_used=row.margin_used,
         planned_stop=row.planned_stop,
+        initial_stop=row.initial_stop,
         planned_first=row.planned_first,
         planned_target=row.planned_target,
         cost_pct=row.cost_pct,

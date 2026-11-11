@@ -26,7 +26,7 @@ import re
 import secrets
 import time
 from bisect import bisect_right
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -102,6 +102,8 @@ from updown.marketdata.provider import MarketDataProvider
 from updown.orchestration import leg_engines
 from updown.orchestration.inspection import setups as setup_layers
 from updown.orchestration.inspection.catalog import available_flags, expand
+from updown.orchestration.inspection.forecast import Bar as ForecastBar
+from updown.orchestration.inspection.forecast import Forecaster, ForecastError
 from updown.orchestration.inspection.overlays import (
     adx_overlay,
     ma_layer,
@@ -109,6 +111,7 @@ from updown.orchestration.inspection.overlays import (
 from updown.orchestration.inspection.signal_geometry import signal_geometry
 from updown.orchestration.inspection.snapshot import FrameView, Layer, build_frame, project
 from updown.orchestration.inspection.snapshot import Snapshot as ChartSnapshot
+from updown.orchestration.inspection.trade_forecast import day_closes, session_forecasts
 from updown.orchestration.leftovers import sweep as sweep_leftovers
 from updown.orchestration.leftovers import sweep_zombie_entries
 from updown.orchestration.playbook_run import major_trend
@@ -6697,6 +6700,8 @@ def _record(item: TradeRecord | None) -> dict[str, Any] | None:
         "entry": str(item.entry),
         "exit": None if item.exit_price is None else str(item.exit_price),
         "stop": str(item.planned_stop),
+        # T820 — 처음 손절(표시 전용 · 예측의 1R 잣대). 옛 기록 · 이어받은 포지션은 null.
+        "initial_stop": None if item.initial_stop is None else str(item.initial_stop),
         # 🔴 **1차 익절이 빠져 있었다** (사용자 지적 2026-08-18: *"왜 이전에 뜨던
         #    1차 익절, 익절 등이 안뜨지?"*). 차트는 보유 계획을 `state.position` 에서
         #    받는데 그 값은 **러너가 살아 있을 때만** 온다. 없으면 매매 로그의 열린
@@ -6792,6 +6797,108 @@ async def state(key: str, at: str | None = None, frame: str | None = None) -> di
         return _state(key, moment, _only(key, frame))
     except SealBreachError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+_FORECASTER: list[Forecaster | None] = []
+"""모형 값(한 번 읽음 · 비어 있으면 아직 안 읽음 · [None] 이면 없음/깨짐)."""
+
+_FORECAST_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
+"""예측 응답 캐시 — 열쇠 = (판 · 기준 · 마지막 1H 봉 · 열린 매매의 손절 · BTC 마지막 날).
+
+`FORECAST_CACHE_MAX` 개까지(오래된 것부터 버린다)."""
+
+FORECAST_CACHE_MAX = 64
+
+
+def _forecaster() -> Forecaster | None:
+    """모형 값을 처음 쓸 때 한 번 읽는다 — 없으면(공개 빌드) None · 깨졌으면 오류를 남기고 None."""
+    if not _FORECASTER:
+        try:
+            _FORECASTER.append(Forecaster.load())
+        except (ForecastError, OSError, ValueError, KeyError) as exc:
+            _logger.error("forecast_model_unreadable", payload={"error": str(exc)[:200]})
+            _FORECASTER.append(None)
+    return _FORECASTER[0]
+
+
+def _forecast_bars(session: Session, frame: Timeframe) -> list[ForecastBar]:
+    """세션이 이미 든 닫힌 봉(새 거래소 조회 없음) → 예측 계산용 봉."""
+    if frame not in session.feed.timeframes:
+        return []
+    return [
+        ForecastBar(
+            int(c.ts.timestamp() * 1000),
+            float(c.open),
+            float(c.high),
+            float(c.low),
+            float(c.close),
+            float(c.volume),
+        )
+        for c in session.feed.judged(frame)
+    ]
+
+
+def _btc_days() -> list[tuple[int, float]] | None:
+    """BTC 날 종가 — 떠 있는 BTC 판의 4H 봉에서(새 조회 없음). BTC 판이 없으면 None(국면 모름)."""
+    for live in SESSIONS.values():
+        session = live.session
+        if session.instrument.symbol != "BTC_USDT":
+            continue
+        bars = _forecast_bars(session, Timeframe.H4)
+        if bars:
+            return day_closes(bars)
+    return None
+
+
+@router.get("/forecast/{key}")
+async def forecast(key: str, now: bool = False) -> dict[str, Any]:
+    """열린 매매의 예상 청산 띠 · 앞날 부채꼴 · 갈래 확률 (T820 · T825 · **표시 전용**).
+
+    Args:
+        key: 세션 id.
+        now: 참이면 마지막으로 닫힌 1H 봉 기준("지금 기준으로 예측" 단추). 거짓이면 연구가 잰 4 시간
+            간격의 마지막 시점(검증된 시점).
+
+    Returns:
+        `{available, reason?, version?, now, trades: [...]}` — 매매마다 그림 값 또는 못 그리는 까닭.
+
+    Note:
+        🔴 주문 · 청산에 안 쓴다(절대 규칙 #2 · #4). 화면이 차트를 열 때와 단추를 누를 때만 부른다 —
+        폴링하지 않는다. 봉은 러너가 이미 든 것만 쓰고, 같은 1H 봉 · 같은 매매면 캐시를 돌려준다.
+    """
+    live = _live(key)
+    model = _forecaster()
+    if model is None:
+        return {"available": False, "reason": "예측 모형 값이 없다", "now": now, "trades": []}
+    session = live.session
+    bars = _forecast_bars(session, Timeframe.H1)
+    btc = _btc_days()
+    opened = [r for r in session.ledger.records if r.outcome is Outcome.OPEN]
+    cache_key = (
+        key,
+        now,
+        model.version,
+        bars[-1].ts_ms if bars else None,
+        tuple((r.trade_id, r.initial_stop, r.planned_stop, r.entry) for r in opened),
+        btc[-1] if btc else None,
+    )
+    hit = _FORECAST_CACHE.get(cache_key)
+    if hit is not None:
+        _FORECAST_CACHE.move_to_end(cache_key)
+        return hit
+    trades = session_forecasts(
+        opened,
+        label_of=lambda attribution: leg_label(session, attribution),
+        model=model,
+        bars=bars,
+        btc_days=btc,
+        now=now,
+    )
+    body = {"available": True, "version": model.version, "now": now, "trades": trades}
+    _FORECAST_CACHE[cache_key] = body
+    while len(_FORECAST_CACHE) > FORECAST_CACHE_MAX:
+        _FORECAST_CACHE.popitem(last=False)
+    return body
 
 
 @router.post("/step/{key}")
