@@ -114,6 +114,20 @@ class GateAdapter:
         self._multipliers: dict[str, Decimal] = {}
 
     @property
+    def quote_share_key(self) -> str:
+        """이 어댑터의 시세가 **어디 것인지** — 같은 값이면 같은 시세라 나눠 써도 된다 (T832).
+
+        Returns:
+            `gate:<REST 베이스>`. 라이브와 테스트넷은 호가창이 달라 서로 다른 값이 나온다.
+
+        Note:
+            어댑터는 판마다 새로 만들어지지만(`provider.adapter_for`) 붙는 곳은 하나다. 보유 감시가
+            같은 종목 판끼리 시세 한 번을 같이 읽을 때 이 값으로 "같은 곳" 임을 안다. 이 이름이
+            없는 어댑터의 시세는 나눠 쓰이지 않는다.
+        """
+        return f"gate:{self._client.base_url}"
+
+    @property
     def capabilities(self) -> frozenset[Capability]:
         """이 어댑터가 할 수 있는 것.
 

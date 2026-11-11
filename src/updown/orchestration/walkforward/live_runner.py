@@ -32,6 +32,7 @@ import json
 import os
 import time
 import uuid
+import zlib
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
@@ -52,7 +53,7 @@ from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.db.models.enums import LogLevel
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Market, Timeframe
-from updown.common.domain.market import Balance
+from updown.common.domain.market import Balance, Quote
 from updown.common.domain.order import OrderKind, OrderResult, OrderStatus
 from updown.common.domain.session import MarketCalendar, SessionConfigError, Tradability
 from updown.common.logging.setup import get_logger
@@ -62,6 +63,7 @@ from updown.decision.risk.policy import load_settings as load_risk_settings
 from updown.decision.sizing import MAINTENANCE_MARGIN
 from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter, RequestCounting
 from updown.marketdata.ingest.timeframes import interval_seconds
+from updown.marketdata.shared_read import shared as shared_read
 from updown.marketdata.stream import CandleStream
 from updown.orchestration import leg_engines
 from updown.orchestration.leftovers import held_size, sweep
@@ -194,6 +196,12 @@ STEP_WINDOW = 200
 """걸음 소요 표본 창 — 최근 200걸음(15m 판이면 이틀치)."""
 BLOCKED_EVENT = "session_candidate_blocked"
 """막힌 후보 한 건을 `event_logs` 에 남길 때의 이벤트 이름 (T562 · `make live-check` 가 읽는다)."""
+CLOSE_BASIS_EVENT = "live_close_basis"
+"""봉 마감을 기다리지 않고 원장을 닫은(또는 시장가로 던진) **까닭 한 건**의 이벤트 이름 (T832).
+
+거래소가 먼저 닫아 대조가 따라 닫은 것 · 목표에 닿아 시장가로 뺀 것 · 손절을 지나 던진 것. 그 판단에
+쓴 사실(거래소 0 을 처음 본 때 · 기다린 시간 · 청산가를 어디서 읽었나)은 앱 로그에만 있었고,
+앱 로그는 배포 때 컨테이너와 함께 사라진다."""
 STEP_SLOW_MS = 250.0
 """이보다 느린 걸음은 `live_step_slow` 로 남긴다.
 
@@ -427,6 +435,46 @@ EARLY_REFRESH_TRIES = 5
 
 EXIT_WATCH_IDLE = 30.0
 """포지션이 없을 때 감시 주기(초)."""
+
+QUOTE_SHARE_S = 1.0
+"""보유 감시의 시세 한 번을 **같은 종목 판끼리** 나눠 쓰는 시간(초 · T832).
+
+같은 종목을 여러 판이 몫으로 나눠 들면 판마다 5 초에 한 번씩 같은 시세를 따로 물었다. 같은 종목
+판들이 같은 순간에 깨도록 맞추고(`exit_watch_delay`), 먼저 깬 판이 받은 답을 나머지가 같이 읽는다.
+⚠️ 잰 값이 아니다 — 깨는 시각이 조금씩 어긋나는 것을 덮을 만큼만 둔 값이고, 가장 나쁜 경우 닿음을
+이만큼 늦게 본다(지금 0 ~ 5 초 → 0 ~ 6 초). 서로 다른 종목끼리는 나눠 쓰지 않는다(전 종목 시세 한
+벌은 약 0.5 MB 라 한 종목 0.5 KB 를 여러 번 묻는 것보다 무겁다 · 2026-11-11 실측)."""
+
+
+def exit_watch_delay(symbol: str, tick: float, now: float) -> float:
+    """보유 감시가 다음에 깰 때까지의 잠(초) — **같은 종목 판은 같은 순간에** 깬다 (T832).
+
+    Args:
+        symbol: 종목. 종목마다 깨는 자리가 다르다(전 판이 한순간에 몰리지 않게).
+        tick: 감시 주기(초).
+        now: 지금(단조 시계 · 초).
+
+    Returns:
+        0 보다 크고 `tick` 을 넘지 않는 잠. 판마다 따로 `tick` 씩 자던 예전보다 길어지지 않는다.
+
+    Note:
+        판마다 제 박자로 자면 같은 종목 판 다섯이 5 초 안에 다섯 번 묻는다. 주기를 종목별 눈금에
+        맞추면 다섯이 같은 순간에 깨서 한 번만 묻는다(`QUOTE_SHARE_S`).
+    """
+    if tick <= 0:
+        return 0.0
+    offset = (zlib.crc32(symbol.encode()) % 1000) / 1000 * tick
+    rest = tick - ((now - offset) % tick)
+    return rest if rest > 0 else tick
+
+
+PERSIST_REFRESH_S = 3600.0
+"""원장이 그대로여도 이만큼 지나면 DB 에 한 번 다시 쓴다(초 · T832).
+
+`_persist` 는 마지막에 쓴 원장과 같으면 쓰기를 건너뛴다. 그러면 밖에서 DB 행이 바뀌었을 때(손으로
+고침 · 백업 복원) 러너가 그것을 다시 덮어쓸 계기가 없어진다 — 예전에는 걸음마다 덮어썼다. 이 값은 그
+받침이다. ⚠️ 잰 값이 아니다(운영값 · 손익과 무관). 진입 축이 1 시간 이상인 판은 걸음마다 한 번 쓰던
+것과 같아진다."""
 
 EXIT_RETRY_BACKOFF_S = 60.0
 """청산 주문이 거부된 뒤 다시 시도하기까지(초 · T815 C1).
@@ -1081,6 +1129,25 @@ def _closed_count(runner: object) -> int:
     )
 
 
+def _plain(value: object) -> object:
+    """사건 기록(JSON)에 실을 수 있는 꼴로 — 값은 바꾸지 않고 적는 꼴만 바꾼다 (T832).
+
+    Args:
+        value: 판단한 자리가 본 값.
+
+    Returns:
+        불 · 정수 · 문자열 · None 은 그대로, 날짜는 ISO 문자열, 목록은 원소마다, 나머지(Decimal ·
+        실수 등)는 문자열. 실수를 문자열로 적는 것은 가격이 지수 꼴 · 반올림으로 달라 보이지 않게다.
+    """
+    if value is None or isinstance(value, bool | int | str):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, list | tuple | set | frozenset):
+        return [_plain(item) for item in cast("Iterable[object]", value)]
+    return str(value)
+
+
 class LiveRunner:
     """웹소켓 봉으로 세션을 걸어간다.
 
@@ -1365,6 +1432,14 @@ class LiveRunner:
         #    같은 상태를 다시 적지 않는다. 프로세스가 살아 있는 동안만 유효하고,
         #    재기동하면 첫 걸음에 한 번 더 적힌다 (그 정도 중복은 분석에서 지운다).
         self._calibrated: dict[tuple[str, str], str] = {}
+        # T832 — **같은 내용을 DB 에 다시 쓰지 않는다.** 마지막에 쓴 원장 · 주문 행을 기억해 두고
+        #    같으면 건너뛴다(프로세스 수명 · 재기동하면 첫 번에 다시 쓴다). 자물쇠는 쓰기 순서와
+        #    기억 순서를 같게 한다 — 두 태스크가 겹쳐 쓰면 DB 에 남은 것과 기억이 갈릴 수 있다.
+        self._persisted: tuple[TradeRecord, ...] | None = None
+        self._persisted_at: float = 0.0
+        self._persisting = asyncio.Lock()
+        self._order_noted: dict[tuple[str, str], tuple[str, str, str, Decimal | None, str]] = {}
+        self._order_noting = asyncio.Lock()
         self._funding_seen: str = ""
         self.placed: dict[str, dict[str, str]] = {}
         """매매 id → 거래소 주문의 흔적 `{order_id, status, contracts}`.
@@ -1573,6 +1648,9 @@ class LiveRunner:
         """
         self._store = store
         self._run_id = run_id
+        # 판이 바뀌면 "이미 썼다" 는 기억도 버린다 (T832) — 새 판 밑에는 아직 아무것도 없다.
+        self._persisted = None
+        self._order_noted = {}
         # ⭐ **주문 이름에 들어가는 표식** (T18 ⑤). DB id 가 아니라 사람이 쓰는 짧은
         #    id 다 — 거래소 콘솔에서 눈으로 판을 가르는 것이 목적이므로.
         self._run_key = key
@@ -1623,6 +1701,55 @@ class LiveRunner:
             self._funnel_saved = dict(self._session.funnel)
         except Exception as exc:
             self._log.warning("live_funnel_persist_failed", payload={"error": str(exc)[:160]})
+
+    async def _note_close_basis(
+        self, trade: TradeRecord, *, path: str, basis: Mapping[str, object]
+    ) -> None:
+        """원장을 닫은(또는 시장가로 던진) 까닭 한 건을 `event_logs` 에 **추가만** 한다 (T832).
+
+        Args:
+            trade: 그 매매의 지금 기록(닫혔으면 닫힌 기록).
+            path: 어느 길이었나 — `reconcile` · `reconcile_share` · `target_touch` · `stop_missed`.
+            basis: 그 판단에 쓴 사실. 값은 여기서 만들지 않는다 — 판단한 자리가 본 것 그대로다.
+
+        Note:
+            2026-11-11 H_USDT 청산을 되짚을 때 "거래소 0 을 언제 봤고 얼마나 기다렸나 · 청산가를
+            어느 체결에서 읽었나" 가 앱 로그에만 있었다. 앱 로그는 배포가 컨테이너를 갈면 사라진다.
+
+            ⛔ 실패해도 던지지 않는다 — 이 기록은 청산이 **끝난 뒤** 남기는 것이고, 못 남겼다고
+            청산 · 손절 거두기를 막으면 안 된다(절대 규칙 #8-1). 조용히 삼키지도 않는다(경고 한 줄).
+            ⛔ UPDATE · DELETE 하지 않는다(절대 규칙 #8-2).
+        """
+        store = getattr(self, "_store", None)
+        if store is None or getattr(self, "observe_only", False):
+            return
+        payload: dict[str, Any] = {
+            "trade_id": trade.trade_id,
+            "market": self.instrument.market.value,
+            "symbol": self.instrument.symbol,
+            "run": getattr(self, "_run_key", ""),
+            "playbook": trade.playbook,
+            "direction": trade.direction.value,
+            "path": path,
+            "outcome": trade.outcome.value,
+            "entry": str(trade.entry),
+            "exit": str(trade.exit_price) if trade.exit_price is not None else "",
+            "stop": str(trade.planned_stop),
+            "target": str(trade.planned_target),
+            **{key: _plain(value) for key, value in basis.items()},
+        }
+        try:
+            await store.note_event(CLOSE_BASIS_EVENT, payload, level=LogLevel.INFO)
+        except Exception as exc:
+            self._log.warning(
+                "live_close_basis_unsaved",
+                payload={
+                    "trade_id": trade.trade_id,
+                    "path": path,
+                    "error": str(exc)[:160],
+                    "note": "청산 까닭을 event_logs 에 못 남겼다 — 매매는 그대로다 (T832)",
+                },
+            )
 
     async def _note_blocked_candidates(self) -> None:
         """새로 막힌 후보를 `event_logs` 에 한 줄씩 **추가만** 한다 (T562).
@@ -1749,30 +1876,49 @@ class LiveRunner:
         return {leg.order_id for leg in plan.inherit if leg.order_id is not None}
 
     async def _persist(self) -> None:
-        """원장을 DB 에 통째로 다시 쓴다.
+        """원장을 DB 에 통째로 다시 쓴다 — **마지막에 쓴 것과 다를 때만**.
 
         Note:
-            ⚠️ **매 걸음 통째로 쓴다** — 파일 저널이 하던 그대로다. 한 판의 매매는
-            많아야 수십 건이라 비용이 없고, 이어쓰기로 두면 갱신(대기 → 체결 → 청산)을
-            표현할 수 없다.
+            ⚠️ **쓸 때는 통째로 쓴다** — 파일 저널이 하던 그대로다. 이어쓰기로 두면
+            갱신(대기 → 체결 → 청산)을 표현할 수 없다.
+
+            ⭐ **같으면 건너뛴다** (T832). 걸음마다 불리는데 원장은 대개 그대로다 — 봉 마감에
+            판 수십 개가 한꺼번에 같은 내용을 다시 쓰고 있었다. 매매 기록은 바뀌지 않는
+            값(frozen)이라 `==` 가 곧 "DB 에 쓸 내용이 같다" 다. `PERSIST_REFRESH_S` 가 지나면
+            같아도 한 번 쓴다(밖에서 DB 가 바뀐 경우의 받침).
 
             ⛔ **실패해도 던지지 않는다** (절대 규칙 #8-1). 저장 실패가 손절·청산 같은
             리스크 감소 행동을 막으면 안 된다 — 로그로 크게 남기고 매매는 계속 돈다.
+            실패한 내용은 "썼다" 고 기억하지 않으므로 다음에 다시 쓴다.
         """
         if self._store is None or self._run_id is None:
             return
-        try:
-            await self._store.save(self._run_id, self._session.ledger.records)
-        except Exception as exc:
-            self.last_error = f"원장 저장 실패: {exc}"[:200]
-            self._log.error(
-                "live_ledger_unsaved",
-                payload={
-                    "run_id": str(self._run_id),
-                    "error": str(exc)[:200],
-                    "note": "매매는 계속 돈다 — 다음 걸음에 다시 쓴다 (§1.2.1)",
-                },
-            )
+        async with self._persisting:
+            # ⚠️ 자물쇠를 잡은 **뒤에** 원장을 읽는다 — 기다리는 사이 바뀐 것까지 싣는다.
+            records = tuple(self._session.ledger.records)
+            now = time.monotonic()
+            if (
+                self._persisted is not None
+                and now - self._persisted_at < PERSIST_REFRESH_S
+                and self._persisted == records
+            ):
+                return
+            try:
+                await self._store.save(self._run_id, records)
+            except Exception as exc:
+                self._persisted = None
+                self.last_error = f"원장 저장 실패: {exc}"[:200]
+                self._log.error(
+                    "live_ledger_unsaved",
+                    payload={
+                        "run_id": str(self._run_id),
+                        "error": str(exc)[:200],
+                        "note": "매매는 계속 돈다 — 다음 걸음에 다시 쓴다 (§1.2.1)",
+                    },
+                )
+                return
+            self._persisted = records
+            self._persisted_at = now
 
     def note_guard(self, name: str, detail: str) -> None:
         """**밖에서** 안전장치 발동을 적는다 (T20 ④-b).
@@ -1941,20 +2087,33 @@ class LiveRunner:
         Note:
             🔴 **원장이 보유중인데 여기 행이 없으면 유령 포지션이다.** 원장은 판정만으로
             보유를 적고 전송은 러너가 따로 한다 — 전송이 실패해도 보유는 남는다.
+
+            ⭐ **같은 행은 다시 쓰지 않는다** (T832). 손절 점검이 30 초마다 "걸려 있다" 를 같은
+            값으로 다시 적고 있었다(보유 몫마다). 원문(`raw`)이 딸린 호출은 늘 쓴다 — 그리고
+            원문 없는 같은 호출이 그 원문을 빈 값으로 덮어쓰던 일도 같이 사라진다.
+            ⚠️ 저장이 실패하면 기억하지 않는다 — 다음 호출이 다시 쓴다.
         """
         if self._store is None or self._run_id is None:
             return
-        await self._store.record_order(
-            self._run_id,
-            trade_id,
-            role=role,
-            status=status,
-            exchange_order_id=order_id,
-            contracts=contracts,
-            price=price,
-            error=error,
-            raw=raw,
-        )
+        key = (trade_id, role)
+        mark = (status, order_id, contracts, price, error)
+        async with self._order_noting:
+            if raw is not None or self._order_noted.get(key) != mark:
+                saved = await self._store.record_order(
+                    self._run_id,
+                    trade_id,
+                    role=role,
+                    status=status,
+                    exchange_order_id=order_id,
+                    contracts=contracts,
+                    price=price,
+                    error=error,
+                    raw=raw,
+                )
+                if saved is False:
+                    self._order_noted.pop(key, None)
+                else:
+                    self._order_noted[key] = mark
         # 🔴 교정 원장 (T185) — **상태가 바뀔 때만** 남긴다.
         #
         #    조건부 손절은 24시간에 만료돼 **매 걸음 다시 걸린다**. 그대로 적으면
@@ -2835,6 +2994,7 @@ class LiveRunner:
 
         # 🔴 T599 — 이름 있는 청산 체결이 없으면 0 이 이어질 때까지 기다린다(조회 지연 · 진입 오인)
         fill = await self._closing_fill(held.trade_id, named_only=True)
+        named = fill is not None
         if fill is None:
             if not self._zero_confirmed():
                 return False
@@ -2848,6 +3008,7 @@ class LiveRunner:
                 },
             )
             return False
+        zero_seen = cast("datetime | None", getattr(self, "_zero_seen_at", None))
 
         long_side = held.direction is Direction.LONG
         gained = (fill > held.entry) if long_side else (fill < held.entry)
@@ -2876,6 +3037,22 @@ class LiveRunner:
         )
         # 🔴 T831 — 목표 지정가로 닫혔으면 조건부 손절이, 손절로 닫혔으면 목표 지정가가 남는다.
         await self._sweep_after_close("거래소 청산 뒤")
+        # T832 — 까닭은 **거둔 뒤에** 남긴다(기록이 손절 거두기를 늦추지 않게).
+        await self._note_close_basis(
+            done,
+            path="reconcile",
+            basis={
+                "on_exchange": "0",
+                "fill_from": "이름 있는 청산 체결" if named else "가장 최근 청산 체결",
+                "zero_first_seen": zero_seen,
+                "zero_waited_s": (
+                    round((done.closed_at - zero_seen).total_seconds(), 1)
+                    if zero_seen is not None and done.closed_at is not None
+                    else None
+                ),
+                "liquidated": outcome is Outcome.LIQUIDATED,
+            },
+        )
         return True
 
     async def _sweep_after_close(self, why: str) -> None:
@@ -2924,18 +3101,28 @@ class LiveRunner:
             (`_tp_after_failed_cancel`)은 기억을 쓰지 않고 늘 새로 읽는다.
         """
         token = _RECONCILE_MEMO.set({id(self): {"recent": None, "owners": {}}})
+        notes: list[tuple[TradeRecord, dict[str, object]]] = []
         try:
-            closed = await self._reconcile_shares_once()
+            closed = await self._reconcile_shares_once(notes)
         finally:
             _RECONCILE_MEMO.reset(token)
         if closed and not any(
             item.outcome is Outcome.OPEN for item in self._session.ledger.records
         ):
             await self._sweep_after_close("거래소 청산 뒤(몫)")
+        # T832 — 까닭은 **거둔 뒤에** 남긴다(기록이 손절 거두기를 늦추지 않게).
+        for done, basis in notes:
+            await self._note_close_basis(done, path="reconcile_share", basis=basis)
         return closed
 
-    async def _reconcile_shares_once(self) -> bool:
+    async def _reconcile_shares_once(
+        self, notes: list[tuple[TradeRecord, dict[str, object]]] | None = None
+    ) -> bool:
         """몫 모드(T320 P4)의 `reconcile` — 거래소가 **먼저 닫은 몫**만 원장에서 닫는다.
+
+        Args:
+            notes: 닫은 몫마다 `(닫힌 기록, 그 판단에 쓴 사실)` 을 여기 담는다(T832 · 부른 쪽이
+                남은 주문을 거둔 뒤 `event_logs` 에 적는다). None 이면 담지 않는다.
 
         Returns:
             하나라도 닫았으면 True.
@@ -3037,9 +3224,18 @@ class LiveRunner:
         if not proven:
             self._share_mismatch = ""  # 모르는 몫이 남아 있으면 합은 여전히 안 맞는다 — 안 지운다
         liquidated = size == 0 and await self._was_liquidated()
+        zero_seen = cast("datetime | None", getattr(self, "_zero_seen_at", None))
+        how = (
+            "이름 있는 체결(계약 수 모르는 몫이 섞임)"
+            if proven
+            else "거래소 포지션 0"
+            if size == 0
+            else "그 몫의 손절 · 목표 주문이 사라짐"
+        )
         closed_any = False
         for held in gone:
             fill = proven.get(held.trade_id)
+            by_name = fill is not None
             if fill is None:
                 fill = await self._share_closing_fill(
                     held, sole=len(gone) == 1 and len(shares) == 1
@@ -3082,6 +3278,25 @@ class LiveRunner:
             self._share_stop_ids.pop(held.trade_id, None)
             await self._align_fee(done.trade_id)
             closed_any = True
+            if notes is not None:
+                notes.append(
+                    (
+                        done,
+                        {
+                            "on_exchange": size,
+                            "shares_owed": owed,
+                            "gone_by": how,
+                            "fill_from": (
+                                "이름 있는 체결"
+                                if by_name
+                                else "그 몫 이름의 체결(혼자 남은 몫이면 가장 최근 체결)"
+                            ),
+                            "contracts": self._share_contracts(held),
+                            "zero_first_seen": zero_seen if size == 0 else None,
+                            "liquidated": outcome is Outcome.LIQUIDATED,
+                        },
+                    )
+                )
             self._log.info(
                 "live_reconciled",
                 payload={
@@ -3910,7 +4125,12 @@ class LiveRunner:
         rounds = 0
         while True:
             busy = any(r.outcome is Outcome.OPEN for r in self._session.ledger.records)
-            await asyncio.sleep(EXIT_WATCH_TICK if busy else EXIT_WATCH_IDLE)
+            # ⭐ T832 — 보유 중이면 종목별 눈금에 맞춰 깬다(같은 종목 판이 시세를 같이 읽게).
+            await asyncio.sleep(
+                exit_watch_delay(self.instrument.symbol, EXIT_WATCH_TICK, time.monotonic())
+                if busy
+                else EXIT_WATCH_IDLE
+            )
             if not busy or self.observe_only:
                 continue
             try:
@@ -3934,7 +4154,7 @@ class LiveRunner:
         records = [r for r in self._session.ledger.records if r.outcome is Outcome.OPEN]
         if not records:
             return
-        last = (await self._quotes.get_quote(self.instrument)).last_price
+        last = (await self._watch_quote()).last_price
         now = time.monotonic()
         for held in records:
             if self._exit_backoff.get(held.trade_id, 0.0) > now:
@@ -3950,6 +4170,36 @@ class LiveRunner:
             if last < held.planned_stop if long else last > held.planned_stop:
                 await self._exit_stop_missed(held, last)
                 return
+
+    async def _watch_quote(self) -> Quote:
+        """보유 감시가 쓰는 시세 — 같은 종목 판이 방금 받은 것이 있으면 같이 읽는다 (T832).
+
+        Returns:
+            시세.
+
+        Note:
+            🔴 **나눠 써도 된다고 밝힌 조회 어댑터만** 나눠 쓴다(`quote_share_key` — 어느 거래소
+            어느 주소의 시세인지). 그 이름이 없으면 예전처럼 판마다 새로 묻는다 — 서로 다른 곳을
+            보는 두 어댑터가 같은 이름으로 섞이는 것을 막는다.
+
+            ⛔ 여기서 받은 값은 **닿았는지 보는 데만** 쓴다. 체결 여부 · 청산가는 이 값이 아니라
+            거래소에 새로 물어 정한다.
+        """
+        source = getattr(self._quotes, "quote_share_key", None)
+        if not isinstance(source, str) or not source:
+            return await self._quotes.get_quote(self.instrument)
+        return cast(
+            "Quote",
+            await shared_read(
+                f"quote:{source}:{self.instrument.symbol}",
+                lambda: self._quotes.get_quote(self.instrument),
+                ttl=QUOTE_SHARE_S,
+            ),
+        )
+
+    def _ledger_record(self, held: TradeRecord) -> TradeRecord:
+        """이 매매의 **지금** 원장 기록 — 없으면 받은 기록 그대로 (T832 · 까닭 기록용)."""
+        return next((r for r in self._session.ledger.records if r.trade_id == held.trade_id), held)
 
     async def _exit_locked(self) -> bool:
         """걸음이 도는 중이면 이번엔 건너뛴다 — 다음 틱이 다시 본다."""
@@ -4036,12 +4286,32 @@ class LiveRunner:
                 # 🔴 T815 C1 — 거래소 청산이 거부되면 원장을 보유 중으로 되돌린다. 안 되돌리면
                 #    "원장 닫힘 · 거래소 보유" 로 갈린 채 아무도 다시 닫지 않는다(손절은
                 #    `_apply_exit_share` 가 되돌려 걸었다). 재시도는 `EXIT_RETRY_BACKOFF_S` 뒤.
-                if not await self._apply_exit(now, shares=[now]):
+                sent = await self._apply_exit(now, shares=[now])
+                if not sent:
                     self._rehold_unfilled(
                         [now], outcomes=(Outcome.TAKE_PROFIT, Outcome.SIGNAL_EXIT)
                     )
                     self._exit_backoff[now.trade_id] = time.monotonic() + EXIT_RETRY_BACKOFF_S
                 await self._persist()
+                if sent:
+                    # T832 — 시장가가 나간 뒤에만 남긴다(거부돼 되돌린 것은 닫힌 것이 아니다).
+                    await self._note_close_basis(
+                        self._ledger_record(now),
+                        path="target_touch",
+                        basis={
+                            "last": last,
+                            "touched_by": (
+                                "지금 가격"
+                                if (
+                                    last >= now.planned_target
+                                    if now.direction is Direction.LONG
+                                    else last <= now.planned_target
+                                )
+                                else "지난 봉의 고저"
+                            ),
+                            "note": "목표에 닿았는데 체결이 안 됐다 — 시장가로 뺐다",
+                        },
+                    )
             finally:
                 _notice_closes(self, before)
 
@@ -4143,6 +4413,17 @@ class LiveRunner:
                     self._exit_backoff[now.trade_id] = time.monotonic() + ZERO_CONFIRM_SECONDS
                 await self.reconcile()
                 await self._persist()
+                # T832 — 던졌다는 사실과 그때 본 값. 대조가 닫았으면 그쪽이 까닭을 따로 남긴다.
+                await self._note_close_basis(
+                    self._ledger_record(now),
+                    path="stop_missed",
+                    basis={
+                        "last": last,
+                        "market_order_sent": sent,
+                        "zero_pending": pending,
+                        "note": "손절가를 지났는데 거래소 손절이 안 터졌다 — 시장가로 던졌다",
+                    },
+                )
             finally:
                 _notice_closes(self, before)
 
@@ -6346,7 +6627,7 @@ class LiveRunner:
         position_seen: dict[str, str] | None = None
         if isinstance(self._orders, PositionAware):
             try:
-                position = await self._orders.position_snapshot(self.instrument)
+                position = await self._audit_position(on_book=held is not None)
             except Exception:
                 position = {}
             else:
@@ -6431,6 +6712,40 @@ class LiveRunner:
                 else:
                     found += liq_findings(held, exchange_liq)
         return found
+
+    async def _audit_position(self, *, on_book: bool) -> dict[str, str]:
+        """감사가 보는 거래소 포지션 — 판들이 나눠 쓰는 계좌 전체 한 벌에서 먼저 찾는다 (T832).
+
+        Args:
+            on_book: 원장이 보유 중이라고 말하는가.
+
+        Returns:
+            거래소가 말하는 포지션. 없으면 빈 사전.
+
+        Raises:
+            Exception: 종목별 조회 실패 — 부르는 쪽(감사)이 이번 바퀴를 건너뛴다.
+
+        Note:
+            ⭐ 감사는 30 초마다 판마다 `positions/<종목>` 을 물었다 — 판이 수십 개면 대부분 "없음"
+            이라는 같은 답이다. 계좌 전체 한 벌(수명 2 초)에 이미 그 답이 있다.
+
+            🔴 **맞을 때만 믿는다.** 한 벌은 최대 2 초 낡을 수 있다. 원장과 같은 말을 하면 그대로
+            쓰고, 어긋나 보이면(또는 못 읽거나 못 가리면) 예전처럼 **종목별로 새로 읽어** 그 답으로
+            판정한다 — 낡은 값 때문에 `ledger_mismatch` 가 뜨는 일은 없다. 반대로 진짜 갈림이
+            낡은 값에 2 초 가려질 수는 있다 — 그 경보는 원래도 두 바퀴 연속을 기다린다.
+
+            ⛔ 대조(`reconcile`) · 손절 · 청산은 이 길을 쓰지 않는다 — 판단은 늘 새로 읽는다.
+        """
+        orders = cast("PositionAware", self._orders)
+        if hasattr(orders, "position_from_account"):
+            with contextlib.suppress(Exception):
+                seen = cast(
+                    "dict[str, str] | None",
+                    await orders.position_from_account(self.instrument),  # type: ignore[attr-defined]
+                )
+                if seen is not None and bool(seen) == on_book:
+                    return seen
+        return await orders.position_snapshot(self.instrument)
 
     def _share_size_findings(self, size: int) -> list[dict[str, str]]:
         """몫 모드(T320 P4) 감사 — 거래소 계약 수와 **몫 합**이 같은가.
@@ -7384,6 +7699,40 @@ class LiveRunner:
                 self._waiting_id(), role=f"진입{ticket[-1]}", status="filled", price=price
             )
 
+    async def _finished_row(
+        self, order_id: str, *, loud: bool = False, extra: dict[str, object] | None = None
+    ) -> tuple[bool, dict[str, str] | None]:
+        """끝난 주문 목록에서 그 주문 한 줄을 찾는다 (T832 — 세 군데에 따로 있던 같은 조회).
+
+        Args:
+            order_id: 거래소 주문 id.
+            loud: 못 읽었을 때 경고 대신 에러로 남길지(부분 체결을 놓칠 수 있는 길).
+            extra: 못 읽었을 때 로그에 더 실을 것.
+
+        Returns:
+            (목록을 읽었나, 그 줄). 못 읽었거나 어댑터가 목록을 못 주면 (False, None) ·
+            읽었는데 없으면 (True, None).
+
+        Note:
+            ⛔ 목록을 기억해 두지 않는다. 체결 여부는 늘 거래소에 새로 묻는다 — 낡은 목록은
+            "안 채워졌다" 는 거짓 답을 만든다(T831).
+        """
+        if not hasattr(self._orders, "recent_orders"):
+            return False, None
+        try:
+            rows = cast(
+                "list[dict[str, str]]",
+                await self._orders.recent_orders(self.instrument),  # type: ignore[attr-defined]
+            )
+        except Exception as exc:
+            emit = self._log.error if loud else self._log.warning
+            emit(
+                "live_fill_lookup_failed",
+                payload={"order": order_id, "error": str(exc)[:120], **(extra or {})},
+            )
+            return False, None
+        return True, next((r for r in rows if str(r.get("id", "")) == order_id), None)
+
     async def _finished_fill(self, order_id: str) -> tuple[Decimal, Decimal] | None:
         """끝난 지정가 진입의 (체결가 · 체결 비율) — 다 찼으면 비율 1, 일부면 `채움/크기` (T831).
 
@@ -7397,19 +7746,7 @@ class LiveRunner:
             🔴 거래소가 말한 값만 쓴다(`_fill_price` 와 같다). 취소로 끝났어도 `size - left` 가
             0 보다 크면 산 것이 있다.
         """
-        if not hasattr(self._orders, "recent_orders"):
-            return None
-        try:
-            rows = cast(
-                "list[dict[str, str]]",
-                await self._orders.recent_orders(self.instrument),  # type: ignore[attr-defined]
-            )
-        except Exception as exc:
-            self._log.warning(
-                "live_fill_lookup_failed", payload={"order": order_id, "error": str(exc)[:120]}
-            )
-            return None
-        row = next((r for r in rows if str(r.get("id", "")) == order_id), None)
+        _, row = await self._finished_row(order_id)
         if row is None:
             return None
         try:
@@ -7438,25 +7775,11 @@ class LiveRunner:
             🔴 **거래소가 말한 값을 그대로 쓴다.** 우리가 부른 지정가로 대신하면
             슬리피지가 사라져 원장이 사실보다 나은 말을 한다.
         """
-        if not hasattr(self._orders, "recent_orders"):
+        _, row = await self._finished_row(order_id)
+        if row is None or str(row.get("finish_as", "")) != "filled":
             return None
-        try:
-            rows = cast(
-                "list[dict[str, str]]",
-                await self._orders.recent_orders(self.instrument),  # type: ignore[attr-defined]
-            )
-        except Exception as exc:
-            self._log.warning(
-                "live_fill_lookup_failed", payload={"order": order_id, "error": str(exc)[:120]}
-            )
-            return None
-        for row in rows:
-            if str(row.get("id", "")) != order_id:
-                continue
-            if str(row.get("finish_as", "")) != "filled":
-                return None
-            with contextlib.suppress(Exception):
-                return Decimal(str(row.get("fill_price") or row.get("price") or "0")) or None
+        with contextlib.suppress(Exception):
+            return Decimal(str(row.get("fill_price") or row.get("price") or "0")) or None
         return None
 
     async def _adopt_partial_before_cancel(
@@ -7483,25 +7806,16 @@ class LiveRunner:
             hint = abs(Decimal(str(filled_hint))) if filled_hint is not None else None
         if hint is not None and hint <= 0:
             return  # 응답이 "체결 0" 이라고 했다 — 거래소에 더 묻지 않는다
-        if not hasattr(self._orders, "recent_orders"):
+        read, row = await self._finished_row(
+            order_id,
+            loud=True,
+            extra={
+                "filled_hint": str(hint),
+                "note": "취소한 진입의 부분 체결을 못 읽었다 — 감사 · 사람이 본다",
+            },
+        )
+        if not read:
             return
-        try:
-            rows = cast(
-                "list[dict[str, str]]",
-                await self._orders.recent_orders(self.instrument),  # type: ignore[attr-defined]
-            )
-        except Exception as exc:
-            self._log.error(
-                "live_fill_lookup_failed",
-                payload={
-                    "order": order_id,
-                    "error": str(exc)[:120],
-                    "filled_hint": str(hint),
-                    "note": "취소한 진입의 부분 체결을 못 읽었다 — 감사 · 사람이 본다",
-                },
-            )
-            return
-        row = next((r for r in rows if str(r.get("id", "")) == order_id), None)
         if row is None:
             if hint is not None:
                 self._log.error(

@@ -14,9 +14,9 @@
 Gate 공개 엔드포인트는 **엔드포인트당 200r/10s (IP 기준)** 이다 — 업비트처럼 그룹
 개념이 있고, 우리는 경로별로 스로틀을 나눈다.
 
-응답 헤더가 남은 횟수를 준다 (`X-Gate-RateLimit-Requests-Remain`). 지금은 읽지 않고
-초당 간격으로만 조인다 — 헤더를 믿고 몰아치면 다른 프로세스가 같은 IP 를 쓰고 있을 때
-함께 막힌다.
+응답 헤더가 남은 횟수를 준다 (`X-Gate-RateLimit-Requests-Remain`). 속도는 여전히 초당
+간격으로만 조인다 — 헤더를 믿고 몰아치면 다른 프로세스가 같은 IP 를 쓰고 있을 때 함께
+막힌다. 헤더는 **기록만** 한다 (T832 · `ratelimit.observe` — 1 분에 한 줄 `ratelimit_paths`).
 
 ## testnet
 
@@ -33,6 +33,7 @@ import httpx
 from updown.common.http.outbound import Outbound, OutboundError, RetryPolicy
 from updown.common.http.throttle import Throttle
 from updown.common.logging.setup import get_logger
+from updown.marketdata.ratelimit import observe
 
 LIVE_BASE_URL: Final = "https://api.gateio.ws/api/v4"
 """라이브 REST 베이스."""
@@ -132,6 +133,8 @@ class GateClient:
             headers={"Accept": "application/json"},
             policy=RetryPolicy(max_retries=max_retries, base_delay_s=0.25, jitter_s=0.1),
             throttle_of=self._throttle,
+            # 응답마다 남은 한도와 경로를 적는다 (T832) — 기록만 하고 막지 않는다.
+            on_response=lambda path, headers: observe("GATE", headers, path=path),
             transport=transport,
         )
 

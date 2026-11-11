@@ -624,6 +624,39 @@ class GatePaperAdapter:
             return {}
         return position_row(raw)
 
+    async def position_from_account(self, instrument: Instrument) -> dict[str, str] | None:
+        """**계좌 전체 포지션 한 벌**에서 이 종목 줄을 꺼낸다 (T832 · 감사 전용).
+
+        Args:
+            instrument: 볼 종목.
+
+        Returns:
+            `position_snapshot` 과 같은 칸. 없으면 `{}`. **이 한 벌로는 못 가리면 None** — 같은
+            종목 줄이 둘 이상 살아 있을 때(양방향 모드)다. None 이면 부르는 쪽이 종목별로 묻는다.
+
+        Raises:
+            GateApiError: 계좌 전체 조회 실패.
+
+        Note:
+            ⭐ 판마다 `positions/<종목>` 을 따로 묻던 감사가, 판들이 나눠 쓰는 계좌 전체 한 벌
+            (`account_margin` 이 쓰는 그것 · 수명 2 초)을 같이 읽게 한다.
+
+            🔴 **최대 2 초 낡을 수 있다.** 그래서 감사만 쓰고, 그것도 원장과 **맞을 때만** 믿는다 —
+            어긋나 보이면 감사가 종목별로 새로 읽어 확인한다. 대조 · 손절 · 청산 판단은 이 값을
+            쓰지 않는다(`position_snapshot` 그대로). 우리가 주문 · 취소를 내면 이 기억은 바로
+            지워진다.
+        """
+        rows = await shared(f"{self._broker}:positions", self._trade.get_positions)
+        contract = to_contract(instrument)
+        live = [
+            row
+            for row in rows
+            if str(row.get("contract") or "") == contract and not zero(row.get("size"))
+        ]
+        if len(live) > 1:
+            return None
+        return position_row(live[0]) if live else {}
+
     async def book_snapshot(self) -> dict[str, dict[str, Any]]:
         """**전 종목 한 벌** — 포지션 · 미결 주문 · 조건부를 세 번의 호출로 (T330 · 2026-09-30).
 

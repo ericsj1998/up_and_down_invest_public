@@ -1023,7 +1023,7 @@ class RunStore:
         price: Decimal | None = None,
         error: str = "",
         raw: JsonDict | None = None,
-    ) -> None:
+    ) -> bool:
         """주문 하나의 **지금 상태**를 적는다.
 
         Args:
@@ -1036,6 +1036,10 @@ class RunStore:
             price: 지정가·발동가.
             error: 실패 문구.
             raw: 원문.
+
+        Returns:
+            적었으면 True · 못 적었으면 False. 부르는 쪽이 "같은 행은 다시 안 쓴다" 를 할 때
+            **못 적은 것을 적었다고 기억하지 않게** 하려는 값이다 (T832).
 
         Note:
             🔴 **매매 행을 안 찾는다** (2026-08-19 사고 ④). 예전에는 `wf_trades` 를 먼저
@@ -1085,6 +1089,8 @@ class RunStore:
                     "note": "되짚기용 기록이다 — 주문 자체는 나갔다",
                 },
             )
+            return False
+        return True
 
     async def record_calibration(
         self,

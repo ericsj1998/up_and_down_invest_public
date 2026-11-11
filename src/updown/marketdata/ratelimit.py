@@ -40,13 +40,32 @@ _logger = get_logger("marketdata.ratelimit")
 BINANCE_WEIGHT_HEADERS = ("x-mbx-used-weight-1m", "x-mbx-used-weight")
 """Binance 가 **1분 창에 지금까지 쓴 가중치**를 실어 주는 헤더."""
 
-GATE_HEADERS = ("x-gate-ratelimit-remain", "x-gate-ratelimit-limit")
+GATE_REMAIN_HEADERS = ("x-gate-ratelimit-requests-remain", "x-gate-ratelimit-remain")
+"""Gate 가 **이 엔드포인트에 남은 횟수**를 실어 주는 헤더.
+
+🔴 실제 이름은 앞의 것이다 (2026-11-11 공개 응답 실측 · T832:
+`x-gate-ratelimit-requests-remain: 199` · `x-gate-ratelimit-limit: 200`). 뒤의 이름만 찾던 동안에는
+Gate 눈금이 한 번도 안 읽혔다. 서명 응답의 헤더는 못 재서 옛 이름도 받는다.
+"""
+
+GATE_LIMIT_HEADERS = ("x-gate-ratelimit-limit",)
+"""Gate 의 그 엔드포인트 한도."""
+
+GATE_HEADERS = GATE_REMAIN_HEADERS + GATE_LIMIT_HEADERS
 """Gate 의 남은 횟수 / 한도."""
 
 LOUD_AT = 0.7
 """이 비율을 넘으면 로그를 남긴다 — 넘고 나서 아는 것보다 다가갈 때 아는 것이 낫다."""
 
+LOUD_EVERY_S = 10.0
+"""한도 접근 경고를 거래소마다 이 간격에 한 번만 찍는다.
+
+응답마다 찍으면 몰아칠 때 로그가 넘친다."""
+
 _BANNED_UNTIL = re.compile(r"banned until (\d{10,13})")
+
+_ID_SEGMENT = re.compile(r"^(\d+|[A-Z0-9]+_[A-Z0-9]+)$")
+"""경로 조각이 주문 번호 · 종목 이름인가 — 그대로 세면 주문마다 줄이 하나씩 생긴다."""
 
 
 @dataclass
@@ -91,6 +110,13 @@ weight 가 이 응답에 묻어 온다) 분 단위 합계로 보면 **누가 큰
 _USED_SEEN: dict[str, deque[tuple[float, int]]] = {}
 """거래소 → `(시각, 헤더 used)` 60초 창 — 창 안 **최댓값**이 그 분의 진짜 소모(IP 전체)다."""
 _LAST_REPORT: dict[str, float] = {}
+_LAST_LOUD: dict[str, float] = {}
+_REMAIN_SEEN: dict[str, deque[tuple[float, str, int, int]]] = {}
+"""거래소 → `(시각, 경로, 남은 횟수, 한도)` 60초 창 (T832 · 2026-11-11).
+
+Gate 한도는 **엔드포인트마다 따로**다. 계량기 하나(`Meter`)에는 마지막 응답의 엔드포인트 값만 남아
+"어느 길이 바닥에 가까웠나" 를 말하지 못한다 — 그래서 경로별 **최솟값**을 따로 든다.
+"""
 
 BINANCE_PATH_WEIGHT: dict[str, int] = {
     "/fapi/v1/klines": 2,  # limit ≤499 (klines_limit_for 가 보장 · 시드 802 는 5)
@@ -115,13 +141,14 @@ BINANCE_PATH_WEIGHT: dict[str, int] = {
 표에 없는 경로는 1 로 세고 `?` 표시로 드러낸다."""
 
 
-def _count_path(venue: str, path: str, used: int, now: float) -> None:
+def _count_path(venue: str, path: str, used: int | None, now: float) -> None:
     """응답 하나를 60초 창 둘에 적는다 — 경로별 공식 weight 와 헤더의 `used`.
 
     Args:
         venue: 거래소 이름.
         path: 엔드포인트 경로. 빈 값이면 `?` 로 센다.
-        used: 이 응답 헤더가 말한 소모량.
+        used: 이 응답 헤더가 말한 소모량. 헤더가 없었으면 None — 건수만 센다(낡은 값을 다시 적으면
+            지나간 최댓값이 창에 계속 남는다).
         now: 응답 시각 (epoch 초).
 
     Note:
@@ -131,13 +158,76 @@ def _count_path(venue: str, path: str, used: int, now: float) -> None:
     weight = BINANCE_PATH_WEIGHT.get(path, 1) if venue == "BINANCE" else 1
     with _LOCK:
         box = _PATHS.setdefault(venue, deque())
-        box.append((now, path or "?", weight))
+        box.append((now, shape_of(path) or "?", weight))
         while box and now - box[0][0] > PATH_WINDOW_S:
             box.popleft()
+        if used is None:
+            return
         seen = _USED_SEEN.setdefault(venue, deque())
         seen.append((now, used))
         while seen and now - seen[0][0] > PATH_WINDOW_S:
             seen.popleft()
+
+
+def shape_of(path: str) -> str:
+    """경로에서 주문 번호 · 종목 이름을 `{id}` 로 바꾼다 — 같은 길을 한 줄로 세려고.
+
+    Args:
+        path: 엔드포인트 경로 (`/futures/usdt/orders/123` ·
+            `/api/v4/futures/usdt/positions/BTC_USDT`).
+
+    Returns:
+        `/futures/usdt/orders/{id}` 꼴. 접두 `/api/v4` 는 뗀다 — 공개 클라이언트와 서명 클라이언트가
+        같은 길을 다른 꼴로 넘겨도 한 줄에 모인다.
+
+    Note:
+        Gate 는 주문 번호 · 종목이 경로에 들어간다. 그대로 세면 주문마다 줄이 생겨 "누가 큰지" 가
+        안 보이고 60초 창의 키가 끝없이 는다. 바이낸스 경로는 조각이 이 꼴에 안 걸려 그대로다.
+    """
+    text = path.removeprefix("/api/v4")
+    return "/".join("{id}" if _ID_SEGMENT.match(part) else part for part in text.split("/"))
+
+
+def _count_remain(venue: str, path: str, remain: int, limit: int, now: float) -> None:
+    """엔드포인트별 남은 횟수를 60초 창에 적는다 (Gate).
+
+    Args:
+        venue: 거래소 이름.
+        path: 엔드포인트 경로.
+        remain: 이 응답 헤더가 말한 남은 횟수.
+        limit: 그 엔드포인트 한도. 모르면 0.
+        now: 응답 시각 (epoch 초).
+    """
+    with _LOCK:
+        box = _REMAIN_SEEN.setdefault(venue, deque())
+        box.append((now, shape_of(path) or "?", remain, limit))
+        while box and now - box[0][0] > PATH_WINDOW_S:
+            box.popleft()
+
+
+def tightest_1m(venue: str) -> list[dict[str, object]]:
+    """최근 60초에 **한도에 가장 가까웠던 엔드포인트** — 경로별 남은 횟수 최솟값.
+
+    Args:
+        venue: 거래소 이름.
+
+    Returns:
+        `{path, remain_min, limit}` 행들, 남은 비율이 작은 순. 남은 횟수를 주는 거래소(Gate)만
+        채워진다.
+
+    Note:
+        같은 IP 를 쓰는 다른 프로세스의 소모도 이 값에 들어 있다 — 헤더는 거래소가 본 사실이다.
+    """
+    now = time.time()
+    with _LOCK:
+        rows = [r for r in _REMAIN_SEEN.get(venue, ()) if now - r[0] <= PATH_WINDOW_S]
+    low: dict[str, tuple[int, int]] = {}
+    for _, path, remain, limit in rows:
+        seen = low.get(path)
+        if seen is None or remain < seen[0]:
+            low[path] = (remain, limit)
+    ordered = sorted(low.items(), key=lambda item: (item[1][0] / item[1][1]) if item[1][1] else 1.0)
+    return [{"path": p, "remain_min": r, "limit": cap} for p, (r, cap) in ordered]
 
 
 def peak_used_1m(venue: str) -> int:
@@ -197,6 +287,20 @@ def _maybe_report(venue: str, now: float) -> None:
     _LAST_REPORT[venue] = now
     top = _agg(venue)
     ours = sum(w for _, _, w in top)
+    tight = tightest_1m(venue)
+    if tight:
+        # 남은 횟수를 주는 거래소(Gate) — 한도가 엔드포인트마다 따로라 가중치 합은 뜻이 없다.
+        # 1 분에 몇 번 불렀나(경로별)와 어느 길이 바닥에 가장 가까웠나를 한 줄로 남긴다 (T832).
+        _logger.info(
+            "ratelimit_paths",
+            payload={
+                "venue": venue,
+                "total_n": sum(n for _, n, _ in top),
+                "top": [{"path": p, "n": n} for p, n, _ in top[:8]],
+                "tightest": tight[:5],
+            },
+        )
+        return
     peak = peak_used_1m(venue)
     _logger.info(
         "ratelimit_paths",
@@ -241,15 +345,32 @@ def observe(venue: str, headers: object, *, limit: int = 0, path: str = "") -> N
     try:
         got = _pick(headers, BINANCE_WEIGHT_HEADERS + GATE_HEADERS)
         if got is None:
+            if path:
+                # 한도 헤더가 없어도 **부른 사실**은 센다 — 호출 수는 헤더와 상관없이 아는 값이다.
+                now = time.time()
+                _count_path(venue, path, None, now)
+                _maybe_report(venue, now)
             return
         name, raw = got
         found = meter(venue)
         found.at = time.time()
-        if name == "x-gate-ratelimit-remain":
+        if name in GATE_REMAIN_HEADERS:
             # ⚠️ Gate 는 **남은 것**을 준다 — 쓴 것으로 뒤집는다. 한도를 모르면 못 뒤집는다.
-            cap = _pick(headers, ("x-gate-ratelimit-limit",))
+            #    한도가 엔드포인트마다 따로라 이 계량기에는 **마지막 응답의 길** 값이 남는다.
+            #    어느 길이 바닥에 가까웠는지는 경로별 최솟값(`tightest_1m`)이 말한다.
+            cap = _pick(headers, GATE_LIMIT_HEADERS)
             found.limit = int(cap[1]) if cap else found.limit
             found.used = max(0, found.limit - int(raw)) if found.limit else 0
+            if path:
+                _count_path(venue, path, found.used, found.at)
+                _count_remain(venue, path, int(raw), int(cap[1]) if cap else 0, found.at)
+                _maybe_report(venue, found.at)
+        elif name in GATE_LIMIT_HEADERS:
+            # 한도만 오고 남은 횟수가 없다 — 쓴 양을 모른다. 건수만 센다.
+            found.limit = int(raw)
+            if path:
+                _count_path(venue, path, None, found.at)
+                _maybe_report(venue, found.at)
         else:
             found.used = int(raw)
             if limit:
@@ -257,7 +378,12 @@ def observe(venue: str, headers: object, *, limit: int = 0, path: str = "") -> N
             if path:
                 _count_path(venue, path, found.used, found.at)
                 _maybe_report(venue, found.at)
-        if found.limit and found.share >= LOUD_AT:
+        if (
+            found.limit
+            and found.share >= LOUD_AT
+            and found.at - _LAST_LOUD.get(venue, 0.0) >= LOUD_EVERY_S
+        ):
+            _LAST_LOUD[venue] = found.at
             _logger.warning(
                 "ratelimit_close",
                 payload={

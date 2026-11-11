@@ -351,9 +351,10 @@ class GateTradeClient:
                 f"Gate 전송 실패({method} {path}): {exc}", status_code=None, payload=""
             ) from exc
         # 🔴 **얼마나 썼는지 헤더로 안다** (2026-08-29 사고 · Binance 와 같은 사정).
-        #    Gate 는 `x-gate-ratelimit-remain` 으로 **남은 것**을 준다. 실패 응답에도
-        #    실리므로 성공 판정보다 먼저 읽는다.
-        observe("GATE", response.headers)
+        #    Gate 는 `x-gate-ratelimit-requests-remain` 으로 **남은 것**을 준다. 실패 응답에도
+        #    실리므로 성공 판정보다 먼저 읽는다. 경로를 함께 넘겨 1 분에 어느 길을 몇 번 불렀는지
+        #    센다 (T832 · 쿼리는 안 넘긴다 — 경로만).
+        observe("GATE", response.headers, path=path)
         if response.status_code == _HTTP_TOO_MANY:
             note_ban("GATE", response.text[:300])
         if response.status_code in (_HTTP_OK, _HTTP_CREATED):
