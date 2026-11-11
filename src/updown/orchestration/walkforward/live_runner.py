@@ -2802,7 +2802,38 @@ class LiveRunner:
                 "note": "거래소가 먼저 닫았다 — 봉 마감을 기다리지 않고 따라잡았다",
             },
         )
+        # 🔴 T831 — 목표 지정가로 닫혔으면 조건부 손절이, 손절로 닫혔으면 목표 지정가가 남는다.
+        await self._sweep_after_close("거래소 청산 뒤")
         return True
+
+    async def _sweep_after_close(self, why: str) -> None:
+        """거래소 포지션이 0 인 채로 원장을 닫았다 — 남은 손절 · 줄이는 주문을 거둔다 (T831).
+
+        Args:
+            why: 로그에 남길 까닭.
+
+        Note:
+            🔴 2026-11-11 H_USDT: 목표 지정가가 거래소에서 체결돼 포지션이 0 이 됐는데, 원장을 닫은
+            길(대조 · 목표 닿음 감시)이 조건부 손절(크기 0 = "포지션 전량 닫기")을 안 거뒀다. 판이
+            다시 뜰 때(판 시작 청소)까지 남았고, 그 사이 같은 종목에 새 포지션이 생기면 그 손절이 새
+            포지션을 통째로 닫는다.
+
+            ⭐ `sweep` 은 거래소 포지션이 **정말 0 일 때만** 거둔다 — 살아 있는 손절은 안 지운다.
+            ⛔ 실패해도 던지지 않는다 — 원장 닫기는 끝났고, 판 시작 청소가 받침이다.
+        """
+        if getattr(self, "observe_only", False):
+            return
+        try:
+            await sweep(self._orders, self.instrument, why=why)
+        except Exception as exc:
+            self._log.warning(
+                "live_leftover_sweep_failed",
+                payload={
+                    "why": why,
+                    "error": str(exc)[:160],
+                    "note": "남은 손절 · 목표 주문을 못 거뒀다 — 판 시작 청소가 다시 본다",
+                },
+            )
 
     async def _reconcile_shares(self) -> bool:
         """몫 모드(T320 P4)의 `reconcile` — 거래소가 **먼저 닫은 몫**만 원장에서 닫는다.
@@ -3152,6 +3183,23 @@ class LiveRunner:
             )
             return False
         return (now - seen).total_seconds() >= ZERO_CONFIRM_SECONDS
+
+    def _closed_by_exchange_pending(self) -> bool:
+        """대조가 거래소 0 을 봤고 아직 기다리는 중인가 (T831 — 목표 닿음 감시가 양보할 때).
+
+        Returns:
+            0 을 처음 본 뒤 `ZERO_CONFIRM_SECONDS` 가 안 지났으면 True. 0 을 못 봤거나(포지션 있음 ·
+            조회 실패) 기다림이 끝났으면 False.
+
+        Note:
+            추가 조회 없이 대조가 남긴 시각만 읽는다(호출량). 대조는 0 이 아닌 크기를 읽거나 원장을
+            닫으면 이 시각을 지운다. 기다림이 끝났는데 열려 있다면 대조가 체결가를 못 찾은 것이라
+            양보하지 않는다 — 감시가 옛 길로 닫는다(원장이 끝없이 열려 있지 않게).
+        """
+        seen = cast("datetime | None", getattr(self, "_zero_seen_at", None))
+        if seen is None:
+            return False
+        return (datetime.now(UTC) - seen).total_seconds() < ZERO_CONFIRM_SECONDS
 
     async def _was_liquidated(self) -> bool:
         """방금 사라진 포지션이 **강제청산**이었나 (T14-2).
@@ -3747,6 +3795,22 @@ class LiveRunner:
             try:
                 now = await self._still_open(held)
                 if now is None:
+                    return
+                if not self._shared and self._closed_by_exchange_pending():
+                    # 🔴 T831 — 거래소는 이미 0 인데(목표 지정가 체결) 대조가 아직 0 이
+                    #    이어지는지 기다리는 중이다. 여기서 "지금 가격" 으로 닫으면 원장 청산가가
+                    #    거래소 체결가와 갈린다(H_USDT 11-11: 0.03502 대 0.0350293). 대조가 실제
+                    #    체결가로 닫게 둔다 — 다음 틱의 `_still_open` 이 다시 대조를 부른다.
+                    #    기다림이 끝났는데도 체결가를 못 찾았으면(`live_reconcile_no_fill`) 아래
+                    #    옛 길로 지금 가격에 닫는다.
+                    self._log.info(
+                        "live_target_left_to_reconcile",
+                        payload={
+                            "trade_id": held.trade_id,
+                            "last": str(last),
+                            "note": "거래소가 이미 닫았다 — 대조가 실제 체결가로 닫게 둔다(T831)",
+                        },
+                    )
                     return
                 if self._shared and any(
                     self._share_contracts(item) <= 0
@@ -8199,7 +8263,9 @@ class LiveRunner:
             snapshot = await self._orders.position_snapshot(self.instrument)
             size = held_size(snapshot)
             if size == 0:
-                # 거래소도 이미 없다 (손절이 먼저 나갔다) — reconcile 소관이다.
+                # 거래소도 이미 없다 (손절 · 목표 지정가가 먼저 나갔다). 원장은 이미 닫혔으니
+                # 대조는 볼 매매가 없다 — 남은 주문은 여기서 거둔다 (T831).
+                await self._sweep_after_close("거래소 이미 0")
                 return True
             # ── 메이커 청산 (T126 · 1.1.0) — 지정가로 걸고 기다린다 ──
             #   기다리는 동안 거래소측 조건부 손절은 그대로다 (무방비 아님).
