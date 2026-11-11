@@ -262,22 +262,6 @@ def test_brief_unread_exchange_is_blank_not_zero() -> None:
     made = brief_payload(perf(hours=24, exchange=None), 24)
     assert made["net"] is None
     assert made["fees"] is None
-    assert made["engine_net"] is None
-
-
-def test_brief_carries_the_engine_leg_share() -> None:
-    whole = perf(hours=24, exchange=ExchangeSummary(pnl=Decimal(1), rows=3, pnl_rows=2))
-    with_engine = Performance(
-        window=whole.window,
-        ledger=whole.ledger,
-        exchange=whole.exchange,
-        diverged=False,
-        note="",
-        engine=ExchangeSummary(pnl=Decimal("2.58"), fees=Decimal("-0.02"), rows=2, pnl_rows=1),
-    )
-    assert brief_payload(with_engine, 24)["engine_net"] == "2.56"
-    # 전체 금액 칸은 엔진 몫을 빼지 않는다 — 빼는 것은 원장 대조뿐이다.
-    assert brief_payload(with_engine, 24)["net"] == "1"
 
 
 def _book(*rows: tuple[str, str, str, int, str, str]) -> list[dict[str, str]]:

@@ -16,13 +16,11 @@ from updown.orchestration.report.performance import (
     Window,
     book_order_id,
     book_reaches,
-    book_symbol,
     classify_book_row,
     compare,
     kst_day_and_month,
     render_text,
     split_account_book,
-    split_engine_rows,
     summarize_account_book,
     summarize_records,
 )
@@ -174,60 +172,16 @@ class TestCompare:
         diverged, note = compare(LedgerSummary(), None)
         assert not diverged and "못 읽었다" in note
 
-    def test_engine_leg_realized_is_left_out_of_the_sign_check(self) -> None:
-        """엔진 다리는 원장에 줄이 없다 — 그 실현이 부호를 뒤집어 경고를 띄우면 안 된다 (T829).
+    def test_a_realized_missing_from_the_ledger_still_flips_the_sign(self) -> None:
+        """원장에 없는 실현은 여전히 경고다 — 엔진 다리도 원장에 적으므로 뺄 몫이 없다 (T830).
 
-        2026-11-10 실계좌: 원장 여섯 건 -1.79% · 거래소 같은 여섯 종목 -2.52 USDT 에
-        나스닥 엔진 다리 +2.58 USDT 가 얹혀 순액이 +0.07 이 됐고 "부호가 갈렸다" 가 떴다.
+        2026-11-10 실계좌: 원장 여섯 건 -1.79% 에 나스닥 엔진 +2.58 USDT 가 원장 밖이라 갈렸다.
+        T829 는 그 몫을 대조에서 뺐고, T830 은 엔진 매매를 원장에 적어 뺄 까닭을 없앴다.
         """
         ledger = LedgerSummary(trades=6, gain_sum_pct=Decimal("-1.786"))
         exchange = ExchangeSummary(pnl=Decimal("0.07"), rows=20, pnl_rows=7)
-        assert compare(ledger, exchange)[0]
-        engine = ExchangeSummary(pnl=Decimal("2.58"), fees=Decimal("-0.02"), rows=2, pnl_rows=1)
-        diverged, note = compare(ledger, exchange, engine)
-        assert not diverged
-        assert "엔진 다리 순 실현 +2.56 USDT" in note
-
-    def test_engine_only_realized_is_a_day_without_closes(self) -> None:
-        """엔진 다리만 실현한 날 — 원장에 마감이 없다고 "거래소에만 실현" 을 띄우지 않는다."""
-        exchange = ExchangeSummary(pnl=Decimal(3), rows=2, pnl_rows=1)
-        engine = ExchangeSummary(pnl=Decimal(3), rows=2, pnl_rows=1)
-        diverged, note = compare(LedgerSummary(), exchange, engine)
-        assert not diverged and "청산이 없다" in note and "엔진 다리" in note
-
-    def test_engine_split_does_not_hide_a_real_divergence(self) -> None:
-        """엔진 몫을 빼고도 부호가 다르면 그대로 갈린 것이다 — 진짜 누락을 가리지 않는다."""
-        ledger = LedgerSummary(trades=2, gain_sum_pct=Decimal(4))
-        exchange = ExchangeSummary(pnl=Decimal(-1), rows=6, pnl_rows=3)
-        engine = ExchangeSummary(pnl=Decimal(2), rows=2, pnl_rows=1)
-        diverged, note = compare(ledger, exchange, engine)
+        diverged, note = compare(ledger, exchange)
         assert diverged and "부호" in note
-
-    def test_empty_engine_share_leaves_the_note_alone(self) -> None:
-        ledger = LedgerSummary(trades=1, gain_sum_pct=Decimal(1))
-        exchange = ExchangeSummary(pnl=Decimal(1), rows=2, pnl_rows=1)
-        assert compare(ledger, exchange, ExchangeSummary()) == compare(ledger, exchange)
-
-
-class TestEngineSplit:
-    def test_rows_are_split_by_symbol_and_nothing_is_lost(self) -> None:
-        stamp = str(int((T0 + timedelta(hours=1)).timestamp()))
-        rows = [
-            {"type": "pnl", "change": "2.58", "time": stamp, "contract": "NAS100_USDT"},
-            {"type": "fee", "change": "-0.02", "time": stamp, "text": "NAS100_USDT:77"},
-            {"type": "fund", "change": "-0.01", "time": stamp, "text": "NAS100_USDT"},
-            {"type": "pnl", "change": "-1.5", "time": stamp, "contract": "PAXG_USDT"},
-            {"type": "dnw", "change": "10", "time": stamp},
-        ]
-        rest, engine = split_engine_rows(rows, {"NAS100_USDT"})
-        assert len(rest) + len(engine) == len(rows)
-        assert [book_symbol(r) for r in engine] == ["NAS100_USDT"] * 3
-        assert summarize_account_book(engine, WINDOW).net == Decimal("2.55")
-        assert summarize_account_book(rest, WINDOW).pnl == Decimal("-1.5")
-
-    def test_no_engine_symbols_means_nothing_is_set_aside(self) -> None:
-        rows = [{"type": "pnl", "change": "1", "time": "1", "contract": "NAS100_USDT"}]
-        assert split_engine_rows(rows, set()) == (rows, [])
 
 
 def test_render_carries_both_sides_and_the_verdict() -> None:

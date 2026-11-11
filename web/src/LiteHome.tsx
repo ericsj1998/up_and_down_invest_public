@@ -128,7 +128,6 @@ export function BriefReport() {
   const winRate = num(brief?.win_rate);
   const meanRr = num(brief?.mean_rr);
   const mdd = num(brief?.max_drawdown_pct);
-  const engineNet = num(brief?.engine_net);
 
   return (
     <section className={`${CARD} p-5`} data-testid="brief-report">
@@ -227,14 +226,6 @@ export function BriefReport() {
       {brief?.diverged ? (
         <p role="alert" className="mt-1 text-xs font-medium text-loss">
           원장 · 거래소 불일치 — {brief.note}
-        </p>
-      ) : engineNet !== null && engineNet !== 0 ? (
-        <p
-          className="mt-1 text-xs text-blue-gray-500 dark:text-blue-gray-300"
-          data-testid="brief-engine"
-        >
-          위 금액에 엔진 다리(판 없는 다리) 순 실현 {money(engineNet, true)}{" "}
-          USDT 포함 · 원장에 줄이 없어 원장 대조에서는 뺌
         </p>
       ) : null}
     </section>

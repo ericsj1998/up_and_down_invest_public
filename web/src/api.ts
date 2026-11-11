@@ -308,8 +308,6 @@ export type LiteBrief = {
   max_drawdown_pct: string;
   diverged: boolean;
   note: string;
-  /** 엔진 다리(판 없는 다리)의 순 실현 — 금액 칸에는 들어 있고 원장 대조에서만 뺐다 (T829). */
-  engine_net?: string | null;
 };
 
 export function liteBrief(hours: number): Promise<LiteBrief> {
@@ -811,8 +809,23 @@ export type Watch = {
   guard?: string;
 };
 
+/** 판 없이 도는 엔진 다리 한 줄 (T830) — 판 목록 응답에 같이 온다(메모리 값). */
+export type EngineLine = {
+  market: string;
+  symbol: string;
+  /** 거래소에 실제 계약이 있는 몫 수. */
+  units?: number;
+  /** 포지션 없이 걷는 몫 수. */
+  ghosts?: number;
+  /** 엔진 장부 실현 누계(USDT · 수수료 포함 · 펀딩 제외). */
+  realized?: string;
+  /** 그 엔진을 못 읽었다. */
+  error?: string;
+};
+
 export function sessions(): Promise<{
   sessions: Summary[];
+  engines?: EngineLine[];
   watch?: Watch[];
   /** 방향별 **동시 보유** 판 수 (T24 ③). 코인은 상관 0.7+ 라 같은 방향
    *  N판이 사실상 한 포지션 N배다 — 실측: 동시 숏 6건 = 실효 5.3판. */

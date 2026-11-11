@@ -23,7 +23,7 @@ from updown.orchestration.walkforward.ledger import Direction, Outcome, TradeRec
 from updown.orchestration.walkforward.store import _to_record  # pyright: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -110,9 +110,6 @@ class Performance:
     exchange: ExchangeSummary | None
     diverged: bool
     note: str
-    engine: ExchangeSummary | None = None
-    """`exchange` 가운데 엔진 다리 종목의 몫 — 원장에 줄이 없어 대조에서 뺀 것 (T829).
-    도는 엔진이 없거나 거래소를 못 읽었으면 None."""
 
 
 def summarize_records(records: Sequence[tuple[str, TradeRecord]], window: Window) -> LedgerSummary:
@@ -262,30 +259,6 @@ def book_row_time(row: Mapping[str, str]) -> datetime | None:
     return _row_time(row)
 
 
-def split_engine_rows(
-    rows: Sequence[Mapping[str, str]], symbols: Collection[str]
-) -> tuple[list[Mapping[str, str]], list[Mapping[str, str]]]:
-    """자금 원장을 판 몫과 엔진 다리 몫으로 가른다 (순수 함수 · T829).
-
-    엔진 다리(판 없이 도는 다리 · 나스닥 순환매)의 실현은 거래소에만 남고 리포트 원장
-    (`wf_trades`)에는 줄이 없다. 섞어서 부호를 맞대면 원장이 맞아도 "갈렸다" 가 뜬다
-    (2026-11-10 실측: 코인 여섯 건은 센트까지 맞았는데 NAS100 +2.58 USDT 가 부호를 뒤집었다).
-
-    Args:
-        rows: `account_book` 줄들.
-        symbols: 엔진 다리가 도는 종목. **알려진 엔진 종목만** 넣는다 — "원장에 없는 종목" 을
-            통째로 넣으면 진짜 원장 누락까지 가린다.
-
-    Returns:
-        `(그 밖, 엔진 다리)`. 두 목록의 합 = 받은 줄 전부.
-    """
-    rest: list[Mapping[str, str]] = []
-    engine: list[Mapping[str, str]] = []
-    for row in rows:
-        (engine if book_symbol(row) in symbols else rest).append(row)
-    return rest, engine
-
-
 def classify_book_row(row: Mapping[str, str], order_texts: Mapping[str, str]) -> str:
     """장부 한 줄이 누구 몫인가 — `strategy` · `outside` · `unknown` (순수 함수).
 
@@ -432,18 +405,13 @@ async def load_closed_trades(
     return [(str(symbol), _to_record(row)) for row, symbol in rows]
 
 
-def compare(
-    ledger: LedgerSummary,
-    exchange: ExchangeSummary | None,
-    engine: ExchangeSummary | None = None,
-) -> tuple[bool, str]:
+def compare(ledger: LedgerSummary, exchange: ExchangeSummary | None) -> tuple[bool, str]:
     """원장과 거래소가 **갈리는가** — 방향(부호)으로 본다.
 
     Args:
         ledger: 원장 집계.
-        exchange: 거래소 집계(전부). 못 읽었으면 None.
-        engine: 그 가운데 엔진 다리 종목의 몫(`split_engine_rows`). 엔진 다리는 원장에 줄이
-            없으므로 맞댈 상대가 없다 — 대조에서 빼고 뺀 금액을 이유에 적는다 (T829).
+        exchange: 거래소 집계(전부 · 엔진 다리 포함). 못 읽었으면 None. 엔진 다리 매매도 원장에
+            같은 꼴로 있다(T830) — 다만 엔진 다리의 펀딩은 원장 밖이라 거래소 쪽에만 든다.
 
     Returns:
         `(갈렸는가, 사람이 읽을 이유)`.
@@ -456,10 +424,6 @@ def compare(
     if exchange is None:
         return False, "거래소 원장을 못 읽었다 — 원장 숫자만 있다. 대조 없이 읽지 않는다"
     pnl_rows, net, tail = exchange.pnl_rows, exchange.net, ""
-    if engine is not None and (engine.pnl_rows or engine.net):
-        pnl_rows -= engine.pnl_rows
-        net -= engine.net
-        tail = f" · 엔진 다리 순 실현 {engine.net:+.2f} USDT 는 원장에 줄이 없어 대조에서 뺐다"
     if pnl_rows == 0 and ledger.trades == 0:
         # 수수료·펀딩 행만 있는 하루 — 들고만 있었다. 마감이 없는데 갈렸다고 쓰면 배지가 늘 붉다.
         return False, "구간에 청산이 없다 (거래소 행은 수수료·펀딩뿐)" + tail

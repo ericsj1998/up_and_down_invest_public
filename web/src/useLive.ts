@@ -15,6 +15,7 @@ import {
   health as fetchHealth,
   sessions as fetchSessions,
   state as fetchState,
+  type EngineLine,
   type Health,
   type Reconcile,
   type State,
@@ -32,6 +33,8 @@ const DETAIL_MS = 15_000;
 
 export type LiveView = {
   rows: Summary[];
+  /** 판 없이 도는 엔진 다리 (T830) — 판 목록에 같이 보인다. 라이브 목록에만 온다. */
+  engines: EngineLine[];
   /** 감시자가 본 이상 (T20 ③). 비어 있는 것이 정상이다. */
   watch: Watch[];
   /** 방향별 동시 보유 판 수 (T24 ③). 같은 방향 2판부터 경고감이다. */
@@ -53,6 +56,7 @@ export type LiveView = {
  */
 export function useLive(live: boolean, frame?: string, pick?: string | null): LiveView {
   const [rows, setRows] = useState<Summary[]>([]);
+  const [engines, setEngines] = useState<EngineLine[]>([]);
   const [watch, setWatch] = useState<Watch[]>([]);
   const [exposure, setExposure] = useState<Record<string, number>>({});
   const [reconcile, setReconcile] = useState<Reconcile | null>(null);
@@ -70,6 +74,7 @@ export function useLive(live: boolean, frame?: string, pick?: string | null): Li
     fetchSessions()
       .then((body) => {
         setRows(body.sessions.filter((row) => !!row.live === live));
+        setEngines(live ? (body.engines ?? []) : []);
         // 🔴 감시자가 본 것 (T20 ③). 목록과 따로 온다 — 죽은 판은 목록에 없는 것이
         //    증상이라, 행에 매달면 바로 그 경우에 사라진다.
         setWatch(body.watch ?? []);
@@ -128,6 +133,7 @@ export function useLive(live: boolean, frame?: string, pick?: string | null): Li
 
   return {
     rows,
+    engines,
     watch,
     exposure,
     reconcile,

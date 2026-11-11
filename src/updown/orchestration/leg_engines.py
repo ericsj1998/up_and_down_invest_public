@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -31,6 +32,84 @@ from updown.common.logging.setup import get_logger
 LEG_ENGINES_GROUP = "updown.leg_engines"
 
 _logger = get_logger("orchestration.leg_engines")
+
+TRADE_OPEN = "open"
+TRADE_TAKE_PROFIT = "take_profit"
+TRADE_STOP_LOSS = "stop_loss"
+TRADE_SIGNAL_EXIT = "signal_exit"
+TRADE_OUTCOMES = frozenset({TRADE_OPEN, TRADE_TAKE_PROFIT, TRADE_STOP_LOSS, TRADE_SIGNAL_EXIT})
+"""엔진 매매 한 줄의 결과 낱말 — 원장 `Outcome` 으로 옮긴다(`leg_ledger.engine_record`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class EngineTrade:
+    """엔진 다리의 매매 한 건 — 판 원장(`wf_trades`)에 같은 꼴로 적힐 재료 (T830).
+
+    엔진은 한 포지션 안에 몫을 여럿 둔다. **몫 하나 = 매매 한 건**이다.
+
+    Attributes:
+        trade_id: 몫 열쇠(엔진 안에서 유일 · 원장 `trade_id`).
+        kind: 몫 종류 이름(표시 · 기록용).
+        opened_at: 몫이 실제로 찬 시각(UTC).
+        entry: 체결가.
+        contracts: 진입 체결 계약 수.
+        multiplier: 계약 승수.
+        stop: 몫의 재난 손절가(없으면 None).
+        target: 몫의 매도 지정가(규칙 청산 몫이면 None).
+        closed_at: 다 닫힌 시각. 열려 있으면 None.
+        exit_price: 닫힌 계약의 가중 평균가. 열려 있으면 None.
+        fees: 진입 + 청산 수수료 USDT(메이커 환급은 음수).
+        pnl: 실현 손익 USDT(진입 · 청산 수수료 포함 · 펀딩 제외). 열려 있으면 None.
+        outcome: `TRADE_OUTCOMES` 의 낱말.
+        note: 어떻게 끝났나(엔진의 사유 낱말 그대로).
+        short: 숏 몫인가(지금 엔진은 롱뿐).
+        adopted: 원장 사본을 적기 전에 이미 든 몫인가 — 진입 수수료가 추정값이고 성과 표본에 안
+            섞는다(원장 `Actor.ADOPTED`).
+    """
+
+    trade_id: str
+    kind: str
+    opened_at: datetime
+    entry: Decimal
+    contracts: int
+    multiplier: Decimal
+    stop: Decimal | None = None
+    target: Decimal | None = None
+    closed_at: datetime | None = None
+    exit_price: Decimal | None = None
+    fees: Decimal = Decimal(0)
+    pnl: Decimal | None = None
+    outcome: str = TRADE_OPEN
+    note: str = ""
+    short: bool = False
+    adopted: bool = False
+
+    def __post_init__(self) -> None:
+        """닫힘 칸이 함께 있는지 · 낱말이 맞는지 확인한다(반쯤 닫힌 줄은 원장을 거짓말하게 한다)."""
+        if self.outcome not in TRADE_OUTCOMES:
+            raise ValueError(f"엔진 매매 결과 낱말 {self.outcome!r} — {sorted(TRADE_OUTCOMES)}")
+        closed = (self.closed_at, self.exit_price, self.pnl)
+        if any(v is None for v in closed) != all(v is None for v in closed):
+            raise ValueError(
+                f"{self.trade_id}: 닫힘 칸(시각 · 청산가 · 손익)은 함께 있거나 함께 없다"
+            )
+        if (self.closed_at is None) != (self.outcome == TRADE_OPEN):
+            raise ValueError(f"{self.trade_id}: 열림 낱말과 닫힘 시각이 어긋난다")
+        if self.contracts <= 0 or self.entry <= 0 or self.multiplier <= 0:
+            raise ValueError(f"{self.trade_id}: 계약 · 체결가 · 승수는 양수다")
+
+
+class EngineTradeSink(Protocol):
+    """엔진이 매매 한 줄을 넘기는 곳 — 원장 사본을 쓴다.
+
+    🔴 `put` 은 **막히지 않고 실패하지 않는다**(절대 규칙 8-1). 엔진 장부 파일이 진짜 장부이고
+    원장은 사본이라, 쓰기가 늦거나 실패해도 엔진의 매매(특히 닫기)는 그대로 간다. 실패는 구현이
+    폴백 파일 + 오류 로그로 남긴다. 같은 줄을 여러 번 넘겨도 된다(같은 `trade_id` 는 덮어쓴다).
+    """
+
+    def put(self, trade: EngineTrade) -> None:
+        """한 줄을 넘긴다(열림 · 고침 · 닫힘 모두 같은 길)."""
+        ...
 
 
 class LegEngine(Protocol):
@@ -107,6 +186,8 @@ class LegEngineContext:
         state_dir: 엔진 상태 파일을 둘 곳(마운트된 볼륨).
         leverage: 다리 선언 배율.
         settings: 다리 선언의 엔진 값(없으면 빈 사전).
+        trades: 매매 한 줄을 넘길 곳(T830 · 판 원장 사본). None 이면 원장에 안 적는다
+            (시험 · 저장소 없음).
     """
 
     fund_id: str
@@ -119,6 +200,7 @@ class LegEngineContext:
     state_dir: Path
     leverage: Decimal
     settings: Mapping[str, object] = field(default_factory=dict[str, object])
+    trades: EngineTradeSink | None = None
 
 
 LegEngineFactory = Callable[[LegEngineContext], LegEngine]

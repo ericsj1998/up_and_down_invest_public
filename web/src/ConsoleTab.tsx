@@ -1401,6 +1401,7 @@ export function ConsoleTab({ openRun }: Props) {
 
       <Runs
         rows={board.rows}
+        engines={board.engines}
         open={openRun}
         refresh={board.refresh}
         available={body?.balance.available}

@@ -44,6 +44,8 @@ from sqlalchemy.dialects.postgresql import insert
 from updown.common.db.models.enums import LogLevel
 from updown.common.db.models.ops import AppSetting, EventLog, PlaybookDecl
 from updown.common.db.models.walkforward import (
+    RUN_ENGINE,
+    RUN_SESSION,
     WalkforwardCalibration,
     WalkforwardOrder,
     WalkforwardRun,
@@ -59,6 +61,7 @@ from updown.orchestration.walkforward.ledger import (
     TradeRecord,
     evidence_from_rows,
     evidence_rows,
+    member_pnl,
 )
 
 if TYPE_CHECKING:
@@ -582,6 +585,8 @@ class RunStore:
                         sa.select(WalkforwardRun).where(
                             WalkforwardRun.anchor == anchor,
                             WalkforwardRun.closed_at.is_(None),
+                            # T830 — 엔진 기록 판은 이어받지 않는다(닻이 같아도 판이 아니다).
+                            WalkforwardRun.kind == RUN_SESSION,
                         )
                     )
                 ).scalar_one_or_none()
@@ -597,6 +602,7 @@ class RunStore:
                             sa.select(WalkforwardRun).where(
                                 WalkforwardRun.key == key,
                                 WalkforwardRun.closed_at.is_(None),
+                                WalkforwardRun.kind == RUN_SESSION,
                             )
                         )
                     ).scalar_one_or_none()
@@ -749,6 +755,9 @@ class RunStore:
                             WalkforwardRun.market == market,
                             WalkforwardRun.symbol == symbol,
                             WalkforwardTrade.outcome == Outcome.OPEN.value,
+                            # T830 — 엔진 몫의 손절은 몫 하나의 값이다. 포지션 전체에 다시 걸면
+                            #   다른 몫의 계약까지 닫는다 — 고아 감시가 읽을 계획이 아니다.
+                            WalkforwardRun.kind == RUN_SESSION,
                         )
                         .order_by(WalkforwardTrade.placed_at.desc())
                         .limit(1)
@@ -836,6 +845,9 @@ class RunStore:
                             .where(
                                 WalkforwardRun.closed_at.is_(None),
                                 WalkforwardRun.live.is_(live),
+                                # 🔴 T830 — 엔진 기록 판은 되살리지 않는다. 러너가 붙으면 엔진과
+                                #    같은 포지션을 둘이 관리하고, 증거금 방에도 두 번 든다.
+                                WalkforwardRun.kind == RUN_SESSION,
                             )
                             .order_by(WalkforwardRun.opened_at)
                         )
@@ -1528,6 +1540,127 @@ class RunStore:
                 },
             )
             return 0
+
+    async def open_engine_run(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        playbook: str,
+        leverage: Decimal,
+        meta: Mapping[str, Any] | None = None,
+    ) -> OpenedRun:
+        """엔진 다리의 **기록 전용 판**을 열거나 이어받는다 (T830).
+
+        Args:
+            market: 시장 코드.
+            symbol: 종목.
+            playbook: 다리 귀속 키(`매매법 id@버전`).
+            leverage: 다리 선언 배율(원장 줄의 의도 배율).
+            meta: 판 머리(펀드 id 등 · 되짚기용).
+
+        Returns:
+            열었거나 이어받은 판. 이어받은 판의 매매는 되읽지 않는다 — 엔진 장부가 진짜 장부이고
+            원장은 사본이다.
+
+        Raises:
+            RunStoreError: DB 에 닿을 수 없는 경우.
+
+        Note:
+            🔴 `kind=engine` 이라 기동 복원 · 증거금 방 · 감시 · 이어받기(`open`)가 이 판을 안 본다.
+            같은 종목의 새 판을 막는 `holder_of` 는 본다 — 엔진 종목에 러너가 못 뜬다.
+        """
+        anchor = anchor_of(market, symbol, playbook, live=True)
+        try:
+            async with self._factory() as session:
+                found = (
+                    await session.execute(
+                        sa.select(WalkforwardRun).where(
+                            WalkforwardRun.anchor == anchor,
+                            WalkforwardRun.closed_at.is_(None),
+                            WalkforwardRun.kind == RUN_ENGINE,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if found is not None:
+                    return OpenedRun(
+                        run_id=found.id, key=found.key, opened_at=found.opened_at, resumed=True
+                    )
+                now = datetime.now(UTC)
+                key = f"eng{uuid.uuid4().hex[:9]}"
+                row = WalkforwardRun(
+                    key=key,
+                    anchor=anchor,
+                    live=True,
+                    kind=RUN_ENGINE,
+                    market=market,
+                    symbol=symbol,
+                    playbook=playbook,
+                    playbook_id=playbook.split("@", 1)[0],
+                    seed_cash=Decimal(0),
+                    margin_budget=None,
+                    leverage=leverage,
+                    skim_pct=Decimal(0),
+                    profit_line=None,
+                    budget_cap=None,
+                    opened_at=now,
+                    closed_at=None,
+                    closed_reason=None,
+                    meta_json=dict(meta or {}),
+                )
+                session.add(row)
+                await session.commit()
+                _logger.info("wf_engine_run_opened", payload={"key": key, "anchor": anchor})
+                return OpenedRun(run_id=row.id, key=key, opened_at=now, resumed=False)
+        except Exception as exc:
+            raise RunStoreError(f"{anchor} 엔진 기록 판을 열 수 없다: {exc}") from exc
+
+    async def engine_runs(self) -> list[dict[str, Any]]:
+        """열린 엔진 기록 판 전부(실계좌) — 판 목록 화면이 엔진 다리 줄로 싣는다 (T830).
+
+        Returns:
+            `{key, market, symbol, playbook, opened_at, trades, closed, realized}` 목록. `realized`
+            는 닫힌 매매의 USDT 합(원장 칸으로 다시 센 값 · 펀딩 제외).
+
+        Raises:
+            RunStoreError: DB 에 닿을 수 없는 경우.
+        """
+        try:
+            async with self._factory() as session:
+                runs = (
+                    (
+                        await session.execute(
+                            sa.select(WalkforwardRun)
+                            .where(
+                                WalkforwardRun.closed_at.is_(None),
+                                WalkforwardRun.live.is_(True),
+                                WalkforwardRun.kind == RUN_ENGINE,
+                            )
+                            .order_by(WalkforwardRun.opened_at)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                out: list[dict[str, Any]] = []
+                for run in runs:
+                    records = await self._records(session, run.id)
+                    done = [r for r in records if r.closed_at is not None]
+                    out.append(
+                        {
+                            "key": run.key,
+                            "market": run.market,
+                            "symbol": run.symbol,
+                            "playbook": run.playbook,
+                            "opened_at": run.opened_at.isoformat(),
+                            "trades": len(records),
+                            "closed": len(done),
+                            "realized": str(sum((member_pnl(r) for r in done), Decimal(0))),
+                        }
+                    )
+        except Exception as exc:
+            raise RunStoreError(f"엔진 기록 판을 못 읽었다: {exc}") from exc
+        return out
 
     async def close(self, key: str, *, reason: str) -> bool:
         """판을 닫는다 — **사람이 RUN 을 지울 때만**.

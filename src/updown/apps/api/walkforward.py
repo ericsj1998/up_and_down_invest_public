@@ -5107,6 +5107,32 @@ def _journaled() -> list[dict[str, Any]]:
     return rows
 
 
+def _engine_lines() -> list[dict[str, Any]]:
+    """도는 엔진 다리 한 줄씩 — 판 목록 화면용(T830 · 메모리만 읽는다).
+
+    Returns:
+        `{market, symbol, units, ghosts, realized}` 목록(거래소 · 종목 순). `units` 는 거래소에 실제
+        계약이 있는 몫 수 · `ghosts` 는 포지션 없이 걷는 몫 수 · `realized` 는 엔진 장부의 실현 누계
+        (수수료 포함 · 펀딩 제외). 한 엔진을 못 읽으면 그 줄에 `error` 를 적는다(목록을 안 깬다).
+    """
+    out: list[dict[str, Any]] = []
+    for (market, symbol), engine in sorted(leg_engines.RUNNING.items()):
+        try:
+            units = cast("list[dict[str, Any]]", engine.status().get("units") or [])
+            out.append(
+                {
+                    "market": market,
+                    "symbol": symbol,
+                    "units": sum(1 for u in units if not u.get("ghost") and u.get("contracts")),
+                    "ghosts": sum(1 for u in units if u.get("ghost")),
+                    "realized": str(engine.realized()),
+                }
+            )
+        except Exception as exc:
+            out.append({"market": market, "symbol": symbol, "error": repr(exc)[:120]})
+    return out
+
+
 @router.get("/sessions")
 async def sessions() -> dict[str, Any]:
     """모의 라이브 전부 — **메모리에 살아 있는 것 + 저널에 남은 것**.
@@ -5145,6 +5171,9 @@ async def sessions() -> dict[str, Any]:
     at = RECON.at
     return {
         "sessions": rows,
+        # T830 — 판 없이 도는 엔진 다리도 판 목록에 한 줄씩(사용자 2026-11-11). 메모리만 읽는다 —
+        #   이 응답은 화면이 주기적으로 받으므로 DB · 거래소를 새로 읽지 않는다.
+        "engines": _engine_lines(),
         "watch": sorted(watch, key=lambda item: item["run"]),
         "exposure": exposure,
         "reconcile": {

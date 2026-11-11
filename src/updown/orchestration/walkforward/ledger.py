@@ -823,6 +823,22 @@ def contract_adjust_of(
     return actual - intended
 
 
+def member_pnl(record: TradeRecord) -> Decimal:
+    """`margin_used` 를 든 닫힌 매매 한 건의 USDT 손익 — 걷기(`_walk_wallet` 멤버 길)와 같은 식.
+
+    Args:
+        record: 매매.
+
+    Returns:
+        손익 USDT. 안 닫혔거나 `margin_used` 가 없으면 0(걷기도 그 매매를 이 식으로 안 센다).
+    """
+    gain = record.gain_pct
+    if gain is None or record.margin_used is None:
+        return Decimal(0)
+    pnl = record.margin_used * record.filled_ratio * gain / Decimal(100)
+    return pnl + record.realized_adjust + record.add_pnl + record.contract_adjust
+
+
 def new_trade_id() -> str:
     """로그 ID — 짧고 눈으로 구분되는 형태.
 

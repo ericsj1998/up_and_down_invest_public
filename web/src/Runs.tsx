@@ -10,7 +10,8 @@
  */
 
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { exchangeMarkets, type MarketInfo } from "./api";
+import { Link } from "react-router-dom";
+import { exchangeMarkets, type EngineLine, type MarketInfo } from "./api";
 import { orderAlive } from "./runsOrder";
 import { useMe } from "./Gate";
 import {
@@ -56,6 +57,8 @@ import { HaltBanner } from "./HaltBanner";
 
 type Props = {
   rows: Summary[];
+  /** 판 없이 도는 엔진 다리 (T830) — RUN 표 아래 한 줄씩. 없으면 칸을 안 그린다. */
+  engines?: EngineLine[];
   /** 판을 연다 — 주소를 바꾸는 것은 셸의 일이다. */
   open: (run: string, name?: string) => void;
   /** 거래소가 말하는 `available` — 콘솔이 이미 안다 (RUN 이 0개여도). */
@@ -220,7 +223,68 @@ function Purse({
   );
 }
 
-export function Runs({ rows, open, refresh, available }: Props) {
+/**
+ * 엔진 다리 칸 (T830) — 판 꼴이 아닌 다리(나스닥)를 RUN 목록 곁에 한 줄씩.
+ *
+ * 값은 판 목록 응답에 실려 온 메모리 값이다(새 요청 없음). 상세는 엔진 다리 화면(`/leg/종목`)이 그린다.
+ */
+export function EngineLines({ engines }: { engines: EngineLine[] }) {
+  if (!engines.length) return null;
+  return (
+    <>
+      <h2 className="section-title">엔진 다리 {engines.length}개</h2>
+      <p className="faint">판 없이 따로 도는 다리 — 매매는 판과 같은 원장에 적힌다.</p>
+      <div className="table-wrap">
+        <table data-testid="engine-lines">
+          <thead>
+            <tr>
+              <th>종목</th>
+              <th>거래소</th>
+              <th className="num">실제 몫</th>
+              <th className="num">걷는 몫(포지션 없음)</th>
+              <th className="num">실현 누계</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {engines.map((e) => {
+              const parsed = e.realized === undefined ? Number.NaN : Number(e.realized);
+              const realized = Number.isFinite(parsed) ? parsed : null;
+              return (
+                <tr key={`${e.market}:${e.symbol}`}>
+                  <td>{e.symbol}</td>
+                  <td>{e.market}</td>
+                  {e.error ? (
+                    <td colSpan={3} className="loss">
+                      못 읽었다 — {e.error}
+                    </td>
+                  ) : (
+                    <>
+                      <td className="num">{e.units ?? "—"}</td>
+                      <td className="num">{e.ghosts ?? "—"}</td>
+                      <td
+                        className={`num${!realized ? "" : realized > 0 ? " gain" : " loss"}`}
+                      >
+                        {realized === null ? "—" : `${realized >= 0 ? "+" : ""}${realized.toFixed(2)} USDT`}
+                      </td>
+                    </>
+                  )}
+                  <td>
+                    <Link className="btn small" to={`/leg/${e.symbol}`}>
+                      열기
+                    </Link>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+export function Runs({ rows, engines = [], open, refresh, available }: Props) {
   const [books, setBooks] = useState<Book[]>([]);
   const [picks, setPicks] = useState<Choice[]>([]);
   /** 종목 묶음(코인 · 주식 추종 · 지수 추종) — 서버가 말한다. 고르개를 그 묶음으로 나눠 그린다. */
@@ -718,6 +782,8 @@ export function Runs({ rows, open, refresh, available }: Props) {
           <p className="empty">도는 RUN이 없다 — 아래에서 띄운다</p>
         )}
       </div>
+
+      <EngineLines engines={engines} />
 
       <Fold
         name="RUN 띄우기"

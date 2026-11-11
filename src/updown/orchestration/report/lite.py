@@ -148,7 +148,7 @@ def brief_payload(perf: Performance, hours: int) -> dict[str, Any]:
 
     Returns:
         `{since, until, clipped, net, pnl, fees, funding, trades, longs, shorts, wins, win_rate,
-        mean_rr, max_drawdown_pct, diverged, note, engine_net}`. 거래소를 못 읽으면 금액 칸은 None.
+        mean_rr, max_drawdown_pct, diverged, note}`. 거래소를 못 읽으면 금액 칸은 None.
 
     Note:
         `clipped` 는 손익 시작점 때문에 구간이 고른 기간보다 짧아졌다는 뜻이다. 표시 없이 두면
@@ -172,8 +172,6 @@ def brief_payload(perf: Performance, hours: int) -> dict[str, Any]:
         "max_drawdown_pct": str(led.max_drawdown_pct),
         "diverged": perf.diverged,
         "note": perf.note,
-        # 엔진 다리(판 없는 다리)의 순 실현 — 금액 칸에는 들어 있고 원장 대조에서만 뺐다 (T829).
-        "engine_net": None if perf.engine is None else str(perf.engine.net),
     }
 
 

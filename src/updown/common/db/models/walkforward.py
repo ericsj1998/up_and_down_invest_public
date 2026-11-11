@@ -50,6 +50,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from updown.common.db.base import RATIO, Base, JsonDict, JsonList
 
+RUN_SESSION = "session"
+"""러너가 도는 판(기본값 · 0137 이전 행 전부)."""
+RUN_ENGINE = "engine"
+"""엔진 다리의 기록 전용 판 — 되살리지 않는다 (T830)."""
+
 
 class WalkforwardRun(Base):
     """한 판 — 종목·매매법·시드·증거금·레버리지·시작/종료 (T16 ②).
@@ -85,6 +90,14 @@ class WalkforwardRun(Base):
 
     live: Mapped[bool]
     """실계좌 경로인가. 🔴 라이브와 백테스트는 목록을 공유하지 않는다."""
+
+    kind: Mapped[str] = mapped_column(default=RUN_SESSION, server_default=RUN_SESSION)
+    """`session`(러너가 도는 판) | `engine`(엔진 다리의 기록 전용 판 · T830 · 0137).
+
+    🔴 `engine` 판은 **되살리지 않는다** — 러너가 붙으면 엔진과 같은 포지션을 둘이 관리한다.
+    열린 판을 고르는 길(기동 복원 · 증거금 방 · 감시 · 이어받기)은 `session` 만 본다.
+    같은 종목의 새 판을 막는 검사(`holder_of`)는 종류를 안 가린다 — 엔진 종목에 판이 못 뜬다.
+    """
 
     market: Mapped[str]
     symbol: Mapped[str]

@@ -72,6 +72,7 @@ from updown.execution.gateway import engine_order_adapter
 from updown.marketdata.ingest.timeframes import interval
 from updown.marketdata.provider import MarketDataProvider, gate_universe_facts
 from updown.orchestration import leg_engines
+from updown.orchestration.leg_ledger import EngineLedger
 from updown.orchestration.rebalancer import (
     Coordinator,
     PositionPort,
@@ -1565,6 +1566,54 @@ ENGINES_ROOT = FUNDS_ROOT / "engines"
 _ENGINE_TASKS: dict[tuple[str, str], asyncio.Task[None]] = {}
 """`(펀드, 종목)` → 엔진 러너 태스크(멈출 때 거둔다)."""
 
+_ENGINE_LEDGERS: dict[tuple[str, str], tuple[str, EngineLedger]] = {}
+"""`(펀드, 종목)` → (엔진 기록 판 key, 원장 사본 기록기) — T830."""
+
+
+async def _engine_ledger(
+    fund_id: str, leg: FundLeg, symbol: str, market: str
+) -> EngineLedger | None:
+    """엔진 다리의 원장 사본 기록기를 연다(T830) — 못 열어도 엔진은 뜬다(규칙 8-1).
+
+    Returns:
+        기록기(배경 쓰기 시작됨). 저장소가 없거나 판을 못 열면 None — 오류 로그만 남긴다.
+    """
+    held = _ENGINE_LEDGERS.get((fund_id, symbol))
+    if held is not None:
+        return held[1]
+    store = run_store()
+    if store is None:
+        return None
+    try:
+        opened = await store.open_engine_run(
+            market=market,
+            symbol=symbol,
+            playbook=leg.attribution,
+            leverage=leg.leverage,
+            meta={"fund_id": fund_id, "engine": str(leg.engine)},
+        )
+    except Exception as exc:
+        _events.error(
+            "fund_engine_ledger_unavailable",
+            payload={
+                "fund_id": fund_id,
+                "symbol": symbol,
+                "error": repr(exc)[:200],
+                "note": "엔진은 그대로 뜬다 — 원장 사본만 못 쓴다(T830)",
+            },
+        )
+        return None
+    ledger = EngineLedger(
+        store,
+        opened.run_id,
+        playbook=leg.attribution,
+        leverage=leg.leverage,
+        fallback=ENGINES_ROOT / f"{fund_id}_{symbol}_ledger_fallback.jsonl",
+    )
+    ledger.start()
+    _ENGINE_LEDGERS[(fund_id, symbol)] = (opened.key, ledger)
+    return ledger
+
 
 def _engine_leg(legs: Sequence[FundLeg], symbol: str) -> FundLeg | None:
     """그 종목을 맡은 엔진 다리 — 없으면 None(세션 다리)."""
@@ -1665,6 +1714,7 @@ async def _spawn_engine(fund_id: str, leg: FundLeg, symbol: str, market: str) ->
     orders = engine_order_adapter(
         quotes, user_id="fund", sim_state=ENGINES_ROOT / f"{fund_id}_{symbol}_sim.json"
     )
+    trades = await _engine_ledger(fund_id, leg, symbol, market)
     engine = factory(
         leg_engines.LegEngineContext(
             fund_id=fund_id,
@@ -1677,6 +1727,7 @@ async def _spawn_engine(fund_id: str, leg: FundLeg, symbol: str, market: str) ->
             state_dir=ENGINES_ROOT,
             leverage=leg.leverage,
             settings=dict(leg.engine_settings or {}),
+            trades=trades,
         )
     )
     leg_engines.register_running(market, engine)
@@ -1712,10 +1763,30 @@ async def _stop_engine(fund_id: str, market: str, symbol: str, engine: Any, *, c
         task = _ENGINE_TASKS.pop((fund_id, symbol), None)
         if task is not None and close:
             task.cancel()
+        if close:
+            await _close_engine_ledger(fund_id, symbol)
         _events.info(
             "fund_engine_stopped",
             payload={"fund_id": fund_id, "symbol": symbol, "closed": close},
         )
+
+
+async def _close_engine_ledger(fund_id: str, symbol: str) -> None:
+    """다리를 뺄 때 원장 사본을 마저 쓰고 엔진 기록 판을 닫는다(T830) — 실패는 로그만."""
+    held = _ENGINE_LEDGERS.pop((fund_id, symbol), None)
+    if held is None:
+        return
+    key, ledger = held
+    try:
+        await asyncio.wait_for(ledger.flush(), timeout=30)
+    except Exception as exc:
+        _events.error(
+            "fund_engine_ledger_flush_failed", payload={"symbol": symbol, "error": repr(exc)[:200]}
+        )
+    ledger.stop()
+    store = run_store()
+    if store is not None:
+        await store.close(key, reason="엔진 다리를 펀드에서 뺐다")
 
 
 def _orders_go_live() -> bool:
