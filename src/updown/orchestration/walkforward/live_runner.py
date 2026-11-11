@@ -3317,10 +3317,15 @@ class LiveRunner:
             if names_exit_of(str(row.get("text", "")), trade_id)
             or (stop_id and str(row.get("text", "")) == f"ao-{stop_id}")
         ]
+        fills = [row for row in listed if str(row.get("finish_as")) == "filled"]
         pick = ours[0] if ours else None
+        if pick is not None and fills and pick is not fills[0]:
+            # 🔴 T831 — 이름이 맞아도 **가장 최근 청산 체결이 아니면** 이 매매를 끝낸 체결이 아니다.
+            #    예: 반익 다리(`-tp-1`)가 먼저 체결되고, 남은 절반을 이름 모를 조건부(`ao-` · 재시작
+            #    뒤 `_stop_id` 빈 판)가 닫았다 — 반익가를 청산가로 적으면 손절이 익절로 적힌다.
+            pick = None
         if pick is None and not named_only:
             # ⚠️ `ao-` 는 이름에 우리 id 가 없다. 체결된 것 중 가장 최근을 쓴다.
-            fills = [row for row in listed if str(row.get("finish_as")) == "filled"]
             pick = fills[0] if fills else None
         if pick is None:
             return None

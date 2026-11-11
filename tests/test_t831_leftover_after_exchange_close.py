@@ -211,6 +211,18 @@ class TestReconcileSweeps:
         assert run._zero_seen_at is None  # pyright: ignore[reportPrivateUsage]
         assert run.book.records[0].exit_price == Decimal("0.0350293")
 
+    def test_an_older_half_fill_is_not_taken_for_the_final_exit(self) -> None:
+        """반익(`-tp-1`) 뒤 남은 절반을 이름 모를 조건부가 닫았다 — 반익가로 닫지 않는다."""
+        exch = _Exchange(size="0")
+        exch.fills = [  # 최근 것이 앞
+            {"text": "ao-777", "fill_price": "0.0412", "finish_as": "filled"},
+            {"text": "t-a1b2c3-hshort00-tp-1", "fill_price": "0.0375", "finish_as": "filled"},
+        ]
+        run = _Runner(exch, _short())
+        assert _reconcile_after_wait(run) is True, "이름 있는 체결이 최근이 아니면 기다린다"
+        assert run.book.records[0].exit_price == Decimal("0.0412"), "손절 체결가로 닫는다"
+        assert run.book.records[0].outcome is Outcome.STOP_LOSS
+
     def test_a_target_filled_on_the_exchange_leaves_no_stop(self) -> None:
         exch = _unnamed(_Exchange(size="0"))
         run = _Runner(exch, _short())
