@@ -24,6 +24,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { ForecastTrade } from "./api";
 import { ForecastPrimitive, forecastShapes, futureBars } from "./chart/forecast";
+import { axisPrecision } from "./chart/precision";
 import type { TradeMark } from "./chart/trades";
 import {
   boxesOf,
@@ -411,6 +412,8 @@ export function Chart({
    * 화면이 통째로 사라진다 (2026-08-30 실측).
    */
   const lastPainted = useRef<number | null>(null);
+  // 가격 축 자릿수 — 바뀔 때만 다시 건다(가격이 아주 작은 코인 · axisPrecision).
+  const axisDigits = useRef<number | null>(null);
   /**
    * **라이브가 켜져 있나** — 부모가 들고 있는 값을 구독에서 읽는다.
    *
@@ -539,6 +542,7 @@ export function Chart({
     });
     chart.current = made;
     series.current = candles;
+    axisDigits.current = null;
     maLine.current = ma;
     adxLine.current = power;
     overlayLines.current = [];
@@ -614,6 +618,14 @@ export function Chart({
       rows.set(stamp(row.ts) as number, toBar(row));
     const sorted = [...rows.entries()].sort((a, b) => a[0] - b[0]);
     series.current.setData(sorted.map(([, bar]) => bar));
+    const lastClose = frame.candles.at(-1)?.close;
+    const digits = axisPrecision(lastClose === undefined ? undefined : Number(lastClose));
+    if (axisDigits.current !== digits) {
+      series.current.applyOptions({
+        priceFormat: { type: "price", precision: digits, minMove: 10 ** -digits },
+      });
+      axisDigits.current = digits;
+    }
     const lastClosed = sorted.at(-1)?.[0] ?? null;
     // 🔴 **다시 그리면 만들어지던 봉이 사라진다.** `setData` 는 시리즈를 통째로 갈아
     //    끼우므로 `update()` 로 얹어 둔 진행 중 봉이 지워진다.
