@@ -196,6 +196,11 @@ class TestNamesExitOf:
             assert not names_exit_of(f"t-a1b2c3-hshort00-{kind}-0", "hshort000001")
         assert not names_exit_of("t-hshort000001-en-0", "hshort000001")
 
+    def test_a_hyphen_in_the_run_key_still_matches(self) -> None:
+        """판 key 는 `-` 를 쓸 수 있다(`_safe_key`) — 판 표식 6 자에 하이픈이 섞여도 찾는다."""
+        assert names_exit_of("t-n-test-hshort00-tp-1", "hshort000001")
+        assert not names_exit_of("t-n-test-hshort00-en-1", "hshort000001")
+
     def test_another_trade_or_a_foreign_name_does_not_match(self) -> None:
         assert not names_exit_of("t-a1b2c3-other000-tp-1", "hshort000001")
         assert not names_exit_of("ao-777", "hshort000001")
