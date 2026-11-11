@@ -146,6 +146,40 @@ class TestTheSessionRecords:
         assert all(item.entry is not None and item.stop is not None for item in recs)
         assert session.blocked_seq <= session.gate_held, "기록은 같은 봉 중복을 거른 수다"
 
+    def test_a_rule_gate_block_is_recorded_too(self, monkeypatch: Any) -> None:
+        """T826 7 ② — 규칙 문(기울기 등)도 막은 후보를 남긴다. 예전엔 깔때기 횟수만 셌다.
+
+        실계좌 2026-11-11 실측: 열린 판 57 개 깔때기 `gate:bar_tilt` > 0 인데 막힌 후보 기록 0 건.
+        """
+        monkeypatch.setattr(Session, "_bar_tilt_mult", lambda *_: Decimal(0))
+        session = _session()
+        for _ in range(20_000):
+            if session.finished:
+                break
+            session.step()
+        assert not session.ledger.records, "문이 다 막았다 — 기록은 진입을 안 바꾼다"
+        recs = [item for item in session.blocked_recent if item.code == "gate:bar_tilt"]
+        assert recs, "규칙 문이 막은 후보가 기록에 없다"
+        assert all(item.exposure is not None and item.exposure > 0 for item in recs), (
+            "크기를 잰 뒤에 막혔다 — 쓰려던 크기를 싣는다"
+        )
+        assert all(item.entry is not None and item.stop is not None for item in recs)
+        assert session.blocked_seq <= session.funnel["gate:bar_tilt"], (
+            "기록은 같은 봉 중복을 거른 수 — 깔때기는 예전 그대로 센다"
+        )
+
+    def test_an_entry_hold_is_recorded_before_sizing(self, monkeypatch: Any) -> None:
+        """진입 보류(`entry_hold`)는 크기를 재기 전에 막는다 — 크기는 지어내지 않는다."""
+        monkeypatch.setattr(Session, "entry_hold", lambda *_: "warm_hold")
+        session = _session()
+        for _ in range(20_000):
+            if session.finished:
+                break
+            session.step()
+        assert not session.ledger.records
+        recs = [item for item in session.blocked_recent if item.code == "hold:warm_hold"]
+        assert recs and all(item.exposure is None for item in recs)
+
     def test_the_ring_keeps_the_latest(self) -> None:
         session = _session()
         for i in range(BLOCKED_RECENT_LIMIT + 5):

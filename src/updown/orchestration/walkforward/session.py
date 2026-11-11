@@ -336,7 +336,10 @@ class BlockedCandidate:
         leg: 후보를 낸 매매법의 귀속 키(`id@version`).
         direction: 계획 기하가 말한 방향. 모르면 None.
         code: 막힌 코드 — `awaiting_fund` · `unreconciled` · `share_opposite` · `marubozu` ·
-            `spinning` · `short_blocked` · `gate:<사유>`.
+            `spinning` · `short_blocked` · `gate:<사유>`(펀드 문) · `hold:<사유>`(진입 보류 —
+            `entry_hold`) · 규칙 문은 깔때기 칸 이름 그대로(`gate:bar_tilt` · `gate:sma_tilt` ·
+            `gate:ref_regime_tilt` · `gate:ref_dist_tilt` · `gate:ref_vol_off` ·
+            `gate:fresh_close` · `vol_unknown`) · `stop_past_liq`(손절이 청산 밖 · T826 7 ②).
         entry: 계획 진입가. 모르면 None.
         stop: 계획 손절가. 계산 전에 막혔으면 None.
         exposure: 그 자리에 쓰려던 노출(명목/증거금). 크기를 재기 전에 막혔으면 None.
@@ -5332,6 +5335,23 @@ class Session:
                 first = target
         # ⭐ **방향은 계획 기하가 말한다.** 손절이 진입 위면 숏이다.
         direction = Direction.SHORT if setup.stop_loss > setup.avg_entry else Direction.LONG
+
+        def held(code: str, exposure: Decimal | None = None) -> None:
+            # 🔴 T826 7 ② — 규칙 문도 "무엇이 막혔나" 를 남긴다. 펀드 문(`_gate`)만 남기고 이
+            #    문들은 깔때기 횟수만 세서, 실계좌 막힌 후보 기록이 늘 0 건이었다(2026-11-11 실측:
+            #    열린 판 57 개 깔때기 `gate:bar_tilt` 등 > 0 · `session_candidate_blocked` 0).
+            #    재현 · 실계좌 대조가 "재현만 들어감" 을 문 탓인지 가를 수 없었다. 기록만 한다 —
+            #    진입 여부 · 크기는 안 바꾼다(결정론 그대로 · 시각은 커서).
+            self._note_blocked(
+                code,
+                owner,
+                direction,
+                entry=bar.close,
+                stop=setup.stop_loss,
+                exposure=exposure,
+                size_mult=setup.size_mult,
+            )
+
         # ⭐ T54 C·D — 캔들 문법 진입 필터. 자리를 지우지 않고 **진입에서만** 거른다.
         if self._candle_blocks(bar, direction, chosen.playbook.playbook_id, leg=owner, setup=setup):
             return None
@@ -5348,6 +5368,7 @@ class Session:
                 "session_entry_ref_gate_held",
                 payload={"note": "기준(BTC) SMA 아래 — 이 봉엔 새로 안 산다 (F1)"},
             )
+            held("hold:ref_gate")
             return None
         band = chosen.playbook.entry_ref_return_band
         if hold == "ref_band" and band is not None:
@@ -5365,6 +5386,7 @@ class Session:
                     "note": "기준(BTC) 수익률이 띠 밖이다 — 이 봉엔 새로 안 들어간다 (T290)",
                 },
             )
+            held("hold:ref_band")
             return None
         surge = chosen.playbook.entry_ref_surge_cap
         if hold == "ref_surge" and surge is not None:
@@ -5380,6 +5402,7 @@ class Session:
                     "note": "기준(BTC)이 직전 며칠 급등했다 — 이 봉엔 새로 안 들어간다 (T304 #8)",
                 },
             )
+            held("hold:ref_surge")
             return None
         if hold == "ref_sma":
             # T304 #2 — 기준(BTC) 4H SMA 가 내려가는 중일 때만 든다(311차 R2). 보유분은 그대로.
@@ -5393,6 +5416,7 @@ class Session:
                     "note": "기준(BTC) 4H SMA 가 내려가는 중이 아니다 — 새로 안 든다 (T304 #2)",
                 },
             )
+            held("hold:ref_sma")
             return None
         vpct = chosen.playbook.entry_ref_vol_pct
         if hold == "ref_volpct" and vpct is not None:
@@ -5409,6 +5433,7 @@ class Session:
                     "note": "기준(BTC) 변동성 백분위가 하한 아래다 — 이 봉엔 새로 안 든다 (T329)",
                 },
             )
+            held("hold:ref_volpct")
             return None
         if hold == "warm_hold":
             # T811 — 판이 열리기 전부터 켜져 있던 조건: 연구라면 이미 들고 있어 이 봉엔 안 산다.
@@ -5425,6 +5450,7 @@ class Session:
                     "note": "판 시작 전 조건 — 연구라면 보유 중인 봉이라 새로 안 든다 (T811)",
                 },
             )
+            held("hold:warm_hold")
             return None
         if hold == "funding":
             self.funding_held += 1
@@ -5437,6 +5463,7 @@ class Session:
                     "note": "펀딩 극단 — 이 봉엔 새로 안 산다",
                 },
             )
+            held("hold:funding")
             return None
         # 🔴 **지정가를 걸고 기다리지 않는다 — 방아쇠가 당겨지면 그 자리에서 산다.**
         #
@@ -5478,6 +5505,7 @@ class Session:
         # ⭐ T49 — 배율은 r 과 손절 거리에서 나온다. 청산보다 바깥 손절이면 이 자리는 안 간다.
         exposure = self._exposure(bar.close, setup.stop_loss, risk_pct=chosen.playbook.risk_pct)
         if exposure is None:
+            held("stop_past_liq")
             return None
         # 🔴 **비대칭 레버리지** (T59) — 숏만 노출을 배수로 줄인다 (롱3/숏1). 롱은 그대로.
         if direction is Direction.SHORT and chosen.playbook.short_size_mult is not None:
@@ -5504,39 +5532,46 @@ class Session:
         tilt = self._sma_tilt_mult(chosen.playbook, sig)
         if tilt <= 0:
             self._count("gate:sma_tilt")
+            held("gate:sma_tilt", exposure)
             return None
         # ⭐ T406 — CL0(급락 되돌림 4H ATR% < 3.1252 건너뜀) · DB(일봉 채널 4H 몸통 < 0.3092 x0.5).
         #    연구 판 `ftilt=`(판 971 ~ 986)가 옆 다리 크기 함수에 곱한 자리와 같다(다리 노출 앞).
         bar_tilt = self._bar_tilt_mult(chosen.playbook, sig)
         if bar_tilt <= 0:
             self._count("gate:bar_tilt")
+            held("gate:bar_tilt", exposure)
             return None
         # ⭐ T436 · T557 · 혼합 4.3 — BTC 일봉 전고점 국면 배수(급락 되돌림 S1 · MACD 숏 S4 ·
         #    모름 1).
         regime_tilt = self._ref_regime_tilt_mult(chosen.playbook)
         if regime_tilt <= 0:
             self._count("gate:ref_regime_tilt")
+            held("gate:ref_regime_tilt", exposure)
             return None
         # ⭐ T783 · P0 — BTC 일봉 SMA 거리 띠(MACD 숏 · 모름 1).
         dist_tilt = self._ref_dist_tilt_mult(chosen.playbook)
         if dist_tilt <= 0:
             self._count("gate:ref_dist_tilt")
+            held("gate:ref_dist_tilt", exposure)
             return None
         regime_tilt *= dist_tilt
         # ⭐ T612 SV1 — BTC 일봉 변동성이 문턱 이상인 날은 신규 진입 0
         #    (삼각 숏 · MACD 숏 · 모름 통과).
         if self._ref_vol_off(chosen.playbook):
             self._count("gate:ref_vol_off")
+            held("gate:ref_vol_off", exposure)
             return None
         exposure *= tilt * bar_tilt * regime_tilt * self._window_mult(chosen.playbook, sig)
         if not self._fresh_close(chosen.playbook):
             self._count("gate:fresh_close")
+            held("gate:fresh_close", exposure)
             return None
         # ⭐ T291 — 다리 배율이 선언돼 있으면 그 다리의 노출로 바꾼다(없으면 그대로).
         exposure = self._leg_scaled(exposure, owner)
         # ⭐ T304 — 변동성 목표 크기. 다리 노출 뒤 · 펀드 문 앞(연구 `size_fn` 과 같은 순서).
         scaled = self._vol_scaled(exposure, chosen.playbook, bar.ts)
         if scaled is None:
+            held("vol_unknown", exposure)
             return None
         exposure = scaled
         # 🔴 **펀드의 진입 문** (T279 P3 · T286) — 자리 · 같은 날 연속 손절 정지 · 총 명목 상한 ·
