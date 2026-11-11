@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 from collections import deque
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -89,7 +90,7 @@ from updown.orchestration.walkforward.ledger import (
 from updown.orchestration.walkforward.order_mapping import has_real_target
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping, Sequence
+    from collections.abc import Generator, Iterator, Sequence
 
     from updown.common.domain.reports import Indicators
     from updown.common.domain.trend import TrendState
@@ -270,7 +271,9 @@ class FrameState:
         bars: 그때 보이던 봉 수. 캐시 열쇠다.
         rows: 그 봉들.
         trend: 주 추세. 판정 불가면 None.
-        indicators: 공용 지표.
+        indicators: 공용 지표. **None 이면 아직 안 잰 축**이다 — 추세도 레벨도 안 재는
+            축(진입 TF 보다 잘은 걸음 축)은 지표가 다른 계산의 재료가 아니라서, 누가 읽을
+            때 `IndicatorTable` 이 그 봉들로 잰다.
         has_box: 상단·하단이 다 있는가.
 
     Note:
@@ -285,12 +288,58 @@ class FrameState:
     bars: int
     rows: list[Candle]
     trend: TrendState | None
-    indicators: Indicators
+    indicators: Indicators | None
     has_box: bool
     box_low: Decimal | None = None
     """지금 박스의 하단 띠 아랫변 — 없으면 None (T44 청산 사다리가 읽는다)."""
     box_high: Decimal | None = None
     """지금 박스의 상단 띠 윗변 — 없으면 None."""
+
+
+class IndicatorTable(Mapping[Timeframe, "Indicators"]):
+    """시간축별 공용 지표 — 안 잰 축은 처음 읽힐 때 잰다.
+
+    `MarketContext.indicators` 자리에 그대로 들어간다(읽는 쪽에는 보통 표와 같다).
+
+    Note:
+        걸음은 이벤트 루프 위에서 돌아 그 시간만큼 모든 판의 감시가 선다. 걸음 축(5m)의
+        지표는 걸음마다 800 봉을 새로 재는데 판정 길에서 읽는 곳이 없었다 — 정시 걸음 시간의
+        15% 가 버려지고 있었다 (T833 실측).
+
+        ⛔ **값은 미리 잰 것과 같다** — 같은 봉으로 같은 함수를 부를 뿐이고 때만 다르다
+        (절대 규칙 #5 · `tests/test_step_reuse.py`). 봉 목록은 `FrameState` 가 만든 뒤 아무도
+        고치지 않는다.
+    """
+
+    __slots__ = ("_late", "_states")
+
+    def __init__(self, states: Mapping[Timeframe, FrameState]) -> None:
+        """표를 만든다.
+
+        Args:
+            states: 시간축 → 그 축의 계산 결과. 차례(급전 축 순서)를 그대로 지킨다.
+        """
+        self._states = dict(states)
+        self._late: dict[Timeframe, Indicators] = {}
+
+    def __getitem__(self, frame: Timeframe) -> Indicators:
+        """그 축의 지표 — 안 잰 축이면 지금 재고 기억한다."""
+        state = self._states[frame]
+        if state.indicators is not None:
+            return state.indicators
+        found = self._late.get(frame)
+        if found is None:
+            found = indicator_snapshot.compute(state.rows).at(len(state.rows) - 1)
+            self._late[frame] = found
+        return found
+
+    def __iter__(self) -> Iterator[Timeframe]:
+        """시간축을 급전 축 순서로 돈다."""
+        return iter(self._states)
+
+    def __len__(self) -> int:
+        """시간축 수."""
+        return len(self._states)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1595,7 +1644,7 @@ class Session:
         """
         candles: dict[Timeframe, list[Candle]] = {}
         trend: dict[Timeframe, TrendState] = {}
-        indicators: dict[Timeframe, Indicators] = {}
+        states: dict[Timeframe, FrameState] = {}
         for frame in self.feed.timeframes:
             state = self._frame(frame, at)
             if state is None:
@@ -1619,14 +1668,14 @@ class Session:
                 wanted.add(self.price_frame)
             if frame in wanted:
                 candles[frame] = state.rows
-            indicators[frame] = state.indicators
+            states[frame] = state
             if state.trend is not None:
                 trend[frame] = state.trend
         return MarketContext(
             instrument=self.instrument,
             as_of=at or self.cursor,
             candles=candles,
-            indicators=indicators,
+            indicators=IndicatorTable(states),
             structures=(),
             geometry={},
             trend=trend,
@@ -1681,18 +1730,26 @@ class Session:
             `_frame` 의 계산 몸통을 떼어 낸 것이다 — 마감 전 예비 신호(`preview`)가 형성 중 봉을
             붙인 봉으로 **같은 계산**을 하되 판정 캐시를 건드리지 않게 (2026-09-27).
         """
-        series = indicator_snapshot.compute(rows)
         # 🔴 진입 TF 보다 잘은 축은 추세를 안 잰다 (`TF_RANK`).
         entry_rank = TF_RANK.get(self.playbook.timeframe, 0)
+        trended = TF_RANK.get(frame, 0) >= entry_rank
+        # 추세를 재는 축은 피벗과 지표를 **한 번만** 만들어 추세 판정에 넘긴다 — 추세 판정이
+        #   같은 봉으로 둘을 다시 만들면 걸음 시간의 4 할이 겹친다(T833 실측 · 결과는 같다 ·
+        #   `tests/test_step_reuse.py`). 걸음은 이벤트 루프 위에서 돌아 그 시간만큼 감시가 선다.
+        levelled = frame in {item.timeframe for item in self.playbooks}
+        pivots = find_pivots(rows, frame) if trended else None
+        # 추세도 레벨도 안 재는 축(걸음 축)은 지표를 **지금 재지 않는다** — 재료로 쓰는 계산이
+        #   없다. 누가 읽으면 `IndicatorTable` 이 같은 봉으로 잰다 (T833).
+        series = indicator_snapshot.compute(rows, pivots=pivots) if trended or levelled else None
         state_of = None
-        if TF_RANK.get(frame, 0) >= entry_rank:
-            history = trend_evaluate(self.instrument, frame, rows)
+        if trended and series is not None:
+            history = trend_evaluate(self.instrument, frame, rows, series=series, pivots=pivots)
             state_of = history.states[-1] if history.states else None
         # 🔴 **원장은 진입 TF 에서만 쌓는다.** `has_box` 는 국면 판정에만 쓰이고 그것은
         #    진입 TF 기준이다. 5개 축 전부에서 쌓으면 5m 은 매 걸음 봉이 늘어 1,200봉짜리
         #    ZigZag+접점 누적이 **매번** 돌고, 그것이 8배속에서 봉 갱신이 끊기던 이유다.
         has_box = False
-        if frame in {item.timeframe for item in self.playbooks}:
+        if levelled and series is not None:
             book = build_levels(rows, series.atr14)
             # 🔴 **셋업과 같은 문턱을 쓴다** — 여기가 국면 `RANGE` 를 정하는데
             #    문턱 없이 판정하면, 셋업이 버리는 얇은 박스로 플레이북이 돌게 된다.
@@ -1715,7 +1772,7 @@ class Session:
             bars=len(rows),
             rows=rows,
             trend=state_of,
-            indicators=series.at(len(rows) - 1),
+            indicators=None if series is None else series.at(len(rows) - 1),
             has_box=has_box,
             box_low=box_low,
             box_high=box_high,
@@ -1900,7 +1957,7 @@ class Session:
                 continue
             candles: dict[Timeframe, list[Candle]] = {}
             trend: dict[Timeframe, TrendState] = {}
-            indicators: dict[Timeframe, Indicators] = {}
+            states: dict[Timeframe, FrameState] = {}
             wanted = {item.timeframe for item in self.playbooks}
             if self.price_frame is not None:
                 wanted.add(self.price_frame)
@@ -1925,7 +1982,7 @@ class Session:
                     continue
                 if frame in wanted:
                     candles[frame] = state.rows
-                indicators[frame] = state.indicators
+                states[frame] = state
                 if state.trend is not None:
                     trend[frame] = state.trend
                 if frame == entry:
@@ -1936,7 +1993,7 @@ class Session:
                 instrument=self.instrument,
                 as_of=self.cursor,
                 candles=candles,
-                indicators=indicators,
+                indicators=IndicatorTable(states),
                 structures=(),
                 geometry={},
                 trend=trend,

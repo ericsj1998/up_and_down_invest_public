@@ -166,6 +166,7 @@ class _Runner(LiveRunner):
         self._share_stop_ids: dict[str, str] = {}
         self._share_misses: dict[str, int] = {}
         self._share_tp_seen: set[str] = set()
+        self._share_tp_placed: dict[str, str] = {}
         self.stop_misses = 0
         self.orders = 0
         self.failures = 0
@@ -667,6 +668,68 @@ class TestUnknownShareDoesNotBlindTheReconcile:
         exch.submit_order = rest  # type: ignore[method-assign]
         asyncio.run(run._ensure_share_target(a))  # pyright: ignore[reportPrivateUsage]
         assert a.trade_id in run._share_tp_seen  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_target_the_list_does_not_show_yet_is_not_placed_twice(self) -> None:
+        """T833 — 방금 건 익절이 목록에 아직 안 보여도 번호로 물어 열려 있으면 또 내지 않는다.
+
+        실측(2026-11-10 DASH · WLD): 진입 직후 걸고 0.15 초 뒤 걸음 끝 점검이 같은 이름을 또 내서
+        거래소가 `REDUCE_ONLY_FAIL` 로 거절했다.
+        """
+        run, exch, a, _b = a_known_b_unknown()
+        sent: list[Any] = []
+        placed: dict[str, dict[str, str]] = {}
+
+        async def rest(order: Any) -> Any:
+            sent.append(order)
+            placed["tp-a"] = {
+                "id": "tp-a",
+                "text": tp_fill(a, size=2)["text"],
+                "size": "-2",
+                "left": "-2",
+                "status": "open",
+            }
+            return SimpleNamespace(status=OrderStatus.SUBMITTED, broker_order_id="tp-a")
+
+        async def detail(order_id: str) -> dict[str, str] | None:
+            return placed.get(order_id)
+
+        exch.submit_order = rest  # type: ignore[method-assign]
+        exch.order_detail = detail  # type: ignore[attr-defined]
+        asyncio.run(run._ensure_share_target(a))  # pyright: ignore[reportPrivateUsage]
+        assert len(sent) == 1
+        assert exch.open == [], "목록은 아직 따라잡지 못했다"
+        asyncio.run(run._ensure_share_target(a))  # pyright: ignore[reportPrivateUsage]
+        assert len(sent) == 1, "🔴 걸려 있는 익절을 또 내지 않는다"
+        assert exch.cancelled == []
+        assert a.trade_id in run._share_tp_seen  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_placed_target_that_is_gone_is_placed_again(self) -> None:
+        """번호로 물었는데 끝났거나(취소 · 만료) 없으면 예전 길 그대로 다시 건다."""
+        run, exch, a, _b = a_known_b_unknown()
+        sent: list[Any] = []
+        answer: dict[str, dict[str, str] | None] = {"tp-a": None}
+
+        async def rest(order: Any) -> Any:
+            sent.append(order)
+            return SimpleNamespace(status=OrderStatus.SUBMITTED, broker_order_id="tp-a")
+
+        async def detail(order_id: str) -> dict[str, str] | None:
+            return answer.get(order_id)
+
+        exch.submit_order = rest  # type: ignore[method-assign]
+        exch.order_detail = detail  # type: ignore[attr-defined]
+        asyncio.run(run._ensure_share_target(a))  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(run._ensure_share_target(a))  # pyright: ignore[reportPrivateUsage]
+        assert len(sent) == 2, "못 찾으면 다시 건다"
+        answer["tp-a"] = {
+            "id": "tp-a",
+            "text": tp_fill(a, size=2)["text"],
+            "size": "-2",
+            "left": "-2",
+            "status": "finished",
+        }
+        asyncio.run(run._ensure_share_target(a))  # pyright: ignore[reportPrivateUsage]
+        assert len(sent) == 3, "끝난 주문(취소 · 만료)이면 다시 건다"
 
     def test_a_failed_placement_clears_the_mark(self) -> None:
         """다시 걸기가 실패하면 표식을 지운다 — 다음 닿음에서 그 몫만큼 시장가가 나간다."""

@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from updown.analysis.indicators import snapshot
 from updown.analysis.indicators.ma import MaAlignment
 from updown.analysis.structures.params import SwingParams
-from updown.analysis.structures.swing import RollingZigzag, find_pivots
+from updown.analysis.structures.swing import RollingZigzag, SwingPoint, find_pivots
 from updown.analysis.trend.choch_bos import TransitionReading, evaluate_transition
 from updown.analysis.trend.market_structure import (
     StructureReading,
@@ -128,6 +128,9 @@ def evaluate(
     timeframe: Timeframe,
     candles: Sequence[Candle],
     swing_params: SwingParams | None = None,
+    *,
+    series: snapshot.IndicatorSeries | None = None,
+    pivots: Sequence[SwingPoint] | None = None,
 ) -> TrendHistory:
     """캔들 전체를 걸어가며 추세 이력을 만든다 (spec §4.16).
 
@@ -136,12 +139,23 @@ def evaluate(
         timeframe: 시간축.
         candles: `ts` 오름차순 캔들.
         swing_params: 스윙 파라미터. None 이면 표준값.
+        series: 호출자가 **같은 `candles` · 같은 `swing_params` 로 이미 계산한** 지표
+            시리즈(`snapshot.compute`). None 이면 여기서 계산한다.
+        pivots: 호출자가 **같은 `candles` · 같은 `swing_params` 로 이미 찾은** 피벗
+            (`find_pivots`). None 이면 여기서 찾는다.
 
     Returns:
         봉별 상태와 전이 목록.
 
     Raises:
-        TrendError: 캔들이 비었거나 시간축이 인자와 다른 경우.
+        TrendError: 캔들이 비었거나 시간축이 인자와 다른 경우. 넘겨받은 `series` 가
+            이 캔들 · 이 스윙 파라미터의 것이 아닌 것이 드러난 경우(봉 수 · 확인 지연).
+
+    Note:
+        `series` · `pivots` 는 **같은 계산을 두 번 하지 않기 위한 통로**다 — 걸음 세션이
+        축마다 지표를 먼저 계산하고 곧바로 이 함수를 부르는데, 안에서 같은 봉으로 지표와
+        피벗을 다시 만들면 걸음 시간의 4 할이 겹친다(T833 실측). 넘겨받아도 결과는
+        같다 (`tests/test_step_reuse.py` 가 잠근다).
 
     Note:
         **미래를 보지 않는다.** 봉 `i` 의 판정에는 `candles[:i+1]` 만 쓴다.
@@ -168,7 +182,14 @@ def evaluate(
         raise TrendError(f"시간축이 다르다: 인자 {timeframe} vs 캔들 {candles[0].timeframe}")
 
     settings = swing_params or SwingParams()
-    series = snapshot.compute(candles, settings)
+    if series is None:
+        series = snapshot.compute(candles, settings, pivots=pivots)
+    elif series.length != len(candles) or series.confirmation_lag_bars != settings.right_bars:
+        # 남의 봉 · 남의 파라미터로 만든 시리즈를 받으면 조용히 틀린 추세가 나온다 (규칙 #8).
+        raise TrendError(
+            f"넘겨받은 지표 시리즈가 이 캔들의 것이 아니다: 봉 {series.length} vs {len(candles)}"
+            f" · 확인 지연 {series.confirmation_lag_bars} vs {settings.right_bars}"
+        )
     ma200 = series.sma[200]
 
     states: list[TrendState | None] = [None] * len(candles)
@@ -187,11 +208,18 @@ def evaluate(
     # 봉마다 전체를 다시 훑으면 O(n²) 이고, 800봉 창에서 그것이 백테스트 시간의
     # 97% 였다 (cProfile 실측). **미래를 보지 않는 성질은 그대로다** — 앞토막이
     # 곧 "그 시점에 확인 끝난 피벗"이기 때문이다.
-    all_pivots = find_pivots(candles, timeframe, settings)
+    all_pivots = find_pivots(candles, timeframe, settings) if pivots is None else pivots
     # 교대 정리도 좌→우 접기라 같은 이유로 이어붙인다 — 앞토막을 봉마다 다시 접으면
     # 피벗 탐색을 고쳐도 O(n²) 이 그대로 남는다 (실측: 남은 시간의 52%).
     roller = RollingZigzag()
     confirmed = 0
+    # 스윙 열과 구조 판정은 **확인된 피벗 수**만의 함수다 — 새 피벗이 확인되지 않은 봉에서는
+    # 직전 봉의 것과 같다. 피벗은 몇 봉에 하나씩만 확인되므로 봉마다 다시 접고 다시 읽으면
+    # 같은 답을 수백 번 만든다 (T833 실측: 이어 쓰니 1H 걸음의 추세 판정 10.4 → 8.6 ms). 읽기만
+    # 하는 값이라 나눠 써도 된다 (`tests/test_step_reuse.py` 가 봉마다 · 창 길이마다 결과를 잠근다).
+    folded = -1
+    swings: list[SwingPoint] = []
+    structure = read_structure(swings)
 
     for index in range(MIN_BARS_FOR_TREND - 1, len(candles)):
         window = candles[: index + 1]
@@ -200,8 +228,10 @@ def evaluate(
             and all_pivots[confirmed].index + settings.right_bars <= index
         ):
             confirmed += 1
-        swings = roller.upto(all_pivots, confirmed)
-        structure = read_structure(swings)
+        if confirmed != folded:
+            swings = roller.upto(all_pivots, confirmed)
+            structure = read_structure(swings)
+            folded = confirmed
         transition = evaluate_transition(window, swings, ma200[: index + 1], phase_start)
         evidence = _evidence(structure, transition, series, index)
 

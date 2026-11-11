@@ -58,7 +58,7 @@ from updown.analysis.indicators.rsi import Divergence, find_divergences
 from updown.analysis.indicators.rsi import rsi as compute_rsi
 from updown.analysis.indicators.series import SeriesError, from_candles
 from updown.analysis.structures.params import SwingParams
-from updown.analysis.structures.swing import prior_swings
+from updown.analysis.structures.swing import SwingPoint, prior_swings, zigzag
 from updown.common.domain.candle import Candle
 from updown.common.domain.reports import Indicators
 
@@ -188,12 +188,16 @@ class IndicatorSeries:
 def compute(
     candles: Sequence[Candle],
     swing_params: SwingParams | None = None,
+    *,
+    pivots: Sequence[SwingPoint] | None = None,
 ) -> IndicatorSeries:
     """캔들 전체의 지표를 한 번에 계산한다 (spec §6.1).
 
     Args:
         candles: `ts` 오름차순 캔들. 같은 종목·같은 시간축이어야 한다.
         swing_params: 다이버전스용 스윙 파라미터. None 이면 표준값.
+        pivots: 이미 찾아 둔 피벗. **같은 `candles` · 같은 `swing_params` 로
+            `find_pivots` 한 결과**여야 한다. None 이면 여기서 찾는다.
 
     Returns:
         전 봉 지표 시리즈.
@@ -205,6 +209,11 @@ def compute(
         **캔들을 받는다** — `PriceSeries` 가 아니다. 다이버전스가 스윙 탐지를 거치고
         스윙 탐지는 결측 판정을 위해 캔들이 필요하기 때문이다. 시리즈만 받으면 캔들을
         되돌려 만들어야 하고, 그 재구성은 순수한 낭비다.
+
+        `pivots` 를 받는 까닭은 **같은 봉에서 피벗을 두 번 찾지 않기 위해서**다 — 추세
+        판정(`trend.service.evaluate`)도 같은 피벗을 쓰고, 피벗 탐색이 이 함수 시간의
+        4 분의 1 쯤이다(T833 실측). 결과는 같다: `prior_swings` 가 곧
+        `zigzag(find_pivots(...))` 이기 때문이다 (`tests/test_step_reuse.py` 가 잠근다).
     """
     series = from_candles(candles)
     swing_settings = swing_params or SwingParams()
@@ -227,7 +236,11 @@ def compute(
         )
     crosses.sort(key=lambda cross: (cross.index, cross.fast_period))
 
-    swings = prior_swings(candles, series.timeframe, swing_settings)
+    swings = (
+        prior_swings(candles, series.timeframe, swing_settings)
+        if pivots is None
+        else zigzag(pivots)
+    )
     divergences = find_divergences(swings, rsi_values)
 
     return IndicatorSeries(

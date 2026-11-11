@@ -1509,6 +1509,10 @@ class LiveRunner:
         self._share_tp_seen: set[str] = set()
         """익절 지정가를 걸었거나 걸린 것을 본 몫 — "걸려 있다 사라짐" 과 "한 번도 안 걸림" 을
         가른다 (T826 A1 · `_touch_wait_reason`). 기억만 한다 — 재기동 뒤 첫 점검이 다시 채운다."""
+        self._share_tp_placed: dict[str, str] = {}
+        """몫 → 우리가 마지막으로 **성공적으로 건** 익절 지정가의 거래소 주문 번호 (T833).
+        걸린 주문 목록이 방금 건 주문을 아직 안 보여 줄 때 번호로 직접 물어 두 번 걸지 않는다
+        (`_ensure_share_target`). 기억만 한다 — 재기동 뒤에는 목록이 이미 따라잡았다."""
         self._share_tp_done: dict[str, int] = {}
         """몫 → 주문을 거두며 확인한 **익절 지정가 체결 계약 수** (T831) — 그만큼은 시장가로 또
         팔지 않는다(`_apply_exit_share` · `_panic_close_share`)."""
@@ -4472,6 +4476,8 @@ class LiveRunner:
                 await self._orders.open_orders(self.instrument),  # type: ignore[attr-defined]
             )
         mine = [r for r in rows if self._names_mine(str(r.get("text", "")), held, "tp")]
+        if not mine:
+            mine = await self._placed_target_still_open(held)
         left = sum(abs(int(str(r.get("left") or 0))) for r in mine)
         if mine:
             self._share_tp_seen.add(held.trade_id)
@@ -4498,6 +4504,8 @@ class LiveRunner:
             self._share_tp_seen.discard(held.trade_id)
             return
         self._share_tp_seen.add(held.trade_id)
+        if done.broker_order_id:
+            self._share_tp_placed[held.trade_id] = str(done.broker_order_id)
         self.orders += 1
         await self._note_order(
             held.trade_id,
@@ -4507,6 +4515,40 @@ class LiveRunner:
             contracts=str(contracts),
             price=held.planned_target,
         )
+
+    async def _placed_target_still_open(self, held: TradeRecord) -> list[dict[str, str]]:
+        """목록에 없는 우리 익절 지정가를 **주문 번호로 직접** 묻는다 (T833).
+
+        Args:
+            held: 몫 기록.
+
+        Returns:
+            그 주문이 아직 걸려 있으면 그 한 줄, 아니면 빈 목록(예전 길 그대로 — 체결을 확인한 뒤
+            다시 건다).
+
+        Note:
+            🔴 실측(2026-11-10 16:00 UTC · DASH · WLD): 진입 직후 보호 걸기가 익절을 걸고(응답
+            `open`) 0.15 초 뒤 걸음 끝 점검이 걸린 주문 목록을 읽었는데 그 주문이 아직 안 보였다
+            → 같은 이름을 또 내서 거래소가 `REDUCE_ONLY_FAIL` 로 거절했다. 돈은 안 움직였지만
+            경고 · 헛 호출이 남고 "한 번도 안 걸림" 으로 표식이 지워졌다. 시각 문턱을 두지
+            않는다 — 번호로 물은 답만 믿는다. 물을 수 없거나 · 못 찾거나 · 이미 끝났으면 아무것도
+            바꾸지 않는다.
+        """
+        order_id = self._share_tp_placed.get(held.trade_id)
+        if not order_id or not hasattr(self._orders, "order_detail"):
+            return []
+        try:
+            found = cast(
+                "dict[str, str] | None",
+                await self._orders.order_detail(order_id),  # type: ignore[attr-defined]
+            )
+        except Exception:
+            return []
+        if not found or str(found.get("status", "")) != "open":
+            return []
+        if not self._names_mine(str(found.get("text", "")), held, "tp"):
+            return []
+        return [dict(found)]
 
     async def _share_target_filled(self, held: TradeRecord) -> bool:
         """이 몫의 목표가 지정가가 몫 크기만큼 체결됐나 (T814)."""
