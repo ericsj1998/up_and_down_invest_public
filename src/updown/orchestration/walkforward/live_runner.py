@@ -749,6 +749,34 @@ def trade_of_text(text: str) -> str:
     return parts[1]
 
 
+EXIT_KINDS = frozenset({"tp", "sl", "cl", "take_profit", "stop_loss", "close"})
+"""포지션을 **줄이는** 우리 주문 종류(이름 속 코드 · 옛 긴 이름). 진입(`en`) · 추가(`add`) ·
+사다리 재배치(`resize`)는 진입 방향이라 청산 체결이 아니다 (T599 · T831)."""
+
+
+def names_exit_of(text: str, trade_id: str) -> bool:
+    """거래소 주문 이름이 **이 매매를 닫는 우리 주문**인가 (T831).
+
+    Args:
+        text: 거래소 주문의 `text`.
+        trade_id: 원장의 매매 id(12자).
+
+    Returns:
+        매매 id 앞자리가 맞고 종류가 목표 · 손절 · 청산이면 참.
+
+    Note:
+        🔴 새 형식 이름에는 매매 id 가 **8 자만** 들어간다(`t-<판 6>-<매매 8>-tp-1`). 전체 id 로
+        찾으면 우리 목표 지정가 체결을 못 알아봐, 대조가 거래소 0 을 20 초 더 기다렸다(H_USDT
+        11-11). 종류까지 보는 것은 진입 체결을 청산가로 잡은 사고(T599 SUSHI)를 막기 위해서다.
+    """
+    found = trade_of_text(text)
+    if not found or not trade_id.startswith(found):
+        return False
+    parts = text.split("-")
+    at = parts.index(found)
+    return at + 1 < len(parts) and parts[at + 1] in EXIT_KINDS
+
+
 ADD_STALE = timedelta(minutes=30)
 """불타기 판정 뒤 이만큼 지나도 못 보냈으면 버린다 (T308 ⑤).
 
@@ -3281,10 +3309,12 @@ class LiveRunner:
             for row in cast("list[dict[str, str]]", rows)
             if row.get("fill_price") and closes_side(row, side)
         ]
+        # 🔴 T831 — 이름은 매매 id 앞 8 자만 싣는다. 전체 id 로 찾으면 우리 목표 · 청산 체결이
+        #    "이름 없음" 으로 떨어져 0 확인(20 초)을 기다린다.
         ours = [
             row
             for row in listed
-            if trade_id in str(row.get("text", ""))
+            if names_exit_of(str(row.get("text", "")), trade_id)
             or (stop_id and str(row.get("text", "")) == f"ao-{stop_id}")
         ]
         pick = ours[0] if ours else None

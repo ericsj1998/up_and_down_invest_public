@@ -11,6 +11,8 @@
 - 진입 지정가(줄이는 주문이 아님)는 거두지 않는다.
 - 목표 닿음 감시는 대조가 거래소 0 을 기다리는 중이면 "지금 가격" 으로 닫지 않는다 — 대조가 실제
   체결가로 닫는다. 기다림이 끝났는데도 열려 있으면(체결가 못 찾음) 옛 길로 닫는다.
+- 대조는 우리 목표 · 손절 · 청산 체결을 매매 id **앞 8 자** 이름으로 알아보고 바로 닫는다. 진입 ·
+  추가 진입 체결은 청산으로 안 본다.
 """
 
 from __future__ import annotations
@@ -23,7 +25,11 @@ from typing import Any, cast
 
 from updown.common.domain.instrument import AssetType, Currency, Instrument, Market
 from updown.orchestration.walkforward.ledger import Actor, Direction, Outcome, TradeRecord
-from updown.orchestration.walkforward.live_runner import ZERO_CONFIRM_SECONDS, LiveRunner
+from updown.orchestration.walkforward.live_runner import (
+    ZERO_CONFIRM_SECONDS,
+    LiveRunner,
+    names_exit_of,
+)
 
 H = Instrument(Market.GATE, "H_USDT", "H 무기한", AssetType.COIN, Currency.USD)
 
@@ -77,9 +83,8 @@ class _Exchange:
         ]
         self.cancelled: list[str] = []
         self.fills = [
-            # 실제 이름 꼴 `t-<판 6>-<매매 8>-tp1` — 매매 id 전체가 안 들어가 대조는 이름으로
-            # 못 찾고 0 이 이어지길 기다린다(H_USDT 11-11 과 같다)
-            {"text": "t-a1b2c3-hshort00-tp1", "fill_price": "0.0350293", "finish_as": "filled"}
+            # 실제 이름 꼴 `t-<판 6>-<매매 8>-tp-1` — 매매 id 는 앞 8 자만 들어간다
+            {"text": "t-a1b2c3-hshort00-tp-1", "fill_price": "0.0350293", "finish_as": "filled"}
         ]
 
     async def position_snapshot(self, instrument: Instrument) -> dict[str, str]:
@@ -171,9 +176,43 @@ def _reconcile_after_wait(run: _Runner) -> bool:
     return asyncio.run(run.reconcile())
 
 
+def _unnamed(exch: _Exchange) -> _Exchange:
+    """체결을 우리 이름이 없는 것으로(사람이 낸 주문 · 이름 못 붙은 조건부 발동)."""
+    exch.fills = [{"text": "ao-777", "fill_price": "0.0350293", "finish_as": "filled"}]
+    return exch
+
+
+class TestNamesExitOf:
+    def test_new_format_exit_kinds_match_by_eight_chars(self) -> None:
+        for kind in ("tp", "sl", "cl"):
+            assert names_exit_of(f"t-a1b2c3-hshort00-{kind}-1", "hshort000001")
+
+    def test_old_format_with_the_full_id_still_matches(self) -> None:
+        assert names_exit_of("t-hshort000001-cl-0", "hshort000001")
+        assert names_exit_of("t-hshort000001-take_profit-1", "hshort000001")
+
+    def test_entry_side_orders_are_not_exits(self) -> None:
+        for kind in ("en", "add", "resize"):
+            assert not names_exit_of(f"t-a1b2c3-hshort00-{kind}-0", "hshort000001")
+        assert not names_exit_of("t-hshort000001-en-0", "hshort000001")
+
+    def test_another_trade_or_a_foreign_name_does_not_match(self) -> None:
+        assert not names_exit_of("t-a1b2c3-other000-tp-1", "hshort000001")
+        assert not names_exit_of("ao-777", "hshort000001")
+        assert not names_exit_of("", "hshort000001")
+        assert not names_exit_of("t-a1b2c3-hshort00", "hshort000001")
+
+
 class TestReconcileSweeps:
-    def test_a_target_filled_on_the_exchange_leaves_no_stop(self) -> None:
+    def test_our_target_fill_closes_at_once_without_the_wait(self) -> None:
         exch = _Exchange(size="0")
+        run = _Runner(exch, _short())
+        assert asyncio.run(run.reconcile()) is True, "앞 8 자 이름이면 0 확인을 안 기다린다"
+        assert run._zero_seen_at is None  # pyright: ignore[reportPrivateUsage]
+        assert run.book.records[0].exit_price == Decimal("0.0350293")
+
+    def test_a_target_filled_on_the_exchange_leaves_no_stop(self) -> None:
+        exch = _unnamed(_Exchange(size="0"))
         run = _Runner(exch, _short())
         assert _reconcile_after_wait(run) is True
         assert run.book.records[0].outcome is Outcome.TAKE_PROFIT
@@ -196,11 +235,11 @@ class TestReconcileSweeps:
 
         exch.cancel_stop = broken  # type: ignore[method-assign]
         run = _Runner(exch, _short())
-        assert _reconcile_after_wait(run) is True
+        assert asyncio.run(run.reconcile()) is True
         assert run.book.records[0].outcome is Outcome.TAKE_PROFIT
 
     def test_nothing_is_swept_while_the_zero_is_unconfirmed(self) -> None:
-        exch = _Exchange(size="0")
+        exch = _unnamed(_Exchange(size="0"))
         run = _Runner(exch, _short())
         assert asyncio.run(run.reconcile()) is False
         assert exch.cancelled == [], "원장을 닫기 전엔 안 거둔다(조회 지연일 수 있다)"
