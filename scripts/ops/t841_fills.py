@@ -53,15 +53,23 @@ async def main() -> None:
         t0 = t1
         await asyncio.sleep(0.3)
     out["fills"] = fills
-    try:
-        out["fund_book"] = await page(
-            c._request,
-            f"/futures/{SETTLE}/account_book",
-            {"type": "fund", "from": str(FROM), "to": str(now)},
-        )
-    except Exception as exc:
-        out.setdefault("errors", []).append(f"fund {type(exc).__name__}")
-    print(json.dumps(out, default=str))
+    # 자금 원장도 30 일씩(한 번에 긴 구간은 400 을 낸다 · 11-13 실측)
+    fund, t0 = [], FROM
+    while t0 < now:
+        t1 = min(t0 + 30 * 86400, now)
+        try:
+            fund += await page(
+                c._request,
+                f"/futures/{SETTLE}/account_book",
+                {"type": "fund", "from": str(t0), "to": str(t1)},
+            )
+        except Exception as exc:
+            out.setdefault("errors", []).append(f"fund {t0}: {type(exc).__name__}")
+        t0 = t1
+        await asyncio.sleep(0.3)
+    out["fund_book"] = fund
+    # remote.sh 가 '{' 로 시작하는 줄을 거르므로 표식을 앞에 붙인다
+    print("T841JSON " + json.dumps(out, default=str))
 
 
 asyncio.run(main())
