@@ -14,6 +14,7 @@ from typing import Any
 from updown.orchestration.report.performance import (
     Performance,
     book_kind,
+    book_order_id,
     book_row_time,
     book_symbol,
 )
@@ -180,6 +181,7 @@ def recent_payload(
     *,
     limit: int = 50,
     since: datetime | None = None,
+    owners: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     """최근 실현 매매 목록 — 거래소 자금 원장을 **실현 주문 단위**로 묶는다 (T829 · 순수 함수).
 
@@ -192,18 +194,21 @@ def recent_payload(
         limit: 보여 줄 건수(최신부터).
         since: 손익 시작점(aware). 주면 그 뒤 줄만의 합계를 `after` 에 따로 낸다 — 목록은
             자르지 않는다(옛 매매도 본 일이므로 보여 주고, 합계만 섞이지 않게 가른다).
+        owners: `{주문 번호: {leg, side}}` — 그 실현을 낸 주문의 원장 매매(다리 이름 · 롱/숏).
+            주문 이름(`t-…` 매매 id · 발동 손절 `ao-…` 는 원장의 손절 주문 번호)으로 이은 것만
+            든다 — 시각으로 맞추지 않는다(사용자 2026-11-12). 못 이은 줄은 `leg` · `side` 가 None.
 
     Returns:
         `{rows, count, wins, net, pnl, fees, funding, since, after, open_fees, open_funding,
         oldest, unreadable}`. `rows` 의 한 줄은 `{symbol, at, pnl, fees, funding, net, balance,
-        fills}`, `after` 는 `{count, wins, net, pnl, fees, funding}`(시작점이 없으면 None).
+        fills, leg, side}`, `after` 는 `{count, wins, net, pnl, fees, funding}`
+        (시작점이 없으면 None).
         장부를 못 읽었으면 `rows` 는 None 이다(빈 목록으로 꾸미지 않는다 · 규칙 #8).
 
     Note:
         - `balance` 는 그 주문의 마지막 줄이 적힌 **직후의 지갑 잔고**(거래소가 적은 값)다.
           미실현은 들어 있지 않다 — 그 시각의 미실현 포함 평가는 어디에도 기록이 없다.
-        - 방향 · 다리 이름은 자금 원장에 없다. 원장(`wf_trades`)과 시각으로 맞대면 추정이
-          끼므로 싣지 않는다.
+        - 방향 · 다리 이름은 자금 원장에 없어 `owners`(주문 번호로 이은 원장 매매)에서 붙인다.
         - 거래소가 주는 장부는 약 30 일치다. `oldest` 보다 앞서 들어간 매매는 진입 수수료 ·
           앞 펀딩이 빠진 채로 나온다.
         - `open_*` 는 마지막 실현 뒤에 쌓여 아직 어느 줄에도 안 붙은 몫(열린 포지션의 진입
@@ -247,6 +252,7 @@ def recent_payload(
             if open_close is None:
                 open_close = closes[key] = {
                     "symbol": symbol,
+                    "order": book_order_id(row),
                     "pnl": zero,
                     "fees": zero,
                     "funding": zero,
@@ -261,8 +267,11 @@ def recent_payload(
         open_close["at"] = when
         open_close["balance"] = _dec(row.get("balance"))
     shown = sorted(closes.values(), key=lambda item: item["at"], reverse=True)[: max(limit, 0)]
+    owned = owners or {}
     rows = [
         {
+            "leg": owned.get(item["order"], {}).get("leg"),
+            "side": owned.get(item["order"], {}).get("side"),
             "symbol": item["symbol"],
             "at": item["at"].isoformat(),
             "pnl": str(item["pnl"]),

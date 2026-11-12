@@ -111,6 +111,28 @@ describe("최근 매매 목록", () => {
     expect(html).toContain("아직 어느 줄에도 안 들어갔다");
   });
 
+  it("주문 번호로 이은 줄에만 롱/숏 · 다리 이름을 붙인다", () => {
+    const html = renderToStaticMarkup(
+      <RecentRows
+        data={{
+          rows: [{ ...row, leg: "급락 되돌림", side: "롱" }, win],
+          count: 2,
+          wins: 1,
+          net: "1.00",
+          pnl: "1.38",
+          fees: "-0.40",
+          funding: "0.02",
+          open_fees: "0",
+          open_funding: "0",
+          oldest: "2026-10-11T00:00:00+00:00",
+          unreadable: 0,
+        }}
+      />,
+    );
+    expect(html.match(/data-testid="recent-leg"/g)).toHaveLength(1);
+    expect(html).toContain("롱 · 급락 되돌림");
+  });
+
   it("합계는 손익 시작점 뒤만 세고 그 앞 매매는 흐리게 남긴다", () => {
     const old = {
       ...row,

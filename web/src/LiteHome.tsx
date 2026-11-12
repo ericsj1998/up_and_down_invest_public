@@ -298,6 +298,15 @@ export function RecentRows({ data }: { data: LiteRecent }) {
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <span className="font-medium text-blue-gray-900 dark:text-white">
                   {row.symbol.replace("_USDT", "")}
+                  {row.leg ? (
+                    <span
+                      className="ml-2 text-xs font-normal text-blue-gray-700 dark:text-blue-gray-100"
+                      data-testid="recent-leg"
+                    >
+                      {row.side ? `${row.side} · ` : ""}
+                      {row.leg}
+                    </span>
+                  ) : null}
                   <span className="ml-2 text-xs font-normal text-blue-gray-500 dark:text-blue-gray-300">
                     {kst(row.at)}
                     {row.fills > 1 ? ` · 체결 ${row.fills}번` : ""}
@@ -310,9 +319,7 @@ export function RecentRows({ data }: { data: LiteRecent }) {
               <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-blue-gray-500 dark:text-blue-gray-300">
                 <span>
                   실현{" "}
-                  <span className="font-mono">
-                    {money(num(row.pnl), true)}
-                  </span>
+                  <span className="font-mono">{money(num(row.pnl), true)}</span>
                 </span>
                 <span>
                   수수료{" "}
@@ -338,8 +345,8 @@ export function RecentRows({ data }: { data: LiteRecent }) {
         })}
       </ul>
       <p className="mt-3 text-xs text-blue-gray-500 dark:text-blue-gray-300">
-        순손익 = 실현 손익 + 그 매매의 수수료(진입 + 청산) + 펀딩 · 그 뒤 계좌
-        = 그 체결 직후 지갑 잔고(미실현 제외) · 시각은 KST
+        순손익 = 실현 손익 + 그 매매의 수수료(진입 + 청산) + 펀딩 · 그 뒤 계좌 =
+        그 체결 직후 지갑 잔고(미실현 제외) · 시각은 KST
         {data.oldest
           ? ` · 거래소 장부는 약 30일치(${kst(data.oldest)}부터) — 그보다 앞서 들어간 매매는 진입 수수료가 빠져 있을 수 있다`
           : ""}

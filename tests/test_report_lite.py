@@ -362,6 +362,21 @@ def test_recent_without_an_account_start_has_no_split() -> None:
     assert made["since"] is None and made["after"] is None
 
 
+def test_recent_names_only_rows_linked_by_order_number() -> None:
+    """사용자 2026-11-12: 다리 이름 · 롱/숏은 주문 번호로 이은 줄에만.
+
+    못 이은 줄은 비운다 — 시각으로 맞추지 않는다.
+    """
+    book = _book(
+        ("pnl", "1", "A_USDT:11", 1, "101", "1"),
+        ("pnl", "-2", "B_USDT:22", 2, "99", "2"),
+    )
+    made = recent_payload(book, owners={"11": {"leg": "급락 되돌림", "side": "롱"}})
+    by = {r["symbol"]: r for r in made["rows"]}
+    assert (by["A_USDT"]["leg"], by["A_USDT"]["side"]) == ("급락 되돌림", "롱")
+    assert (by["B_USDT"]["leg"], by["B_USDT"]["side"]) == (None, None)
+
+
 def test_recent_unread_book_is_not_an_empty_list() -> None:
     assert recent_payload(None) == {"rows": None}
     made = recent_payload([{"type": "pnl", "change": "x", "time": "?"}])

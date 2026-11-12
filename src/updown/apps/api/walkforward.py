@@ -6622,6 +6622,21 @@ def leg_label(session: Session, attribution: str) -> str:
     return book.short_label or book.label or pid
 
 
+def leg_names() -> dict[str, str]:
+    """떠 있는 판에 실린 매매법 id → 다리 짧은 이름 — `leg_label` 과 같은 이름 (사용자 2026-11-12).
+
+    Returns:
+        `{매매법 id: 이름}`. 메모리만 읽는다. 지금 판에 없는 옛 다리는 빠진다
+        (부르는 쪽이 id 를 쓴다).
+    """
+    out: dict[str, str] = {}
+    for live in SESSIONS.values():
+        for book in live.session.playbooks:
+            pid = book.attribution.split("@")[0]
+            out.setdefault(pid, book.short_label or book.label or pid)
+    return out
+
+
 def live_shares() -> dict[str, list[dict[str, Any]]]:
     """실계좌 판의 보유 몫 — 첫 화면이 다리 이름 · 손절을 적는다 (사용자 2026-11-07).
 

@@ -47,6 +47,8 @@ from updown.orchestration.report.lite import brief_payload, lite_payload, recent
 from updown.orchestration.report.performance import (
     Performance,
     Window,
+    book_kind,
+    book_order_id,
     load_closed_trades,
     render_funds,
     render_market_breakdown,
@@ -435,6 +437,56 @@ RECENT_LIMIT = 50
 _recent_cache: tuple[float, dict[str, Any]] | None = None
 
 
+async def _close_owners(book: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    """장부 실현 줄의 주문 번호 → 그 주문을 낸 원장 매매의 다리 이름 · 롱/숏 (사용자 2026-11-12).
+
+    Args:
+        book: 거래소 자금 원장 줄.
+
+    Returns:
+        `{주문 번호: {leg, side}}`. 못 이은 번호는 빠진다. 무엇을 못 읽어도 빈 표다 — 곁들이는
+        이름 때문에 목록이 안 뜨면 그쪽이 더 나쁘다 (규칙 #8-1 방향).
+
+    Note:
+        시각으로 맞추지 않는다. 끝난 주문 목록(거래소 호출 한 번 · 패널을 열 때만 · 60 초 묶음)에서
+        주문 이름을 읽어 ① `t-…` 은 이름에 박힌 매매 id ② 거래소가 발동시킨 손절 `ao-{조건부 id}` 는
+        원장 손절 주문의 조건부 번호로 매매를 찾는다 — 거래소 콘솔(`exchange._ledger_side`)과 같은
+        길이다. 끝난 주문 목록(최근 1,000 개) 밖의 옛 실현은 이름이 비어 나온다.
+    """
+    from updown.apps.api.exchange import (
+        _order_texts,  # pyright: ignore[reportPrivateUsage]
+        _orders_adapter,  # pyright: ignore[reportPrivateUsage]
+    )
+    from updown.apps.api.walkforward import ledger_store, leg_names
+    from updown.orchestration.walkforward.live_runner import trade_of_text
+
+    wanted = {book_order_id(row) for row in book if book_kind(row) == "pnl"} - {""}
+    store = ledger_store()
+    if not wanted or store is None:
+        return {}
+    try:
+        texts = await _order_texts(_orders_adapter())
+    except Exception as exc:  # 외부 I/O · 503 — 이름만 비운다
+        _logger.warning("report_recent_owners_failed", payload={"reason": str(exc)[:200]})
+        return {}
+    picked = {oid: text for oid, text in (texts or {}).items() if oid in wanted}
+    fired = await store.stop_owners([t[3:] for t in picked.values() if t.startswith("ao-")])
+    trade_of = {
+        oid: fired.get(text[3:], "") if text.startswith("ao-") else trade_of_text(text)
+        for oid, text in picked.items()
+    }
+    plans = await store.trace(list(trade_of.values()))
+    names = leg_names()
+    out: dict[str, dict[str, str]] = {}
+    for oid, tid in trade_of.items():
+        plan = plans.get(tid) if tid else None
+        if plan is None:
+            continue
+        pid = str(plan.get("playbook", "")).split("@")[0]
+        out[oid] = {"leg": names.get(pid, pid), "side": str(plan.get("direction", ""))}
+    return out
+
+
 @router.get("/recent")
 async def recent() -> dict[str, Any]:
     """첫 화면 최근 매매 — 실현 주문 50 건의 손익 · 수수료 · 그 뒤 잔고 (T829).
@@ -452,8 +504,12 @@ async def recent() -> dict[str, Any]:
         return _recent_cache[1]
     book = await _exchange_rows(limit=1000)
     began = equity.load_account_start()
+    owners = await _close_owners(book) if book else None
     made = recent_payload(
-        book, limit=RECENT_LIMIT, since=None if began is None else began.at.astimezone(UTC)
+        book,
+        limit=RECENT_LIMIT,
+        since=None if began is None else began.at.astimezone(UTC),
+        owners=owners,
     ) | {"at": datetime.now(UTC).isoformat()}
     if book is not None:
         _recent_cache = (now, made)

@@ -328,6 +328,10 @@ export type LiteRecentRow = {
   /** 그 주문 직후의 지갑 잔고(미실현 제외) · 거래소가 안 적으면 null. */
   balance: string | null;
   fills: number;
+  /** 그 실현을 낸 주문의 원장 다리 이름 — 주문 번호로 이은 것만 · 못 이었으면 null(사용자 2026-11-12). */
+  leg?: string | null;
+  /** 롱 · 숏 — `leg` 와 같은 길로 이은 것만. */
+  side?: string | null;
 };
 
 /** 최근 매매 합계 한 벌 — 목록 전체, 또는 손익 시작점 뒤만. */
@@ -1256,9 +1260,22 @@ export type ForecastTrade = {
     stop_source: "initial" | "assumed" | "adopted";
     btc_known: boolean;
   };
-  band?: { q25: number; q50: number; q75: number; q90: number | null; note: string | null };
-  fan?: { origin: ForecastPoint; points: { at: string; p: number[] }[]; qs: number[] };
-  branch?: { p: number[]; lines: { name: string; p: number; points: ForecastPoint[] }[] };
+  band?: {
+    q25: number;
+    q50: number;
+    q75: number;
+    q90: number | null;
+    note: string | null;
+  };
+  fan?: {
+    origin: ForecastPoint;
+    points: { at: string; p: number[] }[];
+    qs: number[];
+  };
+  branch?: {
+    p: number[];
+    lines: { name: string; p: number; points: ForecastPoint[] }[];
+  };
 };
 
 export type Forecast = {
@@ -1701,7 +1718,12 @@ export function liveAutoAll(): Promise<LiveAutoAllState> {
 export function setAutoAll(
   on: boolean,
   adminPw: string,
-): Promise<{ auto: boolean; changed: number; runs: number; persisted: boolean }> {
+): Promise<{
+  auto: boolean;
+  changed: number;
+  runs: number;
+  persisted: boolean;
+}> {
   return request(`/walkforward/live-all/auto`, {
     method: "POST",
     headers: JSON_POST,
@@ -3527,7 +3549,9 @@ export function calendarHistory(
 }
 
 /** 손익을 0 으로 새로 센다 — 지금 계좌 총액이 자본금의 출발이 된다. 옛 기록은 지우지 않는다. */
-export function setAccountStart(adminPw: string): Promise<{ at: string; balance: string }> {
+export function setAccountStart(
+  adminPw: string,
+): Promise<{ at: string; balance: string }> {
   return request(`/report/account-start`, {
     method: "POST",
     headers: JSON_POST,

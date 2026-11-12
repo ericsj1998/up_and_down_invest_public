@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 
 from updown.common.db.models.walkforward import WalkforwardRun, WalkforwardTrade
-from updown.orchestration.walkforward.ledger import Direction, Outcome, TradeRecord
+from updown.orchestration.walkforward.ledger import Direction, Outcome, TradeRecord, member_pnl
 from updown.orchestration.walkforward.store import _to_record  # pyright: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
@@ -68,6 +68,14 @@ class LedgerSummary:
     by_outcome: dict[str, int] = field(default_factory=dict[str, int])
     by_playbook: dict[str, int] = field(default_factory=dict[str, int])
     by_symbol: dict[str, int] = field(default_factory=dict[str, int])
+    usdt_sum: Decimal | None = None
+    """청산 매매 USDT 손익 합(`member_pnl` · 수수료 · 펀딩 · 계약 보정 반영).
+
+    건 증거금(`margin_used`)이 빈 매매가 하나라도 있으면 None — 일부만 더한 합을
+    거래소와 맞대지 않는다 (사용자 2026-11-12).
+    """
+    usdt_missing: int = 0
+    """건 증거금이 비어 USDT 로 못 센 청산 매매 수."""
 
     @property
     def win_rate(self) -> Decimal | None:
@@ -145,8 +153,11 @@ def summarize_records(records: Sequence[tuple[str, TradeRecord]], window: Window
         peak = max(peak, running)
         drawdown = max(drawdown, peak - running)
     rrs = [item.realized_rr for _, item in closed if item.realized_rr is not None]
+    missing = sum(1 for _, item in closed if item.margin_used is None)
 
     return LedgerSummary(
+        usdt_sum=None if missing else sum((member_pnl(item) for _, item in closed), Decimal(0)),
+        usdt_missing=missing,
         trades=len(closed),
         longs=sum(1 for _, item in closed if item.direction is Direction.LONG),
         shorts=sum(1 for _, item in closed if item.direction is Direction.SHORT),
@@ -417,9 +428,17 @@ def compare(ledger: LedgerSummary, exchange: ExchangeSummary | None) -> tuple[bo
         `(갈렸는가, 사람이 읽을 이유)`.
 
     Note:
-        원장은 증거금 대비 %, 거래소는 USDT 라 크기를 직접 비교할 수 없다. 그래서
         **부호가 다르면** 갈린 것으로 쓴다 — 한쪽이 벌었다는데 다른 쪽이 잃었으면
         둘 중 하나는 틀렸고, 어느 쪽인지는 사람이 본다.
+
+        🔴 같은 단위로 맞댄다 (사용자 2026-11-12). 예전에는 원장의 **건별 % 단순 합**을 거래소
+        USDT 와 맞대서, 큰 매매 -1% 와 작은 매매 +2% 가 섞인 날 원장 + · 거래소 - 로 둘 다
+        맞는데 경고가 떴다. 이제 원장도 매매별 USDT(`member_pnl`)를 더한다. 건 증거금이 빈
+        매매가 있으면(옛 행 · 단독 판) 예전 % 합으로 맞대고 그렇다고 적는다.
+
+        ⚠️ 남는 차이(경고 아님): 거래소 순액에는 아직 안 닫힌 포지션의 진입 수수료 · 펀딩도
+        든다 — 원장은 닫힌 매매만 센다. 그래서 0 근처 날은 USDT 로도 부호가 갈릴 수 있고,
+        그때는 두 금액을 같이 적어 사람이 크기를 본다.
     """
     if exchange is None:
         return False, "거래소 원장을 못 읽었다 — 원장 숫자만 있다. 대조 없이 읽지 않는다"
@@ -437,7 +456,16 @@ def compare(ledger: LedgerSummary, exchange: ExchangeSummary | None) -> tuple[bo
             "거래소에만 실현이 있다 — 재레버 감축의 부분 실현이면 원장은 청산 때 센다 (T229)"
             + tail,
         )
-    ledger_sign = 1 if ledger.gain_sum_pct > 0 else (-1 if ledger.gain_sum_pct < 0 else 0)
+    if ledger.usdt_sum is not None:
+        mine = ledger.usdt_sum
+        tail = f" (원장 {mine:+.2f} USDT · 거래소 순액 {net:+.2f} USDT)" + tail
+    else:
+        mine = ledger.gain_sum_pct
+        tail = (
+            f" (원장은 건 증거금이 빈 매매 {ledger.usdt_missing}건이 있어 손익률 합 {mine:+.2f}% 로"
+            f" 맞댐 · 거래소 순액 {net:+.2f} USDT)" + tail
+        )
+    ledger_sign = 1 if mine > 0 else (-1 if mine < 0 else 0)
     exchange_sign = 1 if net > 0 else (-1 if net < 0 else 0)
     if ledger_sign and exchange_sign and ledger_sign != exchange_sign:
         return True, "손익 부호가 갈렸다 — 원장과 거래소 중 하나는 틀렸다" + tail

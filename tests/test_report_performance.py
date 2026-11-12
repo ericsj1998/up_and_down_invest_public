@@ -3,6 +3,7 @@
 순수 함수만 시험한다 — DB·SMTP 는 안 건드린다.
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import ClassVar
@@ -182,6 +183,51 @@ class TestCompare:
         exchange = ExchangeSummary(pnl=Decimal("0.07"), rows=20, pnl_rows=7)
         diverged, note = compare(ledger, exchange)
         assert diverged and "부호" in note
+
+    def test_usdt_sum_is_compared_not_the_percent_sum(self) -> None:
+        """사용자 2026-11-12: 원장도 USDT 로 더해 같은 단위로 맞댄다.
+
+        큰 매매(증거금 300) -1% = -3 USDT · 작은 매매(증거금 50) +2% = +1 USDT → % 합은 +1% 지만
+        USDT 합은 -2 다. 거래소 순액 -2 와 부호가 같으므로 갈린 것이 아니다(예전엔 경고였다).
+        """
+        rows = [
+            (
+                "BTC",
+                replace(
+                    _trade(closed_hours=1, entry="100", exit_price="99"), margin_used=Decimal(300)
+                ),
+            ),
+            (
+                "ETH",
+                replace(
+                    _trade(closed_hours=2, entry="100", exit_price="102"), margin_used=Decimal(50)
+                ),
+            ),
+        ]
+        ledger = summarize_records(rows, WINDOW)
+        assert ledger.gain_sum_pct > 0
+        assert ledger.usdt_sum == Decimal(-2) and ledger.usdt_missing == 0
+        diverged, note = compare(ledger, ExchangeSummary(pnl=Decimal(-2), rows=4, pnl_rows=2))
+        assert not diverged and "원장 -2.00 USDT" in note
+
+    def test_missing_margin_falls_back_to_the_percent_sum_and_says_so(self) -> None:
+        """건 증거금이 빈 매매가 섞이면 일부만 더한 USDT 를 맞대지 않는다.
+
+        % 합으로 돌아가고 그렇다고 적는다.
+        """
+        rows = [
+            (
+                "BTC",
+                replace(
+                    _trade(closed_hours=1, entry="100", exit_price="99"), margin_used=Decimal(300)
+                ),
+            ),
+            ("ETH", _trade(closed_hours=2, entry="100", exit_price="102")),
+        ]
+        ledger = summarize_records(rows, WINDOW)
+        assert ledger.usdt_sum is None and ledger.usdt_missing == 1
+        diverged, note = compare(ledger, ExchangeSummary(pnl=Decimal(-2), rows=4, pnl_rows=2))
+        assert diverged and "손익률 합" in note
 
 
 def test_render_carries_both_sides_and_the_verdict() -> None:
