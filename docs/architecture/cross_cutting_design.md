@@ -1,8 +1,8 @@
 # 횡단 관심사 설계 — 바깥 호출 · 캐시 · 소프트 삭제 · 루프 눈금
 
 > 도메인이 아닌데 모든 도메인이 쓰는 것들을 **어디에 두고 어떻게 한 벌로 만들었나**. 2026-09-10 사용자 요청("API 호출을 한곳에서 관리하는
-> 레이어 · 표준적으로 분리하는 것들 · 비동기 · 소프트 딜리트")에서 나온 설계다. 원문 태스크: [T264](../planning/tasks/T264_outbound_http_layer.md) ·
-> [T265](../planning/tasks/T265_async_audit.md) · [T266](../planning/tasks/T266_soft_delete_review.md).
+> 레이어 · 표준적으로 분리하는 것들 · 비동기 · 소프트 딜리트")에서 나온 설계다. 원문 태스크: [T264](../planning/tasks/done/T264_outbound_http_layer.md) ·
+> [T265](../planning/tasks/T265_async_audit.md) · [T266](../planning/tasks/done/T266_soft_delete_review.md).
 
 ## 0. 어디에 사나 — `common` 의 배관
 

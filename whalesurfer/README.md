@@ -19,7 +19,7 @@
 | `config/whalesurfer/managers.yml` | 보고자 104 · 수동 CUSIP → 티커 (공개 저장소 동기화 제외 · D6) |
 | `cache/whalesurfer/` | 13F 역사 · 티커 · 사진 · T443 실현값 (gitignore) |
 | `tests/test_whalesurfer.py` | 시험 |
-| `docs/planning/tasks/T442_whalesurfer.md` · `T443_whalesurfer_backtest.md` | 결정 · 백테스트 |
+| `docs/planning/tasks/backlog/T442_whalesurfer.md` · `T443_whalesurfer_backtest.md` | 결정 · 백테스트 |
 
 ## 본체와의 경계
 

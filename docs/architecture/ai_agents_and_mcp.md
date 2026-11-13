@@ -2,9 +2,9 @@
 
 > AI 투자 어시스턴트(채팅)가 **무엇을 할 수 있고 무엇을 절대 못 하는지**, 그 도구들이 어떻게 앱 밖의 AI(Claude Desktop · Cursor · ChatGPT)에도
 > 열려 있는지, 그리고 왜 멀티 에이전트 프레임워크를 쓰지 않았는지. 코드는 `src/updown/orchestration/ai_chat/` · `src/updown/llm/` ·
-> `src/updown/apps/api/{ai_chat,ai_report,mcp_server}.py` · `web/src/chat/`. 태스크 원문은 [T248](../planning/tasks/T248_ai_chat_assistant.md) ·
-> [T256](../planning/tasks/T256_dashboard_spec_tool.md) · [T257](../planning/tasks/T257_chat_shell_ux.md) · [T258](../planning/tasks/T258_chat_eval_engine.md) ·
-> [T263](../planning/tasks/T263_mcp_server.md). 시험한 대화는 [ai_chat_scenarios.md](ai_chat_scenarios.md).
+> `src/updown/apps/api/{ai_chat,ai_report,mcp_server}.py` · `web/src/chat/`. 태스크 원문은 [T248](../planning/tasks/backlog/T248_ai_chat_assistant.md) ·
+> [T256](../planning/tasks/backlog/T256_dashboard_spec_tool.md) · [T257](../planning/tasks/backlog/T257_chat_shell_ux.md) · [T258](../planning/tasks/backlog/T258_chat_eval_engine.md) ·
+> [T263](../planning/tasks/backlog/T263_mcp_server.md). 시험한 대화는 [ai_chat_scenarios.md](ai_chat_scenarios.md).
 
 ## 1. 한 장 그림
 

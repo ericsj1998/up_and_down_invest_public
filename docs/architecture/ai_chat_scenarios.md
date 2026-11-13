@@ -1,7 +1,7 @@
 # AI 채팅 — 시험한 시나리오와 결과
 
 > 어시스턴트가 **실제 모델·실제 도구**로 답한 대화의 기록. 설계는 [ai_agents_and_mcp.md](ai_agents_and_mcp.md), 엔진은
-> [T258](../planning/tasks/T258_chat_eval_engine.md). 모든 실측은 로컬 데모(바이낸스 테스트넷 · 주식 페이퍼 · EDGAR 100종 적재)에서
+> [T258](../planning/tasks/backlog/T258_chat_eval_engine.md). 모든 실측은 로컬 데모(바이낸스 테스트넷 · 주식 페이퍼 · EDGAR 100종 적재)에서
 > `nvidia/nemotron-3-super-120b-a12b` 로. 숫자는 **그날 그 모델**의 값이고, 프롬프트가 바뀌면(`chat-1.x`) 새 참가자라 표본이 0 부터 다시 쌓인다.
 
 ## 1. 판정 기준 (측정 전에 선언)
