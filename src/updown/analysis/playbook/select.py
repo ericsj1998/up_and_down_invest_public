@@ -988,6 +988,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         if body.get("high_exit_short") is None
                         else int(body["high_exit_short"])
                     ),
+                    breakeven_after_r=(
+                        None
+                        if body.get("breakeven_after_r") is None
+                        else Decimal(str(body["breakeven_after_r"]))
+                    ),
                     trail_exit_pct_long=(
                         None
                         if body.get("trail_exit_pct_long") is None

@@ -62,6 +62,7 @@ from updown.common.domain.setup import TradeSetup
 from updown.common.domain.trade_tick import BarDelta
 from updown.common.logging.setup import get_logger
 from updown.decision.portfolio_rules import Grant
+from updown.decision.risk.breakeven import breakeven_stop
 from updown.decision.risk.merged_liquidation import (
     MergedLeg,
     MergedLiqVerdict,
@@ -3205,6 +3206,33 @@ class Session:
             #    묶었을 때 4H 숏이 1H SMA20 에서 닫힌다 — 다른 매매법이 된다. 매매법이 하나거나
             #    묶음의 축이 같으면(지금까지의 모든 선언) `book.timeframe` 이 대표의 축과 같아
             #    한 글자도 안 달라진다.
+            # 🔴 **R 배 뒤 본전** (선언 `breakeven_after_r`). 걷기 봉 중 하나라도
+            #    "진입가 -/+ R x 처음 손절 거리" 에 닿은 판정 TF 봉이 마감했으면 손절을 진입가로
+            #    옮긴다. 값은 결정 층 `breakeven_stop` 이 정한다(규칙 #4) · 유리한 쪽으로만(규칙 #3)
+            #    · 현재가를 넘는 자리면 안 옮긴다(손절이 가격 반대편에 서면 즉시 청산이다).
+            #    R 기준 = 처음 손절(`initial_stop`) · 없으면(옛 · 이어받은 매매) 지금 손절 — 진입 뒤
+            #    손절을 옮기는 규칙이 없는 다리에만 선언한다 · 리스크 감소 행동(#8-1).
+            if book.breakeven_after_r is not None and held.opened_at:
+                gauge = self._frame(book.timeframe, None)
+                if gauge is not None and gauge.rows:
+                    base = held.initial_stop if held.initial_stop is not None else held.planned_stop
+                    level = breakeven_stop(
+                        long=long,
+                        entry=held.entry,
+                        base_stop=base,
+                        current_stop=held.planned_stop,
+                        r_mult=book.breakeven_after_r,
+                        rows=gauge.rows,
+                        opened_at=held.opened_at,
+                        span=frame_span(book.timeframe),
+                    )
+                    safe = level is not None and (level < bar.close if long else level > bar.close)
+                    if level is not None and safe:
+                        held = replace(held, planned_stop=level)
+                        self._open = held
+                        self.ledger.replace(held)
+                        self.journal()
+                        self._count("breakeven_after_r")
             if book.trail_stops:
                 state = self._frame(book.timeframe, None)
                 if state is not None:
