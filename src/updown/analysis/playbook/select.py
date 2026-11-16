@@ -988,6 +988,7 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         if body.get("high_exit_short") is None
                         else int(body["high_exit_short"])
                     ),
+                    entry_off=bool(body.get("entry_off", False)),
                     breakeven_after_r=(
                         None
                         if body.get("breakeven_after_r") is None

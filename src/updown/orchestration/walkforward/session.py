@@ -1213,6 +1213,8 @@ class Session:
     """
     entry_legs_blocked: int = 0
     """분기 목록 밖이라 버린 신규 진입 후보 수 (T758)."""
+    entry_off_blocked: int = 0
+    """선언 `entry_off` 로 신규 진입을 끈 다리의 후보 수 — 지우지 않고 센다 (§1-0s)."""
     has_liquidation: bool = True
     """청산이 있는 시장인가 — 능력표 `leverage_allowed` (T254 ① · `apply_playbook_knobs` 가 세팅).
 
@@ -5371,6 +5373,14 @@ class Session:
             for item in outside:
                 self._note_proposal_blocked("entry_legs", item)
             open_to_entry = [item for item in open_to_entry if item not in outside]
+        # ⭐ 선언 `entry_off` — 신규 진입만 끈 다리. 분기 목록 거르기와 같은 길
+        #    (청산 · 손절은 그대로).
+        off = [item for item in open_to_entry if item.playbook.entry_off]
+        if off:
+            self.entry_off_blocked += len(off)
+            for item in off:
+                self._note_proposal_blocked("entry_off", item)
+            open_to_entry = [item for item in open_to_entry if item not in off]
         if self._held:
             # ⭐ T320 — 보유 중이면 **같은 방향 몫을 더할 수 있는 다리**의 후보만 남는다.
             open_to_entry = [
