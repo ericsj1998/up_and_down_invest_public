@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_left, bisect_right
 from collections import deque
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -477,6 +478,11 @@ def tilted(size_mult: Decimal, book: Playbook) -> Decimal:
     if power is None or size_mult == 1:
         return size_mult
     return size_mult**power
+
+
+def _bar_start(candle: Candle) -> datetime:
+    """봉 시작 시각 — 오름차순 봉에서 이분 탐색할 때의 열쇠."""
+    return candle.ts
 
 
 def early_clock(rows: Sequence[Candle], frame: Timeframe) -> datetime | None:
@@ -2693,13 +2699,16 @@ class Session:
             ⛔ **0.1 은 `judged` 그대로다.** 무조건 바꾸면 0.1 **라이브**의 진입가만
               신선해져 백테스트와 갈라진다 (§5.6.2 동결).
         """
+        # 마지막 봉 하나만 쓴다 — 급전이 준 순서형을 리스트로 복사하지 않는다(봉인 급전은 커서까지
+        #   전부를 내주므로 걸음마다 이력 전체를 복사하게 된다 · 답은 같다).
         frame = self.price_frame
         if self.tick_observed:
-            live = list(self.feed.observed(frame or self.step_frame))
-            return live[-1] if live else None
+            live = self.feed.observed(frame or self.step_frame)
+            return live[-1] if len(live) else None
+        rows: Sequence[Candle]
         if frame is None:
-            rows = list(self.feed.judged(self.step_frame))
-            if not rows:
+            rows = self.feed.judged(self.step_frame)
+            if not len(rows):
                 # 🔴 **여기가 비면 체결 흡수가 통째로 멎는다** (T72 §10~§12 · 3판정 연속).
                 #
                 #    `_collect` 는 `bar is None` 이면 즉시 나가는데, 그러면 우편함을
@@ -2716,8 +2725,8 @@ class Session:
                 #
                 # ⚠️ 라이브에서 이것은 **미래 참조가 아니다** — 라이브에 미래는 없고,
                 #   커서보다 새 봉은 그냥 **지금**이다.
-                rows = list(self.feed.observed(self.step_frame))
-                if rows and not self._tick_fell_back:
+                rows = self.feed.observed(self.step_frame)
+                if len(rows) and not self._tick_fell_back:
                     self._tick_fell_back = True
                     _logger.warning(
                         "session_tick_fell_back_to_observed",
@@ -2728,8 +2737,8 @@ class Session:
                         },
                     )
         else:
-            rows = list(self.feed.observed(frame))
-        return rows[-1] if rows else None
+            rows = self.feed.observed(frame)
+        return rows[-1] if len(rows) else None
 
     def target_touched(self, held: TradeRecord) -> datetime | None:
         """이 매매가 목표에 닿은 봉이 끝난 시각 (T814 · T816).
@@ -2756,7 +2765,12 @@ class Session:
         since = self.target_seen.get(tid, held.opened_at)
         stop_first = self._book_of(held).stop_mode == "touch"
         target = held.planned_target
-        for row in self.feed.observed(frame):
+        seen = self.feed.observed(frame)
+        # 지난번 본 봉 뒤부터 읽는다 — 첫 봉부터 돌면 보유 중 걸음마다 이력 전체를 훑는다.
+        #   봉은 오름차순이고 아래 `ts <= since` 검사는 그대로라 답이 같다.
+        first = bisect_right(seen, since, key=_bar_start)
+        for at in range(first, len(seen)):
+            row = seen[at]
             if row.ts <= since:
                 continue
             since = row.ts
@@ -5265,7 +5279,8 @@ class Session:
             source = min(finer, key=interval)
             # T814 — 라이브는 커서가 진입축 마감에 묶여 있어 `judged` 로는 봉 안의 5 분봉이 안
             #    보인다. 봉인 급전의 `observed` 는 `judged` 와 같다.
-            rows_src = list(self.feed.observed(source))
+            #    리스트로 복사하지 않는다 — 마지막 봉과 이 진입 TF 봉 안의 꼬리만 쓴다(답은 같다).
+            rows_src = self.feed.observed(source)
             # 🔴 "지금" = 재료 축의 마지막 마감 봉이 끝난 시각(T345 결함 ① · 2026-10-02).
             #    예전엔 커서 + 걸음이었는데 커서가 이미 그 봉의 끝이라 한 걸음 일렀다 —
             #    :30 선언이 :15 에 15분짜리 부분 봉으로 샀다(DOGE 2022-07-20 탐침 ·
@@ -5277,7 +5292,8 @@ class Session:
             minutes = int((now - start).total_seconds() // 60)
             if not any(b.early_entry is not None and b.early_entry.minute == minutes for b in mine):
                 continue
-            sub = [c for c in rows_src if c.ts >= start]
+            tail = range(bisect_left(rows_src, start, key=_bar_start), len(rows_src))
+            sub = [rows_src[at] for at in tail if rows_src[at].ts >= start]
             if not sub:
                 continue
             partial = Candle(

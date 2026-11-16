@@ -28,6 +28,7 @@ as-of 시점에 **진행 중인 봉은 종가가 없다.** 그 봉을 보이게 
 않는 것과 같은 규칙을 **읽는 쪽에서도** 지키는 것이다.
 """
 
+from bisect import bisect_right
 from collections.abc import Iterator, Sequence
 from datetime import datetime
 from typing import overload
@@ -65,14 +66,17 @@ def visible_upto(
     Note:
         경계는 `ts + interval <= as_of` 다. `ts <= as_of` 로 하면 **진행 중인 봉이
         포함**되고, 그 봉의 종가는 아직 결정되지 않았다 (spec §4.2).
+
+        이분 탐색으로 센다 — 첫 봉부터 세면 긴 재현에서 걸음마다 이력 전체를 훑는다
+        (창이 길수록 걸음이 느려졌다). `ts + interval <= as_of` 는 `ts <= as_of - interval` 과
+        같고 봉은 오름차순이라 답이 같다 (`tests/test_guard_fast_path.py` 가 옛 세기와 맞댄다).
     """
-    step = interval(timeframe)
-    visible = 0
-    for candle in candles:
-        if candle.ts + step > as_of:
-            break
-        visible += 1
-    return visible
+    return bisect_right(candles, as_of - interval(timeframe), key=_starts_at)
+
+
+def _starts_at(candle: Candle) -> datetime:
+    """봉 시작 시각 — 이분 탐색의 열쇠."""
+    return candle.ts
 
 
 class AsOfSequence(Sequence[Candle]):
@@ -158,7 +162,10 @@ class AsOfSequence(Sequence[Candle]):
         """
         if isinstance(index, slice):
             start, stop, step = index.indices(self._visible)
-            del start, stop, step  # indices() 가 이미 보이는 범위로 잘라 준다
+            if step > 0:
+                # indices() 가 보이는 범위 안의 0 이상 자리로 풀어 준다 → 필요한 구간만 읽는다.
+                # 앞부분을 통째로 복사한 뒤 자르면 뒤쪽 창 하나 읽는 데 이력 전체가 든다.
+                return list(self._source[start:stop:step])
             return list(self._source[: self._visible])[index]
         position = index if index >= 0 else self._visible + index
         if not 0 <= position < self._visible:
