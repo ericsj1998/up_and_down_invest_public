@@ -1032,6 +1032,10 @@ _NOT_REALISED = (Outcome.OPEN, Outcome.PENDING, Outcome.CANCELLED, Outcome.TRANS
 SHARE_WITHDRAW_RECHECK_S = 0.4
 """몫 손절을 거둔 뒤 거래소 목록을 다시 읽기 전 기다리는 초 — 취소 전파 지연(2026-09-30 SAND)."""
 SHARE_EXIT_RETRIES = 3
+SHARE_HELD_REREADS = 3
+"""몫 청산 앞 — 같은 걸음에 다른 몫이 방금 들었을 때 포지션을 다시 읽는 횟수 (2026-11-17 SUI)."""
+SHARE_HELD_REREAD_S = 0.7
+"""다시 읽기 사이 쉼(초) — 거래소 포지션 조회가 방금 체결을 반영할 틈."""
 """몫 청산이 막혔을 때 다음 걸음에서 다시 닫아 보는 횟수 — 그 뒤는 손절만 두고 사람에게 넘긴다."""
 ADOPT_STOP_LOOKBACK = timedelta(hours=48)
 """거래소에 손절이 없는 포지션을 이어받을 때 원장의 마지막 계획을 믿는 시간 창."""
@@ -9174,6 +9178,48 @@ class LiveRunner:
                 },
             )
             return False
+        # 🔴 같은 걸음에 다른 몫이 **방금 들었으면** 포지션 조회가 그 체결을 아직 못 봤을 수 있다
+        #    (2026-11-17 01:00 KST 사고 — 새 몫 60 체결 1 초 뒤 조회가 옛 118 을 돌려줘
+        #    min(118, 118 - 60) = 58 계약만 닫았고 60 계약이 손절 없이 남았다).
+        #    그때만 짧게 다시 읽고, 그래도 원장 몫 합에 못 미치면 **닫지 않고** 다음 걸음에
+        #    다시 닫는다 — 덜 닫으면 손절 없는 계약이 남고 더 닫으면 남의 몫이 나간다.
+        #    이 몫 손절은 아직 안 거뒀다.
+        fresh = now.closed_at is not None and any(
+            item.outcome is Outcome.OPEN
+            and item.trade_id != now.trade_id
+            and item.opened_at is not None
+            and item.opened_at >= now.closed_at
+            for item in records
+        )
+        if fresh and held < mine + others:
+            for _ in range(SHARE_HELD_REREADS):
+                await asyncio.sleep(SHARE_HELD_REREAD_S)
+                try:
+                    held = abs(held_size(await self._orders.position_snapshot(self.instrument)))
+                except Exception:
+                    break
+                if held >= mine + others:
+                    break
+            retry, tries_of = self._exit_state()
+            if held < mine + others and tries_of.get(now.trade_id, 0) == 0:
+                tries_of[now.trade_id] = 1
+                retry[now.trade_id] = before
+                self.failures += 1
+                self.last_error = (
+                    f"몫 {now.trade_id} 청산 미룸 — 방금 든 몫이 포지션 조회에 아직 없다"[:200]
+                )
+                self._log.error(
+                    "live_share_exit_stale_position",
+                    payload={
+                        "trade_id": now.trade_id,
+                        "on_exchange": held,
+                        "others": others,
+                        "mine": mine,
+                        "note": "같은 걸음에 다른 몫이 들었는데 거래소 포지션이 몫 합보다 적다 — "
+                        "안 닫았다(이 몫 손절이 계속 지킨다) · 다음 걸음에 다시 닫는다",
+                    },
+                )
+                return False
         size = min(mine, held - others)
         if size <= 0:
             self._log.warning(
