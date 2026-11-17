@@ -39,6 +39,7 @@ from contextvars import ContextVar
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from types import SimpleNamespace
 from typing import Any, Protocol, cast, runtime_checkable
 
 import structlog
@@ -844,6 +845,27 @@ def names_exit_of(text: str, trade_id: str) -> bool:
     return kind is not None and kind in EXIT_KINDS
 
 
+def _finished_before(row: Mapping[str, Any], since: float | None) -> bool:
+    """끝난 주문 줄이 `since`(유닉스 초) **전에** 끝났나 — 시각을 모르면 거짓 (T852 C2).
+
+    Args:
+        row: `recent_orders` 줄(`finish_time` 이 유닉스 초).
+        since: 기준 시각. None 이면 거르지 않는다.
+
+    Returns:
+        끝난 시각을 읽었고 그것이 기준보다 이르면 참.
+    """
+    if since is None:
+        return False
+    raw = row.get("finish_time")
+    if raw in (None, "", 0, "0"):
+        return False
+    try:
+        return float(str(raw)) < since
+    except ValueError:
+        return False
+
+
 def _kind_after_trade(text: str, trade_id: str) -> str | None:
     """우리 주문 이름에서 이 매매 id 조각 **바로 뒤의 종류 코드** — 이 매매의 주문이 아니면 None.
 
@@ -1037,6 +1059,10 @@ SHARE_HELD_REREADS = 3
 """몫 청산 앞 — 같은 걸음에 다른 몫이 방금 들었을 때 포지션을 다시 읽는 횟수 (2026-11-17 SUI)."""
 SHARE_HELD_REREAD_S = 0.7
 """다시 읽기 사이 쉼(초) — 거래소 포지션 조회가 방금 체결을 반영할 틈."""
+HTTP_CLIENT_ERROR = 400
+HTTP_SERVER_ERROR = 500
+"""주문 예외의 `status_code` 가 이 사이(4xx)면 거래소가 **분명히 거절**한 것이다 — 주문은 안
+나갔다. 그 밖(없음 · 5xx)은 보냈는지 모른다(시간 초과 · 서버 오류)."""
 SHARE_CLOSE_ATTEMPTS = 2
 """몫 청산 시장가가 덜 체결됐을 때 그 자리에서 남은 만큼 다시 내는 횟수(처음 포함)."""
 SHARE_EXIT_WATCH_RETRIES = 10
@@ -3657,10 +3683,14 @@ class LiveRunner:
                 payload={"trade": trade_id, "error": str(exc)[:120]},
             )
             return None
+        # 🔴 T852 C2 — 이 매매가 **열리기 전에 끝난** 체결은 이 매매를 닫은 것일 수 없다. 예전에는
+        #    시각을 안 봐서, 거래소에 없던 매매(거절된 진입)나 이름 없는 청산을 며칠 전 앞 매매의
+        #    청산 체결가로 닫을 수 있었다. 줄에 끝난 시각이 없으면(옛 어댑터 · 대역) 거르지 않는다.
+        since = held.opened_at.timestamp() if held is not None and held.opened_at else None
         listed = [
             row
             for row in cast("list[dict[str, str]]", rows)
-            if row.get("fill_price") and closes_side(row, side)
+            if row.get("fill_price") and closes_side(row, side) and not _finished_before(row, since)
         ]
         # 🔴 T831 — 이름은 매매 id 앞 8 자만 싣는다. 전체 id 로 찾으면 우리 목표 · 청산 체결이
         #    "이름 없음" 으로 떨어져 0 확인(20 초)을 기다린다.
@@ -4961,6 +4991,13 @@ class LiveRunner:
             with self._tolerate("funding"):
                 # ⭐ 펀딩 정산을 열린 매매에 (T226) — 5분마다 · 실패는 경고만.
                 await self._sync_funding()
+            with self._tolerate("entries"):
+                # T852 A5 — 응답을 못 받은 진입을 거래소 기록으로 가른다. 대조보다 **먼저** —
+                # 대조가 "거래소 0" 을 보고 남의 체결가로 닫기 전에 거둔다. 걸음과 겹치지 않게.
+                if self._entry_unknown_map() and not self._stepping.locked():
+                    async with self._stepping:
+                        await self._resolve_unknown_entries()
+                        await self._persist()
             with self._tolerate("reconcile"):
                 # 🔴 **거래소가 먼저 닫았는지 여기서 따라잡는다** (사용자 지적
                 #    2026-08-18: *"실제 주문은 이미 손절 난 상태야. (…) 화면에서는
@@ -5765,6 +5802,8 @@ class LiveRunner:
             await self._stage("apply_add", self._apply_add(), faults)
             # 🔴 **보유 계약을 지금 자본의 목표 노출로 되맞춘다** (0.8.0 재레버).
             await self._stage("resize_position", self._resize_position(), faults)
+        # T852 A5 — 응답을 못 받은 진입을 거래소 기록으로 가른다(체결됐으면 바로 뒤에서 손절).
+        await self._stage("resolve_entries", self._resolve_unknown_entries(), faults)
         await self._stage("guard_stop", self._guard_stop(), faults)
         await self._stage("ensure_share_targets", self._ensure_share_targets(), faults)
         # 🔴 **걸음마다 스스로 점검한다** (사용자 요구 2026-08-18). 오늘 나온 버그가
@@ -7217,9 +7256,20 @@ class LiveRunner:
         ]
         if not fresh:
             return
-        spec = await self._contract_spec()
+        try:
+            spec = await self._contract_spec()
+        except Exception as exc:
+            # 🔴 T852 A6 — 명세를 못 읽으면 이 걸음엔 못 보낸다. 예전에는 예외가 걸음을 끊고
+            #    그 기록이 `_sent` 밖에 남아, **다음 걸음(한 봉 뒤)에 묵은 계획이 시장가로**
+            #    나갔다(다른 값으로 들어감). 주문은 안 나갔으니 원장에서 거둔다.
+            for record in fresh:
+                self._sent.add(record.trade_id)
+                if not (record.entry_fills or record.trade_id in self._revived_open):
+                    self._void_entry(record, f"계약 명세를 못 읽었다: {exc}")
+            raise
         for record in fresh:
             self._sent.add(record.trade_id)
+            protecting = bool(record.entry_fills or record.trade_id in self._revived_open)
             try:
                 # 🔴 **지정가로 이미 샀으면 다시 사지 않는다** (2026-08-20 사고 ⓐ).
                 #    `entry_fills` 는 거래소가 채웠다고 알려 온 조각들이다 — 그것이
@@ -7241,6 +7291,7 @@ class LiveRunner:
                 #    사람이 봐야 한다 (절대 규칙 #8).
                 self.failures += 1
                 self.last_error = f"주문: {exc}"[:200]
+                was = str(self.placed.get(record.trade_id, {}).get("status", ""))
                 # 🔴 **화면이 볼 수 있게 남긴다.** 로그에만 두면 아무도 안 본다 —
                 #    밤새 익절이 세 번 거절됐는데 아침에야 알았다 (2026-08-18).
                 self.placed[record.trade_id] = {
@@ -7249,6 +7300,22 @@ class LiveRunner:
                     "contracts": "0",
                     "error": str(exc)[:180],
                 }
+                # 🔴 T852 A1 · A5 — 진입이 **어디까지 갔는지**로 가른다. 예전에는 셋 다 원장을
+                #    "보유 중" 으로 남겨, 대조가 20 초 뒤 남의 매매 체결가로 닫아 가짜 손익을
+                #    만들었다(하루 손절 정지 · 연속 손절 축소 · 펀드 장부가 그 줄을 셌다).
+                if not protecting:
+                    code = getattr(exc, "status_code", None)
+                    if was != "sending":
+                        # 보내기 전에 터졌다 — 주문은 안 나갔다.
+                        self._void_entry(record, f"보내기 전에 실패: {exc}")
+                    elif isinstance(code, int) and HTTP_CLIENT_ERROR <= code < HTTP_SERVER_ERROR:
+                        # 거래소가 분명히 거절했다(증거금 부족 · 한도 · 요청 한도) — 안 나갔다.
+                        self._void_entry(record, f"거래소가 거절: {exc}")
+                    else:
+                        # 보냈는지 모른다(시간 초과 · 5xx) — 체결됐을 수 있다. 거래소 기록으로
+                        # 가를 때까지 열어 둔다(`_resolve_unknown_entries`).
+                        self.placed[record.trade_id]["status"] = "unknown"
+                        self._entry_unknown_map()[record.trade_id] = time.monotonic()
                 self._log.error(
                     "live_runner_order_failed",
                     payload={
@@ -7259,6 +7326,148 @@ class LiveRunner:
                         "익절만 거절되면 포지션은 열려 있고 익절이 없는 상태다",
                     },
                 )
+
+    def _entry_unknown_map(self) -> dict[str, float]:
+        """보냈는지 모르는 진입(응답 유실) → 보낸 monotonic 시각 (T852 A5) — 더블에도 있게."""
+        return cast("dict[str, float]", self.__dict__.setdefault("_entry_unknown", {}))
+
+    def _void_entry(self, record: TradeRecord, why: str) -> bool:
+        """거래소에 **안 나간 것이 확실한** 진입을 원장에서 거둔다 (T852 A1 · D4).
+
+        Args:
+            record: 방금 원장에 적힌 진입 기록.
+            why: 거두는 까닭(로그 · 화면).
+
+        Returns:
+            거뒀으면 참. 이미 닫혔거나 체결 증거가 있으면 거짓(안 건드린다).
+
+        Note:
+            🔴 주문이 거절 · 미체결 · 전송 전 실패로 끝났는데 원장이 "보유 중" 이면, 거래소 0 을 본
+            대조가 20 초 뒤 **가장 최근 청산 쪽 체결**(앞 매매의 것)로 그 기록을 닫는다 — 있지도
+            않은 매매의 손익이 원장에 실려 하루 손절 정지 · 연속 손절 크기 축소 · 펀드 장부로
+            번진다. 닫을 체결이 없으면 영영 열린 채 자리를 차지하고(다른 종목 진입까지 막음),
+            몫 판에서는 "계약 수 모르는 몫" 이 돼 그 종목의 손절 걸기 · 새 몫 진입을 막는다.
+
+            `_skip_unfillable`(T286)과 같은 처리다 — `CANCELLED` 로 닫고 세션의 그 몫을 놓는다.
+            손절로 적지 않는다(없던 손실을 세지 않는다).
+
+            ⛔ 체결 증거(계약 수 · 지정가 체결 조각)가 있는 기록은 거두지 않는다 — 실제 포지션의
+            원장을 지우면 손절 관리가 끊긴다.
+        """
+        live = next(
+            (item for item in self._session.ledger.records if item.trade_id == record.trade_id),
+            None,
+        )
+        if live is None or live.outcome is not Outcome.OPEN:
+            return False
+        if self._share_contracts(live) > 0 or live.entry_fills:
+            return False
+        self._log.error(
+            "live_runner_entry_voided",
+            payload={
+                "trade_id": live.trade_id,
+                "playbook": live.playbook,
+                "why": why[:200],
+                "note": "주문이 거래소에 안 나갔다 — 원장을 거둔다(취소 · 손익 0). "
+                "매매법이 정한 진입 하나를 놓쳤다",
+            },
+        )
+        self.placed[live.trade_id] = {
+            "status": "voided",
+            "order_id": "",
+            "contracts": "0",
+            "error": why[:180],
+        }
+        self._session.ledger.replace(
+            live.closed(at=live.placed_at, price=live.entry, outcome=Outcome.CANCELLED)
+        )
+        self._entry_unknown_map().pop(live.trade_id, None)
+        if self._shared:
+            self._session.release(leg=live.playbook)
+        else:
+            self._session.release()
+        return True
+
+    async def _resolve_unknown_entries(self) -> None:
+        """보냈는지 모르는 진입을 **거래소 기록으로** 가른다 (T852 A5 · 규칙 #6).
+
+        Note:
+            응답을 못 받은 진입(시간 초과 · 5xx)은 체결됐을 수도 안 나갔을 수도 있다. 다시 보내지
+            않고 묻는다:
+
+            - 이 매매 이름의 진입(`-en-`) 체결이 끝난 주문 목록에 있다 → 계약 수 · 평단을 원장에
+              붙인다(정상 진입과 같은 `_record_filled_exposure`). 손절 · 익절 지정가는 뒤따르는
+              `_guard_stop` · `_ensure_share_targets` 가 건다.
+            - 목록에 없고, 보낸 지 `SHARE_FRESH_S` 가 지났고, 거래소 포지션이 다른 몫 합을 넘지
+              않는다(이 진입 몫이 거래소에 없다) → 안 나간 것으로 보고 거둔다(`_void_entry`).
+            - 그 밖(못 읽음 · 아직 이름 · 포지션에 주인 없는 계약이 있음) → 그대로 두고 다음에
+              다시 묻는다. 감사가 갈린 상태를 알린다.
+        """
+        unknown = self._entry_unknown_map()
+        if not unknown or self.observe_only:
+            return
+        if not hasattr(self._orders, "recent_orders") or not isinstance(
+            self._orders, PositionAware
+        ):
+            return
+        records = {item.trade_id: item for item in self._session.ledger.records}
+        for trade_id, sent_at in list(unknown.items()):
+            live = records.get(trade_id)
+            if live is None or live.outcome is not Outcome.OPEN or self._share_contracts(live) > 0:
+                unknown.pop(trade_id, None)
+                continue
+            try:
+                rows = await self._recent_rows(fresh=True)
+                spec = await self._contract_spec()
+                held = abs(held_size(await self._orders.position_snapshot(self.instrument)))
+            except Exception as exc:
+                self._log.warning(
+                    "live_entry_unknown_unreadable",
+                    payload={"trade_id": trade_id, "error": str(exc)[:140]},
+                )
+                return
+            mine = [
+                row
+                for row in rows
+                if self._names_mine(str(row.get("text", "")), live, "en") and row.get("fill_price")
+            ]
+            got = 0
+            for row in mine:
+                with contextlib.suppress(Exception):
+                    got += abs(int(str(row.get("size") or 0))) - abs(int(str(row.get("left") or 0)))
+            if got > 0:
+                price: Decimal | None = None
+                with contextlib.suppress(Exception):
+                    price = Decimal(str(mine[0]["fill_price"]))
+                filled = SimpleNamespace(filled_quantity=Decimal(got), average_price=price)
+                await self._record_filled_exposure(
+                    live, cast("OrderResult", filled), Decimal(str(spec["quanto_multiplier"]))
+                )
+                self.placed[trade_id] = {
+                    "status": "filled",
+                    "order_id": str(mine[0].get("id", "")),
+                    "contracts": str(got),
+                }
+                self._log.warning(
+                    "live_entry_unknown_filled",
+                    payload={
+                        "trade_id": trade_id,
+                        "contracts": got,
+                        "note": "응답은 못 받았지만 체결됐다 — 거래소 기록으로 원장에 붙였다",
+                    },
+                )
+                unknown.pop(trade_id, None)
+                continue
+            if time.monotonic() - sent_at < SHARE_FRESH_S:
+                continue  # 끝난 주문 목록이 아직 안 따라왔을 수 있다
+            others = sum(
+                self._share_contracts(item)
+                for item in records.values()
+                if item.outcome is Outcome.OPEN and item.trade_id != trade_id
+            )
+            if held <= others:
+                self._void_entry(live, "응답을 못 받았고 거래소 기록 · 포지션에도 없다")
+                records = {item.trade_id: item for item in self._session.ledger.records}
 
     def _skip_unfillable(
         self, record: TradeRecord, equity: Decimal, multiplier: Decimal, size_min: int
@@ -11296,6 +11505,9 @@ class LiveRunner:
             await self._note_order(
                 record.trade_id, role="진입", status="blocked", error=fault[:180]
             )
+            # 🔴 T852 A1 — 주문이 안 나갔으니 원장도 거둔다(`_skip_unfillable` 과 같은 처리).
+            #    "보유 중" 으로 두면 대조가 남의 체결가로 닫아 없던 손익을 만든다.
+            self._void_entry(record, f"계획 기하 오류: {fault}")
             return
         # 보내기 **전에** 적는다 — 응답을 못 받아도(시간 초과) 체결됐을 수 있다
         # (`_mark_entry_sent` 와 같은 값 · 이 함수를 빌려 쓰는 대역에도 돌게 속성으로 적는다).
@@ -11354,6 +11566,16 @@ class LiveRunner:
                     "note": "익절을 걸지 않는다 — 없는 포지션을 줄이려 하면 반대가 열린다",
                 },
             )
+            # 🔴 T852 A1 — 하나도 못 채우고 **끝난** 주문이면 포지션이 없다 — 원장을 거둔다.
+            #    아직 끝나지 않은 상태(접수됨)는 채워질 수 있으니 거래소 기록으로 가를 때까지
+            #    열어 둔다(`_resolve_unknown_entries`).
+            if (
+                entry.status in (OrderStatus.EXPIRED, OrderStatus.CANCELLED, OrderStatus.FAILED)
+                and not entry.filled_quantity
+            ):
+                self._void_entry(record, f"진입이 체결 없이 끝났다({entry.status.value})")
+            else:
+                self._entry_unknown_map()[record.trade_id] = time.monotonic()
             return
         await self._record_filled_exposure(record, entry, multiplier)
 
