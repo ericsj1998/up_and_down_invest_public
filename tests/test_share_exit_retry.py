@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -188,6 +189,60 @@ def test_a_retry_that_raises_goes_back_on_the_queue() -> None:
     due_now(run, a)
     retry(run)
     assert exch.closes == [Decimal(5)]
+
+
+def restarted(
+    *, outcome: Outcome = Outcome.TIME_EXIT
+) -> tuple[_Runner, ShareExchange, TradeRecord, TradeRecord]:
+    """A 가 원장에서는 닫혔는데 거래소 청산이 미뤄진 사이 **판이 다시 떴다** — 줄이 사라졌다."""
+    old, exch, a, b = pair()
+    exch.unreadable = True
+    old._session.ledger.replace(  # pyright: ignore[reportPrivateUsage]
+        a.closed(at=datetime.now(UTC), price=Decimal(110), outcome=outcome)
+    )
+    asyncio.run(old._apply_exit(a, shares=[a, b]))  # pyright: ignore[reportPrivateUsage]
+    exch.unreadable = False
+    run = _Runner(exch, old._session.ledger)  # pyright: ignore[reportPrivateUsage] — 새 러너 · 기억 없음
+    run._stepping = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
+    return run, exch, a, b
+
+
+def recover(run: _Runner) -> None:
+    asyncio.run(run._recover_pending_share_exits())  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_pending_exit_lost_in_a_restart_is_found_again_from_the_facts() -> None:
+    """예전엔 다른 몫이 열려 있는 한 아무도 그 몫을 다시 닫지 않았다(손절만 남은 채)."""
+    run, exch, a, b = restarted()
+    assert not run._exit_state()[0], "새 러너는 줄을 모른다"  # pyright: ignore[reportPrivateUsage]
+    recover(run)
+    assert a.trade_id in run._exit_state()[0]  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(run._retry_share_exits())  # pyright: ignore[reportPrivateUsage]
+    assert exch.closes == [Decimal(5)] and exch.size == 3
+    assert key(a) not in exch.stops and key(b) in exch.stops
+
+
+def test_nothing_is_recovered_when_the_sizes_do_not_point_at_one_share() -> None:
+    """남은 계약 수가 닫힌 몫 하나와 정확히 안 맞으면 추정하지 않는다(사람이 본다)."""
+    run, exch, _a, _b = restarted()
+    exch.size = 7  # 8 이어야 A(5)가 남은 것이다
+    recover(run)
+    assert not run._exit_state()[0]  # pyright: ignore[reportPrivateUsage]
+
+
+def test_nothing_is_recovered_when_that_shares_stop_is_gone() -> None:
+    """그 몫 손절이 없으면 그 몫이 거래소에 남았다는 증거가 없다 — 올리지 않는다."""
+    run, exch, a, _b = restarted()
+    exch.stops.pop(key(a))
+    recover(run)
+    assert not run._exit_state()[0]  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_stop_that_the_exchange_closed_is_not_recovered() -> None:
+    """거래소 손절로 닫힌 기록(러너가 옮기는 종류가 아니다)은 다시 닫기 대상이 아니다."""
+    run, _exch, _a, _b = restarted(outcome=Outcome.STOP_LOSS)
+    recover(run)
+    assert not run._exit_state()[0]  # pyright: ignore[reportPrivateUsage]
 
 
 def test_the_walk_start_retry_does_not_raise_into_the_step() -> None:

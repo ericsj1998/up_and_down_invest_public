@@ -125,6 +125,26 @@ def test_a_lost_response_keeps_the_record_open_until_the_exchange_answers() -> N
     assert a.trade_id in run._entry_unknown_map()  # pyright: ignore[reportPrivateUsage]
 
 
+def test_a_failure_after_the_order_was_answered_never_voids_the_entry() -> None:
+    """주문은 체결됐고 그 뒤 단계(기록 · 손절 걸기)에서 터졌다 — 포지션이 거래소에 있다.
+
+    "보내기 전 실패" 로 읽어 원장에서 거두면 주인 없는 포지션이 된다.
+    """
+    run, exch, a, _b = entering(on_exchange=5)
+
+    async def send(record: TradeRecord, spec: dict[str, str]) -> None:
+        del spec
+        run.placed[record.trade_id] = {"status": "filled", "order_id": "e1", "contracts": "2"}
+        raise RuntimeError("체결 뒤 기록 단계에서 실패")
+
+    run._send = send  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
+    place(run)
+    assert now_of(run, a).outcome is Outcome.OPEN, "🔴 거두면 거래소 포지션이 주인을 잃는다"
+    exch.history.insert(0, entry_fill(a, size=2))
+    resolve(run)
+    assert now_of(run, a).contracts == 2, "거래소 기록에서 되찾는다"
+
+
 def unknown(*, on_exchange: int) -> tuple[_Runner, ShareExchange, TradeRecord, TradeRecord]:
     run, exch, a, b = entering(on_exchange=on_exchange)
     sender(run, fail=RefusedError(None), sending=True)

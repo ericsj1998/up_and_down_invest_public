@@ -786,9 +786,17 @@ def _stops_with_price(rows: list[dict[str, str]]) -> Any:
 
 class TestShareSizeAudit:
     def test_a_persistent_gap_blocks_new_entries(self) -> None:
-        """한 번은 조회 지연일 수 있다 — 두 번 연속이면 알리고 막는다(D2)."""
+        """한 번은 조회 지연일 수 있다 — 어긋남이 **이어지면** 알리고 막는다(D2).
+
+        T852 — "이어짐" 은 횟수가 아니라 시간이다. 감사는 걸음 끝과 점검 루프에서 따로 돌아,
+        진입 직후 1 초 안에 두 번 연달아 늦은 조회를 보면 거짓 오류가 떴다.
+        """
         run, _exch, _a, _b = armed()
         assert run._share_size_findings(6) == []  # pyright: ignore[reportPrivateUsage]
+        assert run._share_size_findings(6) == [], "방금 또 봤다 — 아직 조회 지연일 수 있다"  # pyright: ignore[reportPrivateUsage]
+        first = run._share_size_first  # pyright: ignore[reportPrivateUsage]
+        assert first is not None
+        run._share_size_first = first - 60  # pyright: ignore[reportPrivateUsage]  # 1 분 넘게 이어졌다
         codes = [f["code"] for f in run._share_size_findings(6)]  # pyright: ignore[reportPrivateUsage]
         assert codes == ["share_size_mismatch"]
         asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
