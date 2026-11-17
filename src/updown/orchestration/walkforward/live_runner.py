@@ -4303,29 +4303,26 @@ class LiveRunner:
                         payload={"note": "5 분봉이 안 와서 이번 조기 판정을 건너뛴다"},
                     )
                     continue
-                self._early_step = True
-                try:
-                    # T852 D7 — 겹쳐 건너뛰었으면 잠깐 뒤 다시 건다. 돈 것만 "돌았다" 로 센다
-                    # (예전엔 건너뛰어도 세고 기록해, 눈금이 거짓말했다).
-                    ran = False
-                    for attempt in range(STEP_REDO_TRIES + 1):
-                        ran = await self._one_step()
-                        if ran or attempt == STEP_REDO_TRIES:
-                            break
-                        await asyncio.sleep(STEP_REDO_WAIT)
-                    if ran:
-                        self.early_steps += 1
-                        self._log.info(
-                            "live_early_step",
-                            payload={"n": self.early_steps, "at": datetime.now(UTC).isoformat()},
-                        )
-                    else:
-                        self._log.error(
-                            "live_early_step_not_taken",
-                            payload={"note": "조기 판정을 못 했다 — 걸음이 겹친 채였다"},
-                        )
-                finally:
-                    self._early_step = False
+                # T852 D7 — 겹쳐 건너뛰었으면 잠깐 뒤 다시 건다. 돈 것만 "돌았다" 로 센다(예전엔
+                # 건너뛰어도 세고 기록해, 눈금이 거짓말했다). 조기 깃발은 걸음이 자물쇠 안에서
+                # 켠다(T852 S8) — 여기서 켜 두지 않는다.
+                ran = False
+                for attempt in range(STEP_REDO_TRIES + 1):
+                    ran = await self._one_step(early=True)
+                    if ran or attempt == STEP_REDO_TRIES:
+                        break
+                    await asyncio.sleep(STEP_REDO_WAIT)
+                if ran:
+                    self.early_steps += 1
+                    self._log.info(
+                        "live_early_step",
+                        payload={"n": self.early_steps, "at": datetime.now(UTC).isoformat()},
+                    )
+                else:
+                    self._log.error(
+                        "live_early_step_not_taken",
+                        payload={"note": "조기 판정을 못 했다 — 걸음이 겹친 채였다"},
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -5574,8 +5571,11 @@ class LiveRunner:
                 },
             )
 
-    async def _one_step(self) -> bool:
+    async def _one_step(self, *, early: bool = False) -> bool:
         """봉 하나를 판정하고 주문까지 낸다 — **한 번에 하나만 돈다**.
+
+        Args:
+            early: 조기 진입 판정(정해진 분 · `Session.step_early`)인가. 기본은 닫힌 봉 판정.
 
         Returns:
             걸음이 **돌았으면** 참. 다른 걸음 · 감시가 자물쇠를 쥐고 있어 건너뛰었거나, 가격 축이
@@ -5616,9 +5616,15 @@ class LiveRunner:
         async with self._stepping:
             before = _closed_count(self)
             self._step_deferred = False
+            # 🔴 T852 S8 — "조기 걸음" 깃발은 **자물쇠를 쥔 동안만** 켠다. 예전에는 조기 시계가
+            #    자물쇠 밖에서 켜고 걸음을 불렀다 — 겹쳐서 다시 거는 동안(몇 초) 깃발이 켜진 채라,
+            #    그 사이 다른 길(끊긴 뒤 따라잡기)이 걸으면 닫힌 봉 판정 대신 조기 판정이 불려
+            #    그 봉의 청산 · 진입 판정이 빠질 수 있었다.
+            self._early_step = early
             try:
                 await self._walk_once()
             finally:
+                self._early_step = False
                 # 걸음이 뒤쪽(대조·감사·저장)에서 터져도 앞쪽에서 닫은 기록은 닫힌 것이다 —
                 # 훅은 finally 에서 본다 (배포 전 검토 2026-09-22).
                 _notice_closes(self, before)
@@ -6466,6 +6472,17 @@ class LiveRunner:
         # ⚠️ 하한 1초는 남긴다. 화면이 1.5초마다 당기므로 그보다 짧게 잡을 이유가 없고,
         #    렌더 한 번에 여러 번 부르는 경우를 막는다.
         seconds = interval_seconds(frame)
+        # 🔴 T852 E6 — **새 마감 봉이 생길 수 없는 동안은 묻지 않는다.** 급전은 마감된 봉만
+        #    쥔다. 마지막으로 받은 봉(시작 `t`)의 다음 봉은 `t + 2 x 간격` 에야 닫힌다 — 그
+        #    전에는 물어도 새 봉이 없다. 예전에는 시계(TTL = 간격 / 10)로만 재서 5 분봉을 봉
+        #    하나당 열 번 묻고 아홉 번은 빈손이었다(실측: 평소 전체 거래소 호출의 약 37% · 봉
+        #    조회가 한도에서 가장 빡빡한 길이다). 그때가 지났는데 아직 새 봉이 없으면(거래소가
+        #    늦게 냄) 아래 TTL 간격으로 다시 묻는다 — 그 길은 예전과 같다.
+        last_of = getattr(self._feed, "last_ts", None)  # 급전 대역에는 없을 수 있다
+        if not force and last_of is not None:
+            newest = cast("datetime | None", last_of(frame))
+            if newest is not None and datetime.now(UTC) < newest + timedelta(seconds=2 * seconds):
+                return 0
         ttl = max(1.0, seconds / 10)
         now_mono = time.monotonic()
         last = self._refreshed.get(frame)

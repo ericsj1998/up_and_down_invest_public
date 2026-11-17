@@ -28,6 +28,7 @@ Gate 는 진행 중인 봉도 계속 보낸다 (`marketdata/gate/ws.py` 실측).
 `gaps` 로 세고, 메우는 것은 REST 를 든 소비처의 일이다 — 이 급전은 **알린다**.
 """
 
+from bisect import bisect_left
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
@@ -42,6 +43,11 @@ _logger = get_logger("walkforward.live_feed")
 KEEP_SLACK = 64
 """창(`window`) 위로 더 쥐는 봉 수 — 커서 뒤에 먼저 들어온 하위 축 봉(4h 진입이면 5m 이 최대 47개)이
 있어도 `judged` 가 창만큼 낼 수 있게 (T313)."""
+
+
+def _candle_ts(candle: Candle) -> datetime:
+    """봉의 시작 시각 — 이분 탐색의 열쇠."""
+    return candle.ts
 
 
 class LiveFeedError(RuntimeError):
@@ -98,6 +104,15 @@ class LiveFeed:
         연구 · 재현 판정이 되고 급전이 안 자란다 (2026-09-26).
         """
         self._rows: dict[Timeframe, dict[datetime, Candle]] = {}
+        self._ordered: dict[Timeframe, list[Candle]] = {}
+        """축별로 **시각순으로 줄 세워 둔 봉** — 봉이 바뀔 때만 버린다 (T852 S6).
+
+        `judged` · `observed` 가 부를 때마다 약 800 봉을 다시 줄 세웠다. 한 걸음에 수십 번
+        불리는 길이라(축마다 · 규칙마다) 1H 판의 정시 걸음이 이벤트 루프를 수백 ms 막는 데
+        한몫했다 — 판 58 개가 그 루프 하나를 같이 쓴다. 값은 그대로다(줄 세운 결과를 기억할
+        뿐). 봉을 넣거나 빼는 자리(`push` · `backfill` · `add_frame` · `drop_frame` · `_trim`)가
+        그 축의 기억을 버린다.
+        """
         for frame, rows in seed.items():
             if not rows:
                 raise LiveFeedError(f"{frame.value} 시드가 비었다")
@@ -147,6 +162,31 @@ class LiveFeed:
             return
         for ts in sorted(rows)[:extra]:
             del rows[ts]
+        self._ordered.pop(frame, None)
+
+    def _order(self, frame: Timeframe) -> list[Candle]:
+        """그 축의 봉을 시각순으로 — 기억해 둔 것이 있으면 그것을 (T852 S6).
+
+        Returns:
+            시각순 봉 목록. ⛔ **돌려받은 쪽이 고치면 안 된다** — 밖으로 내줄 때는 사본을 준다
+            (`observed` · `judged`).
+        """
+        got = self._ordered.get(frame)
+        if got is None:
+            rows = self._rows[frame]
+            got = [rows[ts] for ts in sorted(rows)]
+            self._ordered[frame] = got
+        return got
+
+    def last_ts(self, frame: Timeframe) -> datetime | None:
+        """그 축에 받아 둔 **마지막 마감 봉의 시작 시각** — 없는 축이면 None (T852 E6).
+
+        Note:
+            "다음 마감 봉이 생길 수 있는 가장 이른 때" 를 재는 데 쓴다(마지막 봉 시작 + 2 x 간격).
+        """
+        if frame not in self._rows or not self._rows[frame]:
+            return None
+        return self._order(frame)[-1].ts
 
     def add_frame(self, frame: Timeframe, candles: Sequence[Candle]) -> int:
         """보기용 축을 **볼 때** 싣는다 (T313 · 화면이 고른 축).
@@ -167,6 +207,7 @@ class LiveFeed:
         if not candles:
             return 0
         self._rows[frame] = {item.ts: item for item in candles}
+        self._ordered.pop(frame, None)
         self._trim(frame)
         return len(self._rows[frame])
 
@@ -182,6 +223,7 @@ class LiveFeed:
         if frame is self._entry or frame in self.judge_on or frame not in self._rows:
             return False
         del self._rows[frame]
+        self._ordered.pop(frame, None)
         self._pending.pop(frame, None)
         self._received_per.pop(frame, None)
         return True
@@ -314,7 +356,7 @@ class LiveFeed:
         """
         if frame not in self._rows:
             raise KeyError(f"{frame.value} 는 이 급전에 없다")
-        return [self._rows[frame][ts] for ts in sorted(self._rows[frame])]
+        return list(self._order(frame))
 
     def judged(self, frame: Timeframe, *, at: datetime | None = None) -> list[Candle]:
         """그 시각까지 **마감된** 봉만.
@@ -342,9 +384,13 @@ class LiveFeed:
             )
         if frame not in self._rows:
             raise KeyError(f"{frame.value} 는 이 급전에 없다 — 들고 있는 것: {self.timeframes}")
-        rows = [self._rows[frame][key] for key in sorted(self._rows[frame]) if key < moment]
+        # T852 S6 — 줄 세워 둔 목록에서 이분 탐색으로 자른다(예전: 부를 때마다 전부 줄 세움).
+        #   값은 같다 — `ts < moment` 인 봉을 시각순으로, 창이 있으면 마지막 `window` 봉.
+        ordered = self._order(frame)
+        cut = bisect_left(ordered, moment, key=_candle_ts)
         # ⭐ T313 — 연구 · 재현의 `CappedFeed` 와 같은 창(마지막 `window` 봉)
-        return rows if self.window is None else rows[-self.window :]
+        start = 0 if self.window is None else max(0, cut - self.window)
+        return ordered[start:cut]
 
     def push(self, frame: Timeframe, candle: Candle, *, closed: bool) -> bool:
         """봉 하나를 받는다.
@@ -395,6 +441,7 @@ class LiveFeed:
                     },
                 )
         rows[candle.ts] = candle
+        self._ordered.pop(frame, None)
         self._trim(frame)
         # 🔴 **두 번째 시계를 올린다** (T15-2). 진입 축이 아니어도 올린다 — 그것이
         #    커서와 갈라지는 이유 전부다. 이 값이 안 움직이면 그 축은 동결이다.
@@ -524,6 +571,8 @@ class LiveFeed:
             if item.ts not in rows:
                 rows[item.ts] = item
                 added += 1
+        if added:
+            self._ordered.pop(frame, None)
         self._trim(frame)
         self.gaps = max(0, self.gaps - added)
         if added:
