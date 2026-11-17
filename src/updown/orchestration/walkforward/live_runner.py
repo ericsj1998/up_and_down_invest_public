@@ -9929,14 +9929,18 @@ class LiveRunner:
         stale_seen = self._exit_stale_set()
         fresh = self._entry_fresh() or (same_bar and now.trade_id not in stale_seen)
         if fresh and held < mine + others:
+            seen_first = held
+            rereads = 0
             for _ in range(SHARE_HELD_REREADS):
                 await asyncio.sleep(SHARE_HELD_REREAD_S)
+                rereads += 1
                 try:
                     held = abs(held_size(await self._orders.position_snapshot(self.instrument)))
                 except Exception:
                     break
                 if held >= mine + others:
                     break
+            self._note_read_lag("share_exit", rereads, seen_first, held, mine + others)
             if held < mine + others:
                 stale_seen.add(now.trade_id)
                 self._exit_state()[0][now.trade_id] = before
@@ -10264,6 +10268,40 @@ class LiveRunner:
         except Exception:
             return asked
         return max(0, min(asked, got))
+
+    def _note_read_lag(self, where: str, rereads: int, first: int, last: int, want: int) -> None:
+        """주문 직후 포지션 조회가 **얼마나 늦었나**를 남긴다 — 받침 값의 근거를 재려고 (T852).
+
+        Args:
+            where: 어느 길인가(`share_exit` · `panic` · `add`).
+            rereads: 다시 읽은 횟수.
+            first: 처음 읽은 계약 수(늦은 값).
+            last: 마지막으로 읽은 계약 수.
+            want: 보여야 할 계약 수(원장 몫 합).
+
+        Note:
+            🔴 "주문 뒤 `SHARE_FRESH_S`(30 초)는 조회를 그대로 안 믿는다" · "0.7 초 간격 세 번 다시
+            읽는다" 는 **측정값이 아니라 추론**이다(근거는 2026-11-17 SUI — 1 초 뒤 조회가 옛 값).
+            이 줄이 쌓이면 실제 지연 분포로 값을 다시 정한다. 늦은 조회가 났을 때만 남는다.
+        """
+        self._log.warning(
+            "live_position_read_lagged",
+            payload={
+                "where": where,
+                "rereads": rereads,
+                "waited_s": round(rereads * SHARE_HELD_REREAD_S, 2),
+                "first": first,
+                "last": last,
+                "want": want,
+                "caught_up": last >= want,
+                "since_entry_s": self._since_entry_s(),
+            },
+        )
+
+    def _since_entry_s(self) -> float | None:
+        """마지막 진입 · 불타기 주문을 보낸 뒤 지난 초 — 기억이 없으면 None."""
+        sent = cast("float | None", self.__dict__.get("_entry_sent_mono"))
+        return None if sent is None else round(time.monotonic() - sent, 2)
 
     def _mark_entry_sent(self) -> None:
         """진입 · 불타기 주문을 보낸다 — `SHARE_FRESH_S` 동안 포지션 조회를 그대로 믿지 않는다."""
