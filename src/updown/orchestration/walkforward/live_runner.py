@@ -1037,6 +1037,10 @@ SHARE_HELD_REREADS = 3
 """몫 청산 앞 — 같은 걸음에 다른 몫이 방금 들었을 때 포지션을 다시 읽는 횟수 (2026-11-17 SUI)."""
 SHARE_HELD_REREAD_S = 0.7
 """다시 읽기 사이 쉼(초) — 거래소 포지션 조회가 방금 체결을 반영할 틈."""
+SHARE_CLOSE_ATTEMPTS = 2
+"""몫 청산 시장가가 덜 체결됐을 때 그 자리에서 남은 만큼 다시 내는 횟수(처음 포함)."""
+SHARE_EXIT_WATCH_RETRIES = 10
+"""막힌 몫 청산을 감시 루프가 다시 닫아 보는 횟수 — 그 뒤로는 걸음 시작마다 한 번씩만."""
 SHARE_FRESH_S = 30.0
 """진입 · 불타기 주문을 보낸 뒤 **포지션 조회를 그대로 믿지 않는** 시간(초) — 그 사이 조회가 몫
 합보다 적으면 방금 체결이 아직 안 보이는 것일 수 있다(2026-11-17 SUI: 1 초 뒤 조회가 옛 값)."""
@@ -4318,7 +4322,17 @@ class LiveRunner:
                 # 🔴 T815 C1 — 거래소 청산이 거부되면 원장을 보유 중으로 되돌린다. 안 되돌리면
                 #    "원장 닫힘 · 거래소 보유" 로 갈린 채 아무도 다시 닫지 않는다(손절은
                 #    `_apply_exit_share` 가 되돌려 걸었다). 재시도는 `EXIT_RETRY_BACKOFF_S` 뒤.
-                sent = await self._apply_exit(now, shares=[now])
+                try:
+                    sent = await self._apply_exit(now, shares=[now])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # T852 D9 — 던지면 되돌리기 · 저장이 빠져 원장만 닫힌 채 남는다. 실패로 다룬다.
+                    sent = False
+                    self._log.error(
+                        "live_target_exit_raised",
+                        payload={"trade_id": now.trade_id, "error": str(exc)[:200]},
+                    )
                 if not sent:
                     self._rehold_unfilled(
                         [now], outcomes=(Outcome.TAKE_PROFIT, Outcome.SIGNAL_EXIT)
@@ -9270,10 +9284,20 @@ class LiveRunner:
             if item.outcome is Outcome.OPEN and item.trade_id != now.trade_id
         )
         if mine <= 0:
+            # 진입 응답을 못 받은 몫이다 — 거래소 체결 기록에서 계약 수를 되찾아 본다(T815 C2).
+            with contextlib.suppress(Exception):
+                got = await self._recover_share_contracts(now)
+                if got > 0:
+                    now = dc_replace(now, contracts=got)
+                    mine = self._share_contracts(now)
+        if mine <= 0:
             self.failures += 1
             self.last_error = f"몫 {now.trade_id} 계약 수를 몰라 청산을 못 옮겼다"[:200]
             self._log.error("live_share_exit_unknown", payload={"trade_id": now.trade_id})
+            self._queue_share_exit(before, after=EXIT_RETRY_BACKOFF_S)
             return False
+        # 앞선 시도에서 일부만 체결됐으면 남은 만큼만 닫는다(T852 B1).
+        mine = min(mine, self._exit_left_map().get(now.trade_id, mine))
         try:
             held = abs(held_size(await self._orders.position_snapshot(self.instrument)))
         except Exception as exc:
@@ -9284,9 +9308,13 @@ class LiveRunner:
                 payload={
                     "trade_id": now.trade_id,
                     "error": str(exc)[:160],
-                    "note": "안 닫았다 — 몫 손절이 계속 지킨다",
+                    "note": "안 닫았다 — 몫 손절이 계속 지킨다 · 곧 다시 닫는다",
                 },
             )
+            # 🔴 T852 B2 — 한 번 못 읽은 것으로 세션이 정한 청산을 잃지 않는다. 걸음은 목표
+            #    청산만 보유로 되돌리므로, 신호 · 시간 · 마감 손절 청산은 여기서 줄에 안 올리면
+            #    아무도 다시 닫지 않는다(원장 닫힘 · 거래소 보유).
+            self._queue_share_exit(before, after=EXIT_RETRY_BACKOFF_S)
             return False
         # 🔴 같은 걸음에 다른 몫이 **방금 들었으면** 포지션 조회가 그 체결을 아직 못 봤을 수 있다
         #    (2026-11-17 01:00 KST 사고 — 새 몫 60 체결 1 초 뒤 조회가 옛 118 을 돌려줘
@@ -9397,33 +9425,36 @@ class LiveRunner:
                     "live_share_exit_rearm_failed",
                     payload={"trade_id": now.trade_id, "error": str(again)[:160]},
                 )
-            retry, tries_of = self._exit_state()
-            tries = tries_of.get(now.trade_id, 0) + 1
-            tries_of[now.trade_id] = tries
-            if tries <= SHARE_EXIT_RETRIES:
-                retry[now.trade_id] = before
-            else:
-                self._log.error(
-                    "live_share_exit_abandoned",
-                    payload={
-                        "trade_id": now.trade_id,
-                        "tries": tries,
-                        "note": "몫 청산을 거듭 미뤘다 — 손절은 걸려 있다 · 사람이 본다",
-                    },
-                )
+            self._queue_share_exit(before, after=EXIT_RETRY_BACKOFF_S)
             return False
-        try:
-            done = await self._orders.submit_order(
-                close_order(now, self.instrument, size, run=self._run_key, revision=0)
-            )
-        except Exception as exc:
+        # 🔴 T852 B1 — 응답의 **체결 수량**을 본다. 시장가(IOC)는 예외 없이 0 · 일부 체결로 끝날
+        #    수 있다(어댑터가 `EXPIRED` · `PARTIALLY_FILLED` 로 가려 준다). 안 보면 손절은 이미
+        #    거뒀는데 계약이 남는다. 덜 체결됐으면 그 자리에서 남은 만큼 한 번 더 낸다.
+        left = size
+        done = None
+        failure: Exception | None = None
+        for _ in range(SHARE_CLOSE_ATTEMPTS):
+            try:
+                done = await self._orders.submit_order(
+                    close_order(now, self.instrument, left, run=self._run_key, revision=0)
+                )
+            except Exception as exc:
+                failure = exc
+                break
+            self.orders += 1
+            left -= self._filled_of(done, left)
+            if left <= 0:
+                break
+        closed = size - left
+        if closed <= 0:
+            detail = str(failure) if failure is not None else "체결 0(IOC 가 호가를 못 만남)"
             self.failures += 1
-            self.last_error = f"몫 청산 실패: {exc}"[:200]
+            self.last_error = f"몫 청산 실패: {detail}"[:200]
             self._log.error(
                 "live_signal_exit_failed",
-                payload={"trade_id": now.trade_id, "error": str(exc)[:200], "share": True},
+                payload={"trade_id": now.trade_id, "error": detail[:200], "share": True},
             )
-            await self._note_order(now.trade_id, role=role, status="rejected", error=str(exc)[:180])
+            await self._note_order(now.trade_id, role=role, status="rejected", error=detail[:180])
             # 🔴 거둔 몫 손절을 되돌려 건다 — 닫지도 못하고 손절도 없으면 그 몫은 무방비다.
             again = await self._arm_stop(now)
             if again is not None:
@@ -9431,21 +9462,46 @@ class LiveRunner:
                     "live_share_exit_rearm_failed",
                     payload={"trade_id": now.trade_id, "error": str(again)[:160]},
                 )
+            # T852 B2 — 목표 청산은 부르는 쪽이 보유로 되돌리고(그때 이 줄도 지운다), 그 밖의
+            # 청산은 감시 루프가 곧 다시 닫는다.
+            self._queue_share_exit(before, after=EXIT_RETRY_BACKOFF_S)
             return False
-        self.orders += 1
-        self._exit_settled(now.trade_id)
+        assert done is not None
+        if left > 0:
+            # 일부만 나갔다 — 원장은 닫힌 그대로 두고(되돌리면 거래소와 크기가 갈린다), 남은
+            # 만큼만 지키는 손절을 걸어 두고 곧 다시 닫는다.
+            self._exit_left_map()[now.trade_id] = left
+            again = await self._arm_stop(dc_replace(now, contracts=left, add_contracts=0))
+            self._log.error(
+                "live_share_exit_partial",
+                payload={
+                    "trade_id": now.trade_id,
+                    "closed": closed,
+                    "left": left,
+                    "rearm_error": None if again is None else str(again)[:160],
+                    "error": None if failure is None else str(failure)[:160],
+                    "note": "몫 청산이 일부만 체결됐다 — 남은 만큼 손절을 걸고 곧 다시 닫는다",
+                },
+            )
+            self.failures += 1
+            self.last_error = f"몫 {now.trade_id} 청산 일부 체결 — {left} 계약 남음"[:200]
+            self._queue_share_exit(before, after=SHARE_STALE_RETRY_S, count=False)
+        else:
+            self._exit_settled(now.trade_id)
         await self._note_order(
             now.trade_id,
             role=role,
             status=done.status.value,
             order_id=str(done.broker_order_id or ""),
-            contracts=str(size),
+            contracts=str(closed),
         )
         self._correct_exit_from_response(now.trade_id, done)  # T606 ③ — 응답 평단으로 · 요청 없음
         self._fired(
             "stop_exit" if stop_by_close else "signal_exit",
-            f"{role} — 몫 {size} 계약 (다른 몫 {others} 계약은 그대로)",
+            f"{role} — 몫 {closed} 계약 (다른 몫 {others} 계약은 그대로)",
         )
+        if left > 0:
+            return True  # 나머지는 줄에 있다 — 부르는 쪽이 원장을 보유로 되돌리지 않게 참
         if size < mine:
             self._log.warning(
                 "live_share_exit_short",
@@ -9477,7 +9533,27 @@ class LiveRunner:
                 "live_share_exit_retry",
                 payload={"trade_id": trade_id, "tries": tries_of.get(trade_id, 0)},
             )
+            await self._reclose_share(before)
+
+    async def _reclose_share(self, before: TradeRecord) -> None:
+        """줄에서 꺼낸 몫 청산을 다시 닫는다 — **던지지 않고**, 터지면 다시 줄에 올린다 (T852 D9).
+
+        Note:
+            줄에서 먼저 빼고 부르므로, 안쪽이 예외를 내면 그 청산은 사라졌다(다시 안 닫음). 또
+            걸음 시작에서 부르는 길은 예외가 그 봉의 판정까지 통째로 건너뛰게 했다.
+        """
+        try:
             await self._apply_exit_share(before)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.failures += 1
+            self.last_error = f"몫 {before.trade_id} 다시 닫기 실패: {exc}"[:200]
+            self._log.error(
+                "live_share_exit_retry_failed",
+                payload={"trade_id": before.trade_id, "error": str(exc)[:200]},
+            )
+            self._queue_share_exit(before, after=EXIT_RETRY_BACKOFF_S)
 
     async def _retry_stale_share_exits(self) -> None:
         """늦은 포지션 조회 때문에 미룬 몫 청산을 **걸음을 기다리지 않고** 다시 닫는다.
@@ -9507,9 +9583,9 @@ class LiveRunner:
                     continue
                 self._log.warning(
                     "live_share_exit_retry",
-                    payload={"trade_id": trade_id, "why": "stale_position"},
+                    payload={"trade_id": trade_id, "why": "watch"},
                 )
-                await self._apply_exit_share(before)
+                await self._reclose_share(before)
             await self._persist()
 
     def _exit_state(self) -> tuple[dict[str, TradeRecord], dict[str, int]]:
@@ -9527,11 +9603,75 @@ class LiveRunner:
         """늦은 조회로 한 번 미룬 몫 id — 더블에도 있게."""
         return cast("set[str]", self.__dict__.setdefault("_exit_stale_seen", set()))
 
+    def _exit_left_map(self) -> dict[str, int]:
+        """몫 → 청산이 일부만 체결돼 **아직 닫을 계약 수** (T852 B1) — 더블에도 있게."""
+        return cast("dict[str, int]", self.__dict__.setdefault("_exit_left", {}))
+
     def _exit_settled(self, trade_id: str) -> None:
         """이 몫의 청산이 끝났다(닫았거나 이미 나갔다) — 미룬 흔적을 지운다."""
         self._exit_state()[1].pop(trade_id, None)
         self._exit_due_map().pop(trade_id, None)
         self._exit_stale_set().discard(trade_id)
+        self._exit_left_map().pop(trade_id, None)
+
+    def _queue_share_exit(self, before: TradeRecord, *, after: float, count: bool = True) -> None:
+        """닫지 못한 몫 청산을 **다시 닫기 줄**에 올린다 — 감시 루프가 `after` 초 뒤 다시 닫는다.
+
+        Args:
+            before: 판정 전에 열려 있던 몫(다시 닫을 때 `_apply_exit_share` 에 그대로 넘긴다).
+            after: 다시 닫아 볼 때까지의 초.
+            count: 실패 횟수로 셀지. 늦은 조회 · 일부 체결처럼 "곧 풀리는" 미룸은 안 센다.
+
+        Note:
+            🔴 세션이 정한 청산은 **끝내 포기하지 않는다** (T852 B2 · 규칙 #8-1). 예전에는 포지션을
+            못 읽거나 주문이 거절되면 줄에 안 올려, 신호 · 시간 · 마감 손절 청산이 한 번의 실패로
+            영영 안 나갔다(원장 닫힘 · 거래소 보유). 감시 루프 재시도는 `SHARE_EXIT_WATCH_RETRIES`
+            번까지고, 그 뒤로는 걸음 시작(`_retry_share_exits`)마다 한 번씩만 다시 닫아 본다 —
+            그 사이 몫 손절은 되돌려 걸려 있고, 감사가 갈린 상태를 사람에게 알린다.
+        """
+        retry, tries_of = self._exit_state()
+        retry[before.trade_id] = before
+        tries = tries_of.get(before.trade_id, 0)
+        if count:
+            tries += 1
+            tries_of[before.trade_id] = tries
+        if tries <= SHARE_EXIT_WATCH_RETRIES:
+            self._exit_due_map()[before.trade_id] = time.monotonic() + after
+            return
+        self._exit_due_map().pop(before.trade_id, None)
+        self._log.error(
+            "live_share_exit_abandoned",
+            payload={
+                "trade_id": before.trade_id,
+                "tries": tries,
+                "note": "몫 청산이 거듭 막혔다 — 이제 걸음마다 한 번씩만 다시 닫아 본다 · "
+                "손절은 걸려 있다 · 사람이 본다",
+            },
+        )
+
+    @staticmethod
+    def _filled_of(done: Any, asked: int) -> int:
+        """주문 응답이 말하는 **체결 계약 수** — `asked` 를 넘지 않는다 (T852 B1).
+
+        Args:
+            done: `submit_order` 응답.
+            asked: 낸 계약 수.
+
+        Returns:
+            체결 수. 응답이 수량을 안 알려 주면(옛 어댑터 · 대역) `asked` — 예전처럼 다 나간
+            것으로 본다. 하나도 못 채우고 끝난 상태(`EXPIRED` · `CANCELLED` · `FAILED`)면 0.
+        """
+        status = getattr(done, "status", None)
+        if status in (OrderStatus.EXPIRED, OrderStatus.CANCELLED, OrderStatus.FAILED):
+            return 0
+        raw = getattr(done, "filled_quantity", None)
+        if raw is None:
+            return asked
+        try:
+            got = int(Decimal(str(raw)))
+        except Exception:
+            return asked
+        return max(0, min(asked, got))
 
     def _mark_entry_sent(self) -> None:
         """진입 · 불타기 주문을 보낸다 — `SHARE_FRESH_S` 동안 포지션 조회를 그대로 믿지 않는다."""
@@ -9590,6 +9730,20 @@ class LiveRunner:
             done = 0
         if whole > 0 and done >= whole:
             return "목표 지정가 체결"
+        # T852 — 우리 시장가 청산(`cl`)이 이미 다 체결됐다. 응답을 못 받고(시간 초과) 다시 닫는
+        # 길에서 포지션 조회가 옛 값이면 한 번 더 팔아 남의 몫이 나간다(규칙 #6 — 재시도 전에
+        # 체결 여부를 먼저 묻는다).
+        try:
+            sold = sum(
+                abs(int(str(row.get("size") or 0))) - abs(int(str(row.get("left") or 0)))
+                for row in filled
+                if _kind_after_trade(str(row.get("text", "")), held.trade_id) in ("cl", "close")
+                and closes_side(row, held.direction)
+            )
+        except Exception:
+            sold = 0
+        if whole > 0 and sold >= whole:
+            return "우리 청산 체결"
         fired = [
             row
             for row in filled
