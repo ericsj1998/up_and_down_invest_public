@@ -133,7 +133,11 @@ class TestBothLoopsStillShareOnePath:
         )
         stream = inspect.getsource(LiveRunner._consume)  # pyright: ignore[reportPrivateUsage]
         assert "await self._one_step()" in chase
-        assert "await self._one_step()" in stream
+        # T852 — 스트림은 `_step_this_bar` 를 거친다(겹쳐 건너뛴 봉을 잠깐 뒤 다시 건다). 그것이
+        # 부르는 것도 같은 `_one_step` 이다 — 판정 경로는 여전히 하나다.
+        assert "await self._step_this_bar()" in stream
+        again = inspect.getsource(LiveRunner._step_this_bar)  # pyright: ignore[reportPrivateUsage]
+        assert "await self._one_step()" in again
 
     def test_nobody_calls_the_body_directly(self) -> None:
         """⛔ `_walk_once` 를 직접 부르면 방어를 통째로 건너뛴다."""

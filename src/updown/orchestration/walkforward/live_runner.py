@@ -1059,6 +1059,10 @@ SHARE_HELD_REREADS = 3
 """몫 청산 앞 — 같은 걸음에 다른 몫이 방금 들었을 때 포지션을 다시 읽는 횟수 (2026-11-17 SUI)."""
 SHARE_HELD_REREAD_S = 0.7
 """다시 읽기 사이 쉼(초) — 거래소 포지션 조회가 방금 체결을 반영할 틈."""
+LEVERAGE_SYNC_TRIES = 3
+"""판이 뜰 때 거래소 배율 맞추기를 해 보는 횟수(처음 포함) (T852 C3)."""
+LEVERAGE_SYNC_WAIT = 1.0
+"""배율 맞추기 다시 하기 사이 쉼(초)."""
 REF_REGIME_TRIES = 3
 """기준(BTC) 4H 봉을 못 받았을 때 받아 보는 횟수(처음 포함) — 새 봉이 닫힌 뒤일 때만 (T852 A3)."""
 REF_REGIME_WAIT = 1.0
@@ -2076,11 +2080,26 @@ class LiveRunner:
                 },
             )
             return
-        try:
-            await self._orders.set_leverage(self.instrument, wanted)
-        except Exception as exc:
+        # 🔴 T852 C3 — 한 번의 실패(판 수십 개가 한꺼번에 뜰 때의 요청 한도 · 시간 초과)로 판을
+        #    관찰 전용으로 못 박지 않는다. 몇 번 다시 해 보고, 그래도 안 되면 관찰 전용으로 두되
+        #    점검 루프가 계속 다시 맞춘다(`_resync_leverage`). 예전에는 재시작 전까지 손절 점검 ·
+        #    세션발 청산 · 목표 감시가 꺼진 채였고, 무방비 경보도 안 떴다.
+        fault: Exception | None = None
+        for attempt in range(LEVERAGE_SYNC_TRIES):
+            try:
+                await self._orders.set_leverage(self.instrument, wanted)
+            except Exception as exc:
+                fault = exc
+                if attempt + 1 < LEVERAGE_SYNC_TRIES:
+                    await asyncio.sleep(LEVERAGE_SYNC_WAIT)
+                continue
+            fault = None
+            break
+        if fault is not None:
+            exc = fault
             self.failures += 1
             self.observe_only = True
+            self._leverage_desync = True
             self.last_error = f"배율 {wanted} 을 못 걸어 주문을 멈췄다: {exc}"[:200]
             self._fired(
                 "leverage_desync",
@@ -2099,6 +2118,46 @@ class LiveRunner:
         self._log.info(
             "live_leverage_synced",
             payload={"symbol": self.instrument.symbol, "leverage": str(wanted)},
+        )
+
+    async def _resync_leverage(self) -> None:
+        """배율을 못 맞춰 관찰 전용이 된 판을 **다시 맞춰 되살린다** — 점검 루프가 부른다 (T852 C3).
+
+        Note:
+            관찰 전용 까닭이 "배율을 못 맞춤" 일 때만 돈다(주문 경로에 계약이 없어 관찰 전용인
+            판은 건드리지 않는다). 맞추면 주문 · 손절 점검 · 감시가 다시 돈다.
+
+            🔴 못 맞춘 동안 세션이 원장에 적은 진입은 주문이 안 나간 **종이 진입**이다. 그대로
+            두면 되살아난 다음 걸음에 묵은 계획이 시장가로 나간다 — 거둔다(`_void_entry` · 체결
+            증거가 있거나 되살아난 보유 기록은 안 건드린다).
+        """
+        if not self.__dict__.get("_leverage_desync"):
+            return
+        if not isinstance(self._orders, LeverageAware) or self._stepping.locked():
+            return
+        wanted = self._session.ledger.leverage
+        await self._orders.set_leverage(self.instrument, wanted)
+        async with self._stepping:
+            for record in list(self._session.ledger.records):
+                if (
+                    record.outcome is Outcome.OPEN
+                    and record.trade_id not in self._sent
+                    and record.trade_id not in self._revived_open
+                ):
+                    self._sent.add(record.trade_id)
+                    self._void_entry(record, "배율을 못 맞춘 동안 적힌 진입 — 주문이 안 나갔다")
+            self._leverage_desync = False
+            self.observe_only = False
+            self.leverage_ok = True
+            await self._persist()
+        self._fired("leverage_synced", f"거래소 배율을 {wanted} 로 맞췄다 — 주문을 다시 낸다")
+        self._log.warning(
+            "live_leverage_resynced",
+            payload={
+                "symbol": self.instrument.symbol,
+                "leverage": str(wanted),
+                "note": "관찰 전용을 풀었다 — 손절 점검 · 청산 · 감시가 다시 돈다",
+            },
         )
 
     async def _spare_margin(self) -> Decimal | None:
@@ -5050,6 +5109,10 @@ class LiveRunner:
             # 🔴 T852 D3 — 단계마다 따로 돈다(`_tolerate`). 예전에는 한 try 에 줄줄이 묶여, 맨 앞의
             #    봉 조회(`probe` · 화면용)가 한 번 실패하면 그 회차의 대조 · 감사 · 손절 다시 걸기 ·
             #    거두기 재시도 · 이어받기가 전부 빠졌다. 뒤 단계들은 주문 쪽 조회만 쓴다.
+            with self._tolerate("leverage"):
+                # T852 C3 — 배율을 못 맞춰 관찰 전용이 된 판을 다시 맞춘다(맨 앞 — 풀리면 아래
+                # 손절 점검이 이 회차에 바로 돈다).
+                await self._resync_leverage()
             with self._tolerate("probe"):
                 self.last_probe = await self.probe()
             with self._tolerate("absorb"):

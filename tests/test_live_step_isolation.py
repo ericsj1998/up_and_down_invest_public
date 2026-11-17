@@ -27,7 +27,7 @@ from test_share_runner import (
     two_shares,
 )
 from updown.orchestration.walkforward import live_runner
-from updown.orchestration.walkforward.ledger import Ledger
+from updown.orchestration.walkforward.ledger import Ledger, Outcome
 
 TAIL = (
     "_place",
@@ -253,6 +253,75 @@ def test_a_deferred_judgement_counts_as_not_run() -> None:
 
     assert asyncio.run(go()) is False
     assert "_place" not in calls
+
+
+class LeveredExchange(ShareExchange):
+    """배율을 받는 가짜 거래소 — `blows` 인 동안은 배율 설정이 실패한다."""
+
+    def __init__(self, size: int, *, blows: int) -> None:
+        super().__init__(size)
+        self.blows = blows
+        self.asked: list[Any] = []
+
+    async def set_leverage(self, instrument: Any, leverage: Any) -> None:
+        del instrument
+        if self.blows > 0:
+            self.blows -= 1
+            raise RuntimeError("429 요청 한도")
+        self.asked.append(leverage)
+
+
+def levered(*, blows: int) -> tuple[_Runner, LeveredExchange, Any, Any]:
+    """되살아난 보유 몫 B(3 계약)가 있는 판 — 기동 때 배율 설정이 `blows` 번 실패한다."""
+    led = Ledger()
+    paper = share("aaaaaaaa1111", stop="95", contracts=0, playbook="breakout@0.1.0")
+    held = share("bbbbbbbb2222", stop="90", contracts=3, playbook="channel@0.1.0")
+    led.add(held)
+    exch = LeveredExchange(3, blows=blows)
+    run = _Runner(exch, led)
+    run._stepping = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
+    run._sent = set()  # pyright: ignore[reportPrivateUsage]
+    run._revived_open = frozenset({held.trade_id})  # pyright: ignore[reportPrivateUsage]
+    run.placed = {}
+    run.leverage_ok = False
+    return run, exch, paper, held
+
+
+def test_a_transient_leverage_failure_at_start_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(live_runner, "LEVERAGE_SYNC_WAIT", 0)
+    run, exch, _paper, _held = levered(blows=1)
+    asyncio.run(run._sync_leverage())  # pyright: ignore[reportPrivateUsage]
+    assert run.observe_only is False and run.leverage_ok is True
+    assert len(exch.asked) == 1
+
+
+def test_a_run_stuck_on_leverage_comes_back_when_the_exchange_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """예전엔 재시작 전까지 관찰 전용 — 손절 점검 · 청산 · 감시가 꺼진 채였다."""
+    monkeypatch.setattr(live_runner, "LEVERAGE_SYNC_WAIT", 0)
+    run, exch, paper, held = levered(blows=live_runner.LEVERAGE_SYNC_TRIES)
+    asyncio.run(run._sync_leverage())  # pyright: ignore[reportPrivateUsage]
+    assert run.observe_only is True
+    # 못 맞춘 동안 세션이 원장에 진입을 적었다(주문은 안 나갔다)
+    run._session.ledger.add(paper)  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    assert exch.stops == {}, "관찰 전용 동안은 손절도 안 건다 — 그래서 빨리 풀어야 한다"
+    asyncio.run(run._resync_leverage())  # pyright: ignore[reportPrivateUsage]
+    assert run.observe_only is False and run.leverage_ok is True
+    records = {r.trade_id: r for r in run._session.ledger.records}  # pyright: ignore[reportPrivateUsage]
+    assert records[paper.trade_id].outcome is Outcome.CANCELLED, "종이 진입은 거둔다(묵은 계획)"
+    assert records[held.trade_id].outcome is Outcome.OPEN, "되살아난 보유는 그대로"
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    assert key(held) in exch.stops, "풀리면 손절 점검이 다시 돈다"
+
+
+def test_a_run_watching_by_design_is_left_alone() -> None:
+    """주문 경로에 계약이 없어 관찰 전용인 판은 배율 까닭이 아니다 — 안 건드린다."""
+    run, exch, _paper, _held = levered(blows=0)
+    run.observe_only = True
+    asyncio.run(run._resync_leverage())  # pyright: ignore[reportPrivateUsage]
+    assert run.observe_only is True and exch.asked == []
 
 
 def flat(on_exchange: int) -> tuple[_Runner, ShareExchange]:
