@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -27,6 +28,8 @@ from test_share_runner import (
     closed,
     key,
     share,
+    tp_fill,
+    two_shares,
 )
 from updown.common.domain.instrument import Instrument
 from updown.orchestration.walkforward import live_runner
@@ -115,3 +118,145 @@ def test_full_position_with_a_fresh_share_closes_normally() -> None:
     time_exit(run, a, b)
     assert exch.closes == [Decimal(5)] and exch.size == 3
     assert run.failures == 0
+
+
+# ── 같은 꼴 점검에서 나온 것(2026-11-17) ─────────────────────────────────────────────
+
+
+def sent_pair(on_exchange: int) -> tuple[_Runner, ShareExchange, TradeRecord, TradeRecord]:
+    """A(5) · B(3) — 러너가 **방금 진입 주문을 보냈다**(닫힌 봉 · 열린 봉 시각으로는 못 가른다).
+
+    봉 사이 감시가 닫을 때의 꼴이다: 닫은 시각이 지금이라 "같은 봉에 열렸나" 로는 방금 든 몫을
+    못 알아본다. 보낸 시각 기억으로 알아본다.
+    """
+    run, exch, a, b = two_shares(a_contracts=5)
+    exch.size = on_exchange
+    run._stepping = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    run._mark_entry_sent()  # pyright: ignore[reportPrivateUsage]
+    return run, exch, a, b
+
+
+def stale_read(exch: ShareExchange, size: int) -> None:
+    """포지션 조회가 옛 값(`size`)만 돌려준다 — 거래소 실제 크기(`exch.size`)와 다르다."""
+
+    async def old(instrument: Instrument) -> dict[str, str]:
+        del instrument
+        return {"size": str(size), "leverage": "6"}
+
+    exch.position_snapshot = old  # type: ignore[method-assign]
+
+
+def test_a_just_sent_entry_defers_the_close_whatever_the_bar_times_say() -> None:
+    run, exch, a, b = sent_pair(on_exchange=5)
+    time_exit(run, a, b)
+    assert exch.closes == [], "방금 보낸 진입이 조회에 아직 없다 — 덜 닫지 않는다"
+    assert key(a) in exch.stops and key(b) in exch.stops
+    assert a.trade_id in run._exit_due_map()  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_watch_loop_closes_the_deferred_share_without_waiting_for_a_step() -> None:
+    run, exch, a, b = sent_pair(on_exchange=5)
+    time_exit(run, a, b)
+    exch.size = 8  # 거래소가 따라왔다
+    run._exit_due_map()[a.trade_id] = 0.0  # pyright: ignore[reportPrivateUsage] — 때가 됐다
+    asyncio.run(run._retry_stale_share_exits())  # pyright: ignore[reportPrivateUsage]
+    assert exch.closes == [Decimal(5)] and exch.size == 3
+    assert key(a) not in exch.stops and key(b) in exch.stops
+    assert not run._exit_due_map()  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_deferred_close_that_is_not_due_yet_is_left_alone() -> None:
+    run, exch, a, b = sent_pair(on_exchange=5)
+    time_exit(run, a, b)
+    exch.size = 8
+    asyncio.run(run._retry_stale_share_exits())  # pyright: ignore[reportPrivateUsage]
+    assert exch.closes == [], "방금 미뤘다 — 조회가 따라올 틈을 준다"
+
+
+def test_still_short_inside_the_fresh_window_defers_again() -> None:
+    run, exch, a, b = sent_pair(on_exchange=5)
+    time_exit(run, a, b)
+    run._exit_due_map()[a.trade_id] = 0.0  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(run._retry_stale_share_exits())  # pyright: ignore[reportPrivateUsage]
+    assert exch.closes == [], "아직 방금이다 — 여전히 적으면 또 미룬다(손절은 걸려 있다)"
+    assert a.trade_id in run._exit_due_map()  # pyright: ignore[reportPrivateUsage]
+
+
+def test_after_the_fresh_window_the_exchange_is_trusted() -> None:
+    """방금이 지났는데도 적으면 진짜로 나간 것이다 — 남은 만큼만 닫는다(끝없이 미루지 않는다)."""
+    run, exch, a, b = sent_pair(on_exchange=5)
+    time_exit(run, a, b)
+    exch.size = 7
+    run._entry_sent_mono = time.monotonic() - 2 * live_runner.SHARE_FRESH_S  # pyright: ignore[reportPrivateUsage]
+    run._exit_due_map()[a.trade_id] = 0.0  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(run._retry_stale_share_exits())  # pyright: ignore[reportPrivateUsage]
+    assert exch.closes == [Decimal(4)] and exch.size == 3
+
+
+def test_a_share_whose_stop_just_fired_is_not_sold_again_on_a_stale_high_read() -> None:
+    """A 손절이 방금 발동했는데(거래소 3) 조회는 옛 8 — 예전엔 5 계약을 또 팔아 B 가 나갔다."""
+    run, exch, a, b = two_shares(a_contracts=5)
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    exch.fire(key(a), 5, "94.9")
+    stale_read(exch, 8)
+    time_exit(run, a, b)
+    assert exch.closes == [], "🔴 이미 나간 몫을 또 팔면 남의 몫 계약이 나간다"
+    assert key(b) in exch.stops
+
+
+def test_a_share_whose_target_just_filled_is_not_sold_again_on_a_stale_high_read() -> None:
+    run, exch, a, b = two_shares(a_contracts=5)
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    exch.size = 3
+    exch.history.insert(0, tp_fill(a, size=5))
+    stale_read(exch, 8)
+    time_exit(run, a, b)
+    assert exch.closes == []
+    assert key(a) not in exch.stops and key(b) in exch.stops, "나간 몫 손절만 거둔다"
+
+
+def test_a_partial_target_fill_is_not_proof_that_the_share_is_out() -> None:
+    """반익 다리도 같은 이름이다 — 처음 든 크기 전부가 아니면 증거가 아니다(닫을 것은 닫는다)."""
+    run, exch, a, b = two_shares(a_contracts=5)
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    exch.history.insert(0, tp_fill(a, size=2))
+    time_exit(run, a, b)
+    assert exch.closes == [Decimal(5)] and exch.size == 3
+
+
+def test_panic_does_not_throw_a_share_whose_stop_just_fired() -> None:
+    run, exch, a, b = two_shares(a_contracts=5)
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    exch.fire(key(a), 5, "94.9")
+    stale_read(exch, 8)
+    sent = asyncio.run(run._panic_close(a, "시험"))  # pyright: ignore[reportPrivateUsage]
+    assert sent is False and exch.closes == [], "🔴 던지면 B 의 계약이 나간다"
+    assert key(b) in exch.stops
+
+
+def test_panic_rereads_when_an_entry_was_just_sent() -> None:
+    """방금 든 내 몫이 조회에 아직 없다(3 = 남의 몫만) — 다시 읽어 보이면 던진다."""
+    run, exch, a, b = sent_pair(on_exchange=3)
+    reads = {"n": 0}
+
+    async def lagging(instrument: Instrument) -> dict[str, str]:
+        del instrument
+        reads["n"] += 1
+        if reads["n"] == 2:
+            exch.size = 8
+        return {"size": str(exch.size), "leverage": "6"}
+
+    exch.position_snapshot = lagging  # type: ignore[method-assign]
+    sent = asyncio.run(run._panic_close(a, "시험"))  # pyright: ignore[reportPrivateUsage]
+    assert sent is True and exch.closes == [Decimal(5)] and exch.size == 3
+    assert key(b) in exch.stops
+
+
+def test_panic_without_a_fresh_entry_still_trusts_an_empty_read() -> None:
+    """방금 보낸 진입이 없으면 예전 길 — 남은 것이 없으면 안 던진다."""
+    run, exch, a, _b = two_shares(a_contracts=5)
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    exch.size = 3
+    sent = asyncio.run(run._panic_close(a, "시험"))  # pyright: ignore[reportPrivateUsage]
+    assert sent is False and exch.closes == []
