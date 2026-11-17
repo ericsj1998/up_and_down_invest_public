@@ -910,6 +910,51 @@ def _gate_softened(symbol: str, gate: str, why: str) -> None:
     )
 
 
+def _hold_all(session: Session, held: Sequence[TradeRecord]) -> list[TradeRecord]:
+    """되살린 판의 **열린 기록 전부**를 세션 보유로 넣는다 (T852 S2).
+
+    Args:
+        session: 새로 선 세션(보유가 비어 있다).
+        held: 원장에서 되살린 열린 기록들(진입 순).
+
+    Returns:
+        세션 보유에 **못 넣은** 기록들 — 부르는 쪽이 사람에게 알린다. 다 넣었으면 빈 목록.
+
+    Note:
+        🔴 예전에는 첫 기록만 보유로 잡았다("열린 기록이 둘이라는 것 자체가 사고의 잔해" — 한
+        포지션에 한 기록이던 시절의 전제). 몫 판에서는 열린 몫 여럿이 **정상**이다(같은 종목에
+        돌파 롱 + 일봉 채널 + 급락 되돌림). 그래서 몫 둘 이상을 든 채 판이 다시 뜨면(배포 ·
+        재시작) 둘째 몫부터는 원장에만 열려 있고 세션은 몰랐다 — 세션이 그 몫을 판정하지 않아
+        시간 청산 · 신호 청산 · 본전 옮기기가 안 돌았고(거래소 손절 · 목표만 남음), 같은 다리가
+        한 번 더 들 수 있었고, 합친 청산가 검사가 그 몫을 빼고 쟀다.
+
+        몫으로 같이 들 수 있는 기록만 넣는다 — 세션의 진입 규칙(`_may_share`)과 같은 조건:
+        다리마다 하나 · 방향이 모두 같음 · 그 다리가 몫 나눠 쓰기(`share_same_side`)를 선언.
+        그 밖의 겹침은 예전처럼 사고의 잔해로 알린다.
+    """
+    if not held:
+        return []
+    session.adopt(held[0])
+    declared = {
+        book.attribution for book in session.playbooks if getattr(book, "share_same_side", False)
+    }
+    legs = {held[0].playbook}
+    left_out: list[TradeRecord] = []
+    for item in held[1:]:
+        fits = (
+            held[0].playbook in declared
+            and item.playbook in declared
+            and item.playbook not in legs
+            and item.direction is held[0].direction
+        )
+        if not fits:
+            left_out.append(item)
+            continue
+        session.rehold(item)
+        legs.add(item.playbook)
+    return left_out
+
+
 async def _live_start(
     payload: dict[str, Any],
     *,
@@ -1563,19 +1608,20 @@ async def _live_start(
         # ⚠️ `runner.adopt()` 는 이 자리를 못 메운다. 원장에 열린 기록이 있으면 *"이미
         #    안다"* 며 물러나는데(그게 맞다), 정작 `_open` 은 아무도 안 채웠다.
         held = [item for item in opened.records if item.outcome is Outcome.OPEN]
-        if held:
-            session.adopt(held[0])
-            if len(held) > 1:
-                # ⛔ 조용히 하나만 고르지 않는다 — 열린 기록이 둘이라는 것 자체가 사고의
-                #    잔해이고(위 겹침), 그 사실은 사람이 봐야 한다 (절대 규칙 #8).
-                _logger.error(
-                    "live_resume_multiple_open",
-                    payload={
-                        "session_id": handle,
-                        "open": [item.trade_id for item in held],
-                        "note": "열린 기록이 여럿이다 — 첫 건만 보유로 잡는다",
-                    },
-                )
+        left_out = _hold_all(session, held)
+        if left_out:
+            # ⛔ 조용히 하나만 고르지 않는다 — 몫으로 같이 들 수 없는 열린 기록(같은 다리 둘 ·
+            #    방향 섞임 · 몫 판이 아님)은 사고의 잔해이고(위 겹침), 그 사실은 사람이 봐야
+            #    한다 (절대 규칙 #8).
+            _logger.error(
+                "live_resume_multiple_open",
+                payload={
+                    "session_id": handle,
+                    "open": [item.trade_id for item in held],
+                    "left_out": [item.trade_id for item in left_out],
+                    "note": "몫으로 같이 들 수 없는 열린 기록이 있다 — 세션 보유에 못 넣었다",
+                },
+            )
         _logger.info(
             "live_run_resumed",
             payload={
@@ -1594,8 +1640,17 @@ async def _live_start(
         #    이 기록이 원장에 있어 `_revived_open` 에 들어간다(되살리기와 같은 길).
         taken = [replace(item) for item in inherit if item.outcome is Outcome.OPEN]
         session.ledger.records.extend(taken)
-        if taken:
-            session.adopt(taken[0])
+        left_out = _hold_all(session, taken)
+        if left_out:
+            _logger.error(
+                "live_resume_multiple_open",
+                payload={
+                    "session_id": handle,
+                    "open": [item.trade_id for item in taken],
+                    "left_out": [item.trade_id for item in left_out],
+                    "note": "몫으로 같이 들 수 없는 열린 기록이 있다 — 세션 보유에 못 넣었다",
+                },
+            )
         _logger.info(
             "live_run_inherited",
             payload={

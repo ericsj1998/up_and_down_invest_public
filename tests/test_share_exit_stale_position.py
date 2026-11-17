@@ -122,6 +122,90 @@ def test_full_position_with_a_fresh_share_closes_normally() -> None:
     assert run.failures == 0
 
 
+# ── 뿌리: 닫기를 먼저, 열기를 나중에(T852 S1) ─────────────────────────────────────────
+
+
+def closing_first() -> tuple[_Runner, ShareExchange, TradeRecord, TradeRecord]:
+    """세션이 이 봉에 A(5)를 닫고 B 를 새로 열었다 — 러너는 **A 를 먼저** 닫는다(B 는 아직 안 보냄).
+
+    B 는 원장에만 있고 계약 수가 0 이다. 거래소는 A 의 5 계약만 들고 있다 — 이것이 정확한 값이다.
+    """
+    led = Ledger()
+    a = share("aaaaaaaa1111", stop="95", contracts=5, playbook="crash@0.1.0")
+    b = dc_replace(
+        share("bbbbbbbb2222", stop="90", contracts=0, playbook="crash@0.1.0"), opened_at=BAR
+    )
+    led.add(a)
+    exch = ShareExchange(size=5)
+    run = _Runner(exch, led)
+    run._sent = {a.trade_id}  # pyright: ignore[reportPrivateUsage]
+    run._revived_open = frozenset()  # pyright: ignore[reportPrivateUsage]
+    run.placed = {}
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    led.add(b)
+    return run, exch, a, b
+
+
+def test_closing_before_the_new_entry_is_sent_needs_no_position_guesswork() -> None:
+    """사고의 뿌리 — 예전엔 B 진입을 먼저 보내고 A 를 닫아, 조회가 늦으면 5 - 3 = 2 만 닫혔다.
+
+    닫기를 먼저 하면 "거래소 - 다른 몫" 산수에 방금 보낸 진입이 끼지 않는다. 다시 읽기도 미루기도
+    필요 없다.
+    """
+    run, exch, a, _b = closing_first()
+    run._session.ledger.replace(closed(a, Outcome.TIME_EXIT))  # pyright: ignore[reportPrivateUsage]
+    assert asyncio.run(run._apply_exit(a, shares=[a])) is True  # pyright: ignore[reportPrivateUsage]
+    assert exch.closes == [Decimal(5)] and exch.size == 0
+    assert run.failures == 0 and not run._exit_state()[0]  # pyright: ignore[reportPrivateUsage]
+
+
+def test_only_the_share_that_failed_to_close_is_reported() -> None:
+    run, exch, a, b = two_shares(a_contracts=5)
+    asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
+    run._session.ledger.replace(closed(a, Outcome.TAKE_PROFIT))  # pyright: ignore[reportPrivateUsage]
+    run._session.ledger.replace(closed(b, Outcome.TAKE_PROFIT))  # pyright: ignore[reportPrivateUsage]
+    real = exch.submit_order
+
+    async def refuse_b(order: object) -> object:
+        if int(order.quantity) == 3:  # type: ignore[attr-defined]  # B 의 3 계약만 거절
+            raise RuntimeError("REDUCE_ONLY_FAIL")
+        return await real(order)
+
+    exch.submit_order = refuse_b  # type: ignore[method-assign]
+    assert asyncio.run(run._apply_exit(a, shares=[a, b])) is False  # pyright: ignore[reportPrivateUsage]
+    failed = run._exit_failed  # pyright: ignore[reportPrivateUsage]
+    assert failed is not None and [item.trade_id for item in failed] == [b.trade_id], (
+        "거래소에서 닫힌 A 까지 보유로 되돌리지 않는다"
+    )
+
+
+def test_an_unsent_entry_that_cannot_coexist_with_a_reverted_share_is_voided() -> None:
+    """A 의 목표 청산이 거래소에서 실패해 보유로 되돌린다 — 같은 다리의 새 진입 B 는 거둔다.
+
+    세션은 다리마다 보유 한 칸이라, 되돌린 A 가 그 칸의 B 를 덮어쓴다(B 는 세션이 모르는 몫이 된다).
+    닫기를 먼저 옮기므로 B 는 아직 주문 전이다 — 원장만 거둔다.
+    """
+    run, exch, a, b = closing_first()
+    other = dc_replace(
+        share("cccccccc3333", stop="90", contracts=0, playbook="channel@0.1.0"), opened_at=BAR
+    )
+    run._session.ledger.add(other)  # pyright: ignore[reportPrivateUsage]
+    run._session.ledger.replace(closed(a, Outcome.TAKE_PROFIT))  # pyright: ignore[reportPrivateUsage]
+    run._void_conflicting_entries([a])  # pyright: ignore[reportPrivateUsage]
+    records = {r.trade_id: r for r in run._session.ledger.records}  # pyright: ignore[reportPrivateUsage]
+    assert records[b.trade_id].outcome is Outcome.CANCELLED, "같은 다리 — 같이 못 든다"
+    assert records[other.trade_id].outcome is Outcome.OPEN, "다른 다리 · 같은 방향은 그대로 든다"
+    assert exch.adds == [], "주문은 나간 적이 없다"
+
+
+def test_nothing_is_voided_when_the_close_went_through() -> None:
+    run, _exch, a, b = closing_first()
+    run._session.ledger.replace(closed(a, Outcome.TIME_EXIT))  # pyright: ignore[reportPrivateUsage]
+    run._void_conflicting_entries([a])  # pyright: ignore[reportPrivateUsage]
+    records = {r.trade_id: r for r in run._session.ledger.records}  # pyright: ignore[reportPrivateUsage]
+    assert records[b.trade_id].outcome is Outcome.OPEN
+
+
 # ── 같은 꼴 점검에서 나온 것(2026-11-17) ─────────────────────────────────────────────
 
 

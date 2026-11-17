@@ -106,7 +106,8 @@ def test_a_clean_walk_runs_every_stage_in_order() -> None:
     asyncio.run(run._walk_once())  # pyright: ignore[reportPrivateUsage]
     tail = [name for name in calls if name in TAIL]
     assert tail == list(TAIL)
-    assert calls.index("_place") < calls.index("_apply_exit") < calls.index("reconcile")
+    # T852 S1 — 닫기를 먼저, 열기를 나중에 옮긴다(세션과 같은 순서 — SUI 사고의 뿌리).
+    assert calls.index("_apply_exit") < calls.index("_place") < calls.index("reconcile")
 
 
 @pytest.mark.parametrize("stage", ["_apply_half", "reconcile", "_expire_maker_exit", "_place"])

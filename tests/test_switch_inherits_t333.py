@@ -56,4 +56,9 @@ class TestWiring:
         body = source.split("async def _live_start(")[1]
         assert body.index("elif inherit:") < body.index("runner = LiveRunner(")
         assert "session.ledger.records.extend(taken)" in body
-        assert "session.adopt(taken[0])" in body
+        # T852 — 열린 기록 **전부**를 세션 보유로 넣는다(`_hold_all` — 첫 기록은 adopt, 몫으로
+        # 같이 들 수 있는 나머지는 rehold). 예전엔 첫 기록만 잡았다.
+        assert "_hold_all(session, taken)" in body
+        assert body.index("session.ledger.records.extend(taken)") < body.index(
+            "_hold_all(session, taken)"
+        )

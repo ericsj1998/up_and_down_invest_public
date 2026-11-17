@@ -1420,6 +1420,9 @@ class LiveRunner:
         """
         self._exit_retry: dict[str, TradeRecord] = {}
         """막힌 몫 청산 — 다음 걸음에 다시 닫는다(2026-09-30 SAND 사고 · `_retry_share_exits`)."""
+        self._exit_failed: list[TradeRecord] | None = None
+        """이번 `_apply_exit`(몫 판)에서 **거래소로 못 옮긴 몫들** — 걸음이 그 몫만 보유로
+        되돌린다(T852). None 이면 아직 안 돌았다(던진 경우 포함 — 그때는 전부를 본다)."""
         self._exit_tries: dict[str, int] = {}
         """몫 청산을 미룬 횟수 — `SHARE_EXIT_RETRIES` 를 넘으면 손절만 두고 사람에게 넘긴다."""
         self._exit_due: dict[str, float] = {}
@@ -6023,6 +6026,30 @@ class LiveRunner:
         #    그 상태로 재시작하면 주인 없는 계약). 위험을 줄이는 단계는 앞 단계 실패와 무관하게
         #    돌고(규칙 #8-1), 첫 실패는 끝에서 다시 던져 부르는 쪽이 지금처럼 알린다.
         faults: list[Exception] = []
+        # 🔴 T852 S1 — **닫기를 먼저, 열기를 나중에** 옮긴다(세션과 같은 순서 — 세션은 `_settle`
+        #    로 닫고 나서 `_enter` 로 연다). 예전에는 거꾸로였다: 새 몫 진입을 먼저 보내고 옛 몫을
+        #    닫았다. 그래서 옛 몫을 닫을 때 "거래소 포지션 - 다른 몫" 산수에 방금 보낸 진입이
+        #    끼었고, 포지션 조회가 그 체결을 아직 못 봤으면 그만큼 **덜 닫혔다** — 2026-11-17 SUI
+        #    사고(118 계약 중 58 만 닫힘)의 뿌리다. 사흘 기록에 같은 꼴(시간 청산 + 같은 봉
+        #    재진입)이 세 번 있었다. 닫기를 먼저 하면 그 순간 새 몫은 원장에만 있고 계약 수가
+        #    0 이라 산수가 정확하다 — 조회 지연에 기댈 일이 없다. 새 진입의 쓸 돈도 옛 몫의
+        #    증거금이 풀린 뒤에 잰다(재현과 같다).
+        #
+        # 🔴 **원장이 신호로 전량 닫았으면 거래소에서도 닫는다** (0.7.0 · ADX 약화 청산).
+        #    던지면 못 닫은 것으로 다룬다(목표 청산을 보유로 되돌린다).
+        self._exit_failed = None
+        if not await self._stage(
+            "apply_exit", self._apply_exit(before, shares=shares_before), faults, default=False
+        ):
+            # 🔴 T815 C1 — 목표 청산이 거래소에서 거부됐으면 원장을 보유 중으로 되돌린다. 안 그러면
+            #    "원장 닫힘 · 거래소 보유" 로 갈려 대조가 사후 입양(목표 없는 기록)으로 넘긴다.
+            #    목표가 아닌 청산(신호 · 시간 · 마감 손절)은 다시 닫기 줄이 받는다.
+            #    T852 — **못 닫은 몫만** 되돌린다(예전엔 하나만 실패해도 목표 청산인 몫 전부를
+            #    되돌렸다 — 거래소에서 닫힌 몫까지). 되돌리기 전에, 그 몫과 같이 못 드는 새 진입
+            #    (같은 다리 · 반대 방향)은 아직 안 보냈으니 거둔다.
+            back = shares_before if self._exit_failed is None else self._exit_failed
+            self._void_conflicting_entries(back)
+            self._rehold_unfilled(back, outcomes=(Outcome.TAKE_PROFIT,))
         await self._stage("place", self._place(), faults)
         # 🔴 **부탁받은 지정가를 보낸다** (T19 ⑤). 판정 뒤라야 이 걸음에서 새로 생긴
         #    부탁까지 나간다.
@@ -6037,15 +6064,6 @@ class LiveRunner:
         await self._stage("resize_stop", self._resize_stop(), faults)
         # 🔴 **원장이 반익했으면 거래소에서도 던다** (사고 ③-b).
         await self._stage("apply_half", self._apply_half(), faults)
-        # 🔴 **원장이 신호로 전량 닫았으면 거래소에서도 닫는다** (0.7.0 · ADX 약화 청산).
-        #    던지면 못 닫은 것으로 다룬다(목표 청산을 보유로 되돌린다).
-        if not await self._stage(
-            "apply_exit", self._apply_exit(before, shares=shares_before), faults, default=False
-        ):
-            # 🔴 T815 C1 — 목표 청산이 거래소에서 거부됐으면 원장을 보유 중으로 되돌린다. 안 그러면
-            #    "원장 닫힘 · 거래소 보유" 로 갈려 대조가 사후 입양(목표 없는 기록)으로 넘긴다.
-            #    목표가 아닌 청산(신호 · 시간 · 마감 손절)은 지금까지의 재시도 길 그대로다.
-            self._rehold_unfilled(shares_before, outcomes=(Outcome.TAKE_PROFIT,))
         # 🔴 **못 건 익절을 다시 건다.** 안 하면 포지션은 열려 있는데 목표에 닿아도
         #    아무 일이 안 일어난다.
         await self._stage("retry_ladders", self._retry_ladders(), faults)
@@ -7619,6 +7637,46 @@ class LiveRunner:
                         "(entry=진입 · take_profit=익절 · stop=손절). 진입이 성공한 뒤 "
                         "익절만 거절되면 포지션은 열려 있고 익절이 없는 상태다",
                     },
+                )
+
+    def _void_conflicting_entries(self, back: Sequence[TradeRecord]) -> None:
+        """보유로 되돌릴 몫과 **같이 못 드는 새 진입**을 먼저 거둔다 (T852 S1 · S3).
+
+        Args:
+            back: 이 걸음에 닫으려다 거래소에서 못 닫은 몫들(판정 전 기록).
+
+        Note:
+            세션은 그 몫이 닫혔다고 보고 같은 걸음에 새 진입을 원장에 적었을 수 있다. 그런데
+            거래소 청산이 실패해 그 몫을 보유로 되돌리면(목표 청산만), 다음 둘은 같이 못 든다:
+
+            - **같은 다리**의 새 진입 — 세션은 다리마다 보유 한 칸이라, 되돌린 몫이 그 칸의 새
+              진입을 덮어쓴다(새 진입은 원장엔 열려 있는데 세션은 모르는 몫이 된다).
+            - **반대 방향**의 새 진입 — 한 방향 포지션이라 그 주문이 되돌린 몫을 상쇄한다.
+
+            닫기를 먼저 옮기므로(S1) 새 진입은 아직 안 보냈다 — 주문 없이 원장만 거둔다. 닫기가
+            실패하지 않았으면 아무것도 안 한다.
+        """
+        reverting = [
+            item for item in back if self._ledger_record(item).outcome is Outcome.TAKE_PROFIT
+        ]
+        if not reverting:
+            return
+        legs = {item.playbook for item in reverting}
+        sides = {item.direction for item in reverting}
+        for record in list(self._session.ledger.records):
+            if (
+                record.outcome is not Outcome.OPEN
+                or record.trade_id in self._sent
+                or record.trade_id in self._revived_open
+                or record.entry_fills
+                or self._share_contracts(record) > 0
+            ):
+                continue
+            if record.playbook in legs or record.direction not in sides:
+                self._sent.add(record.trade_id)
+                self._void_entry(
+                    record,
+                    "같은 걸음에 닫으려던 몫을 거래소에서 못 닫아 보유로 되돌렸다 — 같이 못 든다",
                 )
 
     def _entry_unknown_map(self) -> dict[str, float]:
@@ -9749,10 +9807,11 @@ class LiveRunner:
         if self.observe_only:
             return True
         if self._shared:
-            ok = True
-            for item in shares:
-                ok = await self._apply_exit_share(item) and ok
-            return ok
+            # T852 — **못 닫은 몫을 적어 둔다**. 부르는 쪽이 그 몫만 보유로 되돌린다(예전엔
+            # 하나만 실패해도 목표 청산인 몫 전부를 되돌렸다).
+            failed = [item for item in shares if not await self._apply_exit_share(item)]
+            self._exit_failed = failed
+            return not failed
         if before is None:
             return True
         now = next(
