@@ -67,10 +67,10 @@ class TestTheRunnerWaitsForItsChance:
         넘게 무방비였다. 봉 사이의 복구는 `test_stop_rearm_between_bars.py` 가 잰다.
         """
         source = inspect.getsource(LiveRunner._walk_once)  # pyright: ignore[reportPrivateUsage]
-        assert "await self._guard_stop()" in source
+        assert "self._guard_stop()" in source
         assert source.index("_guard_stop") < source.index("_run_audit")
 
     def test_arming_happens_before_the_audit_in_a_step(self) -> None:
         """🔴 걸음 안에서는 **손절이 먼저**다 — 순서가 뒤집히면 매 걸음이 거짓 경보다."""
         source = inspect.getsource(LiveRunner._walk_once)  # pyright: ignore[reportPrivateUsage]
-        assert source.index("await self._place()") < source.index("await self._guard_stop()")
+        assert source.index("self._place()") < source.index("self._guard_stop()")

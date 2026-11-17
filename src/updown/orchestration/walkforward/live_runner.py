@@ -34,7 +34,7 @@ import time
 import uuid
 import zlib
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
@@ -4949,13 +4949,19 @@ class LiveRunner:
         """
         while True:
             await asyncio.sleep(PROBE_TICK if self._probe_busy() else PROBE_IDLE_TICK)
-            try:
+            # 🔴 T852 D3 — 단계마다 따로 돈다(`_tolerate`). 예전에는 한 try 에 줄줄이 묶여, 맨 앞의
+            #    봉 조회(`probe` · 화면용)가 한 번 실패하면 그 회차의 대조 · 감사 · 손절 다시 걸기 ·
+            #    거두기 재시도 · 이어받기가 전부 빠졌다. 뒤 단계들은 주문 쪽 조회만 쓴다.
+            with self._tolerate("probe"):
                 self.last_probe = await self.probe()
+            with self._tolerate("absorb"):
                 # 🔴 **거래소가 먼저 채웠는지도 여기서 따라잡는다** (2026-09-06 사고 —
                 #    4h 축에서 지정가가 봉 중간에 채워졌는데 원장이 4시간 동안 몰랐다).
                 await self._absorb_between_bars()
+            with self._tolerate("funding"):
                 # ⭐ 펀딩 정산을 열린 매매에 (T226) — 5분마다 · 실패는 경고만.
                 await self._sync_funding()
+            with self._tolerate("reconcile"):
                 # 🔴 **거래소가 먼저 닫았는지 여기서 따라잡는다** (사용자 지적
                 #    2026-08-18: *"실제 주문은 이미 손절 난 상태야. (…) 화면에서는
                 #    해당 포지션을 보유 중인걸로 보여"*).
@@ -4976,12 +4982,14 @@ class LiveRunner:
                     # ⭐ 거래소 손절(`stop_mode: touch`)은 **여기서** 닫힌다 — 걸음이 아니라. 펀드에
                     #    알려야 실현 손실이 다음 4h 경계를 안 기다리고 크기에 들어간다 (2026-09-22).
                     _notice_closes(self, before)
+            with self._tolerate("audit"):
                 # 🔴 **감사도 여기서 돈다** (T15-4). 걸음에서만 돌면 판정이 멈춘 순간
                 #    감사도 같이 멈춘다 — 정지를 재는 항목이 정지에 같이 죽는다.
                 #
                 # ⚠️ 거짓 경보 수명도 짧아진다. 예전에는 잘못된 경보가 **15분 동안**
                 #    화면에 붙어 있었다 (진입 축 간격이 곧 갱신 주기였다).
                 await self._run_audit()
+            with self._tolerate("guard_stop"):
                 # 🔴 **무방비를 봤으면 다음 걸음까지 기다리지 않는다** (2026-08-31).
                 #
                 #    감사는 30초 만에 알았는데 고치는 자리(`_guard_stop`)가 걸음 안에만
@@ -4995,20 +5003,49 @@ class LiveRunner:
                 # ⛔ **고치는 것은 감사가 아니라 이 루프다.** 감사는 보는 일만 한다
                 #    (`audit` docstring) — 섞으면 점검이 상태를 바꿔서 다음에 무엇이
                 #    원인이었는지 알 수 없게 된다.
-                if any(item["code"] == "stop_missing" for item in self.findings):
+                #
+                # 🔴 T852 — 진입 문(`guarded`)이 닫혀 있을 때도 다시 건다. 손절 걸기 호출만 한 번
+                #    실패하고 옛 손절은 걸려 있으면 감사에 `stop_missing` 이 안 떠, 다음 걸음까지
+                #    (1 ~ 4 시간) 그 종목 새 진입이 막힌 채였다.
+                if (
+                    any(item["code"] == "stop_missing" for item in self.findings)
+                    or not self._session.guarded
+                ):
                     await self._guard_stop(escalate=False)
+            with self._tolerate("withdrawals"):
                 # 🔴 T831 — 닫힌 몫인데 못 거둔 손절 · 익절을 다시 거둔다(남으면 남의 몫을 닫는다).
                 if self._withdraw_retry_map() and not self._stepping.locked():
                     await self._retry_withdrawals()
+            with self._tolerate("adopt"):
                 # 🔴 **고아도 다음 걸음까지 기다리지 않는다** (T599 · 2026-10-24). 감사는 1 분 안에
                 #    "원장 없음 / 거래소 보유중" 을 봤는데 이어받기(`_retry_adopt`)가 걸음 안에만
                 #    있어 4h 판은 4 시간 뒤에야 이어받고 손절을 다시 걸었다(10-23 SUSHI). 감사
                 #    뒤에 부른다 — 감사가 센 연속 수(`_mismatch_streak`)가 조건 · 60 초 묶음 그대로.
-                await self._retry_adopt()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._log.warning("live_probe_failed", payload={"error": str(exc)[:140]})
+                #
+                # 🔴 T852 D8 — 걸음과 **같은 자물쇠 안**에서 부른다(`manual_adopt` 와 같다). 밖에서
+                #    부르면 이어받기가 조회를 기다리는 사이 걸음이 새 몫을 들어, 원장에 넣은 기록이
+                #    "아직 안 보낸 새 계획" 으로 읽혀 진입이 한 번 더 나갈 수 있다. 걸음이 도는
+                #    중이면 건너뛴다 — 걸음 시작에서도 부른다.
+                if not self._stepping.locked():
+                    async with self._stepping:
+                        await self._retry_adopt()
+
+    @contextlib.contextmanager
+    def _tolerate(self, stage: str) -> Generator[None]:
+        """점검 루프의 한 단계 — 던지면 경고만 남기고 **다음 단계로 간다** (T852 D3).
+
+        Args:
+            stage: 단계 이름(로그).
+
+        Note:
+            취소(`CancelledError`)는 `Exception` 이 아니라 그대로 올라간다 — 루프가 멈춰야 한다.
+        """
+        try:
+            yield
+        except Exception as exc:
+            self._log.warning(
+                "live_probe_failed", payload={"stage": stage, "error": str(exc)[:140]}
+            )
 
     async def _consume(self) -> None:
         """스트림 한 번 — 끊기면 반환한다 (`run` 이 다시 부른다)."""
@@ -5542,8 +5579,11 @@ class LiveRunner:
 
     async def _walk_once(self) -> None:
         """걸음 한 번의 본체 — **`_one_step` 만 부른다** (겹침 방어가 거기 있다)."""
-        await self._retry_share_exits()
-        await self._retry_adopt()
+        # T852 — 앞단의 뒷정리(막힌 청산 다시 닫기 · 이어받기 다시 묻기)가 던져도 **이 봉의
+        # 판정은 한다**. 예전에는 그 예외 하나가 봉 판정을 통째로 건너뛰게 했다.
+        head: list[Exception] = []
+        await self._stage("retry_share_exits", self._retry_share_exits(), head)
+        await self._stage("retry_adopt", self._retry_adopt(), head)
         # 🔴 **체결 판정용 봉을 먼저 채운다.** `Session._tick()` 은 `STEP_FRAME`(5m) 의
         #    마지막 봉으로 **진입가와 체결·청산**을 정하는데, 라이브에서 그 축은 웹소켓이
         #    구독하지 않아 **시드 이후 한 번도 갱신되지 않았다.**
@@ -5590,7 +5630,9 @@ class LiveRunner:
                     "note": "낙폭 브레이커 — 새 진입을 멈춘다. 보유 포지션 관리는 계속한다",
                 },
             )
-        await self.refresh(self.price_frame)
+        # T852 — 가격 축 조회가 던져도 아래 `price_drift()` 가 "뒤처졌나" 로 가른다(뒤처졌으면
+        # 판정을 미루고, 이미 받아 둔 봉이 충분하면 그대로 판정한다).
+        await self._stage("refresh_price", self.refresh(self.price_frame), head)
         # 🔴 T372 — 판정 축이 막 닫혔는데 가격 축 마지막 봉이 그보다 이르면(대개 5분 낡은 :50 봉)
         #    TTL 을 무시하고 잠깐 다시 받는다. 안 그러면 진입가 · 진입 시각이 그 낡은 봉으로 적힌다.
         await self._catch_up_price_frame()
@@ -5660,29 +5702,37 @@ class LiveRunner:
         # ⭐ **판정 정지 기준선** (T15-4). 이 값이 뒤처지기 시작하면 봉은 흐르는데
         #    판정이 안 도는 것이다.
         self._bars_at_step = len(self._feed.observed(self.entry))
-        await self._place()
+        # 🔴 T852 D1 — 여기부터는 **단계마다 따로** 돈다(`_stage`). 예전에는 한 단계가 던지면
+        #    뒤의 손절 확인 · 대조 · 저장이 통째로 빠졌다(진입은 나갔는데 원장이 DB 에 없음 →
+        #    그 상태로 재시작하면 주인 없는 계약). 위험을 줄이는 단계는 앞 단계 실패와 무관하게
+        #    돌고(규칙 #8-1), 첫 실패는 끝에서 다시 던져 부르는 쪽이 지금처럼 알린다.
+        faults: list[Exception] = []
+        await self._stage("place", self._place(), faults)
         # 🔴 **부탁받은 지정가를 보낸다** (T19 ⑤). 판정 뒤라야 이 걸음에서 새로 생긴
         #    부탁까지 나간다.
-        await self._pump_orders()
+        await self._stage("pump_orders", self._pump_orders(), faults)
         # ⭐ 대기 계획을 DB 에 남긴다 (T218) — 다음에 판이 다시 떠도 걸린 표를 이어받게.
-        await self._persist_pending()
+        await self._stage("persist_pending", self._persist_pending(), faults)
         # ⭐ 깔때기 증분을 DB 에 더한다 (T445) — "왜 안 들어갔나" 가 재배포를 넘어 남게.
-        await self._persist_funnel()
+        await self._stage("persist_funnel", self._persist_funnel(), faults)
         # ⭐ 막힌 후보를 한 건씩 남긴다 (T562) — 개수가 아니라 "무엇이 막혔나" 가 남게.
-        await self._note_blocked_candidates()
+        await self._stage("note_blocked", self._note_blocked_candidates(), faults)
         # 🔴 **채워진 만큼 손절을 다시 건다** (T19 · 사다리의 가장 위험한 자리).
-        await self._resize_stop()
+        await self._stage("resize_stop", self._resize_stop(), faults)
         # 🔴 **원장이 반익했으면 거래소에서도 던다** (사고 ③-b).
-        await self._apply_half()
+        await self._stage("apply_half", self._apply_half(), faults)
         # 🔴 **원장이 신호로 전량 닫았으면 거래소에서도 닫는다** (0.7.0 · ADX 약화 청산).
-        if not await self._apply_exit(before, shares=shares_before):
+        #    던지면 못 닫은 것으로 다룬다(목표 청산을 보유로 되돌린다).
+        if not await self._stage(
+            "apply_exit", self._apply_exit(before, shares=shares_before), faults, default=False
+        ):
             # 🔴 T815 C1 — 목표 청산이 거래소에서 거부됐으면 원장을 보유 중으로 되돌린다. 안 그러면
             #    "원장 닫힘 · 거래소 보유" 로 갈려 대조가 사후 입양(목표 없는 기록)으로 넘긴다.
             #    목표가 아닌 청산(신호 · 시간 · 마감 손절)은 지금까지의 재시도 길 그대로다.
             self._rehold_unfilled(shares_before, outcomes=(Outcome.TAKE_PROFIT,))
         # 🔴 **못 건 익절을 다시 건다.** 안 하면 포지션은 열려 있는데 목표에 닿아도
         #    아무 일이 안 일어난다.
-        await self._retry_ladders()
+        await self._stage("retry_ladders", self._retry_ladders(), faults)
         # 🔴 **손절을 먼저 걸고, 그 다음에 점검한다** (순서가 뒤집혀 있었다).
         #
         #    진입한 그 걸음에서 감사가 손절보다 **먼저** 돌아서, 아직 걸리지도 않은
@@ -5701,25 +5751,65 @@ class LiveRunner:
         # 🔴 조건부 주문은 24시간에 만료되고 그 소멸이 **조용하다** — 걸었다는 기억은
         #    만료를 모르므로 매 걸음 거래소에 다시 묻는다.
         # 🔴 **거래소가 먼저 닫았을 수 있다** — 손절을 다시 걸기 전에 확인한다.
-        await self.reconcile()
+        await self._stage("reconcile", self.reconcile(), faults)
         # 🔴 **메이커 청산이 안 채워졌으면 시장가로 마무리한다** (T126 · 1.1.0).
         #    reconcile 뒤라야 거래소의 진짜 잔량을 보고 판단한다.
-        await self._expire_maker_exit()
-        # 🔴 **불타기** (T308 ⑤) — reconcile · 청산 뒤라야 포지션이 아직 있는지 안다.
-        #    재레버 · 손절 확인이 그 뒤에 온다(손절은 포지션 전량 닫기라 수량이 따라간다).
-        await self._apply_add()
-        # 🔴 **보유 계약을 지금 자본의 목표 노출로 되맞춘다** (0.8.0 재레버).
-        await self._resize_position()
-        await self._guard_stop()
-        await self._ensure_share_targets()
+        await self._stage("expire_maker_exit", self._expire_maker_exit(), faults)
+        if faults:
+            # 리스크를 **늘리는** 단계는 앞 단계가 터진 걸음에는 쉰다(#8-1 — 모르면 보류).
+            # 불타기는 잃지 않게 감시 루프가 곧 다시 본다(`_retry_deferred_adds`).
+            self._add_retry_at = time.monotonic() + EXIT_RETRY_BACKOFF_S
+        else:
+            # 🔴 **불타기** (T308 ⑤) — reconcile · 청산 뒤라야 포지션이 아직 있는지 안다.
+            #    재레버 · 손절 확인이 그 뒤에 온다(손절은 포지션 전량 닫기라 수량이 따라간다).
+            await self._stage("apply_add", self._apply_add(), faults)
+            # 🔴 **보유 계약을 지금 자본의 목표 노출로 되맞춘다** (0.8.0 재레버).
+            await self._stage("resize_position", self._resize_position(), faults)
+        await self._stage("guard_stop", self._guard_stop(), faults)
+        await self._stage("ensure_share_targets", self._ensure_share_targets(), faults)
         # 🔴 **걸음마다 스스로 점검한다** (사용자 요구 2026-08-18). 오늘 나온 버그가
         #    전부 같은 모양이었다 — 무언가 조용히 얼어 있고 아무도 모른다.
-        await self._run_audit()
+        await self._stage("run_audit", self._run_audit(), faults)
         # ⭐ 닫힌 매매의 불타기 추가분 손익을 청산가로 적는다 (T308 ⑥ · 겹쳐 쌓지 않는다).
-        await self._book_adds()
+        await self._stage("book_adds", self._book_adds(), faults)
         # 🔴 **원장을 DB 에 남긴다** (T16 ②). 여기서 안 남기면 다음 리로드에 이 걸음의
         #    판정이 통째로 사라지고, 거래소 포지션만 관리자 없이 남는다.
-        await self._persist()
+        await self._stage("persist", self._persist(), faults)
+        if faults:
+            raise faults[0]
+
+    async def _stage[T](
+        self, name: str, work: Awaitable[T], faults: list[Exception], *, default: T | None = None
+    ) -> T | None:
+        """걸음의 한 단계를 돌린다 — 던지면 적어 두고 **다음 단계로 간다** (T852 D1).
+
+        Args:
+            name: 단계 이름(로그).
+            work: 그 단계의 코루틴.
+            faults: 실패를 모으는 목록 — 걸음 끝에서 첫 실패를 다시 던진다.
+            default: 던졌을 때 돌려줄 값.
+
+        Returns:
+            단계의 반환값. 던졌으면 `default`.
+
+        Note:
+            취소(`CancelledError`)는 삼키지 않는다 — 판을 내릴 때 걸음이 멈춰야 한다.
+        """
+        try:
+            return await work
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            faults.append(exc)
+            self._log.error(
+                "live_step_stage_failed",
+                payload={
+                    "stage": name,
+                    "error": str(exc)[:200],
+                    "note": "이 단계만 건너뛰고 걸음을 이어 간다 — 손절 확인 · 대조 · 저장은 돈다",
+                },
+            )
+            return default
 
     async def exchange(self) -> dict[str, object]:
         """거래소 잔고·포지션을 읽는다 — **사실**이다.
@@ -9942,13 +10032,22 @@ class LiveRunner:
             #    못 간다.
             shares = [r for r in self._session.ledger.records if r.outcome is Outcome.OPEN]
             if not shares:
-                # 예전 길과 같다 — 보유가 없으면 `guarded` 를 안 건드린다.
+                await self._reopen_gate_when_flat()
                 return
             guarded = True
             for item in shares:
                 self.stop_misses = self._share_misses.get(item.trade_id, 0)
                 self._session.guarded = True
-                await self._guard_stop_once(escalate=escalate, share=item)
+                try:
+                    await self._guard_stop_once(escalate=escalate, share=item)
+                except Exception as exc:
+                    # T852 B9 — 한 몫에서 터져도 뒤 몫의 손절 확인은 돈다. 이 몫은 못 지킨
+                    # 것으로 본다(새 진입을 막고 다음 점검이 다시 건다).
+                    self._session.guarded = False
+                    self._log.error(
+                        "live_runner_stop_guard_raised",
+                        payload={"trade_id": item.trade_id, "error": str(exc)[:200]},
+                    )
                 self._share_misses[item.trade_id] = self.stop_misses
                 guarded = guarded and self._session.guarded
             live = {r.trade_id for r in shares}
@@ -9963,6 +10062,7 @@ class LiveRunner:
             None,
         )
         if held is None:
+            await self._reopen_gate_when_flat()
             return
         if not hasattr(self._orders, "stops_for"):
             # 조건부를 못 거는 어댑터다 — 능력표에 없으면 여기 오지 않는다.
@@ -10069,6 +10169,49 @@ class LiveRunner:
                 price=guard,
                 order_id=self._stop_id,
             )
+
+    async def _reopen_gate_when_flat(self) -> None:
+        """보유 기록이 없을 때 — 닫혀 있던 진입 문을 **거래소도 비었으면** 다시 연다 (T852 A2 · C1).
+
+        Note:
+            🔴 `session.guarded` 를 참으로 되돌리는 곳은 "열린 기록에 손절을 거는 데 성공" 뿐이었다.
+            그래서 손절 걸기가 한 번 실패한 뒤 그 포지션이 사라지면(거래소 손절 발동 · 급히
+            던짐 · 세션 청산) 되돌릴 기회가 없어, **재시작 전까지 그 종목은 새 진입이 없었다** —
+            경보도 깔때기 흔적도 없이. 몫 대조가 못 가른 사정(`_share_mismatch`)도 열린 몫이 다
+            닫히면 지울 길이 없었다.
+
+            거래소 포지션이 0 인 것을 **읽어서 확인한 때만** 연다. 못 읽었거나 계약이 남아
+            있으면(주인 없는 계약) 그대로 둔다 — 그쪽은 이어받기 · 계좌 대조가 다룬다. 문이
+            이미 열려 있으면 거래소를 묻지 않는다(호출량).
+        """
+        if (
+            self._session.guarded
+            and not self._share_mismatch
+            and not self.stop_misses
+            and not self._share_misses
+        ):
+            return
+        if isinstance(self._orders, PositionAware):
+            try:
+                size = held_size(await self._orders.position_snapshot(self.instrument))
+            except Exception:
+                return
+            if size != 0:
+                return
+        self._log.warning(
+            "live_guard_reopened",
+            payload={
+                "was_guarded": self._session.guarded,
+                "share_mismatch": self._share_mismatch[:120],
+                "stop_misses": self.stop_misses,
+                "note": "보유가 없고 거래소도 비었다 — 닫혀 있던 진입 문을 다시 연다",
+            },
+        )
+        self._session.guarded = True
+        self.stop_misses = 0
+        self._share_misses = {}
+        self._share_mismatch = ""
+        self._share_size_streak = 0
 
     def _first_held(self) -> TradeRecord | None:
         """보유 기록 하나 — 몫 모드면 가장 먼저 든 몫 (T320).
@@ -10402,7 +10545,12 @@ class LiveRunner:
             판정과 손익 계산의 근거는 여전히 `planned_stop` 이다.
         """
         long = held.direction is Direction.LONG
-        spec = await self._contract_spec()
+        # 🔴 T852 B9 — 조회 실패는 **돌려준다**(던지지 않는다). 던지면 몫 손절 순회가 그 자리에서
+        #    끊겨 뒤 몫이 이번 손절 확인을 못 받고, 실패 횟수 · `guarded=False` 도 안 선다.
+        try:
+            spec = await self._contract_spec()
+        except Exception as exc:
+            return exc
         tick = Decimal(str(spec.get("order_price_round", "0.1")))
         # 🔴 **눈금에 맞춰 보낸다** (2026-08-20 실측 18건: `trigger.price price is not an
         #    integer multiple of a price unit`). 원장의 손절가는 봉 가격에서 나오므로
@@ -10420,7 +10568,10 @@ class LiveRunner:
             size = self._share_contracts(held)
             if size <= 0:
                 # T815 C2 — 응답이 유실된 진입은 거래소 체결 기록에서 계약 수를 되찾는다.
-                size = await self._recover_share_contracts(held)
+                try:
+                    size = await self._recover_share_contracts(held)
+                except Exception as exc:
+                    return exc  # T852 B9 — 끝난 주문 조회 실패도 "못 걸었다" 로 돌려준다
             if size <= 0:
                 return RuntimeError(f"몫 {held.trade_id} 의 계약 수를 모른다 — 몫 손절을 못 건다")
             share = {"size": size, "key": self._share_stop_key(held)}
