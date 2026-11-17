@@ -95,6 +95,7 @@ from updown.execution.gateway import (
     OrderGatewayError,
     order_adapter,
 )
+from updown.execution.order_marks import ordered_within
 from updown.marketdata.adapter import Capability, QuoteAdapter, RequestBudgetExceededError
 from updown.marketdata.ingest.repository import CandleRepository
 from updown.marketdata.ingest.timeframes import interval, interval_seconds
@@ -140,6 +141,7 @@ from updown.orchestration.walkforward.ledger import Actor, Direction
 from updown.orchestration.walkforward.live_filler import LiveFiller
 from updown.orchestration.walkforward.live_runner import (
     SEED_BARS,
+    SHARE_FRESH_S,
     LiveRunner,
     MarginAware,
     attach,
@@ -1238,7 +1240,13 @@ async def _live_start(
 
     lever = Decimal(str(payload.get("leverage", 1)))
     # ⭐ T563 — 포지션을 든 판을 관리 밖에 두지 않으려고 띄우는 중이면 아래 두 문은 경고만 한다.
-    holding = keep_managing and any(item.outcome is Outcome.OPEN for item in inherit)
+    # 🔴 T852 F1 — **이미 있던 판을 같은 키로 다시 띄우는 길**(재기동 · 감시견)도 경고만 한다.
+    #    아래 두 문은 "새 판을 이 종목에 열어도 되나" 를 묻는 문인데, 다시 띄우기에 그대로 걸면
+    #    재시작 순간 호가가 잠깐 마른 종목의 판이 안 뜨고 → 펀드 복원이 그 종목을 빼고 → 그
+    #    빠진 구성이 저장됐다(일시 실패가 영구 편집이 됐다). 그 판의 **새 진입**은 뜬 뒤에도
+    #    실행 중 스위치(`liquid` · 주문 순간의 수량 계산)가 그대로 막는다.
+    resuming = reviving and bool(payload.get("session_id"))
+    holding = resuming or (keep_managing and any(item.outcome is Outcome.OPEN for item in inherit))
     # 🔴 **그 판의 거래소로** 본다 (2026-09-06) — 없으면 Gate 호가창으로 바이낸스 판을 판정한다.
     depth = await liquidity_of(symbol, margin * lever, market=market.value)
     if not depth.ok:
@@ -3358,6 +3366,15 @@ async def reconcile_once() -> list[Finding]:
                 on_book.add(symbol)
             if engine.waiting_entry():
                 pending.add(symbol)
+        # 🔴 T852 F2 — **지금 포지션을 바꾸는 중인 종목**: 걸음 중인 판 · 방금 주문이 나간 종목.
+        #    거래소 사실은 위 `await` 에서 읽었고 원장은 지금 읽는다 — 그 사이에 판이 움직였으면
+        #    둘이 갈린 것은 반영 중이다. `on_book` 과 같은 순간에(사이에 await 없이) 읽는다.
+        moving = set(ordered_within(market, SHARE_FRESH_S))
+        moving.update(
+            runner.instrument.symbol
+            for runner in LIVE_RUNNERS.values()
+            if runner.instrument.market.value == market and runner.stepping
+        )
         for symbol in sorted({*positions, *resting, *owned} - {""}):
             row = positions.get(symbol)
             held = int(Decimal(str(row.get("size", "0") or "0"))) if row else 0
@@ -3371,6 +3388,9 @@ async def reconcile_once() -> list[Finding]:
                     on_book=symbol in on_book,
                     protected=covered(resting.get(symbol, []), held),
                     pending=symbol in pending,
+                    # 이미 막혀 있던 종목은 봐주지 않는다 — 움직임은 **새로 생긴** 갈림만
+                    # 설명한다(지난 대조에서 갈려 있던 것은 그 사이 판이 움직였든 말든 진짜다).
+                    moving=symbol in moving and f"{market}:{symbol}" not in RECON.blocked,
                 )
             )
     found = _settle_naked(compare(shots))

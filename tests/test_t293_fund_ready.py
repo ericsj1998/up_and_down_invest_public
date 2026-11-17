@@ -314,6 +314,7 @@ class TestWatchdogRebind:
             leverage=Decimal(4),
             legs=(),
             playbook="p",
+            absent={},
         )
         saved: list[str] = []
 

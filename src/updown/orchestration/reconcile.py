@@ -50,6 +50,8 @@ GHOST = "reconcile_ghost_ledger"
 STRAY = "reconcile_stray_orders"
 NAKED = "reconcile_unprotected_size"
 FILL_PENDING = "reconcile_fill_pending"
+IN_FLIGHT = "reconcile_in_flight"
+"""거래소와 원장이 갈렸는데 **그 판이 지금 포지션을 바꾸는 중**이다 (T852 F2) — 경고만 한다."""
 
 UNKNOWN = -1
 """보호 물량을 **못 셌다** — 0(보호가 없다)과 다르다.
@@ -73,6 +75,9 @@ class Snapshot:
         pending: 그 판이 이 종목에 **진입 지정가를 걸어 두고 기다리는 중**인가. 거래소에
             포지션이 있는데 원장이 모르면, 이것이 참일 때는 고아가 아니라 봉 사이 체결의
             **반영 대기**다 (2026-09-06 사고).
+        moving: 그 판이 **지금 포지션을 바꾸는 중**인가 — 걸음 중이거나 방금 주문을 보냈다
+            (T852 F2). 거래소 사실과 원장은 서로 다른 순간에 읽히므로, 이때 둘이 갈린 것은
+            고아 · 유령이 아니라 반영 중이다. `on_book` 과 **같은 순간에** 읽은 값이어야 한다.
     """
 
     market: str
@@ -83,6 +88,7 @@ class Snapshot:
     on_book: bool
     protected: int = UNKNOWN
     pending: bool = False
+    moving: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +247,34 @@ def compare(snapshots: list[Snapshot]) -> list[Finding]:
                         f"거래소에 {shot.held:+d} 계약이 있고 판 {shot.owned or shot.symbol} 의 "
                         "지정가가 대기 중이다 — 봉 사이에 채워진 진입이며 러너가 30초 안에 "
                         "원장에 옮기고 손절을 건다. 계속 남으면 고아로 본다"
+                    ),
+                    orders=shot.orders,
+                )
+            )
+            continue
+        # ── A''. 갈렸는데 그 판이 **지금 포지션을 바꾸는 중**이다 (T852 F2) ─────────
+        #
+        # 🔴 2026-11-17 00:00:16 실계좌 HYPE: 시간 청산 주문이 체결된 지 0.17 초 뒤에 대조가
+        #    돌았다. 거래소 사실은 그 전에 읽은 것(포지션 있음)이고 원장은 그 뒤에 읽은 것
+        #    (닫힘)이라 "고아" 가 됐고, 그 종목의 새 진입이 2 분 막히고 그 판의 손익이 펀드
+        #    장부에서 얼었다. 두 사실을 다른 순간에 읽으면서 **그 사이에 판이 움직였는지**를
+        #    안 물은 것이 뿌리다. 움직이는 중이면 다음 대조(2 분 뒤)가 다시 본다 — 그때도
+        #    갈려 있고 판이 가만히 있으면 진짜다.
+        #
+        # ⚠️ warn 이라 `blocked_keys` 는 안 막는다. 축 D(부분 무방비)는 그대로 본다 — 그것은
+        #    두 사실의 시차가 아니라 거래소 한쪽(포지션 대 조건부)만의 사실이다.
+        if shot.moving and (shot.held != 0) != shot.on_book:
+            out.append(
+                Finding(
+                    code=IN_FLIGHT,
+                    market=shot.market,
+                    symbol=shot.symbol,
+                    level="warn",
+                    detail=(
+                        f"거래소 {shot.held:+d} 계약 · 원장 {'보유' if shot.on_book else '없음'} — "
+                        f"판 {shot.owned or shot.symbol} 이 지금 걸음 중이거나 방금 주문을 "
+                        "보냈다. 반영 중이라 막지 않는다 — 다음 대조에서도 갈려 있으면 고아 · "
+                        "유령으로 본다"
                     ),
                     orders=shot.orders,
                 )

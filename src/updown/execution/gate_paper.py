@@ -35,6 +35,7 @@ from updown.common.domain.market import Balance, MarketStatus, OrderBook, Quote
 from updown.common.domain.order import OrderRequest, OrderResult, OrderStatus
 from updown.common.logging.setup import get_logger
 from updown.common.numeric import zero
+from updown.execution.order_marks import mark_order
 from updown.marketdata.adapter import Capability
 from updown.marketdata.gate.adapter import GateAdapter
 from updown.marketdata.gate.mapping import to_contract
@@ -1146,20 +1147,29 @@ class GatePaperAdapter:
         size = int(order.quantity)
         if order.side is Side.SELL:
             size = -size
-        placed = await self._trade.place_order(
-            to_contract(order.instrument),
-            size,
-            idempotency_key=order.idempotency_key,
-            price=await self._tick(order.instrument, order.price),
-            # 익절·손절·청산은 포지션을 줄이는 주문이다. 빼면 반대 포지션이 새로 열린다.
-            reduce_only=order.order_kind.value in {"take_profit", "stop_loss", "close"},
-            # ⭐ 메이커 보장 (T60 축④) — 요청이 선언한 대로만. 시장가에는 그냥 무시된다.
-            post_only=order.post_only,
-        )
-        # 🔴 **주문을 냈으면 나눠 쓰던 계좌 값을 버린다** (2026-08-29). 잔고·증거금이
-        #    방금 바뀌었는데 2초짜리 옛 값을 다음 판이 받으면 **없는 돈으로 수량을
-        #    산정**하고 그 주문은 거절된다.
-        forget_shared(f"{self._broker}:")
+        price = await self._tick(order.instrument, order.price)
+        venue, symbol = order.instrument.market.value, order.instrument.symbol
+        # T852 F2 — 이 종목에 주문이 날아가는 중이라고 적는다(계좌 대조가 이 순간의 차이를
+        # "주인 없는 포지션" 으로 읽지 않게). 응답 뒤에 한 번 더 적어 늦은 응답도 덮는다.
+        mark_order(venue, symbol)
+        try:
+            placed = await self._trade.place_order(
+                to_contract(order.instrument),
+                size,
+                idempotency_key=order.idempotency_key,
+                price=price,
+                # 익절·손절·청산은 포지션을 줄이는 주문이다. 빼면 반대 포지션이 새로 열린다.
+                reduce_only=order.order_kind.value in {"take_profit", "stop_loss", "close"},
+                # ⭐ 메이커 보장 (T60 축④) — 요청이 선언한 대로만. 시장가에는 그냥 무시된다.
+                post_only=order.post_only,
+            )
+        finally:
+            mark_order(venue, symbol)
+            # 🔴 **주문을 냈으면 나눠 쓰던 계좌 값을 버린다** (2026-08-29). 잔고·증거금이
+            #    방금 바뀌었는데 2초짜리 옛 값을 다음 판이 받으면 **없는 돈으로 수량을
+            #    산정**하고 그 주문은 거절된다. 실패해도 버린다(T852 E5) — 응답을 못 받은
+            #    주문은 나갔을 수도 있고, 틀리게 버리는 값은 조회 한 번이다.
+            forget_shared(f"{self._broker}:")
         return self._to_result(placed, order.idempotency_key)
 
     async def cancel_order(self, broker_order_id: str) -> OrderResult:

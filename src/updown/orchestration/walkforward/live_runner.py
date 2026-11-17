@@ -2503,6 +2503,17 @@ class LiveRunner:
         """
         return self._stream.reconnects + self._restarts
 
+    @property
+    def stepping(self) -> bool:
+        """지금 걸음(또는 원장을 바꾸는 점검 단계) 중인가 (T852 F2).
+
+        Note:
+            걸음은 원장을 먼저 고치고(세션) 그 뒤에 거래소로 옮긴다 — 그 사이 원장과 거래소는
+            잠깐 갈린다. 계좌 대조가 이 값을 원장과 **같은 순간에** 읽어, 갈림이 반영 중인지
+            가른다. 읽기만 한다.
+        """
+        return self._stepping.locked()
+
     def pending_bar(self) -> Candle | None:
         """진행 중인 봉 — 화면이 "살아 있나" 를 보는 근거다.
 

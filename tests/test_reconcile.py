@@ -18,6 +18,7 @@ import pytest
 from updown.orchestration.reconcile import (
     FILL_PENDING,
     GHOST,
+    IN_FLIGHT,
     NAKED,
     ORPHAN,
     STRAY,
@@ -38,6 +39,7 @@ def shot(
     on_book: bool = False,
     protected: int | None = None,
     pending: bool = False,
+    moving: bool = False,
 ) -> Snapshot:
     # 기본은 "딱 맞게 덮여 있다" — 축 D 를 안 보는 시험들이 그것 때문에 깨지지 않게.
     return Snapshot(
@@ -49,7 +51,38 @@ def shot(
         on_book=on_book,
         protected=abs(held) if protected is None else protected,
         pending=pending,
+        moving=moving,
     )
+
+
+class TestARunThatIsMovingRightNow:
+    """🔴 T852 F2 — 2026-11-17 00:00:16 실계좌 HYPE: 시간 청산 체결 0.17 초 뒤 대조가 돌아
+    "고아" 로 읽고 그 종목을 2 분 막았다. 거래소 사실과 원장은 다른 순간에 읽힌다 — 그 사이
+    판이 움직였으면 갈림은 반영 중이다."""
+
+    def test_a_close_in_flight_is_not_an_orphan(self) -> None:
+        found = compare([shot(held=-12, owned="BTC_USDT", on_book=False, moving=True)])
+        assert [f.code for f in found] == [IN_FLIGHT]
+        assert found[0].level == "warn" and blocked_keys(found) == frozenset()
+
+    def test_an_entry_in_flight_is_not_a_ghost(self) -> None:
+        found = compare([shot(held=0, owned="BTC_USDT", on_book=True, moving=True)])
+        assert [f.code for f in found] == [IN_FLIGHT]
+        assert blocked_keys(found) == frozenset()
+
+    def test_a_run_that_is_still_keeps_the_error(self) -> None:
+        """⛔ 완화가 아니라 분류다 — 가만히 있는 판의 갈림은 그대로 고아 · 유령이다."""
+        assert compare([shot(held=-12, owned="BTC_USDT")])[0].code == ORPHAN
+        assert compare([shot(held=0, owned="BTC_USDT", on_book=True)])[0].code == GHOST
+
+    def test_moving_and_matching_reports_nothing(self) -> None:
+        assert compare([shot(held=5, owned="BTC_USDT", on_book=True, moving=True)]) == []
+        assert compare([shot(owned="BTC_USDT", moving=True)]) == []
+
+    def test_moving_does_not_excuse_an_uncovered_position(self) -> None:
+        """축 D 는 거래소 한쪽만의 사실이다 — 두 사실의 시차로 설명되지 않는다."""
+        found = compare([shot(held=5, owned="BTC_USDT", on_book=True, protected=2, moving=True)])
+        assert [f.code for f in found] == [NAKED]
 
 
 class TestItFindsTheDangerousOnes:

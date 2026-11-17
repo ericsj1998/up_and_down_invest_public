@@ -200,6 +200,15 @@ class Fund:
 
     저장 · 복원 때 세션에 다시 건다.
     """
+    absent: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
+    """`{종목: {weight, seed?, mark?, leg_mark?, entry?}}` — 복원 때 **판이 못 뜬 멤버** (T852 F1).
+
+    🔴 못 뜬 것은 일시적인 일(조회 실패 · 같은 종목 판이 아직 안 살아남)인데, 예전에는 그 종목을
+    바스켓에서 빼고 그 구성을 저장해 **영구 편집**이 됐다 — 다음 재기동에도 안 돌아오고, 그 사이
+    감시견이 되살린 판은 "펀드 종목이 아니다" 로 읽혀 문 없는 단독 판이 됐다. 여기 적어 두고
+    저장할 때 바스켓 · 몫 · 정산 mark 에 도로 넣는다(`_fund_data`) — 파일은 온전한 구성을 지킨다.
+    판이 돌아오면 `rebind_member` 가 다시 묶고 지운다. 도는 동안의 배분에는 안 들어간다.
+    """
     engines: dict[str, Any] = field(default_factory=dict[str, Any])
     """`{종목: 엔진}` — 세션 대신 외부 엔진이 도는 다리의 종목(`FundLeg.engine` · `leg_engines`).
 
@@ -827,6 +836,8 @@ FUNDS_ROOT = Path(os.environ.get("FUNDS_ROOT", "logs/funds"))
 def _fund_data(fund: Fund) -> dict[str, Any]:
     """펀드를 저장 가능한 딕셔너리로 — 바스켓·레버·전략·TWR 상태."""
     basket = fund.coordinator.engine.basket
+    # T852 F1 — 판이 못 뜬 멤버를 파일에는 그대로 둔다(일시 실패가 구성을 바꾸지 않게).
+    away = {sym: gone for sym, gone in fund.absent.items() if sym not in basket.symbols}
     return {
         "fund_id": fund.fund_id,
         "label": fund.label,
@@ -860,13 +871,19 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
         "legs_revision": fund.legs_revision,
         "basket": {
             "version": basket.version,
-            "members": [{"symbol": m.symbol, "weight": str(m.weight)} for m in basket.members],
+            "members": [
+                *({"symbol": m.symbol, "weight": str(m.weight)} for m in basket.members),
+                *({"symbol": sym, "weight": str(gone["weight"])} for sym, gone in away.items()),
+            ],
         },
         "twr": fund.coordinator.engine.ledger.to_dict(),
         # ⭐ 420차 · T387 — 브레이크 원장(자기 매매 실현만) · 매매법 열쇠 · 뺀 다리 증분 mark
         "core_twr": None if fund.coordinator.core is None else fund.coordinator.core.to_dict(),
         "core_key": fund.coordinator.core_key,
-        "leg_marks": {sym: str(mark) for sym, mark in fund.coordinator.leg_marks.items()},
+        "leg_marks": {
+            **{sym: str(gone["leg_mark"]) for sym, gone in away.items() if "leg_mark" in gone},
+            **{sym: str(mark) for sym, mark in fund.coordinator.leg_marks.items()},
+        },
         # 판 → 펀드 매핑 (2026-09-04). 지금까지 메모리(`handles`)에만 있어 리포트(스케줄러
         # 프로세스)가 판을 펀드로 못 묶었다 — 파일에 남겨 어느 프로세스든 읽게 한다.
         "runs": dict(fund.handles),
@@ -874,11 +891,17 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
         #    재기동이 이 둘을 되살려야 과거 손익이 다시 세어지지 않는다
         #    (예전엔 seed 를 현재 몫으로 덮어 재기동마다 샜다).
         "seeds": {
-            sym: str(SESSIONS[handle].session.ledger.seed_cash)
-            for sym, handle in fund.handles.items()
-            if handle in SESSIONS
+            **{sym: str(gone["seed"]) for sym, gone in away.items() if "seed" in gone},
+            **{
+                sym: str(SESSIONS[handle].session.ledger.seed_cash)
+                for sym, handle in fund.handles.items()
+                if handle in SESSIONS
+            },
         },
-        "marks": {sym: str(mark) for sym, mark in fund.coordinator.marks.items()},
+        "marks": {
+            **{sym: str(gone["mark"]) for sym, gone in away.items() if "mark" in gone},
+            **{sym: str(mark) for sym, mark in fund.coordinator.marks.items()},
+        },
         "anchor": None if fund.anchor is None else fund.anchor.to_dict(),
         # T606 — 마지막 틱에서 앵커를 건너뛴 이유(없으면 None). 라이브 점검이 읽어 "장부 차가
         #    저절로 안 맞춰진다" 고 말한다 — 화면 응답에만 있던 값을 파일에도 남긴다.
@@ -886,7 +909,10 @@ def _fund_data(fund: Fund) -> dict[str, Any]:
         # ⭐ T758 — 분기 우주. 옛 저장본에는 없다(고정 바구니).
         "universe": fund.universe,
         "universe_quarter": fund.universe_quarter,
-        "entry_legs": {sym: list(v) for sym, v in fund.entry_legs.items()},
+        "entry_legs": {
+            **{sym: list(gone["entry"]) for sym, gone in away.items() if "entry" in gone},
+            **{sym: list(v) for sym, v in fund.entry_legs.items()},
+        },
     }
 
 
@@ -1061,6 +1087,80 @@ def _running_handle(symbol: str, market: str = "GATE") -> str | None:
     return None
 
 
+def absent_entry(data: Mapping[str, Any], member: BasketMember) -> dict[str, Any]:
+    """복원 때 판이 못 뜬 멤버를 **저장본 값 그대로** 적어 둘 한 칸 (T852 F1 · 순수).
+
+    Args:
+        data: 펀드 저장 딕셔너리.
+        member: 못 뜬 멤버.
+
+    Returns:
+        `{weight, seed?, mark?, leg_mark?, entry?}` — 저장본에 있던 값만 싣는다(없는 것을 지어내지
+        않는다). 다음 저장이 이것을 바스켓 · 몫 · 정산 mark 에 도로 넣는다.
+    """
+    out: dict[str, Any] = {"weight": str(member.weight)}
+    for name, source in (("seed", "seeds"), ("mark", "marks"), ("leg_mark", "leg_marks")):
+        held = cast("dict[str, Any]", data.get(source) or {})
+        if member.symbol in held:
+            out[name] = str(held[member.symbol])
+    entry = cast("dict[str, Any]", data.get("entry_legs") or {})
+    if member.symbol in entry:
+        out["entry"] = [str(item) for item in cast("list[object]", entry[member.symbol])]
+    return out
+
+
+def _readmit(fund: Fund, symbol: str, handle: str, session: Any) -> None:
+    """복원 때 빠졌던 멤버의 판이 돌아왔다 — **펀드에 다시 넣는다** (T852 F1).
+
+    Args:
+        fund: 펀드.
+        symbol: 종목(`fund.absent` 에 있다).
+        handle: 돌아온 판의 핸들.
+        session: 그 세션.
+
+    Note:
+        몫 · 정산 mark 는 **저장본 값**을 되살린다(`_restore_one` 이 도는 판에 하는 것과 같다) —
+        mark 를 되살려야 빠져 있던 동안의 실현 손익이 다음 틱에 펀드로 들어온다. 저장본에 mark 가
+        없으면 첫 틱이 지금 값으로 잡는다(새 멤버와 같다). 문은 `_reattach_gate` 가 붙인다 —
+        그 전까지 `fund_ready` 는 꺼 둔다.
+    """
+    gone = fund.absent.pop(symbol)
+    engine = fund.coordinator.engine
+    weight = Decimal(str(gone["weight"]))
+    engine.basket = Basket(
+        (*engine.basket.members, BasketMember(symbol=symbol, weight=weight)),
+        version=engine.basket.version,
+    )
+    total, wsum = engine.balance, engine.basket.weight_sum
+    session.fund_ready = False
+    session.ledger.wallet_start = Decimal(0)
+    session.ledger.refill = False
+    session.ledger.seed_cash = (
+        Decimal(str(gone["seed"])) if "seed" in gone else total * weight / wsum
+    )
+    session.ledger.margin_budget = (
+        total / Decimal(fund.slots) if fund.slots > 0 else total * weight / wsum
+    )
+    fund.coordinator.ports[symbol] = SessionBridge(session)  # type: ignore[index]
+    if "mark" in gone:
+        fund.coordinator.marks[symbol] = Decimal(str(gone["mark"]))
+    if "leg_mark" in gone:
+        fund.coordinator.leg_marks[symbol] = Decimal(str(gone["leg_mark"]))
+    if fund.universe is not None:
+        legs = tuple(str(item) for item in gone.get("entry", _legs_of_symbol(fund.legs, symbol)))
+        session.entry_legs = frozenset(legs)
+        if "entry" in gone:
+            fund.entry_legs[symbol] = legs
+    fund.handles[symbol] = handle
+    _reattach_gate(fund)
+    _save_fund(fund)
+    _logger.warning(
+        "fund_member_readmitted: %s %s — 복원 때 못 뜬 판이 돌아와 다시 묶었다",
+        fund.fund_id,
+        symbol,
+    )
+
+
 def rebind_member(handle: str) -> str | None:
     """되살아난 멤버 세션을 **펀드에 다시 묶는다** — 감시견 부활 뒤 (T293).
 
@@ -1085,7 +1185,13 @@ def rebind_member(handle: str) -> str | None:
     session = live.session
     symbol, market = session.instrument.symbol, session.instrument.market.value
     for fund in FUNDS.values():
-        if fund.market != market or symbol not in fund.coordinator.ports:
+        if fund.market != market:
+            continue
+        if symbol in fund.absent and symbol not in fund.coordinator.ports:
+            # T852 F1 — 복원 때 판이 못 떠서 빠져 있던 멤버다. 바스켓에 도로 넣고 묶는다.
+            _readmit(fund, symbol, handle, session)
+            return fund.fund_id
+        if symbol not in fund.coordinator.ports:
             continue
         old = fund.coordinator.ports[symbol]
         if isinstance(old, SessionBridge) and old.session is session:
@@ -1187,6 +1293,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
     ports: dict[str, Any] = {}
     engines: dict[str, Any] = {}
     kept: list[BasketMember] = []
+    absent: dict[str, dict[str, Any]] = {}
     loop_started = time.perf_counter()
     for member in basket.members:
         # ⭐ T759 ④' — 멤버마다 한 번 양보한다. 2026-11-02 실계좌에서 이 루프(39 종)가 한 번도
@@ -1258,6 +1365,9 @@ async def _restore_one(data: dict[str, Any]) -> None:
                     member.symbol,
                     str(exc)[:160],
                 )
+                # T852 F1 — 빠진 종목을 **잊지 않는다.** 파일에는 그대로 두고(`_fund_data`),
+                # 그 판이 돌아오면 다시 묶는다(`rebind_member`).
+                absent[member.symbol] = absent_entry(data, member)
                 continue
         # 🔴 **매매 기록이 없는 판은 지금 몫에서 시작한다** (1.17.1 · 2026-09-24).
         #    T285 가 저장된 seed 를 지키는 이유는 "과거 매매를 새 시작점에서 다시 세지 않게" 인데,
@@ -1392,6 +1502,7 @@ async def _restore_one(data: dict[str, Any]) -> None:
             None if data.get("universe_quarter") is None else str(data["universe_quarter"])
         ),
         entry_legs={k: v for k, v in saved_entry.items() if k in handles},
+        absent=absent,
     )
     raw_anchor = data.get("anchor")
     if isinstance(raw_anchor, dict):
@@ -3467,6 +3578,9 @@ async def _edit_basket_locked(fund_id: str, payload: Mapping[str, Any]) -> dict[
         if handle:
             await _drop_one(handle)
 
+    # T852 F1 — 사람이 구성을 새로 정했다. 복원 때 못 떠서 적어 둔 멤버는 이 구성에 들어 있으면
+    # 위에서 새로 떴고, 없으면 뺀 것이다 — 어느 쪽이든 더 들고 있을 것이 없다.
+    fund.absent.clear()
     _save_fund(fund)
     return await _status(fund)
 
@@ -5267,6 +5381,11 @@ async def _universe_step(fund: Fund, now: datetime, cfg: RotationConfig) -> dict
         return {"action": "no_snapshot", "quarter": q.isoformat()}
     mine = {leg.playbook for leg in fund.legs if leg.engine is None}
     scopes = {k: v for k, v in legs_gate.items() if k in mine}
+    # T852 F1 — 복원 때 못 떠서 적어 둔 멤버 중 **이번 목록에 없는 것은 잊는다**(파일에 도로
+    # 쓰이지 않게). 목록에 있는 것은 아래 계획이 띄우거나, 판이 돌아오면 다시 묶인다.
+    listed = {sym for syms in scopes.values() for sym in syms}
+    for sym in [s for s in fund.absent if s not in listed]:
+        del fund.absent[sym]
     session_syms = [s for s in fund.handles if _engine_leg(fund.legs, s) is None]
     running = {s: _legs_of_symbol(fund.legs, s) for s in session_syms}
     busy = {s: _session_busy(fund.handles[s]) for s in session_syms}
