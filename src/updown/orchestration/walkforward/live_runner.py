@@ -4219,8 +4219,12 @@ class LiveRunner:
                 await self._retry_deferred_adds()
                 await self._watch_exits_once()
                 rounds += 1
-                if rounds % 12 == 0:  # 1 분마다 — 사라진 목표 주문을 다시 건다
-                    await self._ensure_share_targets()
+                if rounds % 12 == 0 and not self._stepping.locked():
+                    # 1 분마다 — 사라진 목표 주문을 다시 건다. T852 D8 — 걸음과 **같은 자물쇠
+                    # 안**에서(밖에서 돌면 걸음이 그 몫을 닫고 익절을 거두는 사이 낡은 기록으로
+                    # 다시 건다). 걸음이 도는 중이면 다음 틱에.
+                    async with self._stepping:
+                        await self._ensure_share_targets()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -4577,8 +4581,17 @@ class LiveRunner:
             ):
                 return
             for row in mine:
-                await self._orders.cancel_order(str(row["id"]))
-        elif await self._share_target_filled(held):
+                gone = await self._orders.cancel_order(str(row["id"]))
+                got = getattr(gone, "filled_quantity", None)
+                if got and Decimal(str(got)) > 0:
+                    # T852 B7 — 거두는 사이 (일부) 체결됐다. 원장 크기 전부로 다시 걸면 그만큼
+                    # 남의 몫 계약을 판다 — 남은 것은 대조 · 감시가 다룬다.
+                    return
+        elif await self._placed_target_filled(held) or await self._share_target_filled(held):
+            return
+        # 🔴 T852 B7 · D8 — 위에서 조회를 기다리는 사이 이 몫이 닫혔으면 걸지 않는다(닫힌 몫의
+        #    줄이기 전용 지정가는 나중에 남의 몫을 판다).
+        if self._ledger_record(held).outcome is not Outcome.OPEN:
             return
         order = share_target_order(held, self.instrument, contracts, run=self._run_key)
         try:
@@ -4640,6 +4653,40 @@ class LiveRunner:
         if not self._names_mine(str(found.get("text", "")), held, "tp"):
             return []
         return [dict(found)]
+
+    async def _placed_target_filled(self, held: TradeRecord) -> bool:
+        """마지막으로 건 익절 지정가가 **체결돼 끝났나** — 주문 번호로 직접 묻는다 (T852 B7).
+
+        Args:
+            held: 몫 기록.
+
+        Returns:
+            그 주문이 끝났고 체결 수량이 있으면 참. 번호를 모르거나 · 못 읽거나 · 아직 걸려 있거나 ·
+            체결 없이 취소됐으면 거짓(예전 길 그대로).
+
+        Note:
+            🔴 익절 지정가가 방금 다 체결되면 걸린 목록에서 사라지고, 끝난 주문 목록에는 아직 안
+            실렸을 수 있다. 그 틈에 "없네" 하고 같은 크기의 줄이기 전용 지정가를 또 내면, 가격이
+            이미 목표라 **같은 종목의 다른 몫 계약이 그 자리에서 팔린다**. 번호로 물은 답은 목록
+            지연과 무관하다. 체결됐으면 다시 걸지 않는다 — 원장은 대조가 그 체결가로 닫는다.
+        """
+        order_id = self._share_tp_placed.get(held.trade_id)
+        if not order_id or not hasattr(self._orders, "order_detail"):
+            return False
+        try:
+            found = cast(
+                "dict[str, str] | None",
+                await self._orders.order_detail(order_id),  # type: ignore[attr-defined]
+            )
+            if not found or str(found.get("status", "")) == "open":
+                return False
+            if not self._names_mine(str(found.get("text", "")), held, "tp"):
+                return False
+            size = abs(int(str(found.get("size") or 0)))
+            left = abs(int(str(found.get("left") or 0)))
+        except Exception:
+            return False
+        return size - left > 0
 
     async def _share_target_filled(self, held: TradeRecord) -> bool:
         """이 몫의 목표가 지정가가 몫 크기만큼 체결됐나 (T814)."""
@@ -10588,8 +10635,21 @@ class LiveRunner:
         #    남아 나중에 다른 몫의 계약을 닫았다(손절은 T328 꼬리 비교로 이미 찾았다).
         tp_stuck: list[str] = []
         if isinstance(self._orders, OrdersAware):
+            rows: Sequence[Mapping[str, Any]] = []
+            try:
+                rows = await self._orders.open_orders(self.instrument)
+            except Exception as exc:
+                # 🔴 T852 B5 — 걸린 주문 목록을 못 읽었다 = 이 몫의 익절 지정가를 **거뒀는지
+                #    모른다**. 예전에는 조용히 삼켜, 닫힌 몫의 줄이기 전용 익절이 걸린 채 남았고
+                #    나중에 목표가에서 남의 몫 계약을 팔 수 있었다. 나가는 길은 막지 않고(#8-1),
+                #    점검 루프가 다시 거두게 줄에 올린다.
+                self._log.warning(
+                    "live_share_withdraw_unlisted",
+                    payload={"trade_id": held.trade_id, "error": str(exc)[:140]},
+                )
+                self._queue_withdraw_retry(held)
             with contextlib.suppress(Exception):
-                for row in await self._orders.open_orders(self.instrument):
+                for row in rows:
                     text = str(row.get("text", ""))
                     if not self._is_trade_order(text, held):
                         continue
@@ -10740,6 +10800,10 @@ class LiveRunner:
         """
         queue = self._withdraw_retry_map()
         for trade_id, (record, tries) in list(queue.items()):
+            if self._ledger_record(record).outcome is Outcome.OPEN:
+                # T852 — 아직(또는 다시) 열린 몫이다(급히 던지기 전 · 보유로 되돌림). 지금 거두면
+                # 그 몫의 손절 · 익절이 사라진다 — 닫힌 뒤에 거둔다.
+                continue
             ok = False
             with contextlib.suppress(Exception):
                 ok = await self._withdraw_share_orders(record)
