@@ -1729,6 +1729,12 @@ async def _live_start(
     # 🔴 **로그가 어느 판인지 말하게 한다** (T76). 이 줄이 없으면 11개 판의
     #    오류가 구분 없이 섞인다 — 실제로 그래서 고아 셋을 손으로 세야 했다.
     runner.identify(handle)
+    if dry_start:
+        # 🔴 호가 문을 경고로 지나간 판 — 러너의 "말랐다" 표식도 같이 세운다. 세션 스위치
+        #    (`liquid`)는 새 진입만 막고, 불타기 · 크기 늘림은 이 표식을 본다. 표식이 서 있으면
+        #    불타기는 그 자리에서 호가를 다시 재고(B6), 5 분 뒤 호가 점검이 돌아오면 둘 다 푼다.
+        #    화면 배너에도 까닭이 뜬다(조용히 닫혀 있지 않게).
+        runner.dry = {"why": depth.why}
     # ⛔ 주문 경로에 계약이 없으면 **한 건도 안 낸다.** 그 사실은 화면이 말한다.
     runner.observe_only = watching
     # 🔴 **조용히 지우는 것과 조용히 넘어가는 것은 다르다** (규칙 #8). 묻지 않기로 한
@@ -3333,26 +3339,37 @@ NAKED_STRIKES = 2
 """
 
 
-_FLIGHT_STREAK: dict[str, int] = {}
-"""`거래소:종목` → "반영 중" 으로 **연달아** 봐준 횟수 (T852 F2)."""
+_FLIGHT_SINCE: dict[str, float] = {}
+"""`거래소:종목` → 갈림을 "반영 중" 으로 **처음 봐준** monotonic 시각 (T852 F2)."""
 
-FLIGHT_GRACE = 1
-"""갈림을 "반영 중" 으로 봐주는 연속 횟수 — **한 번**(= 대조 한 주기 · 2 분).
+FLIGHT_GRACE_S = 60.0
+"""갈림을 "반영 중" 으로 봐주는 시간(초) — 처음 봐준 때부터.
 
-움직임은 방금 생긴 갈림을 설명할 뿐이다. 다음 대조에서도 갈려 있으면 그때 판이 또 움직이는
+움직임은 방금 생긴 갈림을 설명할 뿐이다. 이 시간이 지나서도 갈려 있으면 그때 판이 또 움직이는
 중이어도 고아 · 유령으로 본다 — 안 그러면 10 초마다 다시 닫기를 시도하는 판(주문이 늘 "방금"
-나갔다)의 갈림을 끝없이 봐주게 된다(배포 전 검토에서 찾음). 값의 근거: 주문 · 걸음이 끝나는
-데는 몇 초면 되고 대조 주기는 2 분이라, 두 번째에도 갈려 있으면 시차로는 설명되지 않는다.
+나갔다)의 갈림을 끝없이 봐주게 된다(배포 전 검토에서 찾음). 횟수가 아니라 **시간**으로 센다:
+사람이 콘솔에서 대조를 한 번 더 돌리면 횟수는 몇 초 만에 소진돼, 걸음 중인 멀쩡한 판이 고아로
+잡힌다(둘째 검토에서 찾음).
+
+값의 근거(추론 · 실측 아님): 걸음 한 번은 4H 마감에도 21 초 안에 끝나고(실측 최대), 주문 뒤
+조회를 그대로 안 믿는 시간이 30 초(`SHARE_FRESH_S`)다 — 그 둘보다 길고 대조 주기(2 분)보다
+짧게 잡았다. 그래서 주기 대조만 도는 평소에는 "연달아 한 번" 과 같다.
 """
 
 
+def _in_grace(key: str) -> bool:
+    """이 칸의 갈림을 아직 "반영 중" 으로 봐줘도 되는가 — 처음이거나 유예 안이다."""
+    since = _FLIGHT_SINCE.get(key)
+    return since is None or time.monotonic() - since < FLIGHT_GRACE_S
+
+
 def _note_flights(found: list[Finding]) -> None:
-    """이번 대조에서 "반영 중" 으로 봐준 칸을 센다 — 안 봐준 칸은 지운다."""
+    """이번 대조에서 "반영 중" 으로 봐준 칸의 처음 시각을 적는다 — 안 봐준 칸은 지운다."""
     flying = {item.key for item in found if item.code == IN_FLIGHT}
-    for key in [key for key in _FLIGHT_STREAK if key not in flying]:
-        del _FLIGHT_STREAK[key]
+    for key in [key for key in _FLIGHT_SINCE if key not in flying]:
+        del _FLIGHT_SINCE[key]
     for key in flying:
-        _FLIGHT_STREAK[key] = _FLIGHT_STREAK.get(key, 0) + 1
+        _FLIGHT_SINCE.setdefault(key, time.monotonic())
 
 
 def _settle_naked(found: list[Finding]) -> list[Finding]:
@@ -3464,13 +3481,13 @@ async def reconcile_once() -> list[Finding]:
                     on_book=symbol in on_book,
                     protected=covered(resting.get(symbol, []), held),
                     pending=symbol in pending,
-                    # 이미 막혀 있던 종목 · 지난 대조에서 이미 한 번 봐준 종목은 봐주지 않는다 —
-                    # 움직임은 **새로 생긴** 갈림만 설명한다(지난 대조에서도 갈려 있던 것은 그
-                    # 사이 판이 움직였든 말든 진짜다 · `FLIGHT_GRACE`).
+                    # 이미 막혀 있던 종목 · 봐준 지 오래된 종목은 봐주지 않는다 — 움직임은
+                    # **방금 생긴** 갈림만 설명한다(유예가 지나서도 갈려 있는 것은 그 사이 판이
+                    # 움직였든 말든 진짜다 · `FLIGHT_GRACE_S`).
                     moving=(
                         symbol in moving
                         and f"{market}:{symbol}" not in RECON.blocked
-                        and _FLIGHT_STREAK.get(f"{market}:{symbol}", 0) < FLIGHT_GRACE
+                        and _in_grace(f"{market}:{symbol}")
                     ),
                 )
             )

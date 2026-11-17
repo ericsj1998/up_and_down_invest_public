@@ -62,7 +62,7 @@ def board(monkeypatch: pytest.MonkeyPatch) -> Board:
     monkeypatch.setattr(mod, "SESSIONS", {"h": made})
     monkeypatch.setattr(mod.leg_engines, "running_on", no_engines)
     monkeypatch.setattr(mod.RECON, "blocked", clear)
-    monkeypatch.setattr(mod, "_FLIGHT_STREAK", {})
+    monkeypatch.setattr(mod, "_FLIGHT_SINCE", {})
     forget_marks()
     return made
 
@@ -111,10 +111,22 @@ async def test_being_in_motion_excuses_a_split_only_once(board: Board) -> None:
     mark_order("GATE", "HYPE_USDT")
     assert [item.code for item in await mod.reconcile_once()] == [IN_FLIGHT]
     assert board.session.reconciled is True
+    mod._FLIGHT_SINCE[KEY] -= 2 * mod.FLIGHT_GRACE_S  # pyright: ignore[reportPrivateUsage]  # 다음 주기
     mark_order("GATE", "HYPE_USDT")  # 다음 대조 때도 방금 주문이 나갔다
     board.stepping = True
     assert [item.code for item in await mod.reconcile_once()] == [ORPHAN]
     assert board.session.reconciled is False and mod.RECON.blocked == frozenset({KEY})
+
+
+@pytest.mark.asyncio
+async def test_a_second_look_seconds_later_does_not_use_up_the_grace(board: Board) -> None:
+    """사람이 콘솔에서 대조를 한 번 더 돌려도, 걸음 중인 멀쩡한 판이 곧바로 고아가 되지 않는다."""
+    board.stepping = True
+    assert [item.code for item in await mod.reconcile_once()] == [IN_FLIGHT]
+    assert [item.code for item in await mod.reconcile_once()] == [IN_FLIGHT], (
+        "유예는 횟수가 아니라 처음 봐준 때부터의 시간이다"
+    )
+    assert board.session.reconciled is True
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime
@@ -233,6 +234,33 @@ def test_a_failed_close_voids_an_unsent_entry_on_the_other_side() -> None:
         "같은 방향 · 같은 다리 — 그 칸은 새 진입의 것"
     )
     assert exch.adds == []
+
+
+def test_a_share_waiting_to_be_closed_again_blocks_only_the_other_side() -> None:
+    """일부만 체결돼 다시 닫기 줄에 선 몫 — 닫기는 "참" 을 돌려줘 보유로 되돌리지 않는다.
+
+    그 계약은 아직 거래소에 있다. 반대 방향 새 진입은 보내지 않고, 같은 다리 · 같은 방향 새
+    진입은 그대로 든다(되돌리지 않으니 그 칸은 새 진입의 것이다 — 목표 청산이어도).
+    """
+    run, _exch, a, b = closing_first()
+    short = dc_replace(
+        share("dddddddd4444", stop="110", contracts=0, playbook="tri@0.1.0"),
+        opened_at=BAR,
+        direction=Direction.SHORT,
+    )
+    run._session.ledger.add(short)  # pyright: ignore[reportPrivateUsage]
+    run._session.ledger.replace(closed(a, Outcome.TAKE_PROFIT))  # pyright: ignore[reportPrivateUsage]
+    run._void_conflicting_entries([a], reverting=False)  # pyright: ignore[reportPrivateUsage]
+    records = {r.trade_id: r for r in run._session.ledger.records}  # pyright: ignore[reportPrivateUsage]
+    assert records[short.trade_id].outcome is Outcome.CANCELLED
+    assert records[b.trade_id].outcome is Outcome.OPEN, "같은 다리여도 안 거둔다 — 되돌리지 않는다"
+
+
+def test_the_step_checks_the_reclose_queue_before_sending_entries() -> None:
+    step = inspect.getsource(live_runner.LiveRunner._walk_once)  # pyright: ignore[reportPrivateUsage]
+    guard = "self._void_conflicting_entries(waiting, reverting=False)"
+    assert "waiting = list(self._exit_state()[0].values())" in step
+    assert step.index('"apply_exit"') < step.index(guard) < step.index('"place"')
 
 
 def test_a_share_that_is_still_open_does_not_void_anything() -> None:

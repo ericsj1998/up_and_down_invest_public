@@ -6303,6 +6303,15 @@ class LiveRunner:
             back = shares_before if self._exit_failed is None else self._exit_failed
             self._void_conflicting_entries(back)
             self._rehold_unfilled(back, outcomes=(Outcome.TAKE_PROFIT,))
+        # 🔴 **다시 닫기 줄에 선 몫이 하나라도 있으면**, 그 몫과 반대 방향인 새 진입은 보내지
+        #    않는다(둘째 검토에서 찾음). 줄에 선 몫은 원장에서는 닫혔지만 그 계약은 아직 거래소에
+        #    있다 — 이 걸음에 일부만 체결된 몫(닫기는 "참" 을 돌려준다)도, 앞 걸음에서 못 닫아
+        #    아직 줄에 있는 몫도 같다. 반대 방향 진입이 나가면 남은 계약을 상쇄하고, 다시 닫기가
+        #    또 팔아 원장과 거래소가 반대로 굳는다. 보유로 되돌리는 것이 아니므로 같은 다리
+        #    규칙은 안 건다. 같은 방향 새 진입은 그대로 든다.
+        waiting = list(self._exit_state()[0].values())
+        if waiting:
+            self._void_conflicting_entries(waiting, reverting=False)
         await self._stage("place", self._place(), faults)
         # 🔴 **부탁받은 지정가를 보낸다** (T19 ⑤). 판정 뒤라야 이 걸음에서 새로 생긴
         #    부탁까지 나간다.
@@ -7906,11 +7915,15 @@ class LiveRunner:
                     },
                 )
 
-    def _void_conflicting_entries(self, back: Sequence[TradeRecord]) -> None:
+    def _void_conflicting_entries(
+        self, back: Sequence[TradeRecord], *, reverting: bool = True
+    ) -> None:
         """보유로 되돌릴 몫과 **같이 못 드는 새 진입**을 먼저 거둔다 (T852 S1 · S3).
 
         Args:
             back: 이 걸음에 닫으려다 거래소에서 못 닫은 몫들(판정 전 기록).
+            reverting: 목표 청산인 몫을 보유로 되돌릴 것인가. 거짓이면(일부만 체결돼 다시 닫기
+                줄에 선 몫 — 되돌리지 않는다) 같은 다리 규칙은 안 걸고 반대 방향 규칙만 건다.
 
         Note:
             세션은 그 몫이 닫혔다고 보고 같은 걸음에 새 진입을 원장에 적었을 수 있다. 그런데
@@ -7935,10 +7948,11 @@ class LiveRunner:
         closing = [item for item in back if self._ledger_record(item).outcome is not Outcome.OPEN]
         if not closing:
             return
-        reverting = [
-            item for item in closing if self._ledger_record(item).outcome is Outcome.TAKE_PROFIT
-        ]
-        legs = {item.playbook for item in reverting}
+        legs = {
+            item.playbook
+            for item in closing
+            if reverting and self._ledger_record(item).outcome is Outcome.TAKE_PROFIT
+        }
         sides = {item.direction for item in closing}
         for record in list(self._session.ledger.records):
             if (

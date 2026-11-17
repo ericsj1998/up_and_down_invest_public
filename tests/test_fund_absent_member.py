@@ -162,3 +162,6 @@ def test_a_board_that_passed_the_depth_gate_on_a_warning_starts_with_entries_shu
     shut = source.index("if dry_start:")
     assert source.index("session = Session(") < shut < source.index("runner.run()")
     assert "session.liquid = False" in source[shut : shut + 400]
+    # 불타기 · 크기 늘림은 러너의 "말랐다" 표식을 본다 — 그것도 같이 세운다.
+    assert 'runner.dry = {"why": depth.why}' in source
+    assert source.index('runner.dry = {"why": depth.why}') < source.index("runner.run()")
