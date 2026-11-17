@@ -178,6 +178,49 @@ class TestLiveInjection:
         )
         assert runner.warnings == ["live_ref_regime_unreadable"]
 
+    def test_a_failed_read_keeps_values_that_are_still_current(self) -> None:
+        """T852 — 같은 4H 봉 안에서 조회가 한 번 실패했다고 멀쩡한 값을 지우지 않는다.
+
+        예전엔 전부 지워 그 걸음의 문이 매매법과 달라졌다(이평 문은 열리고 · 다른 문은 보류).
+        """
+        bars = closed_bars(700)
+        runner = fake_runner(LIVE, bars)
+        inject(runner)
+        kept = (runner._session.ref_return, runner._session.ref_surge, runner._session.ref_vol)
+        assert kept[0] is not None
+
+        async def broken(*_args: Any) -> list[Any]:
+            raise RuntimeError("429 요청 한도")
+
+        runner._quotes.get_candles = broken
+        inject(runner)
+        s = runner._session
+        assert (s.ref_return, s.ref_surge, s.ref_vol) == kept
+        assert runner.warnings == ["live_ref_regime_kept"]
+
+    def test_a_failed_read_after_a_new_bar_closed_is_retried_then_cleared(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """새 4H 봉이 닫힌 뒤인데 못 받았다 — 몇 번 다시 받아 보고, 안 되면 지운다(모름)."""
+        import updown.orchestration.walkforward.live_runner as runner_mod
+
+        monkeypatch.setattr(runner_mod, "REF_REGIME_WAIT", 0)
+        bars = closed_bars(700)
+        runner = fake_runner(LIVE, bars)
+        inject(runner)
+        runner._ref_regime_at = bars[-3].ts  # 그 뒤로 봉이 더 닫혔다 — 기억한 값은 낡았다
+        calls = {"n": 0}
+
+        async def broken(*_args: Any) -> list[Any]:
+            calls["n"] += 1
+            raise RuntimeError("timeout")
+
+        runner._quotes.get_candles = broken
+        inject(runner)
+        assert calls["n"] == runner_mod.REF_REGIME_TRIES
+        assert runner._session.ref_return is None and runner._ref_regime_at is None
+        assert runner.warnings == ["live_ref_regime_unreadable"]
+
     def test_same_closed_bar_is_not_recomputed(self) -> None:
         bars = closed_bars(700)
         runner = fake_runner(LIVE, bars)

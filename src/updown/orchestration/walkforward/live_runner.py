@@ -1059,6 +1059,10 @@ SHARE_HELD_REREADS = 3
 """몫 청산 앞 — 같은 걸음에 다른 몫이 방금 들었을 때 포지션을 다시 읽는 횟수 (2026-11-17 SUI)."""
 SHARE_HELD_REREAD_S = 0.7
 """다시 읽기 사이 쉼(초) — 거래소 포지션 조회가 방금 체결을 반영할 틈."""
+REF_REGIME_TRIES = 3
+"""기준(BTC) 4H 봉을 못 받았을 때 받아 보는 횟수(처음 포함) — 새 봉이 닫힌 뒤일 때만 (T852 A3)."""
+REF_REGIME_WAIT = 1.0
+"""기준 봉 다시 받기 사이 쉼(초)."""
 STEP_REDO_TRIES = 5
 """봉 판정이 겹쳐 건너뛰었거나 미뤄졌을 때 다시 걸어 보는 횟수 (T852 D7)."""
 STEP_REDO_WAIT = 2.0
@@ -8032,10 +8036,20 @@ class LiveRunner:
         found = self._session.filler
         return found if isinstance(found, LiveFiller) else None
 
-    async def _inject_ref_regime(self) -> None:
+    async def _inject_ref_regime(self, *, attempt: int = 0) -> None:
         """기준 종목(BTC) 4h 레짐을 세션에 주입한다 (T66-e F1 · funding 주입과 같은 선례).
 
+        Args:
+            attempt: 다시 받아 보는 횟수(안에서만 쓴다).
+
         Note:
+            🔴 T852 A3 — 조회가 한 번 실패했다고 **아직 유효한 값을 지우지 않는다**. 기억한 값이
+            지금도 마지막으로 닫힌 4H 봉의 것이면(그 봉 시작 + 8 시간 전) 그대로 쓴다. 예전에는
+            같은 4H 봉 안의 걸음에서도 네트워크를 탔고, 그 한 번이 실패하면 값을 전부 지워 그
+            걸음의 문이 매매법과 달라졌다(이평 문은 열리고 · 나머지 문은 진입 보류 · 크기 배수는
+            기본값). 새 봉이 닫힌 뒤인데 못 받았으면 잠깐 뒤 다시 받아 보고, 그래도 안 되면
+            예전처럼 지운다(모름 = 문 잠듦).
+
             게이트를 선언한 플레이북이 없으면 아무것도 안 한다 (0.8.1 판 비용 0).
             실패는 None = 게이트 잠듦(0.2.0 동작 · 검증된 폴백)이며 로그는 남긴다 (#8).
             4h 봉당 1회만 계산한다 — 마지막 마감봉 ts 가 같으면 재사용.
@@ -8092,6 +8106,24 @@ class LiveRunner:
                 self._session.ref_vol_sd_pct = got.vol_sd_pct
             self._ref_regime_at = last_ts
         except Exception as exc:
+            at = self._ref_regime_at
+            if (
+                isinstance(at, datetime)
+                and not warm
+                and datetime.now(UTC) < at + 2 * timedelta(hours=4)
+            ):
+                # 기억한 값이 아직 마지막으로 닫힌 4H 봉의 것이다 — 지우지 않는다.
+                self._log.warning(
+                    "live_ref_regime_kept",
+                    payload={"error": str(exc)[:140], "at": at.isoformat()},
+                )
+                return
+            if attempt + 1 < REF_REGIME_TRIES and not isinstance(exc, ValueError):
+                # 조회 실패(통신 · 요청 한도)만 다시 받는다 — 봉이 모자란 것은 다시 받아도 같다.
+                # 클래스 함수로 부른다(이 함수를 빌려 쓰는 대역에도 돌게).
+                await asyncio.sleep(REF_REGIME_WAIT)
+                await LiveRunner._inject_ref_regime(self, attempt=attempt + 1)
+                return
             self._session.ref_above = None  # 모름 = 게이트 잠듦 (0.2.0 동작 폴백)
             self._session.ref_return = None  # 모름 = 국면 문 잠듦 (T290 · 같은 폴백)
             self._session.ref_surge = None  # 모름 = 급등 상한 보류 (T304 #8 · 같은 폴백)
@@ -9083,9 +9115,12 @@ class LiveRunner:
                     "trade_id": held.trade_id,
                     "contracts": contracts,
                     "error": str(exc)[:200],
-                    "note": "다음 걸음에 거래소에 먼저 묻는다 — 다시 보내지 않는다 (규칙 #6)",
+                    "note": "곧 거래소에 먼저 묻는다 — 다시 보내지 않는다 (규칙 #6)",
                 },
             )
+            # 🔴 T852 B4 — 응답만 잃고 체결됐을 수 있다. 다음 걸음(1 ~ 4 시간)까지 두면 그동안
+            #    이 몫의 손절 · 청산 크기에 불타기 계약이 빠진다. 감시 루프가 곧 이력을 묻는다.
+            self._defer_add(held, "전송 실패 — 이력 확인", after=SHARE_STALE_RETRY_S)
             return
         self.orders += 1
         await self._note_order(
@@ -9127,6 +9162,7 @@ class LiveRunner:
                 "live_add_recover_unreadable",
                 payload={"trade_id": held.trade_id, "error": str(exc)[:140]},
             )
+            self._defer_add(held, "이력 조회 실패")  # T852 B4 — 걸음을 기다리지 않고 다시 묻는다
             return
         want = add_key(held.trade_id, self._run_key).replace(":", "-")
         for row in rows:
@@ -9143,6 +9179,11 @@ class LiveRunner:
                 await self._record_add(held.trade_id, int(size - left), fill, multiplier)
                 return
             break
+        if self._entry_fresh():
+            # 🔴 T852 B4 — 방금 보냈다. 끝난 주문 목록이 아직 안 따라왔을 수 있어, 한 번 못
+            #    찾았다고 버리지 않는다(체결된 계약이 원장 밖에 남는다). 창이 지나면 버린다.
+            self._defer_add(held, "방금 보낸 불타기가 이력에 아직 없다", after=SHARE_STALE_RETRY_S)
+            return
         self._drop_add(held, "lost", detail="보냈는데 거래소 이력에 체결이 없다 — 다시 안 보낸다")
 
     async def _record_add(

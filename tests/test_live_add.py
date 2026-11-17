@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -313,6 +314,11 @@ class TestRecovery:
         ex = _Exchange(raise_on_send=True)
         runner = _Runner(_open(), ex)
         runner.run()
+        # T852 — 방금 보낸 직후에는 이력이 아직 안 따라왔을 수 있어 버리지 않는다.
+        runner.run()
+        assert len(ex.sent) == 1 and runner.record.add_held is None, "방금 보냈다 — 더 본다"
+        # 보낸 지 한참 지났는데도 이력에 없으면 그때 버린다(다시 보내지는 않는다).
+        runner.__dict__["_entry_sent_mono"] = time.monotonic() - 3600
         runner.run()
         assert len(ex.sent) == 1
         assert runner.record.add_held == "lost" and runner.record.add_exposure == 0
