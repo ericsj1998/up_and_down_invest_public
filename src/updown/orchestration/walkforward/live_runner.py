@@ -2679,12 +2679,18 @@ class LiveRunner:
 
         stops: list[dict[str, str]] = []
         orders: list[dict[str, str]] = []
-        if isinstance(self._orders, StopAware):
-            with contextlib.suppress(Exception):
+        # 🔴 T852 C8 — 조회 실패를 "없음" 으로 읽지 않는다. 예전에는 조건부 조회가 한 번 실패하면
+        #    "조건부 손절 없음 — 입양 거부 … 콘솔 청산으로 정리한다" 가 떠, 멀쩡히 손절이 걸린
+        #    포지션을 사람이 닫을 수 있었다. 걸린 주문 조회가 실패하면 남의 판 검사 · 목표 복구도
+        #    건너뛰었다. 못 읽었으면 이번엔 이어받지 않고 다음에 다시 묻는다(60 초).
+        try:
+            if isinstance(self._orders, StopAware):
                 stops = await self._orders.open_stops(self.instrument)
-        if isinstance(self._orders, OrdersAware):
-            with contextlib.suppress(Exception):
+            if isinstance(self._orders, OrdersAware):
                 orders = await self._orders.open_orders(self.instrument)
+        except Exception as exc:
+            self._log.warning("live_adopt_unreadable", payload={"error": str(exc)[:140]})
+            return False
 
         trigger = next(
             (Decimal(str(row["trigger_price"])) for row in stops if row.get("trigger_price")),
@@ -2824,7 +2830,14 @@ class LiveRunner:
                         "note": "우리 키가 아닌 손절로 이어받는다 — 우리 손절이 선 뒤 거둔다",
                     },
                 )
+        if any(item.outcome is Outcome.OPEN for item in self._session.ledger.records):
+            # T852 D8 — 위에서 조회를 기다리는 사이 걸음이 새 기록을 열었다. 겹쳐 이어받지 않는다.
+            return False
         self._fired("adopt", f"거래소 포지션 {size} 계약을 원장으로 되읽었다")
+        # 🔴 T852 C8 — "보낸 것" 표시를 원장에 넣기 **전에** 한다. 넣은 뒤 세션 등록이 던지면
+        #    그 기록이 "아직 안 보낸 새 계획" 으로 읽혀 다음 걸음에 진입이 한 번 더 나간다
+        #    (2026-09-30 XRP 사고와 같은 꼴).
+        self._sent.add(trade_id)
         self._session.ledger.add(record)
         self._session.adopt(record)
         # ⭐ T606 ③ — 이 포지션을 원장이 먼저 닫아 둔 줄이 있으면(T599 거짓 청산) 취소로 바꾼다.
@@ -3040,13 +3053,22 @@ class LiveRunner:
         size = held_size(snapshot)
         if size == 0:
             return  # 거래소도 비었다 — 청산이 끝났다
-        exited = next(
-            (
-                item
-                for item in reversed(self._session.ledger.records)
-                if item.outcome in (Outcome.SIGNAL_EXIT, Outcome.TIME_EXIT)  # 411차 시간 청산도
-            ),
-            None,
+        # 🔴 T852 D6 — **가장 최근에 닫힌 기록**이 신호 · 시간 청산이고 그것이 최근일 때만 마무리
+        #    한다(설명 그대로 "원장 마지막"). 예전에는 과거 아무 신호 · 시간 청산 기록이나 잡아,
+        #    이어받기가 "지어내지 않고 사람에게 넘긴다" 고 거부한 포지션(저장 전에 죽은 새 진입 ·
+        #    주인 모를 계약)을 며칠 전 기록을 핑계로 통째로 시장가로 닫을 수 있었다.
+        done = [
+            item
+            for item in self._session.ledger.records
+            if item.closed_at is not None and item.outcome not in _NOT_REALISED
+        ]
+        last = max(done, key=lambda item: cast("datetime", item.closed_at), default=None)
+        exited = (
+            last
+            if last is not None
+            and last.outcome in (Outcome.SIGNAL_EXIT, Outcome.TIME_EXIT)  # 411차 시간 청산도
+            and datetime.now(UTC) - cast("datetime", last.closed_at) <= ADOPT_STOP_LOOKBACK
+            else None
         )
         if exited is None:
             return  # 마지막이 신호청산이 아니면 다른 상황 — 대조에 맡긴다
