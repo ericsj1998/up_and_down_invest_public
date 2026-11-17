@@ -82,6 +82,31 @@ class TestFetch:
         assert await box.get_or_fetch("k", fetch, now=1005.0) == 1
         assert await box.get_or_fetch("k", fetch, now=1011.0) == 2
 
+    @pytest.mark.asyncio
+    async def test_a_read_that_was_in_flight_when_forgotten_is_not_kept(self) -> None:
+        """T852 E5 — 주문 전에 떠난 잔고 조회가 주문 뒤에 돌아와 옛 값을 다시 담으면 안 된다."""
+        box = TtlCache[str]("t.epoch", 10.0, register=False)
+        gate = asyncio.Event()
+        calls = {"n": 0}
+
+        async def slow() -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                await gate.wait()  # 주문 전에 떠나 주문 뒤에 돌아오는 조회
+                return "주문 전 잔고"
+            return "주문 뒤 잔고"
+
+        early = asyncio.create_task(box.get_or_fetch("GATE:account", slow))
+        await asyncio.sleep(0)
+        box.forget("GATE:")  # 주문을 냈다
+        gate.set()
+        assert await early == "주문 전 잔고", "먼저 물은 쪽에는 받은 값을 준다"
+        assert box.peek("GATE:account") is None, "그러나 남들에게 나눠 주지 않는다"
+        assert await box.get_or_fetch("GATE:account", slow) == "주문 뒤 잔고"
+        assert calls["n"] == 2
+        assert await box.get_or_fetch("GATE:account", slow) == "주문 뒤 잔고"
+        assert calls["n"] == 2, "지운 뒤에 떠난 조회는 예전처럼 기억한다"
+
 
 def test_registry_lists_named_caches() -> None:
     TtlCache[int]("t.registered", 1.0)

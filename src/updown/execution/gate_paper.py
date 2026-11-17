@@ -509,6 +509,23 @@ class GatePaperAdapter:
             self._share_names.pop(fid_text, None)
         return made
 
+    def recall_share_stop(self, stop_id: str, key: str) -> None:
+        """재시작 전에 건 몫 손절의 id 를 **이 몫의 것으로 다시 기억한다** (T852 E3).
+
+        Args:
+            stop_id: 조건부 주문 id(저장소의 손절 행에서 되읽은 값).
+            key: 몫 멱등키.
+
+        Note:
+            기억(`_share_names`)은 프로세스 안에만 있어 재시작에 사라진다. 그 뒤 값 · 크기가
+            달라진 옛 손절은 이름(출처 표시)만으로는 누구 것인지 알 수 없어 `_share_stop` 이
+            건드리지 않았고, 새 손절이 하나 더 걸렸다. id 를 다시 알려 주면 그 손절은 "이 몫의
+            것 · 값이 다름" 으로 읽혀 **새것을 건 뒤 거둬진다.** 이미 아는 id 는 안 덮는다.
+            거래소에 더 없는 id 를 받아도 해가 없다(목록에 없으면 안 쓰인다).
+        """
+        if stop_id:
+            self._share_names.setdefault(stop_id, gate_text(key))
+
     async def get_market_status(self, instrument: Instrument) -> MarketStatus:
         """장 상태 — 무기한 선물은 24시간이다.
 
@@ -856,7 +873,11 @@ class GatePaperAdapter:
             ⚠️ **포지션이 열려 있으면 거래소가 거부하거나 청산가를 즉시 옮긴다.** 그래서
             부르는 쪽이 보유 여부를 먼저 본다.
         """
-        await self._trade.set_leverage(to_contract(instrument), leverage)
+        try:
+            await self._trade.set_leverage(to_contract(instrument), leverage)
+        finally:
+            # T852 E5 — 배율이 바뀌면 묶인 증거금 · 쓸 수 있는 돈이 바뀐다. 나눠 쓰던 값을 버린다.
+            forget_shared(f"{self._broker}:")
 
     async def position_closes(
         self, instrument: Instrument, limit: int = 30
@@ -1185,7 +1206,11 @@ class GatePaperAdapter:
             ⚠️ 이미 체결된 주문의 취소 실패는 **정상**이다. 성공으로 접으면 "취소했다" 고
             믿는 포지션이 살아 있게 된다 (절대 규칙 #8) — 그래서 예외를 삼키지 않는다.
         """
-        cancelled = await self._trade.cancel_order(broker_order_id)
+        try:
+            cancelled = await self._trade.cancel_order(broker_order_id)
+        finally:
+            # T852 E5 — 걸어 둔 진입을 거두면 묶였던 증거금이 풀린다. 나눠 쓰던 값을 버린다.
+            forget_shared(f"{self._broker}:")
         return self._to_result(cancelled, str(cancelled.get("text", "")))
 
     async def finished_stops(self, limit: int = 300) -> dict[str, str]:

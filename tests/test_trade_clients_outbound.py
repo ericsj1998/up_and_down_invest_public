@@ -104,6 +104,19 @@ class TestGateTrade:
             await client.aclose()
         assert len(seen) == 1
 
+    @pytest.mark.asyncio
+    async def test_a_success_that_is_not_json_is_a_domain_error(self) -> None:
+        """T852 E7 — `ValueError` 가 새면 부르는 쪽의 거래소 오류 처리를 전부 비켜 간다."""
+        transport, seen = _capture([httpx.Response(200, text="<html>bad gateway</html>")])
+        client = GateTradeClient("k", "s", transport=transport)
+        try:
+            with pytest.raises(GateApiError, match="JSON 이 아니다") as caught:
+                await client._request("POST", "/futures/usdt/orders", body={"size": 1})  # pyright: ignore[reportPrivateUsage]
+        finally:
+            await client.aclose()
+        assert len(seen) == 1
+        assert caught.value.status_code == 200, "거래소가 요청을 받았다는 사실을 잃지 않는다"
+
 
 class TestBinanceTrade:
     def _handler(self, script: list[Any]) -> tuple[httpx.MockTransport, list[httpx.Request]]:

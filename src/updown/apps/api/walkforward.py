@@ -140,12 +140,14 @@ from updown.orchestration.walkforward import pending as pending_mod
 from updown.orchestration.walkforward.ledger import Actor, Direction
 from updown.orchestration.walkforward.live_filler import LiveFiller
 from updown.orchestration.walkforward.live_runner import (
+    EARLY_META_KEY,
     SEED_BARS,
     SHARE_FRESH_S,
     LiveRunner,
     MarginAware,
     attach,
     decision_frames,
+    early_ids_alive,
     run_of_text,
     seed_within_budget,
 )
@@ -1785,6 +1787,19 @@ async def _live_start(
                     "note": "표는 좀비로 거둔다",
                 },
             )
+    # 🔴 T852 S4 — 저장돼 있던 **조기 진입 표식**을 되살린다(진입한 봉이 아직 안 닫힌 것만).
+    #    표식이 없으면 조기 진입 직후 다시 뜬 판이 그 매매를 진입 전 봉으로 손절 판정한다.
+    raw_early: object = opened.meta.get(EARLY_META_KEY) if opened.resumed else None
+    if isinstance(raw_early, list) and raw_early:
+        saved_early = cast("list[object]", raw_early)
+        alive = early_ids_alive(
+            saved_early, session.ledger.records, session.playbooks, datetime.now(UTC)
+        )
+        session.early_ids.update(alive)
+        _logger.info(
+            "live_early_restored",
+            payload={"session_id": handle, "saved": len(saved_early), "restored": sorted(alive)},
+        )
     # 🔴 좀비 진입 지정가 (2026-08-25 ADA 고아 사건): 주인 없는 진입 지정가는 채워지기 전에
     #    거둔다. 포지션이 있어도 거둔다 (부활은 보호만 걸기 때문). 되살린 표는 `keep` 으로 뺀다.
     try:
@@ -2798,6 +2813,7 @@ async def _revive(key: str, row: dict[str, Any], code: str) -> dict[str, str]:
         # 🔴 금고 셋·브레이커도 같이 — 없으면 설정 없는 판이 되살아난다 (2026-08-23).
         **revive_settings_of(row),
     }
+    retire_dead_runner(key)
     try:
         body = await _live_start(payload, reviving=True)
     except Exception as exc:
@@ -2828,6 +2844,35 @@ async def _revive(key: str, row: dict[str, Any], code: str) -> dict[str, str]:
         _logger.info("fund_member_rebound", payload={"run": handle, "fund": bound})
     _logger.info("run_revived", payload={"run": key, "as": handle, "code": code})
     return {"revive": f"감시자가 되살렸다 → {handle}"}
+
+
+def retire_dead_runner(key: str) -> bool:
+    """**태스크가 끝난** 판의 러너를 도는 판 목록에서 뺀다 — 되살리기 직전 (T852 F3).
+
+    Args:
+        key: 판 키.
+
+    Returns:
+        뺐으면 참. 러너가 없거나 태스크가 아직 돌면 아무것도 안 하고 거짓.
+
+    Note:
+        🔴 "한 종목에 한 판" 문은 `LIVE_RUNNERS` 에 있는 같은 종목 판을 **도는 판**으로 본다.
+        러너 태스크가 예외로 끝난 판(`task_dead`)은 그 목록에 자기 항목이 남아 있어서, 같은 키로
+        다시 띄우려 하면 **자기 자신에게 409** 를 맞았다 — 다섯 번 실패한 뒤 자동 부활이 멎고
+        포지션은 관리자 없이 남는다. "도는 판" 과 "죽은 채 등록부에 남은 판" 을 가르지 않은
+        것이 뿌리다.
+
+        ⛔ 태스크가 **끝난 것을 확인한 판만** 뺀다. 러너가 끝날 때 배경 루프도 같이 거둬지므로
+        (`LiveRunner.run` 의 finally) 그 판은 더 주문을 내지 않는다 — 얼어붙은 판(`steps_stall`)은
+        살아 있어서 여기 오지 않는다(새로 띄우면 판이 둘이 된다).
+
+        세션 항목(`SESSIONS`)은 그대로 둔다 — 새 판이 뜨면서 덮어쓴다. 먼저 지우면 그 사이
+        펀드 저장이 이 종목의 몫(seed)을 빼고 쓴다.
+    """
+    entry = SESSIONS.get(key)
+    if entry is None or entry.runner is None or not entry.runner.done():
+        return False
+    return LIVE_RUNNERS.pop(key, None) is not None
 
 
 async def watch_forever() -> None:

@@ -853,6 +853,56 @@ _REF_ROWS: dict[str, tuple[datetime, int, list[Candle]]] = {}
 _REF_LOCKS: dict[str, asyncio.Lock] = {}
 
 
+EARLY_META_KEY = "early_ids"
+"""판 메타(`wf_runs.meta_json`)에서 조기 진입 표식을 두는 키 (T852 S4)."""
+
+
+def early_ids_alive(
+    saved: Sequence[object],
+    records: Sequence[TradeRecord],
+    playbooks: Sequence[Any],
+    now: datetime,
+) -> set[str]:
+    """저장된 조기 진입 표식 중 **지금도 유효한 것** — 판이 다시 뜰 때 세션에 되살릴 몫 (순수).
+
+    Args:
+        saved: 판 메타에 남아 있던 매매 id 들.
+        records: 되살린 원장 기록.
+        playbooks: 이 판의 매매법들(`attribution` · `timeframe` · `early_entry`).
+        now: 지금(UTC).
+
+    Returns:
+        되살릴 매매 id. 조건: 아직 열려 있고 · 그 다리가 조기 진입을 선언했고 · **진입한 봉이
+        아직 안 닫혔다.**
+
+    Note:
+        🔴 봉이 이미 닫힌 표식은 되살리지 않는다. 표식이 남아 있으면 세션은 "이 봉이 닫혔으니
+        마감 룰을 채웠는지 본다 → 못 채웠으면 종가에 나간다" 를 한 번 하는데, 그 확인을 이미
+        마친 매매의 표식이 저장 실패 · 재시작 틈으로 남아 있었다면 **엉뚱한 봉의 후보로 다시
+        판정해 멀쩡한 매매를 닫는다.** 표식이 지키려는 것(진입 전 봉으로 손절 판정 안 하기)은
+        진입한 봉이 닫히기 전에만 필요하다 — 그 뒤에는 마지막 마감 봉이 곧 진입한 봉이다.
+        재시작이 봉 마감을 넘겼으면 마감 확인은 예전처럼 빠진다(잘못 닫는 것보다 안전한 쪽).
+    """
+    wanted = {str(item) for item in saved}
+    frames = {
+        str(book.attribution): book.timeframe
+        for book in playbooks
+        if getattr(book, "early_entry", None) is not None
+    }
+    alive: set[str] = set()
+    for item in records:
+        if item.trade_id not in wanted or item.outcome is not Outcome.OPEN:
+            continue
+        frame = frames.get(item.playbook)
+        if frame is None or item.opened_at is None:
+            continue
+        span = interval_seconds(frame)
+        start = int(item.opened_at.timestamp()) // span * span
+        if now.timestamp() < start + span:
+            alive.add(item.trade_id)
+    return alive
+
+
 async def ref_rows(quotes: Any, ref: Instrument, bars: int, end: datetime) -> Sequence[Candle]:
     """기준 종목의 4H 봉 — **같은 프로세스의 판들이 한 번만 받는다** (T852 E1).
 
@@ -1789,6 +1839,8 @@ class LiveRunner:
         self._run_id: uuid.UUID | None = None
         self._pending_json: str | None = None
         """마지막으로 저장한 대기 계획(JSON 문자열) — 같으면 다시 안 쓴다 (T218)."""
+        self._early_saved: tuple[str, ...] = ()
+        """마지막으로 저장한 조기 진입 표식 — 같으면 다시 안 쓴다 (T852 S4)."""
         self._funnel_saved: dict[str, int] = {}
         """DB 에 이미 더한 깔때기 값 — 이번 세션 기준 (T445). 걸음마다 늘어난 만큼만 더한다."""
         self._blocked_noted = 0
@@ -1843,6 +1895,33 @@ class LiveRunner:
             self._pending_json = encoded
         except Exception as exc:
             self._log.warning("live_pending_persist_failed", payload={"error": str(exc)[:160]})
+
+    async def _persist_early(self) -> None:
+        """조기 진입 표식(`Session.early_ids`)을 판 메타에 남긴다 — 바뀐 때만 (T852 S4).
+
+        Note:
+            🔴 표식은 세션 메모리에만 있었다. 조기 진입(:30) 뒤 그 봉이 닫히기 전에 판이 다시 뜨면
+            표식이 사라져, 그 매매를 **진입 전에 닫힌 봉**으로 손절 판정했다 — 조기 진입은 부분
+            봉의 저가에 손절을 두므로 앞 봉 몸통은 그 아래에 있기 마련이고, 가격이 손절에 닿지도
+            않았는데 다음 걸음에 손절로 나간다(연구 판에서 그 결함으로 조기 63 건 중 59 건이
+            그렇게 나갔다 · T345). 대기 진입 계획(T218)과 같은 길로 남기고 되살린다.
+
+            빈 목록에서 빈 목록으로는 쓰지 않는다(조기 진입 선언이 없는 판은 호출 0).
+            ⚠️ 실패해도 걸음을 막지 않는다 (규칙 #8-1) — 다음 걸음에 다시 쓴다.
+        """
+        if self._store is None or self._run_id is None or self.observe_only:
+            return
+        ids = cast("set[str] | None", getattr(self._session, "early_ids", None))
+        if ids is None:
+            return
+        now = tuple(sorted(ids))
+        if now == cast("tuple[str, ...]", self.__dict__.get("_early_saved", ())):
+            return
+        try:
+            await self._store.put_meta(self._run_id, EARLY_META_KEY, list(now))
+            self._early_saved = now
+        except Exception as exc:
+            self._log.warning("live_early_persist_failed", payload={"error": str(exc)[:160]})
 
     async def _persist_funnel(self) -> None:
         """세션 깔때기(후보 · 막힘 · 문 · 진입)를 판 메타 `funnel` 에 증분으로 더한다 (T445).
@@ -2616,12 +2695,47 @@ class LiveRunner:
             # ⭐ 방아쇠 축이 진입 축과 다를 때만 실제로 돈다 (0.1 은 즉시 반환).
             asyncio.create_task(self._chase_trigger(), name="live-trigger"),
         ]
+        for task in helpers:
+            task.add_done_callback(self._helper_done)
         try:
             await self._loop()
         finally:
             # ⛔ 러너가 끝나면 배경도 끝난다 — 안 거두면 죽은 판의 조회가 계속 나간다.
             for task in helpers:
                 task.cancel()
+
+    def _helper_done(self, task: asyncio.Task[None]) -> None:
+        """배경 루프 하나가 끝났다 — **예외로 끝났으면 조용히 두지 않는다** (T852 F3).
+
+        Args:
+            task: 끝난 배경 태스크.
+
+        Note:
+            🔴 배경 루프(점검 · 청산 감시 · 급전 채우기 · 호가 감시)는 러너 태스크와 따로 돈다.
+            하나가 예외로 죽어도 러너는 계속 걷고 감시견은 "걸음이 돈다" 만 본다 — 손절 다시
+            걸기나 닿은 목표 빼기가 멎었는데 아무도 모른다(규칙 #8). 여기서 사건으로 남기고 판
+            화면의 안전장치 목록에 적는다.
+
+            취소(러너가 끝나며 거둠) · 정상 반환(조기 진입 선언이 없는 판의 시계 · 방아쇠 축이
+            없는 판)은 사건이 아니다. ⛔ 다시 띄우지 않는다 — 같은 원인으로 곧 또 죽는 루프를
+            쉼 없이 되살리면 그것이 새 부하다. 원인은 사건 기록이 말한다.
+        """
+        if task.cancelled():
+            return
+        fault = task.exception()
+        if fault is None:
+            return
+        name = task.get_name()
+        self.last_error = f"배경 루프 {name} 가 죽었다: {fault}"[:200]
+        self._log.error(
+            "live_helper_dead",
+            payload={
+                "helper": name,
+                "error": f"{type(fault).__name__}: {fault}"[:200],
+                "note": "이 판의 배경 점검 하나가 멎었다 — 판을 다시 띄워야 돌아온다",
+            },
+        )
+        self._fired("helper_dead", f"배경 루프 {name} 가 예외로 끝났다 — {fault}"[:160])
 
     async def _recall_rejections(self) -> None:
         """재시작 전에 **거절당한 주문**을 되살린다 (사용자 신고 2026-08-20).
@@ -6174,6 +6288,9 @@ class LiveRunner:
         await self._stage("pump_orders", self._pump_orders(), faults)
         # ⭐ 대기 계획을 DB 에 남긴다 (T218) — 다음에 판이 다시 떠도 걸린 표를 이어받게.
         await self._stage("persist_pending", self._persist_pending(), faults)
+        # ⭐ 조기 진입 표식을 DB 에 남긴다 (T852 S4) — 재시작 뒤에도 그 매매를 진입 전 봉으로
+        #    손절 판정하지 않게.
+        await self._stage("persist_early", self._persist_early(), faults)
         # ⭐ 깔때기 증분을 DB 에 더한다 (T445) — "왜 안 들어갔나" 가 재배포를 넘어 남게.
         await self._stage("persist_funnel", self._persist_funnel(), faults)
         # ⭐ 막힌 후보를 한 건씩 남긴다 (T562) — 개수가 아니라 "무엇이 막혔나" 가 남게.
@@ -11417,6 +11534,40 @@ class LiveRunner:
             best = mine[0]
         return "" if best is None else str(best.get("id", ""))
 
+    async def _recall_share_stop(self, held: TradeRecord, key: str) -> None:
+        """재시작 뒤 처음 — 이 몫 손절의 id 를 저장소에서 되찾아 어댑터에 알린다 (T852 E3).
+
+        Args:
+            held: 몫 기록.
+            key: 몫 손절 키.
+
+        Note:
+            🔴 러너가 기억하는 "몫 → 손절 id" 는 재시작에 사라진다. 값 · 크기가 그대로인 손절은
+            어댑터가 그것으로 다시 알아보지만, 재시작을 낀 채 값이 바뀐 손절(본전 옮김 · 크기
+            변화)은 못 알아봐 **손절이 둘**이 됐고 옛것은 아무도 안 거뒀다. id 는 저장소의 손절
+            행에 이미 있다 — 기억이 아니라 **기록에서 되찾는다.**
+
+            몫마다 한 번만 묻는다(빈 값을 넣어 표시한다 — 못 찾아도 다시 안 묻는다). 실제로 걸려
+            있는 손절의 id 는 아래 `stops_for` · `_find_share_stop_id` 가 거래소 목록에서 정한다 —
+            여기서는 어댑터가 그 손절을 **알아볼 수 있게만** 한다.
+
+            ⛔ 던지지 않는다 — 손절 걸기를 이 조회가 막으면 안 된다(규칙 #8-1).
+        """
+        self._share_stop_ids[held.trade_id] = ""
+        recall = getattr(self._orders, "recall_share_stop", None)
+        store = getattr(self, "_store", None)
+        if recall is None or store is None:
+            return
+        try:
+            stop_id = await store.last_stop_id(held.trade_id)
+            if stop_id:
+                recall(stop_id, key)
+        except Exception as exc:
+            self._log.warning(
+                "live_share_stop_recall_failed",
+                payload={"trade_id": held.trade_id, "error": str(exc)[:160]},
+            )
+
     def _guard_price(self, held: TradeRecord) -> Decimal:
         """거래소에 걸 조건부 손절 자리 — `Session.guard_price` (T233 ②).
 
@@ -11488,6 +11639,8 @@ class LiveRunner:
             if size <= 0:
                 return RuntimeError(f"몫 {held.trade_id} 의 계약 수를 모른다 — 몫 손절을 못 건다")
             share = {"size": size, "key": self._share_stop_key(held)}
+            if held.trade_id not in self._share_stop_ids:
+                await self._recall_share_stop(held, str(share["key"]))
             self._stop_id = self._share_stop_ids.get(held.trade_id, "")
         try:
             # 🔴 **조건부 주문 id 를 붙잡는다** (사용자 신고 2026-08-20). 이것이 발동하면

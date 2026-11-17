@@ -62,6 +62,8 @@ class TtlCache[T]:
         self._max_size = max_size
         self.entries: dict[str, tuple[float, T]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._epoch = 0
+        """`forget` 가 불린 횟수 — 받아 오는 사이 지워졌는지 가르는 세대 번호."""
         self.hits = 0
         self.misses = 0
         if register:
@@ -154,6 +156,11 @@ class TtlCache[T]:
         Note:
             같은 키의 동시 호출은 키 락으로 합류한다 — 첫 호출이 받아 오는 동안 나머지는 기다렸다가
             같은 값을 받는다. `fetch` 가 던지면 아무것도 기억하지 않고 그대로 올린다.
+
+            🔴 **받아 오는 사이 `forget` 이 불렸으면 기억하지 않는다** (T852 E5). `forget` 은 "방금
+            세상이 바뀌었다"(주문을 냈다)는 뜻인데, 그 전에 떠난 조회가 그 뒤에 돌아와 옛 값을
+            **방금 받은 값처럼** 다시 담았다 — 다음 판이 주문 전 잔고로 수량을 쟀다. 부른 쪽에는
+            값을 돌려주되(그 호출은 지우기 전에 물은 것이다) 남들에게 나눠 주지는 않는다.
         """
         kept = self.fresh(key, ttl_s=ttl_s, now=now)
         if kept is not None:
@@ -163,7 +170,10 @@ class TtlCache[T]:
             kept = self.fresh(key, ttl_s=ttl_s, now=now)
             if kept is not None:
                 return kept[1]
+            epoch = self._epoch
             value = await fetch()
+            if self._epoch != epoch:
+                return value
             return self.put(key, value, now=now)
 
     def forget(self, prefix: str | None = None) -> int:
@@ -174,7 +184,13 @@ class TtlCache[T]:
 
         Returns:
             지운 항목 수.
+
+        Note:
+            세대 번호를 올린다 — 지금 받아 오는 중인 조회는 돌아와도 기억되지 않는다
+            (`get_or_fetch`). 앞자리로 가르지 않고 캐시 전체를 한 세대로 본다: 틀리게 안 담는
+            값은 조회 한 번이고, 가르려면 날아가는 조회마다 키를 들고 다녀야 한다.
         """
+        self._epoch += 1
         if prefix is None:
             count = len(self.entries)
             self.entries.clear()

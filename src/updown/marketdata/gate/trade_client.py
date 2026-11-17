@@ -358,7 +358,17 @@ class GateTradeClient:
         if response.status_code == _HTTP_TOO_MANY:
             note_ban("GATE", response.text[:300])
         if response.status_code in (_HTTP_OK, _HTTP_CREATED):
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as exc:
+                # T852 E7 — 성공 응답인데 본문이 JSON 이 아니다(중간 장비의 오류 페이지 등).
+                # 예전에는 `ValueError` 가 그대로 새서, 부르는 쪽의 "거래소 오류" 처리 가지를
+                # 전부 비켜 갔다. 거래소는 요청을 **받았다** — 상태 코드를 실어 같은 예외로 올린다.
+                raise GateApiError(
+                    f"Gate 응답이 JSON 이 아니다({method} {path}): {response.text[:200]}",
+                    status_code=response.status_code,
+                    payload=response.text,
+                ) from exc
         if response.status_code == _HTTP_UNAUTHORIZED:
             raise GateAuthError(
                 f"Gate 401 ({path}) — 서명·키·IP 중 하나다. 서명은 문서 정답 벡터로 "

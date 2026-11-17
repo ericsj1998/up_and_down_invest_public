@@ -1305,6 +1305,48 @@ class RunStore:
             return {}
         return {str(order_id): str(trade_id) for order_id, trade_id in rows}
 
+    async def last_stop_id(self, trade_id: str) -> str:
+        """그 매매에 **마지막으로 건 조건부 손절의 id** (T852 E3).
+
+        Args:
+            trade_id: 매매의 짧은 id.
+
+        Returns:
+            조건부 주문 id. 건 적이 없거나(마지막 시도가 실패) 못 읽으면 빈 문자열.
+
+        Note:
+            🔴 거래소는 조건부의 이름을 우리 이름 대신 출처 표시(`api`)로 돌려준다. 그래서 러너는
+            건 id 를 기억으로 들고 다니는데, 그 기억은 재시작에 사라진다 — 값 · 크기가 그대로면
+            그것으로 다시 알아보지만, 달라졌으면 **자기가 건 손절을 못 알아보고 하나 더 건다.**
+            옛 손절은 아무 목록에도 안 잡힌 채 남아, 나중에 같은 종목의 다른 몫을 닫는다.
+            이 id 는 이미 여기(`wf_orders` 손절 행 · 역할당 한 줄)에 적혀 있었다 — 되읽기만 한다.
+
+            판 id 로 좁히지 않는다 — 매매법 전환이 열린 기록을 새 판으로 옮기면 손절 행은 옛
+            판에 남는다. 매매 id 가 같은 행 중 가장 최근 것을 쓴다.
+
+            ⛔ 던지지 않는다. 못 읽으면 예전처럼(값 · 크기로 알아보기) 돈다 — 손절 걸기를 이
+            조회가 막으면 안 된다(규칙 #8-1).
+        """
+        if not trade_id:
+            return ""
+        try:
+            async with self._factory() as session:
+                found = (
+                    await session.execute(
+                        sa.select(WalkforwardOrder.exchange_order_id)
+                        .where(
+                            WalkforwardOrder.trade_id == trade_id,
+                            WalkforwardOrder.role == "손절",
+                        )
+                        .order_by(WalkforwardOrder.updated_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+        except Exception as exc:
+            _logger.warning("wf_last_stop_unreadable", payload={"error": str(exc)[:200]})
+            return ""
+        return "" if found is None else str(found)
+
     async def run_tags(self) -> dict[str, JsonDict]:
         """판 표식 6자 → **그 판이 무엇이었나** (사용자 요구 2026-08-20).
 

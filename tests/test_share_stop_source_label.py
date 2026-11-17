@@ -116,6 +116,35 @@ def test_other_price_size_and_human_stops_are_left_alone() -> None:
     assert trade.cancelled == []
 
 
+def test_a_restart_with_a_moved_stop_leaves_two_unless_the_id_is_recalled() -> None:
+    """T852 E3 — 재시작을 낀 채 손절값이 바뀌면 옛 손절은 이름(`api`)만으로는 누구 것인지 모른다."""
+    # 기억 없이: 값이 다른 `api` 조건부는 안 건드린다 → 새것이 하나 더 걸려 둘이 된다.
+    blind = FakeTrade()
+    blind.add("old", "3.2000", -12)
+    assert arm(adapter(blind), price="3.3895") is not None
+    assert [row["id"] for row in blind.rows] == ["old", "new-1"] and blind.cancelled == []
+
+    # 저장소에서 되읽은 id 를 알려 주면: 새것을 먼저 걸고 옛것을 거둔다 → 하나.
+    trade = FakeTrade()
+    trade.add("old", "3.2000", -12)
+    a = adapter(trade)
+    a.recall_share_stop("old", KEY)
+    assert arm(a, price="3.3895") is not None
+    assert [row["id"] for row in trade.rows] == ["new-1"] and trade.cancelled == ["old"]
+    assert arm(a, price="3.3895") is None, "그 뒤로는 또 걸지 않는다"
+
+
+def test_recalling_does_not_touch_another_share_or_an_unknown_id() -> None:
+    trade = FakeTrade()
+    trade.add("theirs", "3.2000", -12)  # 다른 몫의 손절(값이 다름 · 이름은 `api`)
+    a = adapter(trade)
+    a.recall_share_stop("gone", KEY)  # 거래소에 더 없는 id — 해가 없다
+    a.recall_share_stop("", KEY)
+    assert arm(a, price="3.3895") is not None
+    assert trade.cancelled == [], "id 를 모르는 손절은 예전처럼 안 건드린다"
+    assert len(trade.rows) == 2
+
+
 def test_two_shares_keep_their_own_stops() -> None:
     trade = FakeTrade()
     a = adapter(trade)
