@@ -1353,6 +1353,9 @@ class LiveRunner:
         self._entry_sent_mono: float | None = None
         """진입 · 불타기 주문을 마지막으로 보낸 monotonic 시각 — `SHARE_FRESH_S` 동안은 포지션
         조회가 그 체결을 아직 못 봤을 수 있다고 본다."""
+        self._add_retry_at: float | None = None
+        """일시적 까닭으로 미룬 불타기를 감시 루프가 다시 실어 볼 monotonic 시각 — 없으면 None
+        (`_defer_add` · `_retry_deferred_adds`)."""
         self._share_stop_ids: dict[str, str] = {}
         """몫 모드(T320 P3)에서 몫(매매 id)마다 걸린 조건부 손절 id — 발동 기록을 몫에 잇는 열쇠."""
         self._share_misses: dict[str, int] = {}
@@ -4162,6 +4165,7 @@ class LiveRunner:
                 continue
             try:
                 await self._retry_stale_share_exits()
+                await self._retry_deferred_adds()
                 await self._watch_exits_once()
                 rounds += 1
                 if rounds % 12 == 0:  # 1 분마다 — 사라진 목표 주문을 다시 건다
@@ -8499,22 +8503,56 @@ class LiveRunner:
                 "live_add_unreadable",
                 payload={"trade_id": held.trade_id, "error": str(exc)[:140]},
             )
-            return  # 다음 걸음에 다시 본다(늦으면 `stale` 로 버린다)
-        size = Decimal(str(snapshot.get("size", "0") or "0"))
-        if size == 0 or (size > 0) != (held.direction is Direction.LONG):
-            self._drop_add(held, "no_position")
+            # 한 번 못 읽은 것으로 이 불타기를 잃지 않는다 — 다음 걸음은 `ADD_STALE` 보다 늦을
+            # 수 있다(1H · 4H 판). 감시 루프가 곧 다시 본다(늦으면 `stale` 로 버린다).
+            self._defer_add(held, "조회 실패")
             return
-        if self._shared:
-            # 🔴 T320 — 거래소가 몫 합보다 적게 들었으면 어느 몫이 이미 나갔다(손절 발동 ·
-            #    못 본 청산). 누구 것인지 모르는 채 싣지 않는다 — 리스크 증가 행동이다(#8-1).
-            owed = sum(
+        size = Decimal(str(snapshot.get("size", "0") or "0"))
+        long = held.direction is Direction.LONG
+        owed = (
+            sum(
                 self._share_contracts(item)
                 for item in self._session.ledger.records
                 if item.outcome is Outcome.OPEN
             )
-            if abs(size) < owed:
-                self._drop_add(held, "share_short", detail=f"거래소 {abs(size)} · 몫 합 {owed}")
+            if self._shared
+            else 0
+        )
+
+        def short(now: Decimal) -> bool:
+            """포지션이 없거나 · 반대 방향이거나 · 몫 합보다 적게 보인다."""
+            return now == 0 or (now > 0) != long or abs(now) < owed
+
+        if short(size) and self._entry_fresh():
+            # 🔴 2026-11-17 점검 — 방금 진입 · 다른 몫의 불타기를 보냈으면 조회가 그 체결을 아직
+            #    못 봤을 수 있다. 그 옛 값으로 "어느 몫이 나갔다" · "포지션이 없다" 고 읽으면
+            #    매매법이 정한 불타기를 **영구히** 버린다. 짧게 다시 읽고, 그래도 안 보이면
+            #    버리지 않고 감시 루프가 곧 다시 싣게 둔다(리스크를 늘리는 행동이라 안 보이는
+            #    채로 싣지는 않는다 · #8-1). 방금이 지나도 모자라면 예전처럼 버린다.
+            for _ in range(SHARE_HELD_REREADS):
+                await asyncio.sleep(SHARE_HELD_REREAD_S)
+                try:
+                    snapshot = await self._orders.position_snapshot(self.instrument)
+                except Exception:
+                    break
+                size = Decimal(str(snapshot.get("size", "0") or "0"))
+                if not short(size):
+                    break
+            if short(size):
+                self._defer_add(
+                    held,
+                    f"방금 든 몫이 조회에 아직 없다(거래소 {abs(size)} · 몫 합 {owed})",
+                    after=SHARE_STALE_RETRY_S,
+                )
                 return
+        if size == 0 or (size > 0) != long:
+            self._drop_add(held, "no_position")
+            return
+        if self._shared and abs(size) < owed:
+            # 🔴 T320 — 거래소가 몫 합보다 적게 들었으면 어느 몫이 이미 나갔다(손절 발동 ·
+            #    못 본 청산). 누구 것인지 모르는 채 싣지 않는다 — 리스크 증가 행동이다(#8-1).
+            self._drop_add(held, "share_short", detail=f"거래소 {abs(size)} · 몫 합 {owed}")
+            return
         multiplier = Decimal(str(spec["quanto_multiplier"]))
         size_min = int(spec.get("order_size_min", 1))
         size_max = int(spec.get("order_size_max", 0)) or None
@@ -8559,7 +8597,9 @@ class LiveRunner:
             snapshot=snapshot,
         )
         if merged is None:
-            return  # 몫 계약 수를 모른다 — 다음 걸음에 다시 본다(늦으면 `stale` 로 버린다)
+            # 몫 계약 수를 모른다 — 되찾으면 싣게 감시 루프가 다시 본다(늦으면 `stale` 로 버린다).
+            self._defer_add(held, "몫 계약 수 모름")
+            return
         contracts, merged_detail = merged
         if contracts <= 0:
             self._drop_add(held, "merged_liq", detail=merged_detail)
@@ -8688,6 +8728,51 @@ class LiveRunner:
             },
         )
         await self._persist()
+
+    def _defer_add(
+        self, held: TradeRecord, why: str, *, after: float = EXIT_RETRY_BACKOFF_S
+    ) -> None:
+        """이번 불타기를 **버리지 않고 미룬다** — 감시 루프가 곧 다시 싣는다 (2026-11-17 점검).
+
+        Args:
+            held: 보유 기록.
+            why: 미루는 까닭(로그).
+            after: 다시 볼 때까지의 초. 늦은 조회는 짧게(`SHARE_STALE_RETRY_S`), 조회 실패 ·
+                계약 수 모름은 길게(기본 60 초 — 거래소를 자주 두드리지 않는다).
+
+        Note:
+            일시적 까닭(조회 실패 · 방금 든 몫이 조회에 아직 없음)으로 매매법이 정한 불타기를
+            잃지 않게 한다. 다음 걸음은 `ADD_STALE`(30 분)보다 늦을 수 있어(1H · 4H 판) 걸음을
+            기다리면 사실상 버리는 것과 같다. 끝없이 미루지 않는다 — 판정 뒤 `ADD_STALE` 이
+            지나면 `_apply_add_one` 이 `stale` 로 버린다.
+        """
+        self._add_retry_at = time.monotonic() + after
+        self._log.warning(
+            "live_add_deferred",
+            payload={
+                "trade_id": held.trade_id,
+                "why": why[:160],
+                "note": "불타기를 버리지 않았다 — 곧 다시 본다(늦으면 stale 로 버린다)",
+            },
+        )
+
+    async def _retry_deferred_adds(self) -> None:
+        """미룬 불타기를 **걸음을 기다리지 않고** 다시 싣는다 — 감시 루프가 부른다.
+
+        Note:
+            걸음 꼬리와 같은 순서로 돈다: 불타기 → 손절 크기 맞추기(`_guard_stop`) → 익절 지정가
+            맞추기 → 저장. 걸음이 도는 중이면 건너뛴다 — 다음 틱이 다시 본다. 이미 실었거나
+            버린 불타기는 `_apply_add_one` 이 건너뛴다.
+        """
+        at = cast("float | None", self.__dict__.get("_add_retry_at"))
+        if at is None or at > time.monotonic() or self._stepping.locked():
+            return
+        async with self._stepping:
+            self._add_retry_at = None
+            await self._apply_add()
+            await self._guard_stop()
+            await self._ensure_share_targets()
+            await self._persist()
 
     def _drop_add(self, held: TradeRecord, why: str, *, detail: str = "") -> None:
         """이번 불타기를 **버린다** — 사유를 남기고 노출을 0 으로 (원 포지션은 그대로 · T308 ⑤).

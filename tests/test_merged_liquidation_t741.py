@@ -612,6 +612,8 @@ class _Runner:
     _shared = LiveRunner._shared  # pyright: ignore[reportPrivateUsage]
     _record_add = LiveRunner._record_add  # pyright: ignore[reportPrivateUsage]
     _drop_add = LiveRunner._drop_add  # pyright: ignore[reportPrivateUsage]
+    _defer_add = LiveRunner._defer_add  # pyright: ignore[reportPrivateUsage]
+    _entry_fresh = LiveRunner._entry_fresh  # pyright: ignore[reportPrivateUsage]
     _share_contracts = staticmethod(LiveRunner._share_contracts)  # pyright: ignore[reportPrivateUsage]
     _merged_liq_legs = LiveRunner._merged_liq_legs  # pyright: ignore[reportPrivateUsage]
     _merged_liq_contracts = LiveRunner._merged_liq_contracts  # pyright: ignore[reportPrivateUsage]

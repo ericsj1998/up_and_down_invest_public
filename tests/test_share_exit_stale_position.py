@@ -25,8 +25,10 @@ import pytest
 from test_share_runner import (
     ShareExchange,
     _Runner,  # pyright: ignore[reportPrivateUsage]
+    adding,
     closed,
     key,
+    now_of,
     share,
     tp_fill,
     two_shares,
@@ -251,6 +253,71 @@ def test_panic_rereads_when_an_entry_was_just_sent() -> None:
     sent = asyncio.run(run._panic_close(a, "시험"))  # pyright: ignore[reportPrivateUsage]
     assert sent is True and exch.closes == [Decimal(5)] and exch.size == 3
     assert key(b) in exch.stops
+
+
+def adding_after_entry(on_exchange: int) -> tuple[_Runner, ShareExchange, TradeRecord, TradeRecord]:
+    """A(2) · B(3 · 불타기 판정됨) — 방금 진입 주문을 보냈고 거래소는 `on_exchange` 를 말한다."""
+    run, exch, a, b = adding()
+    exch.size = on_exchange
+    run._stepping = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
+    run._share_tp_placed = {}  # pyright: ignore[reportPrivateUsage]
+    run._mark_entry_sent()  # pyright: ignore[reportPrivateUsage]
+    return run, exch, a, b
+
+
+def test_an_add_is_not_dropped_when_a_just_sent_entry_is_not_visible_yet() -> None:
+    """예전엔 `share_short` 로 그 불타기를 영구히 버렸다 — 매매법이 정한 추가 매수가 사라졌다."""
+    run, exch, _a, b = adding_after_entry(on_exchange=3)
+    asyncio.run(run._apply_add())  # pyright: ignore[reportPrivateUsage]
+    assert exch.adds == [], "안 보이는 채로 싣지는 않는다(리스크를 늘리는 행동)"
+    assert now_of(run, b).add_held is None, "버리지 않았다"
+    assert run._add_retry_at is not None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_watch_loop_places_the_deferred_add_and_grows_the_stop() -> None:
+    run, exch, a, b = adding_after_entry(on_exchange=3)
+    asyncio.run(run._apply_add())  # pyright: ignore[reportPrivateUsage]
+    exch.size = 5  # 거래소가 따라왔다
+    run._add_retry_at = 0.0  # pyright: ignore[reportPrivateUsage] — 때가 됐다
+    asyncio.run(run._retry_deferred_adds())  # pyright: ignore[reportPrivateUsage]
+    assert exch.adds == [2] and now_of(run, b).add_contracts == 2
+    assert exch.stops[key(b)][1] == 5 and exch.stops[key(a)][1] == 2, "손절 크기도 따라간다"
+    assert run._add_retry_at is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_an_add_catches_up_during_rereads() -> None:
+    run, exch, _a, b = adding_after_entry(on_exchange=3)
+    reads = {"n": 0}
+
+    async def lagging(instrument: Instrument) -> dict[str, str]:
+        del instrument
+        reads["n"] += 1
+        if reads["n"] == 2:
+            exch.size = 5
+        return {"size": str(exch.size), "leverage": "6"}
+
+    exch.position_snapshot = lagging  # type: ignore[method-assign]
+    asyncio.run(run._apply_add())  # pyright: ignore[reportPrivateUsage]
+    assert exch.adds == [2] and now_of(run, b).add_contracts == 2
+
+
+def test_after_the_fresh_window_a_short_position_drops_the_add() -> None:
+    """방금이 지났는데도 모자라면 진짜로 어느 몫이 나간 것이다 — 예전처럼 버린다."""
+    run, exch, _a, b = adding_after_entry(on_exchange=3)
+    run._entry_sent_mono = time.monotonic() - 2 * live_runner.SHARE_FRESH_S  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(run._apply_add())  # pyright: ignore[reportPrivateUsage]
+    assert exch.adds == [] and now_of(run, b).add_held == "share_short"
+
+
+def test_an_unreadable_position_defers_the_add_instead_of_losing_it() -> None:
+    run, exch, _a, b = adding_after_entry(on_exchange=5)
+    exch.unreadable = True
+    asyncio.run(run._apply_add())  # pyright: ignore[reportPrivateUsage]
+    assert exch.adds == [] and now_of(run, b).add_held is None
+    exch.unreadable = False
+    run._add_retry_at = 0.0  # pyright: ignore[reportPrivateUsage]
+    asyncio.run(run._retry_deferred_adds())  # pyright: ignore[reportPrivateUsage]
+    assert exch.adds == [2]
 
 
 def test_panic_without_a_fresh_entry_still_trusts_an_empty_read() -> None:
