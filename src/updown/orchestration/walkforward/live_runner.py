@@ -1059,6 +1059,10 @@ SHARE_HELD_REREADS = 3
 """몫 청산 앞 — 같은 걸음에 다른 몫이 방금 들었을 때 포지션을 다시 읽는 횟수 (2026-11-17 SUI)."""
 SHARE_HELD_REREAD_S = 0.7
 """다시 읽기 사이 쉼(초) — 거래소 포지션 조회가 방금 체결을 반영할 틈."""
+STEP_REDO_TRIES = 5
+"""봉 판정이 겹쳐 건너뛰었거나 미뤄졌을 때 다시 걸어 보는 횟수 (T852 D7)."""
+STEP_REDO_WAIT = 2.0
+"""다시 걸기 사이 쉼(초) — 봉 사이 감시의 청산 · 불타기 왕복이 끝날 틈."""
 HTTP_CLIENT_ERROR = 400
 HTTP_SERVER_ERROR = 500
 """주문 예외의 `status_code` 가 이 사이(4xx)면 거래소가 **분명히 거절**한 것이다 — 주문은 안
@@ -4120,7 +4124,7 @@ class LiveRunner:
                     "note": "끊긴 사이 닫힌 봉을 판정한다",
                 },
             )
-            await self._one_step()
+            await self._step_this_bar()
 
     async def _keep_early_clock(self) -> None:
         """조기 진입 선언이 있는 판을 **정해진 분에 깨운다** (T814 · T345).
@@ -4160,12 +4164,25 @@ class LiveRunner:
                     continue
                 self._early_step = True
                 try:
-                    await self._one_step()
-                    self.early_steps += 1
-                    self._log.info(
-                        "live_early_step",
-                        payload={"n": self.early_steps, "at": datetime.now(UTC).isoformat()},
-                    )
+                    # T852 D7 — 겹쳐 건너뛰었으면 잠깐 뒤 다시 건다. 돈 것만 "돌았다" 로 센다
+                    # (예전엔 건너뛰어도 세고 기록해, 눈금이 거짓말했다).
+                    ran = False
+                    for attempt in range(STEP_REDO_TRIES + 1):
+                        ran = await self._one_step()
+                        if ran or attempt == STEP_REDO_TRIES:
+                            break
+                        await asyncio.sleep(STEP_REDO_WAIT)
+                    if ran:
+                        self.early_steps += 1
+                        self._log.info(
+                            "live_early_step",
+                            payload={"n": self.early_steps, "at": datetime.now(UTC).isoformat()},
+                        )
+                    else:
+                        self._log.error(
+                            "live_early_step_not_taken",
+                            payload={"note": "조기 판정을 못 했다 — 걸음이 겹친 채였다"},
+                        )
                 finally:
                     self._early_step = False
             except asyncio.CancelledError:
@@ -5090,13 +5107,13 @@ class LiveRunner:
             moved = self._feed.push(self.entry, item.candle, closed=item.closed)
             if not moved:
                 continue
-            if self._feed.gaps > 0:
-                await self._heal()
+            if self._feed.gaps > 0 and not await self._heal_before_step():
+                continue
             # ⛔ **한 걸음이 터져도 러너는 산다.** 판정 하나가 예외를 내면 예전에는
             #    루프가 통째로 끝났다 — 봉 하나 때문에 판 전체가 조용히 멈추는 것은
             #    가장 나쁜 실패다 (절대 규칙 #8).
             try:
-                await self._one_step()
+                await self._step_this_bar()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -5115,6 +5132,44 @@ class LiveRunner:
                 #    이미 재생성된 뒤였다(블루그린). 건너뛴 봉은 **진입이 사라지는 사건**이라
                 #    `event_logs`(append-only)에 남긴다 — `setting_cleared` 와 같은 이유다.
                 await self._note_skipped(exc)
+
+    async def _heal_before_step(self) -> bool:
+        """판정 전에 봉 구멍을 메운다 — 실패하면 잠깐 뒤 다시 해 보고, 끝내 안 되면 남긴다.
+
+        Returns:
+            구멍이 메워졌으면 참. 거짓이면 이 봉은 판정하지 않는다(빈 봉의 ATR · MA 는 조용히
+            틀린다).
+
+        Note:
+            🔴 T852 D7 — 예전에는 메우기(REST)가 한 번 실패하면 예외가 스트림 루프를 끊었고
+            ("스트림이 죽었다"), 다시 붙은 뒤의 따라잡기는 커서가 움직였을 때만 걸어서 **그 봉은
+            판정 없이 · 흔적 없이** 지나갔다. 이제 실패를 여기서 받고, 판정을 못 한 봉은 사건으로
+            남긴다.
+        """
+        fault: Exception | None = None
+        for attempt in range(STEP_REDO_TRIES + 1):
+            try:
+                await self._heal()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                fault = exc
+            if self._feed.gaps == 0:
+                return True
+            if attempt < STEP_REDO_TRIES:
+                await asyncio.sleep(STEP_REDO_WAIT)
+        self.failures += 1
+        self.last_error = f"봉 구멍을 못 메워 판정을 건너뛰었다: {fault}"[:200]
+        self._log.error(
+            "live_runner_heal_failed",
+            payload={
+                "error": str(fault)[:200],
+                "gaps": self._feed.gaps,
+                "note": "이 봉은 판정하지 않는다 — 빈 봉으로 지표를 내지 않는다",
+            },
+        )
+        await self._note_skipped(RuntimeError(self.last_error))
+        return False
 
     async def _note_skipped(self, exc: Exception) -> None:
         """건너뛴 봉을 `event_logs` 에 남긴다 — **사유가 바뀔 때만** (2026-09-21).
@@ -5330,8 +5385,12 @@ class LiveRunner:
                 },
             )
 
-    async def _one_step(self) -> None:
+    async def _one_step(self) -> bool:
         """봉 하나를 판정하고 주문까지 낸다 — **한 번에 하나만 돈다**.
+
+        Returns:
+            걸음이 **돌았으면** 참. 다른 걸음 · 감시가 자물쇠를 쥐고 있어 건너뛰었거나, 가격 축이
+            뒤처져 판정을 미뤘으면 거짓 — 부르는 쪽이 잠깐 뒤 다시 건다(`_step_this_bar`).
 
         Note:
             🔴 **겹쳐 들면 같은 사다리가 두 번 나간다** (사용자 신고 2026-08-21).
@@ -5364,15 +5423,48 @@ class LiveRunner:
         #    asyncio 에서 안전하다. 사이에 다른 코드를 넣으면 그 순간 다시 깨진다.
         if self._stepping.locked():
             self.overlaps += 1
-            return
+            return False
         async with self._stepping:
             before = _closed_count(self)
+            self._step_deferred = False
             try:
                 await self._walk_once()
             finally:
                 # 걸음이 뒤쪽(대조·감사·저장)에서 터져도 앞쪽에서 닫은 기록은 닫힌 것이다 —
                 # 훅은 finally 에서 본다 (배포 전 검토 2026-09-22).
                 _notice_closes(self, before)
+        return not self._step_deferred
+
+    async def _step_this_bar(self) -> None:
+        """이 봉을 판정한다 — 겹쳐 건너뛰었거나 미뤘으면 **잠깐 뒤 다시** (T852 D7).
+
+        Note:
+            🔴 `_one_step` 은 자물쇠가 잡혀 있으면 기다리지 않고 돌아간다("방아쇠는 1 초 뒤에 다시
+            온다"). 그런데 방아쇠 축이 없는 판(봉 마감 판정형)은 다시 부르는 사람이 없어, 그 순간
+            봉 사이 감시가 청산 · 불타기로 자물쇠를 쥐고 있었으면 **그 봉의 진입 · 청산 판정이
+            다음 봉까지 통째로 밀렸다**(1 ~ 4 시간 · 흔적은 `overlaps` 숫자뿐). 가격 축이 뒤처져
+            판정을 미룬 경우도 같다 — "축이 따라잡으면 다시 본다" 고 적혀 있었지만 부르는 사람이
+            없었다.
+
+            다시 걸어도 주문은 겹치지 않는다 — 세션이 그 봉을 이미 소비했으면 `shot is None` 으로
+            바로 돌아간다. 몇 번 해도 안 되면 그 사실을 남긴다(봉을 잃은 것은 사건이다).
+        """
+        for attempt in range(STEP_REDO_TRIES + 1):
+            if await self._one_step():
+                return
+            if attempt < STEP_REDO_TRIES:
+                await asyncio.sleep(STEP_REDO_WAIT)
+        self.failures += 1
+        self.last_error = "이 봉을 판정하지 못했다 — 걸음이 겹치거나 가격 축이 뒤처진 채였다"
+        self._log.error(
+            "live_step_not_taken",
+            payload={
+                "tries": STEP_REDO_TRIES + 1,
+                "overlaps": self.overlaps,
+                "note": "이 봉의 진입 · 청산 판정이 없다 — 다음 봉에서 계속한다",
+            },
+        )
+        await self._note_skipped(RuntimeError(self.last_error))
 
     async def _absorb_between_bars(self) -> None:
         """봉 사이에 **대기 지정가의 체결을 원장에 옮긴다** — 30초 점검에서 부른다.
@@ -5691,6 +5783,7 @@ class LiveRunner:
                     "note": "판정을 미뤘다 — 봉은 남아 있고 축이 따라잡으면 다시 본다",
                 },
             )
+            self._step_deferred = True  # T852 D7 — 부르는 쪽이 잠깐 뒤 다시 건다
             return
         # 🔴 **판정 전에 우편함을 채운다** (T19 ⑤). 세션은 동기라 네트워크를 못
         #    기다린다 — 여기서 거래소에 묻고 넣어 둬야 그 걸음이 채워진 것을 본다.

@@ -26,6 +26,7 @@ from test_share_runner import (
     share,
     two_shares,
 )
+from updown.orchestration.walkforward import live_runner
 from updown.orchestration.walkforward.ledger import Ledger
 
 TAIL = (
@@ -192,6 +193,66 @@ def test_one_share_blowing_up_does_not_leave_the_next_share_unguarded() -> None:
     asyncio.run(run._guard_stop())  # pyright: ignore[reportPrivateUsage]
     assert key(b) in exch.stops, "뒤 몫은 지킨다"
     assert run._session.guarded is False, "못 지킨 몫이 있다 — 새 진입은 막는다"  # pyright: ignore[reportPrivateUsage]
+
+
+def stepper(answers: list[bool]) -> tuple[_Runner, list[int]]:
+    """`_one_step` 이 `answers` 순서로 "돌았다 · 건너뛰었다" 를 답하는 러너."""
+    run, _exch, _a, _b = two_shares()
+    run.overlaps = 0
+    calls: list[int] = []
+
+    async def one_step() -> bool:
+        calls.append(len(calls))
+        return answers[len(calls) - 1] if len(calls) <= len(answers) else False
+
+    run._one_step = one_step  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
+    return run, calls
+
+
+def test_a_bar_skipped_by_an_overlap_is_judged_a_moment_later(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """예전엔 봉 사이 감시가 자물쇠를 쥔 순간 봉이 닫히면 그 봉 판정이 다음 봉까지 밀렸다."""
+    monkeypatch.setattr(live_runner, "STEP_REDO_WAIT", 0)
+    run, calls = stepper([False, False, True])
+    asyncio.run(run._step_this_bar())  # pyright: ignore[reportPrivateUsage]
+    assert len(calls) == 3 and run.failures == 0
+
+
+def test_a_bar_that_never_gets_judged_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(live_runner, "STEP_REDO_WAIT", 0)
+    run, calls = stepper([])
+    asyncio.run(run._step_this_bar())  # pyright: ignore[reportPrivateUsage]
+    assert len(calls) == live_runner.STEP_REDO_TRIES + 1
+    assert run.failures == 1 and "판정하지 못했다" in run.last_error
+
+
+def test_one_step_says_whether_it_ran() -> None:
+    run, _calls = walker()
+
+    async def go() -> tuple[bool, bool]:
+        run._stepping = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
+        ran = await run._one_step()  # pyright: ignore[reportPrivateUsage]
+        async with run._stepping:  # pyright: ignore[reportPrivateUsage]
+            skipped = await run._one_step()  # pyright: ignore[reportPrivateUsage]
+        return ran, skipped
+
+    run.overlaps = 0
+    ran, skipped = asyncio.run(go())
+    assert ran is True and skipped is False and run.overlaps == 1
+
+
+def test_a_deferred_judgement_counts_as_not_run() -> None:
+    """가격 축이 뒤처져 판정을 미뤘다 — "돌았다" 가 아니다(부르는 쪽이 다시 건다)."""
+    run, calls = walker()
+    run.price_drift = lambda: "가격 축이 5 분 뒤처졌다"  # type: ignore[method-assign]
+
+    async def go() -> bool:
+        run._stepping = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
+        return await run._one_step()  # pyright: ignore[reportPrivateUsage]
+
+    assert asyncio.run(go()) is False
+    assert "_place" not in calls
 
 
 def flat(on_exchange: int) -> tuple[_Runner, ShareExchange]:
