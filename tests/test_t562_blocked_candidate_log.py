@@ -91,6 +91,42 @@ class TestTheSessionRecords:
         assert session.blocked_seq == expected
         assert session.funnel.get("blocked:awaiting_fund", 0) > 0, "깔때기는 예전 그대로 센다"
 
+    def test_every_entry_switch_that_is_off_leaves_a_record(self) -> None:
+        """T852 F6 — 스위치 절반만 남기던 것을 전부로. 진입 여부는 그대로(안 산다)."""
+        for name, code in (
+            ("auto", "halted"),
+            ("guarded", "unguarded"),
+            ("liquid", "book_dry"),
+            ("funded", "unfunded"),
+        ):
+            session = _session()
+            setattr(session, name, False)
+            proposals = _walk_until_blocked(session)
+            eligible = _eligible(proposals)
+            assert not session.ledger.records, f"{name} 가 꺼져 있으면 안 산다"
+            assert session.blocked_seq == len(eligible) >= 1
+            rec = session.blocked_recent[-1]
+            assert rec.code == code and rec.leg == eligible[-1].playbook.attribution
+            assert session.funnel[f"blocked:{code}"] == len(eligible)
+
+    def test_a_tripped_breaker_leaves_a_record(self) -> None:
+        session = _session()
+        session.breaker_tripped_at = START
+        _walk_until_blocked(session)
+        assert not session.ledger.records
+        assert session.blocked_recent[-1].code == "breaker"
+
+    def test_switches_that_are_on_leave_nothing_and_change_nothing(self) -> None:
+        """평소(스위치 전부 켜짐)에는 깔때기에 새 칸이 안 생긴다 — 재현 결과가 그대로다."""
+        session = _session()
+        for _ in range(20_000):
+            if session.finished:
+                break
+            session.step()
+        assert session.ledger.records, "전제: 예시 매매법이 한 번은 산다"
+        new = {"halted", "unguarded", "book_dry", "unfunded", "breaker"}
+        assert not {key for key in session.funnel if key.removeprefix("blocked:") in new}
+
     def test_the_same_bar_is_not_recorded_twice(self) -> None:
         """② 같은 봉 재호출(마감 진입 뒤 조기 진입이 같은 후보로 또 묻는 경우 등)은 한 건."""
         session = _session()

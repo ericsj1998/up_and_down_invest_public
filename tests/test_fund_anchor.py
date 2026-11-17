@@ -23,8 +23,10 @@ from updown.orchestration.rebalancer.anchor import (
     dnw_since,
     initial_state,
     manual_flow,
+    names_needed,
     outside_since,
     row_time,
+    rows_reach,
 )
 from updown.portfolio.performance import CashFlow, TwrLedger
 
@@ -183,6 +185,76 @@ class TestOutsideOrdersAreFlows:
     def test_first_anchor_counts_nothing(self) -> None:
         rows = [self.row("pnl", "-9", T0, "IREN_USDT", "1")]
         assert outside_since(rows, None, self.MEMBERS, {}, {}) == 0
+
+    def test_names_are_asked_for_only_when_a_member_fill_must_be_told_apart(self) -> None:
+        """T852 F4 — 이름표가 답을 못 바꾸는 틱에는 거래소에 안 묻는다(값은 같아야 한다)."""
+        r = self.row
+        later = T0 + timedelta(minutes=1)
+        quiet = [
+            r("pnl", "-9", later, "IREN_USDT", "77"),  # 펀드 밖 계약 — 이름표 없이도 사람 몫
+            r("fund", "-0.2", later, "BTC_USDT", "0"),  # 펀딩 — 이름표를 안 본다
+            r("pnl", "-8", T0 - timedelta(minutes=1), "ETH_USDT", "2"),  # 지난 앵커 앞
+            gate_row("dnw", "50", later),
+        ]
+        assert names_needed(quiet, T0, self.MEMBERS) is False
+        assert outside_since(quiet, T0, self.MEMBERS, {}, {}) == outside_since(
+            quiet, T0, self.MEMBERS, ORDERS, STOPS
+        )
+        busy = [*quiet, r("fee", "-1", later, "ETH_USDT", "2")]
+        assert names_needed(busy, T0, self.MEMBERS) is True
+        assert outside_since(busy, T0, self.MEMBERS, {}, {}) != outside_since(
+            busy, T0, self.MEMBERS, ORDERS, STOPS
+        ), "이 줄은 이름표가 있어야 사람 몫으로 갈린다"
+
+    def test_skipping_the_names_never_changes_the_sum(self) -> None:
+        """무작위 줄 묶음 — `names_needed` 가 거짓이면 이름표가 있든 없든 합이 같다."""
+        import random
+
+        rng = random.Random(11)
+        kinds = ["pnl", "fee", "fund", "dnw", "refr"]
+        contracts = ["BTC_USDT", "ETH_USDT", "IREN_USDT", ""]
+        skipped = 0
+        for _ in range(400):
+            rows: list[dict[str, object]] = []
+            for _ in range(rng.randrange(0, 6)):
+                at = T0 + timedelta(minutes=rng.randrange(-5, 6))
+                contract = rng.choice(contracts)
+                text = rng.choice([f"{contract}:{rng.choice(list(ORDERS))}", contract, ""])
+                rows.append(
+                    {
+                        "type": rng.choice(kinds),
+                        "change": str(rng.randrange(-9, 10)),
+                        "time": str(at.timestamp()),
+                        "contract": contract,
+                        "text": text,
+                    }
+                )
+            if names_needed(rows, T0, self.MEMBERS):
+                continue
+            skipped += 1
+            assert outside_since(rows, T0, self.MEMBERS, {}, {}) == outside_since(
+                rows, T0, self.MEMBERS, ORDERS, STOPS
+            )
+        assert skipped > 50, "건너뛰는 꼴이 충분히 나와야 시험이다"
+
+
+class TestRowsReach:
+    """T852 F4 — 경보는 받은 줄이 마지막 앵커까지 못 닿았을 때만."""
+
+    def test_rows_that_go_back_past_the_anchor_cover_it(self) -> None:
+        rows = [
+            gate_row("pnl", "1", T0 + timedelta(minutes=5)),
+            gate_row("pnl", "1", T0 - timedelta(minutes=5)),
+        ]
+        assert rows_reach(rows, T0) is True
+
+    def test_rows_that_all_come_after_the_anchor_do_not(self) -> None:
+        rows = [gate_row("pnl", "1", T0 + timedelta(minutes=m)) for m in (1, 2, 3)]
+        assert rows_reach(rows, T0) is False
+
+    def test_nothing_dated_is_nothing_missed(self) -> None:
+        assert rows_reach([], T0) is True
+        assert rows_reach([{"type": "pnl", "change": "1", "time": ""}], T0) is True
 
     def test_manual_loss_does_not_move_twr(self) -> None:
         state = AnchorState(mode=MODE_ACCOUNT, idle=Decimal(0), at=T0, seen=())

@@ -200,6 +200,57 @@ def dnw_since(
     return total, tuple(keys[-200:])
 
 
+def rows_reach(rows: list[dict[str, Any]], after: datetime) -> bool:
+    """받은 자금 원장이 `after` 까지 **거슬러 닿는가** (T852 F4).
+
+    Args:
+        rows: `account_book` 행들.
+        after: 마지막 앵커 시각.
+
+    Returns:
+        가장 오래된 줄이 `after` 이전이면 참 — 그 뒤 줄은 빠짐없이 받았다. 시각 있는 줄이 없어도 참
+        (볼 것이 없다).
+
+    Note:
+        🔴 예전 경보는 "받은 줄 수가 상한에 찼나" 를 봤다. 원장이 상한보다 길기만 하면 늘 참이라
+        틱마다 떴고(실측 2026-11-15 ~ 17 · 57 틱 중 57), 정작 **앞을 못 본 때**와 구별이 안 됐다.
+        물어야 할 것은 개수가 아니라 "마지막 앵커까지 덮었나" 다.
+    """
+    times = [at for row in rows if (at := row_time(row.get("time"))) is not None]
+    return not times or min(times) <= after
+
+
+def names_needed(rows: list[dict[str, Any]], after: datetime, members: frozenset[str]) -> bool:
+    """`outside_since` 가 **주문 이름표를 실제로 볼 줄**이 있는가 (T852 F4).
+
+    Args:
+        rows: `account_book` 행들.
+        after: 마지막 앵커 시각.
+        members: 펀드 종목.
+
+    Returns:
+        `after` 뒤에 펀드 종목의 손익 · 수수료 줄(주문 번호가 붙은 것)이 하나라도 있으면 참.
+
+    Note:
+        이름표(끝난 주문 1,000 줄 · 끝난 조건부 300 줄)는 그런 줄을 가를 때만 쓰인다. 체결이
+        없던 틱에서는 받아도 0 을 계산할 뿐이라 안 받는다 — 조건은 `outside_since` 와 같은 순서로
+        본다(둘이 갈리면 사람 매매가 성과에 섞인다 · 시험이 둘을 맞댄다).
+    """
+    for row in rows:
+        if str(row.get("type", "")) not in ("pnl", "fee"):
+            continue
+        at = row_time(row.get("time"))
+        if at is None or at <= after:
+            continue
+        text = str(row.get("text") or "")
+        contract = str(row.get("contract") or text.split(":")[0])
+        if contract and contract not in members:
+            continue
+        if ":" in text:
+            return True
+    return False
+
+
 def outside_since(
     rows: list[dict[str, Any]],
     after: datetime | None,

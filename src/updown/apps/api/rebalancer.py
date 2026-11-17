@@ -88,7 +88,9 @@ from updown.orchestration.rebalancer.anchor import (
     dnw_since,
     initial_state,
     manual_flow,
+    names_needed,
     outside_since,
+    rows_reach,
 )
 from updown.orchestration.rebalancer.coordinator import (
     TickReport,
@@ -4966,6 +4968,19 @@ async def _outside_pnl(
     read_stops = getattr(orders, "finished_stops", None)
     if read_orders is None or read_stops is None:
         return Decimal(0)
+    members = frozenset(fund.coordinator.engine.basket.symbols)
+    # T852 F4 — 경보는 **정말 앞을 못 봤을 때만**(가장 오래된 줄도 마지막 앵커보다 새것). 예전에는
+    # 받은 줄 수가 상한에 찼는지만 봐서 틱마다 떴다(57 / 57) — 늘 뜨는 경보는 경보가 아니다.
+    if len(rows) >= ANCHOR_BOOK_ROWS and not rows_reach(rows, after):
+        _logger.warning(
+            "fund_outside_rows_capped: %s — 자금 원장 %d줄이 마지막 앵커(%s)까지 못 닿았다",
+            fund.fund_id,
+            len(rows),
+            after.isoformat(),
+        )
+    # 이름표는 펀드 종목의 손익 · 수수료 줄을 가를 때만 쓴다 — 그런 줄이 없으면 안 받는다.
+    if not names_needed(rows, after, members):
+        return outside_since(rows, after, members, {}, {})
     try:
         found = cast("list[dict[str, str]]", await read_orders(limit=1000))
         stop_texts = cast("dict[str, str]", await read_stops(limit=ANCHOR_BOOK_ROWS))
@@ -4973,13 +4988,6 @@ async def _outside_pnl(
         _logger.warning("fund_outside_unreadable: %s %s", fund.fund_id, str(exc)[:120])
         return Decimal(0)
     texts = {str(o.get("id", "")): str(o.get("text", "")) for o in found if o.get("id")}
-    if len(rows) >= ANCHOR_BOOK_ROWS:
-        _logger.warning(
-            "fund_outside_rows_capped: %s — 자금 원장 %d줄을 다 읽었다(앞은 못 봤다)",
-            fund.fund_id,
-            len(rows),
-        )
-    members = frozenset(fund.coordinator.engine.basket.symbols)
     return outside_since(rows, after, members, texts, stop_texts)
 
 

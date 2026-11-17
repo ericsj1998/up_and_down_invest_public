@@ -387,7 +387,9 @@ class BlockedCandidate:
         symbol: 종목.
         leg: 후보를 낸 매매법의 귀속 키(`id@version`).
         direction: 계획 기하가 말한 방향. 모르면 None.
-        code: 막힌 코드 — `awaiting_fund` · `unreconciled` · `share_opposite` · `marubozu` ·
+        code: 막힌 코드 — `awaiting_fund` · `unreconciled` · 꺼진 진입 스위치(`halted` 사람이 멈춤 ·
+            `unguarded` 손절을 못 검 · `book_dry` 호가 마름 · `unfunded` 예산 초과 · `breaker` 낙폭
+            정지 · T852 F6) · `share_opposite` · `marubozu` ·
             `spinning` · `short_blocked` · `gate:<사유>`(펀드 문) · `hold:<사유>`(진입 보류 —
             `entry_hold`) · 규칙 문은 깔때기 칸 이름 그대로(`gate:bar_tilt` · `gate:sma_tilt` ·
             `gate:ref_regime_tilt` · `gate:ref_dist_tilt` · `gate:ref_vol_off` ·
@@ -2540,6 +2542,26 @@ class Session:
             for item in shot.proposals:
                 if not item.blocked:
                     self._note_proposal_blocked("awaiting_fund", item)
+        # ⭐ T852 F6 — 나머지 스위치도 **후보가 실제로 막혔을 때** 남긴다. 예전에는 위 둘만
+        #    남겨서, 호가가 말랐거나(`liquid`) 손절을 못 걸었거나(`guarded`) 사람이 멈췄거나
+        #    (`auto`) 예산이 넘쳤거나(`funded`) 낙폭 정지(`tripped`)로 못 든 후보는 흔적이 없었다
+        #    — "왜 안 들어갔나" 에 답할 수 없었다(관측 규약이 스위치 절반에만 있었다). 자리가
+        #    없어(`idle` 거짓) 어차피 못 들 후보는 안 남긴다. 읽기만 한다 — 진입 여부는 아래
+        #    `_may_enter` 가 그대로 정한다.
+        if idle:
+            for code, shut in (
+                ("halted", not self.auto),
+                ("unguarded", not self.guarded),
+                ("book_dry", not self.liquid),
+                ("unfunded", not self.funded),
+                ("breaker", tripped),
+            ):
+                if not shut:
+                    continue
+                for item in shot.proposals:
+                    if not item.blocked:
+                        self._count(f"blocked:{code}")
+                        self._note_proposal_blocked(code, item)
         opened = self._enter(shot) if self._may_enter(idle=idle, tripped=tripped) else None
         # ⭐ T345 조기 진입 — 마감 판정에서 못 샀고(보통 봉이 안 닫혔다) 지금이 선언한 분이면
         #    부분 봉으로 본다.

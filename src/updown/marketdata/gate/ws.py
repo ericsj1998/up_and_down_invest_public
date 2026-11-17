@@ -118,7 +118,31 @@ IDLE_TIMEOUT_S: Final = 900.0
 15분 무소식이면 한산함이 아니라 끊김으로 본다. 잘못 다시 붙어도 비용은 재연결 한 번이다.
 """
 
+RELINK_PAUSE_S: Final = 1.0
+RELINK_PAUSE_MAX_S: Final = 30.0
+"""한 번도 못 받고 이어서 끊길 때 다시 붙기 전 쉬는 시간의 시작값 · 상한(초) (T852 E4).
+
+값의 근거는 **추론**이다(실측 아님 — 이어서 못 붙은 기록이 아직 없다): 1 초에서 두 배씩 늘려
+30 초에서 멈춘다. 상한 30 초는 진입축(1H · 4H)에 견줘 짧고, 끊긴 사이 닫힌 봉은 소비처가 받아서
+판정한다.
+"""
+
 _logger = get_logger("marketdata.gate.ws")
+
+
+def relink_pause_s(quiet: int) -> float:
+    """다시 붙기 전에 쉴 시간(초).
+
+    Args:
+        quiet: 프레임을 하나도 못 받은 채 이어서 끊긴 횟수(받다가 끊긴 첫 번째가 1).
+
+    Returns:
+        첫 번째는 0(바로 다시 붙는다 — 예전과 같다). 두 번째부터 1 · 2 · 4 … 초, 상한
+        `RELINK_PAUSE_MAX_S`.
+    """
+    if quiet <= 1:
+        return 0.0
+    return min(RELINK_PAUSE_MAX_S, RELINK_PAUSE_S * 2.0 ** min(quiet - 2, 16))
 
 
 class GateWebSocketError(RuntimeError):
@@ -591,6 +615,7 @@ class GateCandleStream:
             정상 종료(서버가 닫음)도 이제 `gate_ws_reconnect` 로 남는다 — 예전엔 조용히 다시 붙었다.
         """
         subscribed_at = last_recv = time.monotonic()
+        quiet = 0  # 프레임을 하나도 못 받은 채 이어서 끊긴 횟수 (T852 E4)
         while True:
             try:
                 async with websockets.connect(
@@ -613,6 +638,7 @@ class GateCandleStream:
                         try:
                             raw = await asyncio.wait_for(socket.recv(), timeout=self._idle_timeout)
                             last_recv = time.monotonic()
+                            quiet = 0
                         except TimeoutError as exc:
                             raise GateStreamIdleError(
                                 f"{int(self._idle_timeout or 0)}초 동안 갱신 없음 — 구독이 끊겼다"
@@ -626,6 +652,8 @@ class GateCandleStream:
                             yield item
             except (OSError, websockets.WebSocketException, GateStreamIdleError) as exc:
                 self.reconnects += 1
+                quiet += 1
+                pause = relink_pause_s(quiet)
                 now = time.monotonic()
                 _logger.warning(
                     "gate_ws_reconnect",
@@ -639,6 +667,13 @@ class GateCandleStream:
                         "since_subscribed_s": round(now - subscribed_at, 1),
                         "idle_s": round(now - last_recv, 1),
                         "ping_timeout_s": self._ping_timeout,
+                        "pause_s": pause,
                         "note": "이 사이 봉에 구멍이 있을 수 있다 — REST 로 메워야 한다",
                     },
                 )
+                # 🔴 T852 E4 — **한 번도 못 받고 또 끊겼으면 쉬고 다시 붙는다.** 예전에는 쉼이
+                #    없어서, 거래소 · 네트워크가 막힌 동안 판마다 이 루프가 쉬지 않고 돌았다
+                #    (판 58 개가 이벤트 루프 하나를 나눠 쓴다 — 걸음 · 손절 감시가 같이 굶는다).
+                #    받다가 끊긴 첫 번째는 예전처럼 바로 붙는다.
+                if pause > 0:
+                    await asyncio.sleep(pause)

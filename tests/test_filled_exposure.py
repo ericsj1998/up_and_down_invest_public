@@ -81,6 +81,9 @@ class _RunnerStub:
         self._session = _Session(records, sizing_base)
         self._log = _Log()
 
+    # 크기 기준을 읽는 실제 메서드를 그대로 빌린다 (T852 F5 — 판정 때 찍힌 예산이 먼저).
+    _budget_of = LiveRunner._budget_of  # pyright: ignore[reportPrivateUsage]
+
     async def _persist(self) -> None: ...
 
     @property

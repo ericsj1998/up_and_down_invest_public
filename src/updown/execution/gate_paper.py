@@ -1011,7 +1011,11 @@ class GatePaperAdapter:
         """
         if price is None:
             return None
-        spec = await self._quotes.contract_spec(instrument)
+        # T852 E8 — **주문 쪽 명세**를 쓴다(`contract_spec` · 1 시간 기억). 예전에는 여기만 조회
+        # 어댑터의 명세를 지정가마다 새로 받았다 — 호출이 하나 더 나가고, 그 조회가 실패하면
+        # 주문은 안 나갔는데 "보냈는지 모름" 으로 보이고, 테스트넷에서는 라이브 눈금으로
+        # 내렸다(2026-08-19 사고의 남은 절반 — 같은 값을 두 길로 읽으면 한쪽만 고쳐진다).
+        spec = await self.contract_spec(instrument)
         step = Decimal(str(spec.get("order_price_round", "0.1")))
         if step <= 0:
             return price

@@ -845,6 +845,58 @@ def names_exit_of(text: str, trade_id: str) -> bool:
     return kind is not None and kind in EXIT_KINDS
 
 
+REF_SPAN = timedelta(hours=4)
+"""기준(BTC) 봉의 간격 — 국면값은 4H 마감 봉으로 낸다."""
+
+_REF_ROWS: dict[str, tuple[datetime, int, list[Candle]]] = {}
+"""출처 · 종목 → (지금 4H 봉의 시작 · 받은 봉 수 · 봉 목록) — **마지막 한 벌만** 든다 (T852 E1)."""
+_REF_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+async def ref_rows(quotes: Any, ref: Instrument, bars: int, end: datetime) -> Sequence[Candle]:
+    """기준 종목의 4H 봉 — **같은 프로세스의 판들이 한 번만 받는다** (T852 E1).
+
+    Args:
+        quotes: 조회 어댑터.
+        ref: 기준 종목(BTC 무기한).
+        bars: 필요한 봉 수(끝에서부터).
+        end: 지금 시각(UTC).
+
+    Returns:
+        `end - bars x 4h` 이후의 봉들(진행 중 봉 포함 — 부르는 쪽이 마감 봉만 고른다).
+
+    Note:
+        🔴 판 58 개가 4H 마감마다 **같은 요청**을 따로 보냈다. 공개 조회는 프로세스에 클라이언트
+        하나라 그 요청들이 봉 조회 줄에 한 줄로 섰고, 그 뒤에 선 판일수록 판정 · 주문이 늦게
+        나갔다(실측: 4H 마감 뒤 주문이 13 ~ 21 초에 나감 · 그 분의 봉 조회 233 ~ 276 번).
+        닫힌 봉은 바뀌지 않으니 한 번 받은 것을 같은 4H 봉 동안 나눠 쓴다.
+
+        🔴 **방금 닫힌 봉까지 들어 있을 때만** 기억한다. 4H 경계 직후 거래소가 그 봉을 아직 안
+        냈으면 기억하지 않는다 — 기억하면 다음 경계까지 모든 판이 한 봉 낡은 값을 받는다.
+
+        나눠 써도 된다고 밝힌 조회 어댑터(`quote_share_key`)만 나눠 쓴다. 그 이름이 없으면
+        (재현의 가짜 조회 · 시험 대역) 예전처럼 판마다 받는다. 돌려주는 목록은 부른 쪽이 요청한
+        창으로 자른다 — 더 긴 창을 받아 둔 판이 있어도 값이 달라지지 않게.
+    """
+    start = end - REF_SPAN * bars
+    key = getattr(quotes, "quote_share_key", None)
+    if not isinstance(key, str) or not key:
+        return cast("Sequence[Candle]", await quotes.get_candles(ref, Timeframe.H4, start, end))
+    seconds = int(REF_SPAN.total_seconds())
+    edge = datetime.fromtimestamp(int(end.timestamp()) // seconds * seconds, tz=UTC)
+    name = f"{key}:{ref.symbol}"
+    lock = _REF_LOCKS.setdefault(name, asyncio.Lock())
+    async with lock:
+        held = _REF_ROWS.get(name)
+        if held is not None and held[0] == edge and held[1] >= bars:
+            return [item for item in held[2] if item.ts >= start]
+        rows = cast("Sequence[Candle]", await quotes.get_candles(ref, Timeframe.H4, start, end))
+        newest = max((item.ts for item in rows if item.ts + REF_SPAN <= end), default=None)
+        if newest == edge - REF_SPAN:
+            _REF_ROWS[name] = (edge, bars, list(rows))
+        return rows
+
+
 def exchange_outcome(
     held: TradeRecord, fill: Decimal, cause: str, *, liquidated: bool = False
 ) -> Outcome:
@@ -5289,7 +5341,22 @@ class LiveRunner:
 
     async def _consume(self) -> None:
         """스트림 한 번 — 끊기면 반환한다 (`run` 이 다시 부른다)."""
+        linked = getattr(self._stream, "reconnects", 0)
         async for item in self._stream.stream():
+            # 🔴 T852 E4 — 스트림이 **안에서 스스로 다시 붙었으면** 그 사이 닫힌 봉을 메우고
+            #    판정한다. 재연결은 스트림 안에 숨어 있어 이 함수가 끝나지 않는다 — 그래서 끊긴
+            #    뒤의 메우기 · 따라잡기(`_loop` · T815 N1)가 소켓 끊김에는 한 번도 안 닿았고,
+            #    봉 마감을 낀 채 끊겼다 붙으면 그 봉의 판정이 빠졌다. 두 층이 저마다 재연결을
+            #    맡으면서 안쪽이 바깥에 필요한 신호를 삼킨 것이다.
+            now_linked = getattr(self._stream, "reconnects", 0)
+            if now_linked != linked:
+                linked = now_linked
+                try:
+                    await self._after_relink()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._log.error("live_runner_heal_failed", payload={"error": str(exc)[:200]})
             moved = self._feed.push(self.entry, item.candle, closed=item.closed)
             if not moved:
                 continue
@@ -5318,6 +5385,40 @@ class LiveRunner:
                 #    이미 재생성된 뒤였다(블루그린). 건너뛴 봉은 **진입이 사라지는 사건**이라
                 #    `event_logs`(append-only)에 남긴다 — `setting_cleared` 와 같은 이유다.
                 await self._note_skipped(exc)
+
+    async def _after_relink(self) -> None:
+        """소켓이 다시 붙은 뒤 — 끊긴 사이 닫힌 진입축 봉이 있으면 받아서 판정한다 (T852 E4).
+
+        Note:
+            🔴 **끊긴 사이 닫힌 봉이 없으면 거래소에 묻지 않는다.** 재연결의 대부분은 봉 중간이고
+            그때는 놓친 것이 없다 — 판 58 개가 재연결마다 봉을 다시 받으면 그것이 새 부하다.
+            봉 경계를 넘겼을 때만 한 번 받는다(`_catch_up_entry` · 닫힌 봉을 차례로 넣으므로
+            구멍이 안 생긴다). **방금 닫힌 봉**을 거래소가 아직 안 냈을 때만 잠깐 뒤 다시 묻고,
+            끝내 안 오면 남긴다 — 다음 마감 봉이 올 때 구멍 메우기(`_heal_before_step`)가 그
+            봉을 채운다. 닫힌 지 오래인데 봉이 없으면(장이 닫힌 시장) 한 번 묻고 끝낸다.
+        """
+        span = timedelta(seconds=interval_seconds(self.entry))
+        if datetime.now(UTC) < self._feed.cursor + span:
+            return
+        if self._feed.gaps > 0:
+            await self._heal()
+        await self._catch_up_entry()
+        just = STEP_REDO_TRIES * STEP_REDO_WAIT
+        for _ in range(STEP_REDO_TRIES):
+            late = (datetime.now(UTC) - (self._feed.cursor + span)).total_seconds()
+            if late < 0 or late > just:
+                return
+            await asyncio.sleep(STEP_REDO_WAIT)
+            await self._catch_up_entry()
+        if datetime.now(UTC) < self._feed.cursor + span:
+            return
+        self._log.warning(
+            "live_relink_bar_missing",
+            payload={
+                "cursor": self._feed.cursor.isoformat(),
+                "note": "다시 붙은 뒤에도 닫힌 봉을 못 받았다 — 다음 마감 봉에서 메운다",
+            },
+        )
 
     async def _heal_before_step(self) -> bool:
         """판정 전에 봉 구멍을 메운다 — 실패하면 잠깐 뒤 다시 해 보고, 끝내 안 되면 남긴다.
@@ -8305,9 +8406,8 @@ class LiveRunner:
             return
         try:
             end = datetime.now(UTC)
-            rows = await self._quotes.get_candles(
-                ref, Timeframe.H4, end - timedelta(hours=4 * (need + 20 + warm_extra)), end
-            )
+            # T852 E1 — 판들이 같은 기준 봉을 한 번만 받는다(`ref_rows`).
+            rows = await ref_rows(self._quotes, ref, need + 20 + warm_extra, end)
             # 마감봉만 (마지막 봉이 진행 중이면 제외 — 판정은 닫힌 봉으로)
             closed = [c for c in rows if c.ts + timedelta(hours=4) <= end]
             if len(closed) <= need:
@@ -11752,6 +11852,30 @@ class LiveRunner:
         )
         return await self._spare_margin()
 
+    def _budget_of(self, trade_id: str) -> Decimal:
+        """이 진입의 **크기 기준(예산)** — 판정 순간 원장에 찍힌 값 (T852 F5).
+
+        Args:
+            trade_id: 매매 id.
+
+        Returns:
+            그 기록의 `margin_used`(판정 때의 예산). 없으면(단독 판 · 옛 기록) 지금 `sizing_base`.
+
+        Note:
+            🔴 예전에는 진입 한 건 안에서 예산을 **세 번 따로** 읽었다 — 판정 때(원장
+            `margin_used`) · 계약 수를 정할 때 · 체결 뒤 실제 노출을 잴 때. 그 사이 주문을
+            기다리는 동안 다른 종목의 청산이 펀드 예산을 바꾸면 계약 수와 노출 분모가 서로 다른
+            예산에서 나왔다(실측 2026-11-17 00:00 — 진입 4 건 중 2 건 · 0.55%). 판정 때 찍은 값
+            하나를 끝까지 들고 간다 — 원장 손익(`margin_used x …`)과도 같은 자다.
+        """
+        record = next(
+            (item for item in self._session.ledger.records if item.trade_id == trade_id), None
+        )
+        stamped = None if record is None else record.margin_used
+        if stamped is not None and stamped > 0:
+            return stamped
+        return self._session.ledger.sizing_base
+
     async def _usable_equity(self, trade_id: str, exposure: Decimal | None = None) -> Decimal:
         """이 주문에 **실제로 쓸 수 있는 돈** — 예산과 계좌 가용의 작은 쪽.
 
@@ -11771,7 +11895,7 @@ class LiveRunner:
             ⇒ 두 경로가 **같은 계산**을 쓰게 뽑아냈다. 한쪽에만 있는 안전장치는
               언젠가 다른 쪽에서 사고가 난다.
         """
-        budget = self._session.ledger.sizing_base
+        budget = self._budget_of(trade_id)
         if exposure is not None:
             await self._ask_yield(budget, exposure, trade_id)
         spare = await self._spare_margin()
@@ -11822,7 +11946,7 @@ class LiveRunner:
             ⚠️ 분모는 `sizing_base`(자리 예산)다. 상한이 `cap x 자리 수` 로 비교되므로
             같은 자를 써야 한다 — 쥐어짜인 `equity` 를 쓰면 작게 산 것이 크게 잡힌다.
         """
-        base = self._session.ledger.sizing_base
+        base = self._budget_of(record.trade_id)
         price = entry.average_price if entry.average_price else record.entry
         qty = entry.filled_quantity
         live = next(
