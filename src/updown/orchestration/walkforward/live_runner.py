@@ -850,7 +850,8 @@ REF_SPAN = timedelta(hours=4)
 
 _REF_ROWS: dict[str, tuple[datetime, int, list[Candle]]] = {}
 """출처 · 종목 → (지금 4H 봉의 시작 · 받은 봉 수 · 봉 목록) — **마지막 한 벌만** 든다 (T852 E1)."""
-_REF_LOCKS: dict[str, asyncio.Lock] = {}
+_REF_FLIGHTS: dict[str, tuple[datetime, int, asyncio.Future[list[Candle]]]] = {}
+"""출처 · 종목 → (4H 봉의 시작 · 요청한 봉 수 · **지금 날아가는 조회**) — 같이 기다릴 한 건."""
 
 
 EARLY_META_KEY = "early_ids"
@@ -927,6 +928,13 @@ async def ref_rows(quotes: Any, ref: Instrument, bars: int, end: datetime) -> Se
         나눠 써도 된다고 밝힌 조회 어댑터(`quote_share_key`)만 나눠 쓴다. 그 이름이 없으면
         (재현의 가짜 조회 · 시험 대역) 예전처럼 판마다 받는다. 돌려주는 목록은 부른 쪽이 요청한
         창으로 자른다 — 더 긴 창을 받아 둔 판이 있어도 값이 달라지지 않게.
+
+        🔴 **날아가는 조회 하나를 같이 기다린다 — 성공도 실패도 같이 받는다.** 처음에는 자물쇠로
+        한 줄을 세웠는데, 그러면 조회가 느리게 실패할 때(시한 초과) 판마다 **차례로** 같은
+        실패를 처음부터 겪는다 — 맨 뒤 판은 판 수 x 시한만큼 판정(세션발 청산 포함)을 못 했다
+        (배포 전 검토에서 찾음). 예전(판마다 따로)에는 다 같이 한 번에 실패하고 "모름" 으로
+        판정했다. 같은 조회를 기다리면 그 성질이 그대로다: 실패하면 기다리던 판이 **같은
+        순간에** 실패를 받는다. 실패는 기억하지 않는다 — 그 뒤에 오는 판은 새로 묻는다.
     """
     start = end - REF_SPAN * bars
     key = getattr(quotes, "quote_share_key", None)
@@ -935,16 +943,29 @@ async def ref_rows(quotes: Any, ref: Instrument, bars: int, end: datetime) -> Se
     seconds = int(REF_SPAN.total_seconds())
     edge = datetime.fromtimestamp(int(end.timestamp()) // seconds * seconds, tz=UTC)
     name = f"{key}:{ref.symbol}"
-    lock = _REF_LOCKS.setdefault(name, asyncio.Lock())
-    async with lock:
-        held = _REF_ROWS.get(name)
-        if held is not None and held[0] == edge and held[1] >= bars:
-            return [item for item in held[2] if item.ts >= start]
-        rows = cast("Sequence[Candle]", await quotes.get_candles(ref, Timeframe.H4, start, end))
-        newest = max((item.ts for item in rows if item.ts + REF_SPAN <= end), default=None)
-        if newest == edge - REF_SPAN:
-            _REF_ROWS[name] = (edge, bars, list(rows))
-        return rows
+    held = _REF_ROWS.get(name)
+    if held is not None and held[0] == edge and held[1] >= bars:
+        return [item for item in held[2] if item.ts >= start]
+    flight = _REF_FLIGHTS.get(name)
+    if flight is None or flight[0] != edge or flight[1] < bars or flight[2].done():
+
+        async def fetch() -> list[Candle]:
+            rows = list(
+                cast("Sequence[Candle]", await quotes.get_candles(ref, Timeframe.H4, start, end))
+            )
+            newest = max((item.ts for item in rows if item.ts + REF_SPAN <= end), default=None)
+            if newest == edge - REF_SPAN:
+                _REF_ROWS[name] = (edge, bars, rows)
+            return rows
+
+        task = asyncio.ensure_future(fetch())
+        # 기다리던 판이 전부 취소돼도 "아무도 안 받은 예외" 경고가 안 남게 결과를 한 번 읽는다.
+        task.add_done_callback(lambda done: done.cancelled() or done.exception())
+        flight = (edge, bars, task)
+        _REF_FLIGHTS[name] = flight
+    # ⚠️ shield — 기다리던 판 하나가 취소돼도(판 내림) 남의 조회까지 끊지 않는다.
+    rows = await asyncio.shield(flight[2])
+    return [item for item in rows if item.ts >= start]
 
 
 def exchange_outcome(
@@ -7901,14 +7922,24 @@ class LiveRunner:
 
             닫기를 먼저 옮기므로(S1) 새 진입은 아직 안 보냈다 — 주문 없이 원장만 거둔다. 닫기가
             실패하지 않았으면 아무것도 안 한다.
+
+            🔴 **반대 방향은 못 닫은 몫 전부를 본다**(목표 청산만이 아니다 · 배포 전 검토에서 찾음).
+            시간 · 신호 청산이 거래소에서 실패하면 그 몫은 원장에서는 닫힌 채 "다시 닫기 줄" 에
+            서는데, 그 계약은 아직 거래소에 있다. 같은 걸음의 반대 방향 진입(줄이기 전용이
+            아니다)이 그대로 나가면 그 계약을 상쇄하고, 다시 닫기가 또 팔아 **원장과 거래소가
+            반대 방향으로 굳는다**(새 진입의 손절은 그 포지션을 못 지킨다). 같은 다리 규칙은
+            보유로 되돌리는 몫(목표 청산)에만 걸린다 — 안 되돌리면 그 칸은 새 진입의 것이다.
         """
-        reverting = [
-            item for item in back if self._ledger_record(item).outcome is Outcome.TAKE_PROFIT
-        ]
-        if not reverting:
+        # 이 걸음에 세션이 닫은 몫만 본다(원장에서 더는 열려 있지 않은 것) — 닫기 단계가 통째로
+        # 던지면 `back` 에 이 걸음에 안 닫은 몫도 섞여 온다.
+        closing = [item for item in back if self._ledger_record(item).outcome is not Outcome.OPEN]
+        if not closing:
             return
+        reverting = [
+            item for item in closing if self._ledger_record(item).outcome is Outcome.TAKE_PROFIT
+        ]
         legs = {item.playbook for item in reverting}
-        sides = {item.direction for item in reverting}
+        sides = {item.direction for item in closing}
         for record in list(self._session.ledger.records):
             if (
                 record.outcome is not Outcome.OPEN
@@ -10266,16 +10297,25 @@ class LiveRunner:
         #    (걸음 · 감시 어느 길로 와도 같다 — 감시가 닫은 시각은 지금이라 ② 로는 못 잡는다)
         #    ② 이 몫이 닫힌 봉에 다른 몫이 열렸다(보낸 시각 기억이 없을 때의 받침 · 한 번만).
         #    ① 이 끝나면 거래소를 믿는다 — 그때도 적으면 이 몫 손절이 발동한 것이다.
+        #    🔴 ② 는 **계약 수가 적힌 몫**만 센다(배포 전 검토에서 찾음). 닫기를 먼저 옮기므로
+        #    (S1) 같은 걸음의 새 진입은 아직 안 보냈다 — 계약 수 0 인 몫은 거래소에 없으니 "조회에
+        #    아직 안 보인다" 의 까닭이 될 수 없다. 안 가르면, 이 몫의 익절 지정가가 걸음 직전에
+        #    체결된 때(거래소 0 · 내 몫은 이미 나감)를 조회 지연으로 읽어 닫기 실패로 돌려주고,
+        #    걸음이 이 몫을 보유로 되돌리며 같은 다리의 새 진입을 거둔다(정상 진입 하나를 놓침).
         same_bar = now.closed_at is not None and any(
             item.outcome is Outcome.OPEN
             and item.trade_id != now.trade_id
             and item.opened_at is not None
             and item.opened_at >= now.closed_at
+            and self._share_contracts(item) > 0
             for item in records
         )
         stale_seen = self._exit_stale_set()
         fresh = self._entry_fresh() or (same_bar and now.trade_id not in stale_seen)
-        if fresh and held < mine + others:
+        # 조회가 적게 보이는 까닭은 둘이다 — 방금 든 몫이 아직 안 보이거나, **내 몫이 이미
+        # 나갔거나**. 뒤쪽은 이름 있는 체결이 사실로 말해 준다 — 기다리기 전에 그것부터 본다.
+        out_early = await self._share_out_by_name(now) if fresh and held < mine + others else None
+        if fresh and held < mine + others and out_early is None:
             seen_first = held
             rereads = 0
             for _ in range(SHARE_HELD_REREADS):
@@ -10313,7 +10353,9 @@ class LiveRunner:
         #    방금 발동했는데 포지션 조회가 옛 값이면, 위 셈은 이미 나간 내 몫을 "남았다" 로 읽고
         #    시장가가 **남의 몫 계약**을 판다. 이름 있는 체결이 있으면 이미 나간 것으로 본다
         #    (손절 id 기억을 지우는 거두기 **전에** 본다 · 못 읽으면 예전 길 그대로).
-        out_by = await self._share_out_by_name(now) if size > 0 else None
+        out_by = out_early
+        if out_by is None and size > 0:
+            out_by = await self._share_out_by_name(now)
         if size <= 0 or out_by is not None:
             self._log.warning(
                 "live_share_exit_gone",

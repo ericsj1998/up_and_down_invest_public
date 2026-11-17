@@ -35,7 +35,7 @@ from test_share_runner import (
 )
 from updown.common.domain.instrument import Instrument
 from updown.orchestration.walkforward import live_runner
-from updown.orchestration.walkforward.ledger import Ledger, Outcome, TradeRecord
+from updown.orchestration.walkforward.ledger import Direction, Ledger, Outcome, TradeRecord
 
 BAR = datetime(2026, 1, 2, tzinfo=UTC)  # `closed()` 가 닫는 시각 — 같은 봉
 
@@ -204,6 +204,74 @@ def test_nothing_is_voided_when_the_close_went_through() -> None:
     run._void_conflicting_entries([a])  # pyright: ignore[reportPrivateUsage]
     records = {r.trade_id: r for r in run._session.ledger.records}  # pyright: ignore[reportPrivateUsage]
     assert records[b.trade_id].outcome is Outcome.OPEN
+
+
+# ── 배포 전 독립 검토에서 나온 것(2026-11-17 저녁) ────────────────────────────────────
+
+
+def test_a_failed_close_voids_an_unsent_entry_on_the_other_side() -> None:
+    """A(롱)의 **시간 청산**이 거래소에서 실패했다 — 같은 걸음의 숏 진입은 보내지 않는다.
+
+    A 는 원장에서 닫힌 채 "다시 닫기 줄" 에 서지만 그 계약은 아직 거래소에 있다. 숏 진입(줄이기
+    전용이 아니다)이 나가면 그 계약을 상쇄하고, 다시 닫기가 또 팔아 원장(숏)과 거래소(롱)가
+    반대로 굳는다. 같은 방향의 새 진입은 그대로 든다 — 되돌리지 않으니 그 칸은 새 진입의 것이다.
+    """
+    run, exch, a, b = closing_first()
+    short = dc_replace(
+        share("dddddddd4444", stop="110", contracts=0, playbook="tri@0.1.0"),
+        opened_at=BAR,
+        direction=Direction.SHORT,
+    )
+    run._session.ledger.add(short)  # pyright: ignore[reportPrivateUsage]
+    run._session.ledger.replace(closed(a, Outcome.TIME_EXIT))  # pyright: ignore[reportPrivateUsage]
+    run._void_conflicting_entries([a])  # pyright: ignore[reportPrivateUsage]
+    records = {r.trade_id: r for r in run._session.ledger.records}  # pyright: ignore[reportPrivateUsage]
+    assert records[short.trade_id].outcome is Outcome.CANCELLED, (
+        "반대 방향 — 못 닫은 계약을 상쇄한다"
+    )
+    assert records[b.trade_id].outcome is Outcome.OPEN, (
+        "같은 방향 · 같은 다리 — 그 칸은 새 진입의 것"
+    )
+    assert exch.adds == []
+
+
+def test_a_share_that_is_still_open_does_not_void_anything() -> None:
+    """닫기 단계가 통째로 던지면 이 걸음에 안 닫은 몫도 섞여 온다 — 그것으로는 거두지 않는다."""
+    run, _exch, a, b = closing_first()
+    run._void_conflicting_entries([a])  # pyright: ignore[reportPrivateUsage]  # A 는 아직 열려 있다
+    records = {r.trade_id: r for r in run._session.ledger.records}  # pyright: ignore[reportPrivateUsage]
+    assert records[b.trade_id].outcome is Outcome.OPEN
+
+
+def test_a_target_that_filled_just_before_the_step_is_not_read_as_a_lagging_entry() -> None:
+    """A 의 익절 지정가가 걸음 직전에 체결됐고(거래소 0) 같은 걸음에 B 가 새로 든다(아직 안 보냄).
+
+    예전엔 "같은 봉에 다른 몫이 열렸다" 만 보고 조회 지연으로 읽어 닫기 실패로 돌려줬다 — 걸음이
+    A 를 보유로 되돌리며 같은 다리의 B 를 거뒀다(정상 진입 하나를 놓침). 계약 수 0 인 몫은
+    거래소에 없으니 조회가 적게 보이는 까닭이 될 수 없다.
+    """
+    run, exch, a, _b = closing_first()
+    exch.size = 0
+    exch.history.insert(0, tp_fill(a, size=5))
+    run._session.ledger.replace(closed(a, Outcome.TAKE_PROFIT))  # pyright: ignore[reportPrivateUsage]
+    assert asyncio.run(run._apply_exit(a, shares=[a])) is True  # pyright: ignore[reportPrivateUsage]
+    assert exch.closes == [] and run.failures == 0
+    assert not run._exit_due_map() and run._exit_failed in (None, [])  # pyright: ignore[reportPrivateUsage]
+    assert key(a) not in exch.stops, "나간 몫의 손절은 거둔다"
+
+
+def test_named_fills_are_asked_before_waiting_for_a_lagging_read() -> None:
+    """방금 진입을 보냈고 조회가 적게 보인다 — 그런데 내 몫의 목표가 다 체결된 기록이 있다.
+
+    적게 보이는 까닭은 "방금 든 몫이 안 보임" 과 "내 몫이 이미 나감" 둘이다. 뒤쪽은 이름 있는
+    체결이 사실로 말해 준다 — 기다리며 미루지 않는다.
+    """
+    run, exch, a, b = sent_pair(on_exchange=3)  # B 3 계약만 남았다 — A 는 목표로 나갔다
+    exch.history.insert(0, tp_fill(a, size=5))
+    time_exit(run, a, b)
+    assert exch.closes == [], "이미 나간 몫을 또 팔지 않는다"
+    assert a.trade_id not in run._exit_due_map(), "미루지도 않는다"  # pyright: ignore[reportPrivateUsage]
+    assert key(a) not in exch.stops and key(b) in exch.stops
 
 
 # ── 같은 꼴 점검에서 나온 것(2026-11-17) ─────────────────────────────────────────────

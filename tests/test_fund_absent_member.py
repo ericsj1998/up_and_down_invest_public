@@ -153,3 +153,12 @@ def test_a_board_coming_back_under_its_own_key_passes_the_start_gates() -> None:
     assert 'resuming = reviving and bool(payload.get("session_id"))' in source
     assert "holding = resuming or (" in source
     assert source.index("holding = resuming or (") < source.index("if not depth.ok:")
+
+
+def test_a_board_that_passed_the_depth_gate_on_a_warning_starts_with_entries_shut() -> None:
+    """호가 점검은 판이 뜬 지 5 분 뒤에야 처음 잰다 — 그 사이 마른 호가에 새로 들면 안 된다."""
+    source = inspect.getsource(api._live_start)  # pyright: ignore[reportPrivateUsage]
+    assert "dry_start = not depth.ok" in source
+    shut = source.index("if dry_start:")
+    assert source.index("session = Session(") < shut < source.index("runner.run()")
+    assert "session.liquid = False" in source[shut : shut + 400]

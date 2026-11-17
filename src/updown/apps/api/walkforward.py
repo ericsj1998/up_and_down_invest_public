@@ -117,6 +117,7 @@ from updown.orchestration.leftovers import sweep as sweep_leftovers
 from updown.orchestration.leftovers import sweep_zombie_entries
 from updown.orchestration.playbook_run import major_trend
 from updown.orchestration.reconcile import (
+    IN_FLIGHT,
     NAKED,
     Finding,
     Snapshot,
@@ -1246,11 +1247,14 @@ async def _live_start(
     #    아래 두 문은 "새 판을 이 종목에 열어도 되나" 를 묻는 문인데, 다시 띄우기에 그대로 걸면
     #    재시작 순간 호가가 잠깐 마른 종목의 판이 안 뜨고 → 펀드 복원이 그 종목을 빼고 → 그
     #    빠진 구성이 저장됐다(일시 실패가 영구 편집이 됐다). 그 판의 **새 진입**은 뜬 뒤에도
-    #    실행 중 스위치(`liquid` · 주문 순간의 수량 계산)가 그대로 막는다.
+    #    실행 중 스위치(`liquid` · 주문 순간의 수량 계산)가 그대로 막는다 — 호가 문을 경고로
+    #    지나갔으면 세션을 `liquid=False` 로 띄운다(아래 `dry_start`). 러너의 호가 점검은 5 분
+    #    뒤에야 처음 재므로, 안 그러면 그 사이 마른 호가에 새로 들 수 있다(배포 전 검토에서 찾음).
     resuming = reviving and bool(payload.get("session_id"))
     holding = resuming or (keep_managing and any(item.outcome is Outcome.OPEN for item in inherit))
     # 🔴 **그 판의 거래소로** 본다 (2026-09-06) — 없으면 Gate 호가창으로 바이낸스 판을 판정한다.
     depth = await liquidity_of(symbol, margin * lever, market=market.value)
+    dry_start = not depth.ok
     if not depth.ok:
         if not holding:
             raise HTTPException(
@@ -1372,6 +1376,11 @@ async def _live_start(
             drawdown_stop_pct=stop,
         ),
     )
+    if dry_start:
+        # 🔴 호가 문을 경고로 지나간 판이다(포지션 관리 · 다시 띄우기) — **새 진입은 닫아 둔 채**
+        #    띄운다. 호가가 돌아오면 러너의 호가 점검(`check_book`)이 다시 연다. 손절 · 청산은
+        #    이 스위치와 무관하다(`_may_enter` 에만 걸린다).
+        session.liquid = False
     session.flip_on_opposite = any(
         bool(catalog[name].params.get("symmetric")) for name in book.setups if name in catalog
     )
@@ -3324,6 +3333,28 @@ NAKED_STRIKES = 2
 """
 
 
+_FLIGHT_STREAK: dict[str, int] = {}
+"""`거래소:종목` → "반영 중" 으로 **연달아** 봐준 횟수 (T852 F2)."""
+
+FLIGHT_GRACE = 1
+"""갈림을 "반영 중" 으로 봐주는 연속 횟수 — **한 번**(= 대조 한 주기 · 2 분).
+
+움직임은 방금 생긴 갈림을 설명할 뿐이다. 다음 대조에서도 갈려 있으면 그때 판이 또 움직이는
+중이어도 고아 · 유령으로 본다 — 안 그러면 10 초마다 다시 닫기를 시도하는 판(주문이 늘 "방금"
+나갔다)의 갈림을 끝없이 봐주게 된다(배포 전 검토에서 찾음). 값의 근거: 주문 · 걸음이 끝나는
+데는 몇 초면 되고 대조 주기는 2 분이라, 두 번째에도 갈려 있으면 시차로는 설명되지 않는다.
+"""
+
+
+def _note_flights(found: list[Finding]) -> None:
+    """이번 대조에서 "반영 중" 으로 봐준 칸을 센다 — 안 봐준 칸은 지운다."""
+    flying = {item.key for item in found if item.code == IN_FLIGHT}
+    for key in [key for key in _FLIGHT_STREAK if key not in flying]:
+        del _FLIGHT_STREAK[key]
+    for key in flying:
+        _FLIGHT_STREAK[key] = _FLIGHT_STREAK.get(key, 0) + 1
+
+
 def _settle_naked(found: list[Finding]) -> list[Finding]:
     """축 D 만 연속 관측을 요구한다 — 나머지는 그대로 통과시킨다."""
     now = {item.key for item in found if item.code == NAKED}
@@ -3433,12 +3464,18 @@ async def reconcile_once() -> list[Finding]:
                     on_book=symbol in on_book,
                     protected=covered(resting.get(symbol, []), held),
                     pending=symbol in pending,
-                    # 이미 막혀 있던 종목은 봐주지 않는다 — 움직임은 **새로 생긴** 갈림만
-                    # 설명한다(지난 대조에서 갈려 있던 것은 그 사이 판이 움직였든 말든 진짜다).
-                    moving=symbol in moving and f"{market}:{symbol}" not in RECON.blocked,
+                    # 이미 막혀 있던 종목 · 지난 대조에서 이미 한 번 봐준 종목은 봐주지 않는다 —
+                    # 움직임은 **새로 생긴** 갈림만 설명한다(지난 대조에서도 갈려 있던 것은 그
+                    # 사이 판이 움직였든 말든 진짜다 · `FLIGHT_GRACE`).
+                    moving=(
+                        symbol in moving
+                        and f"{market}:{symbol}" not in RECON.blocked
+                        and _FLIGHT_STREAK.get(f"{market}:{symbol}", 0) < FLIGHT_GRACE
+                    ),
                 )
             )
     found = _settle_naked(compare(shots))
+    _note_flights(found)
     at = datetime.now(UTC)
     FOUND[:] = found
     RECON.blocked = blocked_keys(found)

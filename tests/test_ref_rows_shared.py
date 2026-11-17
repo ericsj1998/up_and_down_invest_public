@@ -70,7 +70,7 @@ class Quotes:
 @pytest.fixture(autouse=True)
 def clean() -> None:
     live_runner._REF_ROWS.clear()  # pyright: ignore[reportPrivateUsage]
-    live_runner._REF_LOCKS.clear()  # pyright: ignore[reportPrivateUsage]
+    live_runner._REF_FLIGHTS.clear()  # pyright: ignore[reportPrivateUsage]
 
 
 def get(quotes: Quotes, bars: int, now: datetime = NOW) -> list[Candle]:
@@ -123,6 +123,64 @@ def test_an_adapter_that_did_not_opt_in_is_asked_every_time() -> None:
     get(quotes, 100)
     get(quotes, 100)
     assert quotes.calls == 2
+
+
+class Slow(Quotes):
+    """응답이 늦게 오는 조회 — `fail` 이면 늦게 실패한다(시한 초과 꼴)."""
+
+    def __init__(self, *, fail: bool) -> None:
+        super().__init__(key="gate", through=EDGE - REF_SPAN)
+        self.fail = fail
+
+    async def get_candles(
+        self, ref: Any, frame: Any, start: datetime, end: datetime
+    ) -> list[Candle]:
+        await asyncio.sleep(0.01)
+        rows = await super().get_candles(ref, frame, start, end)
+        if self.fail:
+            raise TimeoutError("봉 조회 시한 초과")
+        return rows
+
+
+def test_boards_asking_at_the_same_moment_wait_for_one_request() -> None:
+    quotes = Slow(fail=False)
+
+    async def together() -> list[Any]:
+        return await asyncio.gather(*(ref_rows(quotes, BTC, 100, NOW) for _ in range(58)))
+
+    got = asyncio.run(together())
+    assert quotes.calls == 1 and all(list(rows) == list(got[0]) for rows in got)
+
+
+def test_a_slow_failure_reaches_every_waiting_board_at_once() -> None:
+    """🔴 한 줄로 세우면 판마다 차례로 같은 실패를 처음부터 겪는다 — 맨 뒤 판은 판 수 x 시한만큼
+    판정을 못 한다. 같은 조회를 기다리면 다 같이 한 번에 실패하고 "모름" 으로 판정한다."""
+    quotes = Slow(fail=True)
+
+    async def together() -> list[Any]:
+        return await asyncio.gather(
+            *(ref_rows(quotes, BTC, 100, NOW) for _ in range(58)), return_exceptions=True
+        )
+
+    got = asyncio.run(together())
+    assert quotes.calls == 1, "실패도 한 번만 겪는다"
+    assert all(isinstance(item, TimeoutError) for item in got)
+    quotes.fail = False
+    assert get(quotes, 100), "실패는 기억하지 않는다 — 그 뒤에 온 판은 새로 묻는다"
+    assert quotes.calls == 2
+
+
+def test_a_cancelled_waiter_does_not_cut_the_others_off() -> None:
+    quotes = Slow(fail=False)
+
+    async def together() -> list[Candle]:
+        first = asyncio.ensure_future(ref_rows(quotes, BTC, 100, NOW))
+        second = asyncio.ensure_future(ref_rows(quotes, BTC, 100, NOW))
+        await asyncio.sleep(0)
+        first.cancel()  # 판 하나가 내려갔다
+        return list(await second)
+
+    assert asyncio.run(together()) and quotes.calls == 1
 
 
 def test_the_budget_of_an_entry_is_the_one_stamped_at_the_decision() -> None:

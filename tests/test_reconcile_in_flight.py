@@ -62,6 +62,7 @@ def board(monkeypatch: pytest.MonkeyPatch) -> Board:
     monkeypatch.setattr(mod, "SESSIONS", {"h": made})
     monkeypatch.setattr(mod.leg_engines, "running_on", no_engines)
     monkeypatch.setattr(mod.RECON, "blocked", clear)
+    monkeypatch.setattr(mod, "_FLIGHT_STREAK", {})
     forget_marks()
     return made
 
@@ -99,6 +100,41 @@ async def test_a_symbol_that_was_already_blocked_is_not_excused(board: Board) ->
     found = await mod.reconcile_once()
     assert [item.code for item in found] == [ORPHAN]
     assert board.session.reconciled is False
+
+
+@pytest.mark.asyncio
+async def test_being_in_motion_excuses_a_split_only_once(board: Board) -> None:
+    """10 초마다 다시 닫기를 시도하는 판은 늘 "방금 주문을 보냈다" — 끝없이 봐주면 안 된다.
+
+    움직임은 방금 생긴 갈림만 설명한다. 다음 대조(2 분 뒤)에도 갈려 있으면 고아다.
+    """
+    mark_order("GATE", "HYPE_USDT")
+    assert [item.code for item in await mod.reconcile_once()] == [IN_FLIGHT]
+    assert board.session.reconciled is True
+    mark_order("GATE", "HYPE_USDT")  # 다음 대조 때도 방금 주문이 나갔다
+    board.stepping = True
+    assert [item.code for item in await mod.reconcile_once()] == [ORPHAN]
+    assert board.session.reconciled is False and mod.RECON.blocked == frozenset({KEY})
+
+
+@pytest.mark.asyncio
+async def test_a_split_that_healed_gets_its_grace_back(board: Board, monkeypatch: Any) -> None:
+    mark_order("GATE", "HYPE_USDT")
+    assert [item.code for item in await mod.reconcile_once()] == [IN_FLIGHT]
+
+    async def healed(market: str) -> Any:
+        del market
+        return {"history": []}, {"HYPE_USDT"}, {}, {}
+
+    real = mod._venue_snapshot  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(mod, "_venue_snapshot", healed)
+    assert await mod.reconcile_once() == []  # 반영이 끝났다
+    monkeypatch.setattr(mod, "_venue_snapshot", real)
+    mark_order("GATE", "HYPE_USDT")
+    assert [item.code for item in await mod.reconcile_once()] == [IN_FLIGHT], (
+        "새 갈림은 다시 봐준다"
+    )
+    assert board.session.reconciled is True
 
 
 @pytest.mark.asyncio
