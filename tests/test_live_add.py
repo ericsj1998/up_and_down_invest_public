@@ -270,7 +270,7 @@ class TestDropped:
         assert ex.sent == []
         self._dropped(runner, "stale")
 
-    @pytest.mark.parametrize("state", ["dry", "breaker", "paused", "fund"])
+    @pytest.mark.parametrize("state", ["dry", "breaker", "paused"])
     def test_guards_drop(self, state: str) -> None:
         ex = _Exchange(fill=_filled("2", "110"))
         runner = _Runner(_open(), ex)
@@ -278,14 +278,39 @@ class TestDropped:
             runner.dry = {"why": "호가 마름"}
         elif state == "breaker":
             runner._session.ledger.tripped_at = "t0"  # pyright: ignore[reportPrivateUsage]
-        elif state == "paused":
-            runner._session.auto = False  # pyright: ignore[reportPrivateUsage]
         else:
-            runner.fund_ready = False
+            runner._session.auto = False  # pyright: ignore[reportPrivateUsage]
         runner.run()
         assert ex.sent == []
-        want = {"dry": "book_dry", "breaker": "breaker", "paused": "paused", "fund": "fund_wait"}
+        want = {"dry": "book_dry", "breaker": "breaker", "paused": "paused"}
         self._dropped(runner, want[state])
+
+    def test_a_stale_dry_flag_is_measured_again_before_dropping(self) -> None:
+        """T852 — "호가 마름" 표식은 최대 5 분 낡았다. 그 자리에서 다시 재서 돌아왔으면 싣는다."""
+        ex = _Exchange(fill=_filled("2", "110"))
+        runner = _Runner(_open(), ex)
+        runner.dry = {"why": "호가 마름"}
+        measured: list[int] = []
+
+        async def check_book() -> None:
+            measured.append(1)
+            runner.dry = None  # 호가가 돌아와 있었다
+
+        runner.check_book = check_book  # type: ignore[attr-defined]
+        runner.run()
+        assert measured == [1] and len(ex.sent) == 1
+        assert runner.record.add_contracts == 2
+
+    def test_a_fund_that_is_not_attached_yet_defers_instead_of_dropping(self) -> None:
+        """T852 — 판이 뜬 직후 펀드가 붙기 전(수십 초)이라고 불타기를 영영 버리지 않는다."""
+        ex = _Exchange(fill=_filled("2", "110"))
+        runner = _Runner(_open(), ex)
+        runner.fund_ready = False
+        runner.run()
+        assert ex.sent == [] and runner.record.add_held is None, "버리지 않았다"
+        runner.fund_ready = True
+        runner.run()
+        assert len(ex.sent) == 1 and runner.record.add_contracts == 2
 
     def test_nothing_granted_sends_nothing(self) -> None:
         ex = _Exchange(fill=_filled("2", "110"))

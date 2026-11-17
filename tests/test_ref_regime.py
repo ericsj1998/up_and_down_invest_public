@@ -189,14 +189,20 @@ class TestLiveInjection:
         kept = (runner._session.ref_return, runner._session.ref_surge, runner._session.ref_vol)
         assert kept[0] is not None
 
+        calls = {"n": 0}
+
         async def broken(*_args: Any) -> list[Any]:
-            raise RuntimeError("429 요청 한도")
+            calls["n"] += 1
+            raise RuntimeError("조회 실패")
 
         runner._quotes.get_candles = broken
         inject(runner)
         s = runner._session
         assert (s.ref_return, s.ref_surge, s.ref_vol) == kept
-        assert runner.warnings == ["live_ref_regime_kept"]
+        assert calls["n"] == 0, (
+            "같은 4H 봉 안에서는 거래소에 묻지도 않는다(호출 수 · 실패할 일 없음)"
+        )
+        assert runner.warnings == []
 
     def test_a_failed_read_after_a_new_bar_closed_is_retried_then_cleared(
         self, monkeypatch: pytest.MonkeyPatch
