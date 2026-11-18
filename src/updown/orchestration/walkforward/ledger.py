@@ -273,7 +273,20 @@ def plan_fault(record: TradeRecord) -> str:
     first = record.planned_first
     target = record.planned_target
     # ⭐ 반익이 지나갔으면 손절이 진입가까지 올라와 있을 수 있다 (본절).
-    even = record.half_at is not None
+    # ⭐ **R 배 뒤 본전**(선언 `breakeven_after_r`)도 같은 정상 상태다 (2026-11-18). 그 규칙은 반익
+    #    없이 손절을 진입가로 옮기는데, 예외가 `half_at` 만 보던 탓에 본전으로 옮긴 숏마다
+    #    자가 점검이 *"숏인데 손절이 진입 아래다"* 를 error 로 외쳤다(실측 PENGU · RAVE —
+    #    손절은 거래소에 정상으로 걸려 있었다). 늘 붉은 점검은 진짜 이상을 묻는다.
+    #    ⇒ 처음 손절(`initial_stop`)이 진입 반대편에 제대로 서 있었고 지금 손절이 **그 뒤 옮겨진
+    #      값**이면 같은 값을 허용한다. 새 계획은 처음 손절 = 지금 손절이라 그대로 엄하다.
+    #    ⛔ 같은 값까지만이다 — 진입을 넘어간 손절은 여전히 잡는다.
+    first_stop = record.initial_stop
+    moved = (
+        first_stop is not None
+        and first_stop != stop
+        and (first_stop < entry if long else first_stop > entry)
+    )
+    even = record.half_at is not None or moved
     if long:
         if not (stop <= entry if even else stop < entry):
             return f"롱인데 손절({stop})이 진입({entry}) 위다"
