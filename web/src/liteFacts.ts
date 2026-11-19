@@ -25,7 +25,13 @@ export type LiteFacts = {
   stopWarning: string | null;
 };
 
-/** 한 종목에 조건부가 이보다 많으면 겹쳐 쌓인 것으로 본다(서버 점검 `STOP_COUNT_LIMIT` 과 같은 값). */
+/**
+ * 한 종목에 조건부가 이보다 많으면 겹쳐 쌓인 것으로 본다(서버 점검 `STOP_COUNT_LIMIT` 과 같은 값).
+ *
+ * 🔴 몫마다 손절을 하나씩 거는 다리(엔진 다리)는 몫 수만큼 걸리는 것이 정상이다 — 그래서 한도는
+ * `max(이 값, 보유 몫 수)` 다. 2026-11-19 에 몫 여섯인 포지션(손절 여섯 · 수량 합 = 포지션)에 이
+ * 경고가 떴다. 서버 점검은 엔진 다리를 건수가 아니라 손절 수량 합으로 본다.
+ */
 const STOP_COUNT_LIMIT = 5;
 
 export function liteFacts(p: LitePosition): LiteFacts {
@@ -59,7 +65,7 @@ export function liteFacts(p: LitePosition): LiteFacts {
         ? null
         : p.exchange_stops === 0
           ? "거래소에 걸린 손절 없음"
-          : p.exchange_stops > STOP_COUNT_LIMIT
+          : p.exchange_stops > Math.max(STOP_COUNT_LIMIT, p.shares.length)
             ? `거래소 손절 ${p.exchange_stops}건 — 겹쳐 쌓임`
             : null,
   };

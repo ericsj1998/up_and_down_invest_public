@@ -72,6 +72,25 @@ describe("liteFacts", () => {
     );
     expect(liteFacts({ ...NEAR, exchange_stops: null }).stopWarning).toBeNull();
   });
+
+  it("몫마다 손절을 하나씩 건 포지션은 몫 수까지 정상이다", () => {
+    const shares = Array.from({ length: 6 }, (_, i) => ({
+      name: `몫 ${i + 1}`,
+      stop: "3",
+      opened_at: null,
+    }));
+    expect(
+      liteFacts({ ...NEAR, shares, exchange_stops: 6 }).stopWarning,
+    ).toBeNull();
+    expect(
+      liteFacts({ ...NEAR, shares, exchange_stops: 7 }).stopWarning,
+    ).toContain("7건");
+    // 몫이 하나인 판은 예전 한도 그대로
+    expect(liteFacts({ ...NEAR, exchange_stops: 5 }).stopWarning).toBeNull();
+    expect(liteFacts({ ...NEAR, exchange_stops: 6 }).stopWarning).toContain(
+      "6건",
+    );
+  });
 });
 
 describe("heldText · legNames", () => {
