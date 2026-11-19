@@ -48,8 +48,13 @@ def test_factory_adds_the_universe_job_and_runs_it_soon() -> None:
         finally:
             eng.stop()
 
+    from updown.analysis.playbook.select import load_playbooks
+    from updown.orchestration.rebalancer.breadth_job import params_of
+
     jobs, first = asyncio.run(run())
-    assert set(jobs) == {"resource_beat", "universe_snapshot"}
+    # 시장 전체 값 잡은 그 값을 쓰는 진입 문(`entry_washed`)을 선언한 매매법이 있을 때만 붙는다
+    breadth = {"market_breadth", "market_breadth_check"} if params_of(load_playbooks()) else set()
+    assert set(jobs) == {"resource_beat", "universe_snapshot"} | breadth
     assert isinstance(first, datetime)
     assert first < datetime.now(UTC) + timedelta(seconds=UNIVERSE_RUN_SOON_S + 5)
 
