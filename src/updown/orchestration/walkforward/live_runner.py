@@ -56,6 +56,14 @@ from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Market, Timeframe
 from updown.common.domain.market import Balance, Quote
 from updown.common.domain.order import OrderKind, OrderResult, OrderStatus
+from updown.common.domain.releases import (
+    DEFAULT_CONFIG_PATH as RELEASES_PATH,
+)
+from updown.common.domain.releases import (
+    ReleaseConfigError,
+    ReleaseSchedule,
+    load_release_schedule,
+)
 from updown.common.domain.session import MarketCalendar, SessionConfigError, Tradability
 from updown.common.logging.setup import get_logger
 from updown.decision.risk.merged_liquidation import MergedLeg, check_merged_liquidation
@@ -928,6 +936,25 @@ def set_market_values_reader(reader: MarketValuesReader | None) -> None:
     _market_reader = reader
     _MARKET_DAYS.clear()
     _MARKET_LOCKS.clear()
+
+
+_releases: tuple[float, ReleaseSchedule] | None = None
+
+
+def release_schedule_now() -> ReleaseSchedule:
+    """발표 일정 — **같은 프로세스의 판들이 한 번만 읽는다**(설정 파일이 바뀌면 다시 읽는다).
+
+    Raises:
+        ReleaseConfigError: 설정을 못 읽었거나 꼴이 틀린 경우 — 부르는 쪽이 "모름" 으로 받는다.
+    """
+    global _releases
+    try:
+        stamp = RELEASES_PATH.stat().st_mtime
+    except OSError as exc:
+        raise ReleaseConfigError(f"발표 일정 설정이 없다: {RELEASES_PATH}") from exc
+    if _releases is None or _releases[0] != stamp:
+        _releases = (stamp, load_release_schedule(RELEASES_PATH))
+    return _releases[1]
 
 
 async def market_day_values(
@@ -8726,7 +8753,7 @@ class LiveRunner:
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
 
     async def _inject_market_values(self) -> None:
-        """시장 전체 값(종목 폭 · 뒤처진 묶음 수익)을 세션에 넣는다 — `entry_washed` 를 선언한 판만.
+        """시장 전체 값(종목 폭 · 뒤처진 묶음 수익) · 발표 일정을 세션에 넣는다 — 선언한 판만.
 
         Note:
             값의 날 = 지금 기준 마지막으로 닫힌 UTC 날. 그날 줄을 하루에 한 번 읽고 기억한다
@@ -8734,6 +8761,13 @@ class LiveRunner:
             진입을 보류한다(규칙 #8-1) · 로그는 남긴다(#8). 보유 · 손절 · 청산에는 닿지 않는다.
             선언이 없으면 아무것도 안 한다(비용 0).
         """
+        if any(b.entry_event_window is not None for b in self._session.playbooks):
+            # 발표 일정(미리 공개되는 일정 · 설정 파일) — 못 읽으면 None = 모름 → 그 문은 보류한다.
+            try:
+                self._session.release_schedule = release_schedule_now()
+            except ReleaseConfigError as exc:
+                self._session.release_schedule = None
+                self._log.warning("live_releases_unreadable", payload={"error": str(exc)[:140]})
         rule = next(
             (b.entry_washed for b in self._session.playbooks if b.entry_washed is not None), None
         )

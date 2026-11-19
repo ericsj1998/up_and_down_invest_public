@@ -57,6 +57,7 @@ from updown.analysis.trend.service import evaluate as trend_evaluate
 from updown.common.costs import DEFAULT_CONFIG_PATH, MarketCosts, load_cost_table
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Timeframe
+from updown.common.domain.releases import ReleaseSchedule
 from updown.common.domain.reports import TrendDirection
 from updown.common.domain.session import MarketCalendar
 from updown.common.domain.setup import TradeSetup
@@ -762,6 +763,12 @@ class Session:
     """
     market_lag_ret: Decimal | None = None
     """뒤처진 종목 묶음의 최근 수익률 — 러너 주입(`entry_washed` 조건 ③). 🔴 None = 모름 → 보류."""
+    release_schedule: ReleaseSchedule | None = None
+    """예정된 큰 지표 발표 일정 — 러너 주입(`entry_event_window`).
+
+    미리 공개되는 일정이라 봉과 같은 사실 입력이다. 🔴 None = 모름 → 이 문을 선언한 매매법은
+    **진입을 보류**한다(규칙 #8-1).
+    """
     ref_vol_sd_pct: Decimal | None = None
     """기준 종목(BTC) 일봉 로그수익 표본 표준편차 % — 러너 주입(T612 SV1 · `entry_ref_vol_off`).
 
@@ -1903,7 +1910,8 @@ class Session:
 
         Returns:
             `ref_gate` · `ref_band` · `ref_surge` · `ref_sma` · `ref_volpct` · `ref_volrank` ·
-            `rel_lag` · `washed` · `warm_hold` · `funding` 중 처음 걸린 것. 없으면 None.
+            `rel_lag` · `washed` · `event_window` · `warm_hold` · `funding` 중 처음 걸린 것.
+            없으면 None.
 
         Note:
             `_enter` 가 이 순서 그대로 읽고 센다 · 적는다. 마감 전 예비 신호(`preview`)도 같은
@@ -1941,6 +1949,15 @@ class Session:
             )
         ):
             return "washed"
+        window = book.entry_event_window
+        if window is not None:
+            inside = (
+                None
+                if self.release_schedule is None
+                else self.release_schedule.inside(self.cursor, window.kinds, window.hours)
+            )
+            if inside is not False:
+                return "event_window"
         if self.warm_holds and self._warm_held_now(book):
             return "warm_hold"
         if funding_blocks(direction, self.recent_funding, book.funding_cap):
@@ -5662,8 +5679,8 @@ class Session:
             )
             held("hold:ref_volpct")
             return None
-        if hold in ("ref_volrank", "rel_lag", "washed"):
-            # 기준 변동성 순위 · 기준 대비 뒤처짐 · 씻긴 시장 문 — 그 봉엔 새로 안 든다.
+        if hold in ("ref_volrank", "rel_lag", "washed", "event_window"):
+            # 기준 변동성 순위 · 기준 대비 뒤처짐 · 씻긴 시장 · 발표 앞뒤 문 — 그 봉엔 새로 안 든다.
             # 보유분은 그대로.
             # 🔴 모르면(None) 보류한다 — 신규 진입은 리스크 증가 행동이다(절대 규칙 #8-1).
             self._count(hold)
@@ -5686,6 +5703,7 @@ class Session:
                         None if self.market_lag_ret is None else str(self.market_lag_ret)
                     ),
                     "funding": None if self.recent_funding is None else str(self.recent_funding),
+                    "releases": self.release_schedule is not None,
                     "note": "진입 문이 닫혀 있다(또는 값을 모른다) — 이 봉엔 새로 안 든다",
                 },
             )

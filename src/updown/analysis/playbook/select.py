@@ -38,6 +38,7 @@ from updown.analysis.playbook.types import (
     DrawdownBrake,
     EarlyEntry,
     EntryLimit,
+    EventWindow,
     NewHighTilt,
     PeerOpenBoost,
     PeerOpenCap,
@@ -576,6 +577,27 @@ def _washed(raw: object, name: str) -> WashedRule:
         )
     except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
         raise PlaybookConfigError(f"{name}.entry_washed — {exc}") from exc
+
+
+def _event_window(raw: object, name: str) -> EventWindow:
+    """발표 앞뒤 창 문.
+
+    예: `{hours: 8, kinds: [cpi, jobs, fomc]}`.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_event_window")
+    try:
+        kinds = body["kinds"]
+        if not isinstance(kinds, list):
+            raise TypeError("kinds 는 목록")
+        return EventWindow(
+            hours=Decimal(str(body["hours"])),
+            kinds=tuple(str(k) for k in cast("list[object]", kinds)),
+        )
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_event_window — {exc}") from exc
 
 
 def _trail_after_r(raw: object, name: str) -> TrailAfterR:
@@ -1129,6 +1151,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         None
                         if body.get("entry_washed") is None
                         else _washed(body["entry_washed"], f"playbooks.{name}")
+                    ),
+                    entry_event_window=(
+                        None
+                        if body.get("entry_event_window") is None
+                        else _event_window(body["entry_event_window"], f"playbooks.{name}")
                     ),
                     trail_after_r=(
                         None

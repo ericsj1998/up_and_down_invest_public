@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from updown.analysis.indicators.reference import RefNeeds, needs_of, reference_regime
 from updown.analysis.playbook.types import WashedRule
 from updown.common.domain.instrument import Timeframe
+from updown.common.domain.releases import ReleaseSchedule
 from updown.decision.allocation import Basket, as_members
 from updown.orchestration.fund_replay.runner_rules import (
     ContractSpec,
@@ -184,6 +185,7 @@ class FundReplay:
         membership: Callable[[str, datetime], frozenset[str] | None] | None = None,
         market_values: Callable[[date, WashedRule], tuple[Decimal | None, Decimal | None] | None]
         | None = None,
+        release_schedule: ReleaseSchedule | None = None,
     ) -> None:
         """걸음을 준비한다.
 
@@ -200,6 +202,8 @@ class FundReplay:
             market_values: `(날, 선언) → (종목 폭, 뒤처진 묶음 수익)` — 그날 종가까지로 잰 시장
                 전체 값. 실계좌는 러너가 DB 줄을 읽어 넣는다(`_inject_market_values`). None 이면
                 값을 모르는 것으로 돈다(`entry_washed` 를 선언한 다리는 진입을 보류한다).
+            release_schedule: 발표 일정(`entry_event_window`) — 실계좌는 러너가 설정 파일에서
+                읽어 넣는다. None 이면 모르는 것으로 돈다(그 문을 선언한 다리는 진입 보류).
         """
         self.boards = list(boards)
         self.coordinator = coordinator
@@ -210,6 +214,8 @@ class FundReplay:
         self._rnd = random.Random(seed)
         self._membership = membership
         self._market_values = market_values
+        for board in self.boards:
+            board.session.release_schedule = release_schedule
         self.result = ReplayResult()
 
     def run(self, start: datetime, end: datetime) -> ReplayResult:

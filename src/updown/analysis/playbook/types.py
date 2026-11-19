@@ -483,6 +483,33 @@ class TrailAfterR:
 
 
 @dataclass(frozen=True, slots=True)
+class EventWindow:
+    """예정된 큰 지표 발표의 앞뒤 창 안에서는 새로 들지 않는다.
+
+    창 = `[발표 - hours, 발표 + hours)`. 판정 시각이 `kinds` 가운데 어느 발표의 창 안이면 그 봉엔
+    새로 안 든다. 일정은 러너가 넣는다(`Session.release_schedule` · 미리 공개되는 일정).
+    🔴 **일정을 모르면(None · 일정의 끝을 넘음) 보류한다**(규칙 #8-1). 보유 포지션은 그대로.
+
+    Attributes:
+        hours: 창의 반폭(시간).
+        kinds: 볼 발표 종류(일정 설정의 이름).
+
+    Raises:
+        ValueError: 반폭이 0 이하이거나 종류가 비어 있는 경우.
+    """
+
+    hours: Decimal
+    kinds: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """값이 말이 되는지."""
+        if not 0 < self.hours <= 72:
+            raise ValueError(f"반폭은 0 초과 72 이하(시간): {self.hours}")
+        if not self.kinds:
+            raise ValueError("발표 종류가 비어 있다")
+
+
+@dataclass(frozen=True, slots=True)
 class WashedRule:
     """시장이 이미 씻겨 내려간 날에는 새로 들지 않는다 — 조건 넷 가운데 기준 종목 약세는 반드시.
 
@@ -1755,6 +1782,11 @@ class Playbook:
     """시장이 이미 씻겨 내려간 날 신규 진입을 하지 않는다 — 값은 러너가 주입한다
     (`Session.ref_washed_ret` · `market_breadth` · `market_lag_ret` · `recent_funding`).
     🔴 모르면(None) 보류한다(규칙 #8-1). ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_event_window: EventWindow | None = None
+    """예정된 큰 지표 발표의 앞뒤 창 안에서는 새로 들지 않는다 — 일정은 러너 주입
+    (`Session.release_schedule`). 🔴 모르면(None) 보류한다(규칙 #8-1).
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2).
     """
     trail_after_r: TrailAfterR | None = None
     """R 배만큼 유리하게 간 뒤부터 손절을 최근 봉의 끝으로 따라 옮긴다(`TrailAfterR`).

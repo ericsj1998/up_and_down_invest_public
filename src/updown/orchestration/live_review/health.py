@@ -266,6 +266,7 @@ GATE_ATTRS: dict[str, str] = {
     "ref_volrank": "entry_ref_vol_rank",
     "rel_lag": "entry_rel_lag",
     "washed": "entry_washed",
+    "event_window": "entry_event_window",
     "funding": "funding_cap",
 }
 """보류 사유 이름 → 매매법 선언의 칸 이름. 어느 다리가 그 문을 선언했는지 여기로 찾는다."""

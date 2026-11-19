@@ -285,7 +285,7 @@ def session_hold(book: Playbook, regime: RefRegime | None) -> str | None:
     )
     # 종목 일봉(`entry_rel_lag`) · 시장 전체 값(`entry_washed`)이 필요한 문은 여기서 모른다 — 기준
     # 종목 값만으로 정해지는 문만 본다(모르는 문을 "닫힘" 으로 보이지 않게 뺀다).
-    ref_only = replace(book, entry_rel_lag=None, entry_washed=None)
+    ref_only = replace(book, entry_rel_lag=None, entry_washed=None, entry_event_window=None)
     return Session.entry_hold(cast("Session", state), ref_only, Direction.LONG)
 
 

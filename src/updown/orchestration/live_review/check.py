@@ -592,6 +592,7 @@ def now_rows(
     )
     rows.append(outside_row(snap, now, days))
     rows.append(universe_row(snap.fund, now))
+    rows.append(_releases_row_now(now))
     core_dd = twr_drawdown(snap.fund.get("core_twr"))
     fund_dd = twr_drawdown(snap.fund.get("twr"))
     at_s = brake_threshold(snap.fund)
@@ -608,6 +609,60 @@ def now_rows(
     )
     rows.append(_resource_row(health))
     return rows
+
+
+RELEASES_WARN_DAYS = 14
+"""발표 일정의 끝이 이 일수 안이면 ⚠️ — 그 뒤엔 발표 앞뒤 문을 선언한 다리가 신규 진입을 보류한다."""
+
+
+def releases_row(schedule: Any, now: datetime, *, declared: bool) -> Row:
+    """발표 일정 줄 — 진입 문 `entry_event_window` 가 읽는 일정이 언제까지 있나.
+
+    Args:
+        schedule: 발표 일정(`ReleaseSchedule`) · 못 읽었으면 None.
+        now: 지금(UTC).
+        declared: 그 문을 선언한 매매법이 있나.
+
+    Returns:
+        점검 줄. 끝을 넘었거나 못 읽었으면 ⛔(그 문을 선언한 다리가 신규 진입을 멈춘 상태다) ·
+        `RELEASES_WARN_DAYS` 일 안이면 ⚠️. 선언이 없으면 정보 줄.
+    """
+    basis = (
+        f"일정 끝까지 {RELEASES_WARN_DAYS} 일 넘게 · 끝을 넘기면 발표 앞뒤 문을 선언한 숏 다리가 "
+        "신규 진입을 보류한다 — 갱신 = scripts/research/t877_release_schedule.py → 배포"
+    )
+    if not declared:
+        return Row("now", "발표 일정", "info", "선언한 매매법 없음", basis)
+    if schedule is None:
+        return Row("now", "발표 일정", "bad", "config/market_releases.yml 을 못 읽었다", basis)
+    left = schedule.horizon - now
+    status = (
+        "bad"
+        if left <= timedelta(0)
+        else "warn"
+        if left < timedelta(days=RELEASES_WARN_DAYS)
+        else "ok"
+    )
+    return Row(
+        "now",
+        "발표 일정",
+        status,
+        f"끝 {schedule.horizon:%Y-%m-%d %H:%M} UTC · 남은 {left.days} 일",
+        basis,
+    )
+
+
+def _releases_row_now(now: datetime) -> Row:
+    """저장소의 선언 · 일정으로 `releases_row` 를 만든다(못 읽으면 ⛔)."""
+    from updown.analysis.playbook.select import load_playbooks
+    from updown.common.domain.releases import ReleaseConfigError, load_release_schedule
+
+    declared = any(b.entry_event_window is not None for b in load_playbooks())
+    try:
+        schedule = load_release_schedule()
+    except ReleaseConfigError:
+        schedule = None
+    return releases_row(schedule, now, declared=declared)
 
 
 def universe_row(fund: Mapping[str, Any], now: datetime) -> Row:
