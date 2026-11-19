@@ -175,6 +175,8 @@ class PositionCheck:
     stop_trigger: Decimal | None
     stop_size: int | None
     problems: tuple[str, ...]
+    notes: tuple[str, ...] = ()
+    """문제는 아니지만 알아 둘 상태 — 지금은 엔진 다리의 "익절 뒤 마감 처리 대기" 뿐(⛔ 없음)."""
 
 
 def open_trades(snap: Snapshot) -> list[Trade]:
@@ -214,16 +216,72 @@ def _problems(
     return out
 
 
-def _engine_problems(size: int, stop_sum: int | None) -> list[str]:
+def _engine_problems(
+    size: int, stop_sum: int | None, pending_tp: int = 0
+) -> tuple[list[str], list[str]]:
     """엔진 다리 포지션 — 원장 대신 엔진 장부가 주인이고, 손절은 몫마다 따로 걸린다.
 
     몫마다 손절이 있으니 한 줄 크기로 재면 멀쩡해도 "다 못 닫는다" 가 된다. 합으로 잰다.
+
+    Args:
+        size: 거래소 포지션 수량(롱이면 양수).
+        stop_sum: 그 계약에 걸린 조건부 손절 수량 합(롱이면 음수). 없으면 None.
+        pending_tp: 엔진의 마지막 마감 처리 **뒤에** 체결된 익절(줄이기 지정가) 수량 합.
+
+    Returns:
+        (문제들, 메모들).
+
+    Note:
+        나스닥 엔진은 체결 정리를 뉴욕 마감 처리 때 하루 한 번 한다
+        (`index_leg/runner.py` `on_close` → `_absorb_fills`). 그래서 낮에 한 몫이 익절하면
+        그 몫의 손절은 다음 마감 처리까지 거래소에 남는다 — 손절 합이 포지션보다 그 몫만큼 크다.
+        설계대로라 ⛔ 가 아니다(2026-11-19 23:37 NAS100 39 계약 · 06:0x 에 정리).
+        넘친 수량이 그 익절 수량과 **정확히** 같을 때만 메모로 돌리고,
+        다르거나 마감 처리가 지나도 남으면 ⛔ 그대로.
     """
     if stop_sum is None:
-        return ["거래소에 걸린 손절이 없다"]
-    if stop_sum != -size:
-        return [f"손절 합 {stop_sum} 이 포지션 {size} 과 다르다"]
-    return []
+        return ["거래소에 걸린 손절이 없다"], []
+    if stop_sum == -size:
+        return [], []
+    extra = abs(stop_sum) - abs(size)
+    if pending_tp > 0 and (stop_sum > 0) != (size > 0) and extra == pending_tp:
+        return [], [
+            f"익절 {pending_tp} 계약 체결 뒤 엔진 마감 처리 대기 — "
+            f"그 몫 손절({stop_sum} 중 {extra})은 다음 마감 처리에서 거둬진다(설계대로)"
+        ]
+    return [f"손절 합 {stop_sum} 이 포지션 {size} 과 다르다"], []
+
+
+def _engine_pending_tp(snap: Snapshot) -> dict[str, int]:
+    """계약마다 엔진의 마지막 마감 처리(`index_leg_day` 사건) 뒤에 체결된 익절 수량 합.
+
+    마감 처리 사건이 기간 안에 없으면 빈 사전 — 그때는 넘친 손절을 메모로 돌리지 않는다(⛔ 그대로).
+    """
+    last = None
+    for e in snap.events:
+        if e.get("event_type") == "index_leg_day":
+            t = when(e.get("ts"))
+            if t is not None and (last is None or t > last):
+                last = t
+    if last is None:
+        return {}
+    cut = last.timestamp()
+    out: dict[str, int] = {}
+    for o in _rows_of(snap.exchange.get("finished_orders")):
+        if not o.get("is_reduce_only") or "-tp-" not in str(o.get("text", "")):
+            continue
+        if str(o.get("finish_as", "")) != "filled":
+            continue
+        try:
+            done_at = float(o.get("finish_time") or 0)
+        except (TypeError, ValueError):
+            continue
+        if done_at <= cut:
+            continue
+        filled = abs(_int(o.get("size", 0)) or 0) - abs(_int(o.get("left", 0)) or 0)
+        contract = str(o.get("contract", ""))
+        out[contract] = out.get(contract, 0) + max(filled, 0)
+    return out
 
 
 STOP_COUNT_LIMIT = 5
@@ -247,6 +305,7 @@ def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
         stop_count[contract] = stop_count.get(contract, 0) + 1
         stop_sum[contract] = stop_sum.get(contract, 0) + (ssize or 0)
     engines = engine_symbols(snap.fund)
+    pending_tp = _engine_pending_tp(snap) if engines else {}
     by_sym: dict[str, Trade] = {}
     for t in open_trades(snap):
         by_sym.setdefault(t.symbol, t)
@@ -256,6 +315,11 @@ def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
         size = _int(p.get("size", 0)) or 0
         trade = by_sym.get(sym)
         stop = stops.get(sym)
+        eng_probs, eng_notes = (
+            _engine_problems(size, stop_sum.get(sym), pending_tp.get(sym, 0))
+            if sym in engines
+            else ([], [])
+        )
         out.append(
             PositionCheck(
                 symbol=sym,
@@ -270,7 +334,7 @@ def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
                 stop_trigger=stop[0] if stop else None,
                 stop_size=stop[1] if stop else None,
                 problems=(
-                    tuple(_engine_problems(size, stop_sum.get(sym)))
+                    tuple(eng_probs)
                     if sym in engines
                     else tuple(_problems(trade, size, stop))
                     + (
@@ -279,6 +343,7 @@ def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
                         else ()
                     )
                 ),
+                notes=tuple(eng_notes),
             )
         )
     held = {c.symbol for c in out}
@@ -542,9 +607,11 @@ def now_rows(
         )
     )
     probs = [f"{c.symbol}: {' / '.join(c.problems)}" for c in checks if c.problems]
+    notes = [f"{c.symbol}: {' / '.join(c.notes)}" for c in checks if c.notes]
     stops = sum(1 for c in checks if c.stop_trigger is not None)
     match_value = f"포지션 {len(checks)} · 손절 걸림 {stops}"
     match_value += " · " + " · ".join([*probs, *ghosts]) if probs or ghosts else ""
+    match_value += " · 참고 " + " · ".join(notes) if notes else ""
     rows.append(
         Row(
             s,
@@ -1244,7 +1311,7 @@ def _position_table(checks: Sequence[PositionCheck]) -> list[str]:
                 _f(c.liq, 6),
                 _f(c.stop_trigger, 6),
                 _f(c.trade.planned_stop if c.trade else None, 6),
-                " / ".join(c.problems) or "없음",
+                " / ".join(c.problems) or ("참고: " + " / ".join(c.notes) if c.notes else "없음"),
             )
             for c in checks
         ],
@@ -1518,7 +1585,13 @@ def check_json(
             if c.flags
         ],
         "positions": [
-            {"symbol": c.symbol, "size": c.size, "problems": list(c.problems)} for c in checks
+            {
+                "symbol": c.symbol,
+                "size": c.size,
+                "problems": list(c.problems),
+                "notes": list(c.notes),
+            }
+            for c in checks
         ],
         "made_at": now.astimezone(UTC).isoformat(),
     }

@@ -136,15 +136,20 @@ def test_stop_far_from_plan_and_partial_size_are_flagged() -> None:
     assert "다 못 닫는다" in probs and "계획 손절" in probs
 
 
-def _engine_snap(positions: list[dict[str, Any]], stops: list[dict[str, Any]]) -> Snapshot:
+def _engine_snap(
+    positions: list[dict[str, Any]],
+    stops: list[dict[str, Any]],
+    events: list[dict[str, Any]] | None = None,
+    finished: list[dict[str, Any]] | None = None,
+) -> Snapshot:
     fund = {
         "legs": [
             {"attribution": "pb@1", "symbols": ["NEAR_USDT"], "engine": None},
             {"attribution": "eng@1", "symbols": ["NAS100_USDT"], "engine": "private_strategy"},
         ]
     }
-    exchange = {"positions": positions, "price_orders": stops}
-    return Snapshot(Path(), NOW, [], [], [], fund, [], exchange)
+    exchange = {"positions": positions, "price_orders": stops, "finished_orders": finished or []}
+    return Snapshot(Path(), NOW, [], [], [], fund, events or [], exchange)
 
 
 def _nas_pos(size: int = 29) -> dict[str, Any]:
@@ -168,6 +173,62 @@ def test_engine_leg_still_flags_missing_or_short_stops() -> None:
     assert "손절이 없다" in " ".join(checks[0].problems)
     checks, _ = position_checks(_engine_snap([_nas_pos()], [_nas_stop(-20)]))
     assert "포지션 29" in " ".join(checks[0].problems)
+
+
+def _close_event(at: datetime) -> dict[str, Any]:
+    return {"event_type": "index_leg_day", "ts": at.isoformat(), "payload": {}}
+
+
+def _tp_fill(size: int, at: datetime, contract: str = "NAS100_USDT") -> dict[str, Any]:
+    return {
+        "contract": contract,
+        "size": -size,
+        "left": 0,
+        "text": "t-nxfae9-c0000016-tp-1",
+        "is_reduce_only": True,
+        "finish_as": "filled",
+        "finish_time": at.timestamp(),
+    }
+
+
+def test_engine_take_profit_after_close_is_pending_not_a_problem() -> None:
+    """2026-11-19 23:37 NAS100 — 한 몫(39)이 익절 · 그 몫 손절은 다음 마감 처리까지 남는다."""
+    stops = [_nas_stop(-36)] * 5 + [_nas_stop(-39)]
+    snap = _engine_snap(
+        [_nas_pos(180)],
+        stops,
+        events=[_close_event(NOW - timedelta(hours=4))],
+        finished=[_tp_fill(39, NOW - timedelta(minutes=2))],
+    )
+    checks, _ = position_checks(snap)
+    assert checks[0].problems == ()
+    assert "마감 처리 대기" in " ".join(checks[0].notes)
+    rows = now_rows(snap, Health(), checks, [], NOW)
+    row = next(r for r in rows if r.item.startswith("거래소 대조"))
+    assert row.status == "ok" and "참고" in row.value
+
+
+def test_engine_excess_stop_still_flagged_when_not_explained() -> None:
+    stops = [_nas_stop(-36)] * 5 + [_nas_stop(-39)]
+    # 익절이 마지막 마감 처리 앞이다 — 그 처리에서 거둬졌어야 했다 → ⛔ 그대로
+    snap = _engine_snap(
+        [_nas_pos(180)],
+        stops,
+        events=[_close_event(NOW - timedelta(hours=1))],
+        finished=[_tp_fill(39, NOW - timedelta(hours=3))],
+    )
+    assert "손절 합" in " ".join(position_checks(snap)[0][0].problems)
+    # 수량이 안 맞는다 → ⛔ 그대로
+    snap = _engine_snap(
+        [_nas_pos(180)],
+        stops,
+        events=[_close_event(NOW - timedelta(hours=4))],
+        finished=[_tp_fill(20, NOW - timedelta(minutes=2))],
+    )
+    assert "손절 합" in " ".join(position_checks(snap)[0][0].problems)
+    # 마감 처리 기록이 없다 → 메모로 돌리지 않는다
+    snap = _engine_snap([_nas_pos(180)], stops, finished=[_tp_fill(39, NOW)])
+    assert "손절 합" in " ".join(position_checks(snap)[0][0].problems)
 
 
 def test_brake_threshold_reads_the_leg_not_the_unused_bundle_field() -> None:
