@@ -281,6 +281,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         #    ⚠️ 조회·로그인은 **락과 무관**하게 계속 뜬다 — 락은 거래 시작만 게이트한다.
         from updown.apps.api.leader import TradingLeader
 
+        _wire_market_values(getattr(resolved_state, "session_factory", None))
         _trade_tasks: list[asyncio.Task[None]] = []
         # 1 GB 호스트 — engine 잡(자원 비트)을 리더 api 안에서 돌린다 (`inproc_engine` 참조).
         #    플래그가 꺼져 있으면 None 이고 아무 일도 없다 (dev·paper).
@@ -614,3 +615,29 @@ app = create_app()
 
 자원 생성은 `lifespan` 안에서 일어나므로, 임포트만으로 DB·Redis 에 붙지 않는다.
 """
+
+
+def _wire_market_values(factory: Any) -> None:
+    """러너가 그날의 시장 전체 값(종목 폭 · 뒤처진 묶음 수익)을 읽는 길을 꽂는다.
+
+    Args:
+        factory: DB 세션 팩토리. 없으면 꽂지 않는다(값 모름 = 그 문을 선언한 다리는 진입 보류).
+
+    Note:
+        줄은 엔진 잡(`market_breadth`)이 쓰고 러너는 읽기만 한다 — 러너 · 세션은 DB 를 모르므로
+        앱이 길을 댄다.
+    """
+    from updown.orchestration.rebalancer.breadth_job import BreadthParams, MarketCloseStore
+    from updown.orchestration.walkforward.live_runner import set_market_values_reader
+
+    if factory is None:
+        return
+    store = MarketCloseStore(factory)
+
+    async def read(market: str, day: Any, rule: Any) -> Any:
+        got = await store.breadth(
+            market, day, BreadthParams(rule.breadth_ma, rule.lag_days, rule.lag_rank_days)
+        )
+        return None if got is None else (got.breadth, got.lag_ret)
+
+    set_market_values_reader(read)

@@ -20,7 +20,7 @@ import random
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 from updown.analysis.indicators.reference import RefNeeds, needs_of, reference_regime
+from updown.analysis.playbook.types import WashedRule
 from updown.common.domain.instrument import Timeframe
 from updown.decision.allocation import Basket, as_members
 from updown.orchestration.fund_replay.runner_rules import (
@@ -181,6 +182,8 @@ class FundReplay:
         seed: int,
         engines: Sequence[ReplayEngineLeg] = (),
         membership: Callable[[str, datetime], frozenset[str] | None] | None = None,
+        market_values: Callable[[date, WashedRule], tuple[Decimal | None, Decimal | None] | None]
+        | None = None,
     ) -> None:
         """걸음을 준비한다.
 
@@ -194,6 +197,9 @@ class FundReplay:
                 실계좌 `_universe_step` 이 세션에 거는 `entry_legs` 와 같다. 빈 집합이고 보유가
                 없으면 그 걸음은 커서만 민다(`Session.idle_advance` · 실계좌는 그 판을 내린다).
                 None 이면 예전과 같다(고정 목록).
+            market_values: `(날, 선언) → (종목 폭, 뒤처진 묶음 수익)` — 그날 종가까지로 잰 시장
+                전체 값. 실계좌는 러너가 DB 줄을 읽어 넣는다(`_inject_market_values`). None 이면
+                값을 모르는 것으로 돈다(`entry_washed` 를 선언한 다리는 진입을 보류한다).
         """
         self.boards = list(boards)
         self.coordinator = coordinator
@@ -203,6 +209,7 @@ class FundReplay:
         self._ref_ends = [c.ts + FOUR for c in self._ref]
         self._rnd = random.Random(seed)
         self._membership = membership
+        self._market_values = market_values
         self.result = ReplayResult()
 
     def run(self, start: datetime, end: datetime) -> ReplayResult:
@@ -225,6 +232,7 @@ class FundReplay:
             on_hour = t.minute == 0
             if on_hour and t.hour % 4 == 0:
                 self._inject_ref(t)
+                self._inject_market(t)
             if on_hour:
                 self._inject_funding(t)
             if on_hour and self.engines:
@@ -318,6 +326,20 @@ class FundReplay:
                 s.ref_lag_ret = got.lag_ret
             if needs.washed_days is not None:
                 s.ref_washed_ret = got.washed_ret
+
+    def _inject_market(self, t: datetime) -> None:
+        """4H 경계마다 시장 전체 값(전날 종가까지)을 넣는다 — `entry_washed` 를 선언한 판만.
+
+        실계좌 `_inject_market_values` 와 같은 날 셈이다: 값의 날 = `t` 기준 마지막으로 닫힌 UTC 날.
+        """
+        day = (t - timedelta(days=1)).date()
+        for board in self.boards:
+            s = board.session
+            rule = next((b.entry_washed for b in s.playbooks if b.entry_washed is not None), None)
+            if rule is None:
+                continue
+            got = None if self._market_values is None else self._market_values(day, rule)
+            s.market_breadth, s.market_lag_ret = (None, None) if got is None else got
 
     def _inject_funding(self, t: datetime) -> None:
         """가장 최근 정산 요율을 `recent_funding` 으로 — 러너가 거래소 요율을 넣는 자리."""

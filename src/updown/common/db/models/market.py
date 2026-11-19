@@ -6,7 +6,7 @@
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 import sqlalchemy as sa
@@ -93,3 +93,47 @@ class CandleQualityIssue(Base):
             postgresql_where=sa.text("status = 'open'"),
         ),
     )
+
+
+class MarketDailyClose(Base):
+    """거래소 전 종목의 **UTC 일봉 종가** 한 칸 — 시장 전체 값(종목 폭 · 뒤처진 묶음)의 재료.
+
+    Note:
+        세션 하나는 종목 하나만 안다. "전체 종목 중 이평 위 비율" 같은 값은 전 종목 종가가 있어야
+        잰다 — 하루 한 번 전 종목 시세를 한 번에 받아 그날 종가로 쌓는다(`source = ticker`) ·
+        빈 날은 종목별 일봉으로 메운다(`source = candle`).
+        같은 칸은 한 번만 적는다(먼저 적힌 값이 남는다) — 뒤늦게 받은 값으로 지난 판단의 재료가
+        바뀌면 재현이 안 된다.
+    """
+
+    __tablename__ = "market_daily_closes"
+
+    market: Mapped[str] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(primary_key=True)
+    day: Mapped[date] = mapped_column(sa.Date, primary_key=True)
+    close: Mapped[Decimal]
+    source: Mapped[str]
+    captured_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())
+
+
+class MarketBreadthDay(Base):
+    """그날(UTC) 종가까지로 잰 **시장 전체 값** 한 줄 — 진입 문이 읽는다.
+
+    Note:
+        `day` = 값에 들어간 마지막 닫힌 날. 일수 셋(`ma_days` · `lag_days` · `rank_days`)은 매매법
+        선언에서 온다 — 선언이 다르면 줄도 따로다. 낼 수 없던 값은 NULL(모름 = 문은 보류한다).
+        같은 날 · 같은 일수의 줄은 하나뿐이고 고치지 않는다(재현).
+    """
+
+    __tablename__ = "market_breadth_days"
+
+    market: Mapped[str] = mapped_column(primary_key=True)
+    day: Mapped[date] = mapped_column(sa.Date, primary_key=True)
+    ma_days: Mapped[int] = mapped_column(primary_key=True)
+    lag_days: Mapped[int] = mapped_column(primary_key=True)
+    rank_days: Mapped[int] = mapped_column(primary_key=True)
+    breadth: Mapped[Decimal | None]
+    lag_ret: Mapped[Decimal | None]
+    breadth_count: Mapped[int]
+    lag_count: Mapped[int]
+    computed_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())

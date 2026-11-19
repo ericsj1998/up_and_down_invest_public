@@ -37,7 +37,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import replace as dc_replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from types import SimpleNamespace
 from typing import Any, Protocol, cast, runtime_checkable
@@ -49,7 +49,7 @@ from updown.analysis.detectors.rules import load_rules
 from updown.analysis.indicators.reference import RefNeeds, btc_vol_pct_series, reference_regime
 from updown.analysis.indicators.reference import btc_daily_vol as btc_daily_vol
 from updown.analysis.indicators.reference import needs_of as ref_needs_of
-from updown.analysis.playbook.types import RefVolPct
+from updown.analysis.playbook.types import RefVolPct, WashedRule
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.db.models.enums import LogLevel
 from updown.common.domain.candle import Candle
@@ -904,6 +904,78 @@ def early_ids_alive(
     return alive
 
 
+MarketValuesReader = Callable[
+    [str, date, WashedRule], Awaitable[tuple[Decimal | None, Decimal | None] | None]
+]
+"""`(거래소, 날, 선언) → (종목 폭, 뒤처진 묶음 수익)` — 줄이 없으면 None(앱이 읽개를 꽂는다)."""
+
+_market_reader: MarketValuesReader | None = None
+_MARKET_DAYS: dict[tuple[str, date, int, int, int], tuple[Decimal | None, Decimal | None]] = {}
+_MARKET_LOCKS: dict[tuple[str, date, int, int, int], asyncio.Lock] = {}
+
+
+def set_market_values_reader(reader: MarketValuesReader | None) -> None:
+    """그날의 시장 전체 값을 읽는 길을 꽂는다 — 프로세스에 하나(앱이 뜰 때 한 번).
+
+    Args:
+        reader: 읽개. None 이면 값을 모르는 것으로 돈다(그 문을 선언한 다리는 진입을 보류한다).
+
+    Note:
+        세션 · 러너는 DB 를 모른다 — 값은 봉과 같은 사실 입력이고 앱이 길을 댄다. 읽개가 바뀌면
+        기억해 둔 값도 버린다(시험 사이에 새지 않게).
+    """
+    global _market_reader
+    _market_reader = reader
+    _MARKET_DAYS.clear()
+    _MARKET_LOCKS.clear()
+
+
+async def market_day_values(
+    market: str, day: date, rule: WashedRule, *, now: datetime
+) -> tuple[Decimal | None, Decimal | None] | None:
+    """그날(`day` 종가까지)의 시장 전체 값 — **같은 프로세스의 판들이 한 번만 읽는다**.
+
+    Args:
+        market: 거래소 이름.
+        day: 값에 들어간 마지막 닫힌 UTC 날.
+        rule: 일수를 정하는 선언.
+        now: 지금 시각 — 자정 직후인지 가른다.
+
+    Returns:
+        `(종목 폭, 뒤처진 묶음 수익)`. 줄이 없거나 읽개가 없으면 None(모름).
+
+    Note:
+        자정 직후(`MARKET_VALUES_FRESH_S` 안)에는 줄이 막 적히는 중일 수 있어 잠깐씩 다시 읽는다.
+        그 밖의 시각에 없으면 바로 None 이다. 읽은 줄은 그날 내내 기억한다(줄은 고쳐지지 않는다).
+        읽기 실패(예외)는 부르는 쪽이 "모름" 으로 받는다.
+    """
+    key = (market, day, rule.breadth_ma, rule.lag_days, rule.lag_rank_days)
+    held = _MARKET_DAYS.get(key)
+    if held is not None:
+        return held
+    reader = _market_reader
+    if reader is None:
+        return None
+    lock = _MARKET_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        held = _MARKET_DAYS.get(key)
+        if held is not None:
+            return held
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        fresh = (now - midnight).total_seconds() <= MARKET_VALUES_FRESH_S
+        for attempt in range(MARKET_VALUES_TRIES if fresh else 1):
+            got = await reader(market, day, rule)
+            if got is not None:
+                for old in [k for k in _MARKET_DAYS if k[1] < day]:
+                    _MARKET_DAYS.pop(old, None)
+                    _MARKET_LOCKS.pop(old, None)
+                _MARKET_DAYS[key] = got
+                return got
+            if attempt + 1 < (MARKET_VALUES_TRIES if fresh else 1):
+                await asyncio.sleep(MARKET_VALUES_WAIT)
+    return None
+
+
 async def ref_rows(quotes: Any, ref: Instrument, bars: int, end: datetime) -> Sequence[Candle]:
     """기준 종목의 4H 봉 — **같은 프로세스의 판들이 한 번만 받는다** (T852 E1).
 
@@ -1225,6 +1297,12 @@ REF_REGIME_TRIES = 3
 """기준(BTC) 4H 봉을 못 받았을 때 받아 보는 횟수(처음 포함) — 새 봉이 닫힌 뒤일 때만 (T852 A3)."""
 REF_REGIME_WAIT = 1.0
 """기준 봉 다시 받기 사이 쉼(초)."""
+MARKET_VALUES_TRIES = 5
+"""그날의 시장 전체 값 줄이 아직 없을 때 읽어 보는 횟수(처음 포함) — 자정 직후일 때만."""
+MARKET_VALUES_WAIT = 1.0
+"""시장 전체 값 다시 읽기 사이 쉼(초)."""
+MARKET_VALUES_FRESH_S = 90
+"""자정 뒤 이 초 안에서만 다시 읽는다 — 그 뒤에 없으면 잡이 못 낸 것이다(기다려도 같다)."""
 STEP_REDO_TRIES = 5
 """봉 판정이 겹쳐 건너뛰었거나 미뤄졌을 때 다시 걸어 보는 횟수 (T852 D7)."""
 STEP_REDO_WAIT = 2.0
@@ -6247,6 +6325,7 @@ class LiveRunner:
             self._session.recent_funding = None
             self._log.warning("live_funding_unreadable", payload={"error": str(exc)[:120]})
         await self._inject_ref_regime()
+        await self._inject_market_values()
         before = next(
             (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),
             None,
@@ -8645,6 +8724,33 @@ class LiveRunner:
             self._session.ref_washed_ret = None  # 모름 = 씻긴 시장 문 보류
             self._ref_regime_at = None
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
+
+    async def _inject_market_values(self) -> None:
+        """시장 전체 값(종목 폭 · 뒤처진 묶음 수익)을 세션에 넣는다 — `entry_washed` 를 선언한 판만.
+
+        Note:
+            값의 날 = 지금 기준 마지막으로 닫힌 UTC 날. 그날 줄을 하루에 한 번 읽고 기억한다
+            (`market_day_values`). 🔴 못 읽으면 None = 모름 → 세션이 그 문을 선언한 다리의 신규
+            진입을 보류한다(규칙 #8-1) · 로그는 남긴다(#8). 보유 · 손절 · 청산에는 닿지 않는다.
+            선언이 없으면 아무것도 안 한다(비용 0).
+        """
+        rule = next(
+            (b.entry_washed for b in self._session.playbooks if b.entry_washed is not None), None
+        )
+        if rule is None:
+            return
+        now = datetime.now(UTC)
+        day = (now - timedelta(days=1)).date()
+        try:
+            got = await market_day_values(self.instrument.market.value, day, rule, now=now)
+        except Exception as exc:
+            got = None
+            self._log.warning("live_market_values_unreadable", payload={"error": str(exc)[:140]})
+        if got is None:
+            self._session.market_breadth = None
+            self._session.market_lag_ret = None
+            return
+        self._session.market_breadth, self._session.market_lag_ret = got
 
     def _inject_warm_holds(self, closed: Sequence[Candle], needs: RefNeeds, extra: int) -> None:
         """연구라면 들고 있었을 몫을 세션에 넣는다 (T811 · T812).

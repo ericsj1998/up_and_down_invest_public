@@ -351,3 +351,96 @@ def register_universe_job(
     _logger.info(
         "job_registered", payload={"job": "universe_snapshot", "minute": job_cfg.check_minute}
     )
+
+
+BREADTH_CAPTURE_AT = (23, 59, 45)
+"""전 종목 시세를 받는 시각(UTC 시 · 분 · 초) — 자정 정각의 걸음보다 먼저 그날 줄을 만든다.
+
+15 초 이른 시세를 그날 종가로 친다.
+"""
+BREADTH_CHECK_SECOND = 30
+"""매시 정각 뒤 이 초에 그날 줄이 있는지 점검한다 — 없으면 메운다(자정 것을 놓쳤을 때)."""
+
+
+def register_breadth_job(
+    scheduler: AsyncIOScheduler,
+    factory: "async_sessionmaker[AsyncSession]",
+    *,
+    run_soon_s: float | None = None,
+) -> None:
+    """시장 전체 값 잡 — 자정 직전 한 번 받고 매시 한 번 점검한다(줄이 없을 때만 거래소에 묻는다).
+
+    Args:
+        scheduler: 엔진 스케줄러.
+        factory: DB 세션 팩토리.
+        run_soon_s: 등록 뒤 이 초 뒤에 한 번 먼저 돈다. None 이면 다음 정각까지 기다린다.
+
+    Note:
+        `entry_washed` 를 선언한 매매법이 하나도 없으면 등록하지 않는다(할 일이 없다).
+        자정 직전 한 번은 전 종목 시세 **한 번**으로 끝난다. 줄이 이미 있으면 DB 한 번 읽고
+        끝이라 매시 점검의 비용은 0 에 가깝다. 처음 한 번 · 자정을 놓친 날은 종목마다 일봉을
+        받아 메운다 — 호출 사이를 쉬며 await 하므로 리더 안에서 돌아도 이벤트 루프를 막지 않는다.
+        실패하면 다음 정각에 다시 한다 — 그동안 러너는 "모름" 으로 읽고 그 문을 보류한다.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from updown.analysis.playbook.select import load_playbooks
+    from updown.marketdata.provider import gate_universe_facts
+    from updown.orchestration.rebalancer.breadth_job import (
+        BreadthJobConfig,
+        MarketCloseStore,
+        params_of,
+        run_day,
+    )
+
+    params = params_of(load_playbooks())
+    if not params:
+        _logger.info("breadth_job_idle", payload={"note": "선언한 매매법이 없다"})
+        return
+    store = MarketCloseStore(factory)
+    cfg = BreadthJobConfig()
+
+    async def job() -> None:
+        facts = gate_universe_facts()
+        try:
+            out = await run_day(store, facts, params, now=datetime.now(UTC), cfg=cfg)
+        finally:
+            await facts.aclose()
+        _logger.info(
+            "breadth_job_checked",
+            payload={
+                "day": out.day.isoformat(),
+                "action": out.action,
+                "captured": out.captured,
+                "filled": out.filled,
+                "failed": out.failed,
+                "reason": out.reason,
+            },
+        )
+
+    soon: dict[str, Any] = {}
+    if run_soon_s is not None:
+        soon["next_run_time"] = datetime.now(UTC) + timedelta(seconds=run_soon_s)
+    hour, minute, second = BREADTH_CAPTURE_AT
+    scheduler.add_job(  # pyright: ignore[reportUnknownMemberType]
+        _traced("market_breadth", job),
+        trigger=CronTrigger(timezone="UTC", hour=hour, minute=minute, second=second),
+        id="market_breadth",
+        name="market_breadth",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+        replace_existing=True,
+    )
+    scheduler.add_job(  # pyright: ignore[reportUnknownMemberType]
+        _traced("market_breadth_check", job),
+        trigger=CronTrigger(timezone="UTC", minute=0, second=BREADTH_CHECK_SECOND),
+        id="market_breadth_check",
+        name="market_breadth_check",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=1800,
+        replace_existing=True,
+        **soon,
+    )
+    _logger.info("job_registered", payload={"job": "market_breadth", "params": len(params)})

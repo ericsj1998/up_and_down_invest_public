@@ -19,7 +19,12 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from updown.apps.engine.resource_beat import register_resource_beat
-from updown.apps.engine.scheduler import build_scheduler, job_ids, register_universe_job
+from updown.apps.engine.scheduler import (
+    build_scheduler,
+    job_ids,
+    register_breadth_job,
+    register_universe_job,
+)
 from updown.common.logging.setup import get_logger
 from updown.common.resources import start_loop_lag
 
@@ -30,6 +35,8 @@ FLAG = "UPDOWN_ENGINE_INPROC"
 PROC_LABEL = "engine(in api)"
 """자원 카드의 engine 행에 이 이름이 뜬다 — 별도 프로세스가 아님을 화면이 말해야 한다."""
 UNIVERSE_RUN_SOON_S = 120.0
+BREADTH_RUN_SOON_S = 60.0
+"""리더가 뜬 뒤 이 초 뒤에 시장 전체 값 잡을 한 번 돌린다 — 그날 줄이 없으면 메운다."""
 """리더가 된 뒤 분기 우주 점검을 먼저 한 번 도는 시각(초).
 
 배포 뒤 다음 정시까지 펀드를 못 만들지 않게 한다.
@@ -83,6 +90,12 @@ class InprocEngine:
                 Exception
             ) as exc:  # 잡 등록 실패가 거래 시작을 막지 않는다 · 조용히 넘기지 않는다
                 _logger.error("universe_job_register_failed", payload={"error": str(exc)[:200]})
+            try:
+                register_breadth_job(scheduler, self._factory, run_soon_s=BREADTH_RUN_SOON_S)
+            except (
+                Exception
+            ) as exc:  # 잡 등록 실패가 거래 시작을 막지 않는다 · 조용히 넘기지 않는다
+                _logger.error("breadth_job_register_failed", payload={"error": str(exc)[:200]})
         start_loop_lag()  # T265 눈금 — 스냅샷의 `loop_lag_ms`
         scheduler.start()
         self._scheduler = scheduler

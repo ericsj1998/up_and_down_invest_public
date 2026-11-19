@@ -19,7 +19,12 @@ from updown.common.db.models.accounts import (
 )
 from updown.common.db.models.analysis import AnalysisReport, Structure
 from updown.common.db.models.fundamentals import FinancialFactRow
-from updown.common.db.models.market import Candle, CandleQualityIssue
+from updown.common.db.models.market import (
+    Candle,
+    CandleQualityIssue,
+    MarketBreadthDay,
+    MarketDailyClose,
+)
 from updown.common.db.models.master import Instrument
 from updown.common.db.models.ops import (
     AppSetting,
@@ -48,6 +53,8 @@ __all__ = [
     "EventLog",
     "FinancialFactRow",
     "Instrument",
+    "MarketBreadthDay",
+    "MarketDailyClose",
     "MarketGrantRow",
     "PlaybookGrantRow",
     "RoleCollection",

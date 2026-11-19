@@ -56,6 +56,7 @@ HEAD = (
     "_pump_fills",
     "_note_funding",
     "_inject_ref_regime",
+    "_inject_market_values",
 )
 
 
