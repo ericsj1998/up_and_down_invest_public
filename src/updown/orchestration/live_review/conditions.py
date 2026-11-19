@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -279,10 +279,14 @@ def session_hold(book: Playbook, regime: RefRegime | None) -> str | None:
         ref_surge=None if regime is None else regime.surge,
         ref_sma_down=None if regime is None else regime.sma_down,
         ref_vol_pct=None if regime is None else regime.vol_pct,
+        ref_vol_rank=None if regime is None else regime.vol_rank,
         recent_funding=None,
         warm_holds={},  # T811 — 판 시작 몫은 러너 상태라 여기선 모른다(기준 문만 본다)
     )
-    return Session.entry_hold(cast("Session", state), book, Direction.LONG)
+    # 종목 일봉(`entry_rel_lag`) · 시장 전체 값(`entry_washed`)이 필요한 문은 여기서 모른다 — 기준
+    # 종목 값만으로 정해지는 문만 본다(모르는 문을 "닫힘" 으로 보이지 않게 뺀다).
+    ref_only = replace(book, entry_rel_lag=None, entry_washed=None)
+    return Session.entry_hold(cast("Session", state), ref_only, Direction.LONG)
 
 
 @dataclass(frozen=True, slots=True)

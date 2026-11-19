@@ -14,6 +14,10 @@
   최근 3 일 치 (T304 변동성 목표).
 - `vol_sd_pct` (`entry_ref_vol_off.days` d): UTC 일봉 로그수익 d 개의 표본 표준편차 x 100
   (T612 SV1 · 숏 보호 · 연구 `t612_short_vol_dmul.sd20`).
+- `vol_rank` (`entry_ref_vol_rank` days · window): UTC 일봉 로그수익 `days` 개의 모집단
+  표준편차를, 그 날을 포함한 최근 `window` 일의 같은 값 안에서 순위(0 ~ 100)로.
+- `lag_ret` (`entry_rel_lag.days` d) · `washed_ret` (`entry_washed.ref_days` d): UTC 일봉 종가의
+  d 일 수익률(`surge` 와 같은 식 · 칸만 따로 — 다리마다 일수가 다르다).
 - `vol_pct` (`entry_ref_vol_pct` bars · rank): 4H 로그수익 `bars` 개의 모집단 표준편차를 직전
   `rank` 개 값 안에서 평균 순위 백분위로 (T329 급락 되돌림 롱 · 연구 573 `BTC변동성백분위`).
 """
@@ -67,6 +71,10 @@ class RefNeeds:
     pivot_lookback: int | None = None
     dist_days: int | None = None
     vol_off_days: int | None = None
+    vol_rank_days: int | None = None
+    vol_rank_window: int | None = None
+    lag_days: int | None = None
+    washed_days: int | None = None
 
     @property
     def empty(self) -> bool:
@@ -81,6 +89,9 @@ class RefNeeds:
             and self.pivot_k is None
             and self.dist_days is None
             and self.vol_off_days is None
+            and self.vol_rank_days is None
+            and self.lag_days is None
+            and self.washed_days is None
         )
 
     @property
@@ -106,6 +117,11 @@ class RefNeeds:
             6 * pivot_days,
             6 * ((self.dist_days or 0) + 2),
             6 * ((self.vol_off_days or 0) + 3),
+            0
+            if self.vol_rank_days is None
+            else 6 * (self.vol_rank_days + (self.vol_rank_window or 0) + 2),
+            6 * ((self.lag_days or 0) + 2),
+            6 * ((self.washed_days or 0) + 2),
         )
 
 
@@ -136,6 +152,9 @@ def needs_of(playbooks: Iterable[Playbook]) -> RefNeeds:
     )
     dist = next((b.entry_ref_dist_tilt for b in books if b.entry_ref_dist_tilt is not None), None)
     voff = next((b.entry_ref_vol_off for b in books if b.entry_ref_vol_off is not None), None)
+    vrank = next((b.entry_ref_vol_rank for b in books if b.entry_ref_vol_rank is not None), None)
+    lag = next((b.entry_rel_lag for b in books if b.entry_rel_lag is not None), None)
+    washed = next((b.entry_washed for b in books if b.entry_washed is not None), None)
     return RefNeeds(
         ma_n=ma_n,
         band_n=None if band is None else band.bars,
@@ -150,6 +169,10 @@ def needs_of(playbooks: Iterable[Playbook]) -> RefNeeds:
         pivot_lookback=None if reg is None else reg.lookback_days,
         dist_days=None if dist is None else dist.days,
         vol_off_days=None if voff is None else voff.days,
+        vol_rank_days=None if vrank is None else vrank.days,
+        vol_rank_window=None if vrank is None else vrank.window,
+        lag_days=None if lag is None else lag.days,
+        washed_days=None if washed is None else washed.ref_days,
     )
 
 
@@ -178,6 +201,9 @@ class RefRegime:
     pivot_s4: str | None = None
     dist_pct: Decimal | None = None
     vol_sd_pct: Decimal | None = None
+    vol_rank: Decimal | None = None
+    lag_ret: Decimal | None = None
+    washed_ret: Decimal | None = None
 
 
 def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
@@ -254,6 +280,11 @@ def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
         window = closes[-needs.vol_off_days - 1 :]
         rets = [math.log(b / a) for a, b in itertools.pairwise(window)]
         vol_sd_pct = Decimal(str(statistics.stdev(rets) * 100))
+    vol_rank: Decimal | None = None
+    if needs.vol_rank_days is not None:
+        vol_rank = btc_vol_rank(closed, needs.vol_rank_days, needs.vol_rank_window or 365)
+    lag_ret = None if needs.lag_days is None else _daily_return(closed, needs.lag_days)
+    washed_ret = None if needs.washed_days is None else _daily_return(closed, needs.washed_days)
     return RefRegime(
         above=above,
         ret=ret,
@@ -265,7 +296,53 @@ def reference_regime(closed: Sequence[Candle], needs: RefNeeds) -> RefRegime:
         pivot_s4=s4,
         dist_pct=dist_pct,
         vol_sd_pct=vol_sd_pct,
+        vol_rank=vol_rank,
+        lag_ret=lag_ret,
+        washed_ret=washed_ret,
     )
+
+
+def _daily_return(closed: Sequence[Candle], days: int) -> Decimal:
+    """UTC 일봉 종가(00:00 UTC 에 끝나는 4H 봉의 종가)의 `days` 일 수익률 — `surge` 와 같은 식.
+
+    Raises:
+        ValueError: 일봉이 `days` 개 이하이거나 기준 종가가 0 이하인 경우.
+    """
+    daily = [c.close for c in closed if (c.ts + FOUR_HOURS).hour == 0]
+    if len(daily) <= days or daily[-1 - days] <= 0:
+        raise ValueError(f"기준 일봉 부족: {len(daily)} <= {days}")
+    return daily[-1] / daily[-1 - days] - 1
+
+
+def btc_vol_rank(bars: Sequence[Candle], days: int, window: int) -> Decimal:
+    """마감된 기준(BTC) 4H 봉에서 **일봉 변동성의 순위**(0 ~ 100)를 낸다.
+
+    Args:
+        bars: 마감된 4H 봉(오름차순).
+        days: 변동성 하나에 쓰는 일 로그수익 개수(30).
+        window: 순위를 재는 창 — 마지막 날을 포함한 최근 `window` 일의 변동성(365).
+
+    Returns:
+        마지막 닫힌 일봉의 변동성보다 **낮은** 값의 수 ÷ (`window` - 1) x 100.
+
+    Raises:
+        ValueError: 일봉이 `days + window` 개보다 적거나 종가가 0 이하인 경우 — 창이 다 차지
+            않으면 값을 내지 않는다(모름 = 보류).
+
+    Note:
+        변동성 = 그 날까지의 일 로그수익 `days` 개의 모집단 표준편차(순위는 자유도와 무관하다).
+        일봉 종가 = 00:00 UTC 에 끝나는 4H 봉의 종가. float 로 계산해 Decimal 로 넘긴다.
+    """
+    closes = [float(c.close) for c in bars if (c.ts + FOUR_HOURS).hour == 0]
+    if len(closes) < days + window or any(x <= 0 for x in closes):
+        raise ValueError(f"기준 일봉 부족·이상(변동성 순위): {len(closes)} < {days + window}")
+    rets = [math.log(after / before) for before, after in itertools.pairwise(closes)]
+    vols = [
+        statistics.pstdev(rets[k - days : k]) for k in range(len(rets) - window + 1, len(rets) + 1)
+    ]
+    last = vols[-1]
+    below = sum(1 for v in vols if v < last)
+    return Decimal(str(100 * below / max(1, len(vols) - 1)))
 
 
 def daily_from_4h(bars: Sequence[Candle]) -> list[tuple[date, float, float, float, float]]:

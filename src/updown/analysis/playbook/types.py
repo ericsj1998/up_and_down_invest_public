@@ -390,6 +390,159 @@ class RefVolOff:
 
 
 @dataclass(frozen=True, slots=True)
+class RefVolRank:
+    """기준 종목(BTC) 일봉 변동성의 **순위**가 문턱 이상인 날은 신규 진입을 하지 않는다.
+
+    값 = 닫힌 BTC 일봉 로그수익 `days` 개의 모집단 표준편차를, 그 날을 포함한 최근 `window` 일의
+    같은 값 안에서 "더 낮은 값의 수 ÷ (개수 - 1) x 100" 으로 잰 순위(0 ~ 100).
+    값은 러너가 4H 마감마다 주입한다(`Session.ref_vol_rank`). 🔴 **모르면(None) 보류한다**
+    (규칙 #8-1). 보유 포지션은 건드리지 않는다 — 문이지 청산이 아니다.
+
+    Attributes:
+        days: 변동성 하나에 쓰는 일 로그수익 개수(30).
+        window: 순위를 재는 창(일 · 자기 포함 · 365).
+        min_rank: 이 순위 이상이면 그날 신규 진입 0(0 ~ 100).
+
+    Raises:
+        ValueError: 일수 · 창 · 문턱이 말이 안 되는 경우.
+    """
+
+    days: int
+    window: int
+    min_rank: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 말이 되는지."""
+        if not 2 <= self.days <= 400:
+            raise ValueError(f"일수는 2 ~ 400: {self.days}")
+        if not 2 <= self.window <= 800:
+            raise ValueError(f"창은 2 ~ 800: {self.window}")
+        if not 0 < self.min_rank <= 100:
+            raise ValueError(f"문턱은 0 초과 100 이하: {self.min_rank}")
+
+    def blocks(self, value: Decimal) -> bool:
+        """이 순위면 신규 진입을 막는가."""
+        return value >= self.min_rank
+
+
+@dataclass(frozen=True, slots=True)
+class RelLag:
+    """그 종목이 기준 종목(BTC)보다 **뒤처져 있을 때만** 새로 든다.
+
+    값 = 종목의 닫힌 일봉 `days` 일 수익 - 기준 종목의 `days` 일 수익. 이 값이 `max_gap` 이하여야
+    든다. 종목 쪽은 세션이 들고 있는 일봉으로 재고, 기준 쪽은 러너가 주입한다
+    (`Session.ref_lag_ret`). 🔴 **어느 쪽이든 모르면(None) 보류한다**(규칙 #8-1).
+
+    Attributes:
+        days: 수익을 재는 일수(20).
+        max_gap: 수익 차의 상한(-0.018 = 기준보다 1.8%p 넘게 뒤처짐).
+
+    Raises:
+        ValueError: 일수가 말이 안 되는 경우.
+    """
+
+    days: int
+    max_gap: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 말이 되는지."""
+        if not 1 <= self.days <= 400:
+            raise ValueError(f"일수는 1 ~ 400: {self.days}")
+
+    def holds(self, own: Decimal, ref: Decimal) -> bool:
+        """이 수익 차면 들어도 되는가."""
+        return own - ref <= self.max_gap
+
+
+@dataclass(frozen=True, slots=True)
+class TrailAfterR:
+    """처음 손절 거리의 R 배만큼 유리하게 간 **뒤부터** 손절을 최근 봉의 끝으로 따라 옮긴다.
+
+    걷기 봉(진입 뒤에 마감한 판정 TF 봉) 가운데 저가(숏) · 고가(롱)가
+    "진입가 -/+ r x 처음 손절 거리" 에 닿은 봉이 켜는 봉이다. 켜진 봉부터 판정 TF 봉이 마감할
+    때마다 손절 = min(지금 손절, 최근 `bars` 개 걷기 봉(지금 봉 포함)의 최고가) — 숏 기준 ·
+    롱은 거울상. 값은 결정 층 `trail_after_r_stop` 이 정한다(규칙 #4) · 유리한 쪽으로만(규칙 #3).
+
+    Attributes:
+        r: 켜지는 R 배수(1 = 처음 손절 거리만큼 유리하게).
+        bars: 따라가는 창(판정 TF 봉 수 · 5).
+
+    Raises:
+        ValueError: 배수 · 창이 말이 안 되는 경우.
+    """
+
+    r: Decimal
+    bars: int
+
+    def __post_init__(self) -> None:
+        """값이 말이 되는지."""
+        if self.r <= 0:
+            raise ValueError(f"R 배수는 0 초과: {self.r}")
+        if not 1 <= self.bars <= 200:
+            raise ValueError(f"창은 1 ~ 200: {self.bars}")
+
+
+@dataclass(frozen=True, slots=True)
+class WashedRule:
+    """시장이 이미 씻겨 내려간 날에는 새로 들지 않는다 — 조건 넷 가운데 기준 종목 약세는 반드시.
+
+    조건(전부 진입 시각까지 닫힌 값):
+      ① 기준 종목(BTC) `ref_days` 일 수익 < 0                         (`Session.ref_washed_ret`)
+      ② 전체 종목 중 `breadth_ma` 일 이평 위 비율 < `breadth_below`   (`Session.market_breadth`)
+      ③ 뒤처진 묶음(`lag_rank_days` 일 수익 아래 1/3)의 최근 `lag_days` 일 수익 < 0
+                                                                      (`Session.market_lag_ret`)
+      ④ 그 종목 직전 펀딩 < 0                                          (`Session.recent_funding`)
+    ① 이 참이고 ② ~ ④ 가운데 `need` 개 이상이 참이면 그 봉엔 새로 안 든다. 값은 러너가 주입한다.
+    🔴 **①·②·③ 가운데 하나라도 모르면(None) 보류한다**(규칙 #8-1). 펀딩을 모르면 ④ 는 거짓으로
+    센다(요율이 없는 종목 = 음수 아님). 보유 포지션은 건드리지 않는다.
+
+    Attributes:
+        ref_days: 기준 종목 수익 일수(7).
+        breadth_ma: 종목 폭을 재는 이평 일수(20).
+        breadth_below: 종목 폭 문턱(0.4).
+        lag_days: 뒤처진 묶음의 최근 수익 일수(3).
+        lag_rank_days: 뒤처진 묶음을 고르는 수익 일수(30).
+        need: ② ~ ④ 가운데 참이어야 하는 개수(2).
+
+    Raises:
+        ValueError: 값이 말이 안 되는 경우.
+    """
+
+    ref_days: int
+    breadth_ma: int
+    breadth_below: Decimal
+    lag_days: int
+    lag_rank_days: int
+    need: int
+
+    def __post_init__(self) -> None:
+        """값이 말이 되는지."""
+        if min(self.ref_days, self.breadth_ma, self.lag_days, self.lag_rank_days) < 1:
+            raise ValueError("일수는 1 이상")
+        if not 0 < self.breadth_below < 1:
+            raise ValueError(f"종목 폭 문턱은 0 ~ 1: {self.breadth_below}")
+        if not 1 <= self.need <= 3:
+            raise ValueError(f"필요 개수는 1 ~ 3: {self.need}")
+
+    def blocks(
+        self,
+        ref_ret: Decimal,
+        breadth: Decimal,
+        lag_ret: Decimal,
+        funding: Decimal | None,
+    ) -> bool:
+        """이 값들이면 신규 진입을 막는가."""
+        if ref_ret >= 0:
+            return False
+        hits = (
+            int(breadth < self.breadth_below)
+            + int(lag_ret < 0)
+            + int(funding is not None and funding < 0)
+        )
+        return hits >= self.need
+
+
+@dataclass(frozen=True, slots=True)
 class RefDistTilt:
     """기준 종목(BTC) 일봉 종가의 SMA(`days`) 거리 % 가 정하는 크기 배수 (T783 · P0 · T772).
 
@@ -1587,6 +1740,28 @@ class Playbook:
     entry_ref_vol_off: RefVolOff | None = None
     """기준 종목(BTC) 일봉 변동성이 문턱 이상인 날 신규 진입을 하지 않는다 (T612 SV1 · 숏 보호) —
     러너 주입(`Session.ref_vol_sd_pct`) · 모르면 막지 않는다. ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_ref_vol_rank: RefVolRank | None = None
+    """기준 종목(BTC) 일봉 변동성 순위가 문턱 이상인 날 신규 진입을 하지 않는다 — 러너 주입
+    (`Session.ref_vol_rank`). 🔴 모르면(None) 보류한다(규칙 #8-1).
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_rel_lag: RelLag | None = None
+    """그 종목이 기준 종목(BTC)보다 뒤처져 있을 때만 새로 든다 — 종목 쪽은 세션의 닫힌 일봉 ·
+    기준 쪽은 러너 주입(`Session.ref_lag_ret`). 🔴 모르면(None) 보류한다(규칙 #8-1).
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    entry_washed: WashedRule | None = None
+    """시장이 이미 씻겨 내려간 날 신규 진입을 하지 않는다 — 값은 러너가 주입한다
+    (`Session.ref_washed_ret` · `market_breadth` · `market_lag_ret` · `recent_funding`).
+    🔴 모르면(None) 보류한다(규칙 #8-1). ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
+    trail_after_r: TrailAfterR | None = None
+    """R 배만큼 유리하게 간 뒤부터 손절을 최근 봉의 끝으로 따라 옮긴다(`TrailAfterR`).
+
+    값은 결정 층 `trail_after_r_stop` 이 정하고 세션은 그 값으로만 손절을 바꾼다. 유리한 쪽으로만
+    (규칙 #3) · 현재가를 넘지 않을 때만. R 의 기준은 `TradeRecord.initial_stop`(없으면 지금 손절).
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2).
     """
     entry_ref_regime_tilt: RefRegimeTilt | None = None
     """기준 종목(BTC) 일봉 전고점 국면이 정하는 **크기 배수** (T436 · T557 · 혼합 4.3).

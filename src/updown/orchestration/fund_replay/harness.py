@@ -291,6 +291,7 @@ class FundReplay:
                 s.ref_pivot_s1 = s.ref_pivot_s4 = None
                 s.ref_dist_pct = None
                 s.ref_vol_sd_pct = None
+                s.ref_vol_rank = s.ref_lag_ret = s.ref_washed_ret = None
                 continue
             if needs.ma_n is not None:
                 s.ref_above = got.above
@@ -311,6 +312,12 @@ class FundReplay:
                 s.ref_dist_pct = got.dist_pct
             if needs.vol_off_days is not None:
                 s.ref_vol_sd_pct = got.vol_sd_pct
+            if needs.vol_rank_days is not None:
+                s.ref_vol_rank = got.vol_rank
+            if needs.lag_days is not None:
+                s.ref_lag_ret = got.lag_ret
+            if needs.washed_days is not None:
+                s.ref_washed_ret = got.washed_ret
 
     def _inject_funding(self, t: datetime) -> None:
         """가장 최근 정산 요율을 `recent_funding` 으로 — 러너가 거래소 요율을 넣는 자리."""

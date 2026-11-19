@@ -52,8 +52,12 @@ from updown.analysis.playbook.types import (
     RefSurgeCap,
     RefVolOff,
     RefVolPct,
+    RefVolRank,
+    RelLag,
     SmaTilt,
+    TrailAfterR,
     VolTarget,
+    WashedRule,
 )
 from updown.common.domain.evidence import Family, Grade
 from updown.common.domain.instrument import MarketGroup, Timeframe
@@ -515,6 +519,78 @@ def _ref_vol_off(raw: object, name: str) -> RefVolOff:
         return RefVolOff(days=int(str(body["days"])), min_pct=Decimal(str(body["min_pct"])))
     except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
         raise PlaybookConfigError(f"{name}.entry_ref_vol_off — {exc}") from exc
+
+
+def _ref_vol_rank(raw: object, name: str) -> RefVolRank:
+    """기준 일봉 변동성 순위 문.
+
+    예: `{days: 30, window: 365, min_rank: "67"}`.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_ref_vol_rank")
+    try:
+        return RefVolRank(
+            days=int(str(body["days"])),
+            window=int(str(body["window"])),
+            min_rank=Decimal(str(body["min_rank"])),
+        )
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_ref_vol_rank — {exc}") from exc
+
+
+def _rel_lag(raw: object, name: str) -> RelLag:
+    """기준 종목보다 뒤처진 종목만 드는 문.
+
+    예: `{days: 20, max_gap: "-0.018"}`.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_rel_lag")
+    try:
+        return RelLag(days=int(str(body["days"])), max_gap=Decimal(str(body["max_gap"])))
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_rel_lag — {exc}") from exc
+
+
+def _washed(raw: object, name: str) -> WashedRule:
+    """씻긴 시장 문.
+
+    예: `{ref_days: 7, breadth_ma: 20, breadth_below: "0.4", lag_days: 3, lag_rank_days: 30,
+    need: 2}`.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.entry_washed")
+    try:
+        return WashedRule(
+            ref_days=int(str(body["ref_days"])),
+            breadth_ma=int(str(body["breadth_ma"])),
+            breadth_below=Decimal(str(body["breadth_below"])),
+            lag_days=int(str(body["lag_days"])),
+            lag_rank_days=int(str(body["lag_rank_days"])),
+            need=int(str(body["need"])),
+        )
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.entry_washed — {exc}") from exc
+
+
+def _trail_after_r(raw: object, name: str) -> TrailAfterR:
+    """R 배 뒤 따라가는 손절.
+
+    예: `{r: "1.0", bars: 5}`.
+
+    Raises:
+        PlaybookConfigError: 키가 빠졌거나 값이 범위 밖인 경우.
+    """
+    body = _mapping(raw, f"{name}.trail_after_r")
+    try:
+        return TrailAfterR(r=Decimal(str(body["r"])), bars=int(str(body["bars"])))
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{name}.trail_after_r — {exc}") from exc
 
 
 def _early_entry(raw: object, name: str) -> EarlyEntry:
@@ -1038,6 +1114,26 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         None
                         if body.get("entry_ref_vol_off") is None
                         else _ref_vol_off(body["entry_ref_vol_off"], f"playbooks.{name}")
+                    ),
+                    entry_ref_vol_rank=(
+                        None
+                        if body.get("entry_ref_vol_rank") is None
+                        else _ref_vol_rank(body["entry_ref_vol_rank"], f"playbooks.{name}")
+                    ),
+                    entry_rel_lag=(
+                        None
+                        if body.get("entry_rel_lag") is None
+                        else _rel_lag(body["entry_rel_lag"], f"playbooks.{name}")
+                    ),
+                    entry_washed=(
+                        None
+                        if body.get("entry_washed") is None
+                        else _washed(body["entry_washed"], f"playbooks.{name}")
+                    ),
+                    trail_after_r=(
+                        None
+                        if body.get("trail_after_r") is None
+                        else _trail_after_r(body["trail_after_r"], f"playbooks.{name}")
                     ),
                     entry_ref_regime_tilt=(
                         None

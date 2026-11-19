@@ -279,23 +279,30 @@ def plan_fault(record: TradeRecord) -> str:
     #    손절은 거래소에 정상으로 걸려 있었다). 늘 붉은 점검은 진짜 이상을 묻는다.
     #    ⇒ 처음 손절(`initial_stop`)이 진입 반대편에 제대로 서 있었고 지금 손절이 **그 뒤 옮겨진
     #      값**이면 같은 값을 허용한다. 새 계획은 처음 손절 = 지금 손절이라 그대로 엄하다.
-    #    ⛔ 같은 값까지만이다 — 진입을 넘어간 손절은 여전히 잡는다.
+    # ⭐ **따라가는 손절**(선언 `trail_after_r` · `trail_stops` · `trail_ma`)은 손절을 진입가
+    #    **너머**(이익을 잠그는 쪽)까지 옮긴다 — 그것도 매매법이 시킨 정상 상태다. 처음 손절이
+    #    진입 반대편에 제대로 서 있었고 지금 손절이 처음보다 **조여진 쪽**(롱 위 · 숏 아래)이면
+    #    손절과 진입의 위아래는 따지지 않는다. 처음 손절을 모르거나(옛 기록) 처음보다 느슨해진
+    #    손절은 여전히 같은 값까지만 허용하고 그 너머는 잡는다.
     first_stop = record.initial_stop
     moved = (
         first_stop is not None
         and first_stop != stop
         and (first_stop < entry if long else first_stop > entry)
     )
+    trailed = (
+        moved and first_stop is not None and (stop > first_stop if long else stop < first_stop)
+    )
     even = record.half_at is not None or moved
     if long:
-        if not (stop <= entry if even else stop < entry):
+        if not (trailed or (stop <= entry if even else stop < entry)):
             return f"롱인데 손절({stop})이 진입({entry}) 위다"
         if not entry < first:
             return f"롱인데 1차 익절({first})이 진입({entry}) 아래다"
         if not first <= target:
             return f"롱인데 목표({target})가 1차 익절({first}) 아래다"
         return ""
-    if not (entry <= stop if even else entry < stop):
+    if not (trailed or (entry <= stop if even else entry < stop)):
         return f"숏인데 손절({stop})이 진입({entry}) 아래다"
     if not first < entry:
         return f"숏인데 1차 익절({first})이 진입({entry}) 위다"

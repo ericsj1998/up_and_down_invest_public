@@ -8617,6 +8617,12 @@ class LiveRunner:
                 self._session.ref_dist_pct = got.dist_pct
             if needs.vol_off_days is not None:
                 self._session.ref_vol_sd_pct = got.vol_sd_pct
+            if needs.vol_rank_days is not None:
+                self._session.ref_vol_rank = got.vol_rank
+            if needs.lag_days is not None:
+                self._session.ref_lag_ret = got.lag_ret
+            if needs.washed_days is not None:
+                self._session.ref_washed_ret = got.washed_ret
             self._ref_regime_at = last_ts
         except Exception as exc:
             if attempt + 1 < REF_REGIME_TRIES and not isinstance(exc, ValueError):
@@ -8634,6 +8640,9 @@ class LiveRunner:
             self._session.ref_pivot_s1 = self._session.ref_pivot_s4 = None  # 모름 = 배수 1 (T436)
             self._session.ref_dist_pct = None  # 모름 = 배수 1 (T783)
             self._session.ref_vol_sd_pct = None  # 모름 = 막지 않음 (T612 SV1)
+            self._session.ref_vol_rank = None  # 모름 = 변동성 순위 문 보류
+            self._session.ref_lag_ret = None  # 모름 = 뒤처짐 문 보류
+            self._session.ref_washed_ret = None  # 모름 = 씻긴 시장 문 보류
             self._ref_regime_at = None
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
 

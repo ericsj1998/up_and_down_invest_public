@@ -69,6 +69,7 @@ from updown.decision.risk.merged_liquidation import (
     MergedLiqVerdict,
     check_merged_liquidation,
 )
+from updown.decision.risk.trail_after import trail_after_r_stop
 from updown.decision.sizing import DEFAULT_LEVERAGE_CAP, capped_stop, protect_stop, size_for
 from updown.marketdata.ingest.delta_store import load_bar_deltas
 from updown.marketdata.ingest.timeframes import interval
@@ -739,6 +740,28 @@ class Session:
 
     모르면 None(배수 1).
     """
+    ref_vol_rank: Decimal | None = None
+    """기준 종목(BTC) 일봉 변동성 순위(0 ~ 100) — 러너 주입(`entry_ref_vol_rank`).
+
+    🔴 None = 모름 → 이 문을 선언한 매매법은 **진입을 보류**한다(규칙 #8-1).
+    """
+    ref_lag_ret: Decimal | None = None
+    """기준 종목(BTC)의 직전 `days` 일(UTC 일봉 종가) 수익률 — 러너 주입(`entry_rel_lag`).
+
+    `ref_surge` 와 같은 식이고 칸만 따로다(다리마다 일수가 다르다). 🔴 None = 모름 → 보류.
+    """
+    ref_washed_ret: Decimal | None = None
+    """기준 종목(BTC)의 직전 `ref_days` 일 수익률 — 러너 주입(`entry_washed` 조건 ①).
+
+    🔴 None = 모름 → 보류.
+    """
+    market_breadth: Decimal | None = None
+    """전체 종목 가운데 이평 위에 있는 비율(0 ~ 1) — 러너 주입(`entry_washed` 조건 ②).
+
+    세션은 종목 하나만 안다 — 시장 전체 값은 봉과 같은 **사실 입력**이다. 🔴 None = 모름 → 보류.
+    """
+    market_lag_ret: Decimal | None = None
+    """뒤처진 종목 묶음의 최근 수익률 — 러너 주입(`entry_washed` 조건 ③). 🔴 None = 모름 → 보류."""
     ref_vol_sd_pct: Decimal | None = None
     """기준 종목(BTC) 일봉 로그수익 표본 표준편차 % — 러너 주입(T612 SV1 · `entry_ref_vol_off`).
 
@@ -1879,8 +1902,8 @@ class Session:
             direction: 계획 기하가 말한 방향.
 
         Returns:
-            `ref_gate` · `ref_band` · `ref_surge` · `ref_sma` · `ref_volpct` · `warm_hold` ·
-            `funding` 중 처음 걸린 것. 없으면 None.
+            `ref_gate` · `ref_band` · `ref_surge` · `ref_sma` · `ref_volpct` · `ref_volrank` ·
+            `rel_lag` · `washed` · `warm_hold` · `funding` 중 처음 걸린 것. 없으면 None.
 
         Note:
             `_enter` 가 이 순서 그대로 읽고 센다 · 적는다. 마감 전 예비 신호(`preview`)도 같은
@@ -1900,11 +1923,49 @@ class Session:
         vpct = book.entry_ref_vol_pct
         if vpct is not None and (self.ref_vol_pct is None or not vpct.holds(self.ref_vol_pct)):
             return "ref_volpct"
+        vrank = book.entry_ref_vol_rank
+        if vrank is not None and (self.ref_vol_rank is None or vrank.blocks(self.ref_vol_rank)):
+            return "ref_volrank"
+        lag = book.entry_rel_lag
+        if lag is not None:
+            own = self.own_return(lag.days)
+            if own is None or self.ref_lag_ret is None or not lag.holds(own, self.ref_lag_ret):
+                return "rel_lag"
+        washed = book.entry_washed
+        if washed is not None and (
+            self.ref_washed_ret is None
+            or self.market_breadth is None
+            or self.market_lag_ret is None
+            or washed.blocks(
+                self.ref_washed_ret, self.market_breadth, self.market_lag_ret, self.recent_funding
+            )
+        ):
+            return "washed"
         if self.warm_holds and self._warm_held_now(book):
             return "warm_hold"
         if funding_blocks(direction, self.recent_funding, book.funding_cap):
             return "funding"
         return None
+
+    def own_return(self, days: int) -> Decimal | None:
+        """이 종목의 닫힌 일봉 `days` 일 수익률 — 부작용 없음.
+
+        Args:
+            days: 수익을 재는 일수.
+
+        Returns:
+            마지막 닫힌 일봉 종가 ÷ `days` 봉 전 종가 - 1. 일봉 축이 없거나 봉이 모자라면
+            None(모름).
+
+        Note:
+            일봉은 판정이 이미 들고 있다(`decision_frames`). 커서까지 닫힌 봉만 본다(규칙 #5).
+        """
+        if Timeframe.D1 not in self.feed.timeframes:
+            return None
+        rows = self.feed.judged(Timeframe.D1)
+        if len(rows) <= days or rows[-1 - days].close <= 0:
+            return None
+        return rows[-1].close / rows[-1 - days].close - 1
 
     def _warm_held_now(self, book: Playbook) -> bool:
         """판정 봉이 판 시작 전 "연구라면 들고 있었을 몫" 의 보유 안인가 (T811 · 부작용 없음).
@@ -3271,6 +3332,35 @@ class Session:
                         self.ledger.replace(held)
                         self.journal()
                         self._count("breakeven_after_r")
+            # 🔴 **R 배 뒤 따라가는 손절** (선언 `trail_after_r`). 걷기 봉 가운데 켜는 봉이 있으면
+            #    그 봉부터 판정 TF 봉이 마감할 때마다 손절을 최근 봉들의 끝으로 옮긴다. 값은 결정 층
+            #    `trail_after_r_stop` 이 닫힌 봉만으로 다시 센다(걸음을 건너뛰어도 같은 값 ·
+            #    규칙 #5) ·
+            #    유리한 쪽으로만(규칙 #3) · 현재가를 넘는 자리면 안 옮긴다 · 리스크 감소 행동(#8-1).
+            #    옮긴 손절은 **다음 걸음부터** 체결 판정에 쓰인다(체결 판정이 이 앞에 있다).
+            trail = book.trail_after_r
+            if trail is not None and held.opened_at:
+                gauge = self._frame(book.timeframe, None)
+                if gauge is not None and gauge.rows:
+                    base = held.initial_stop if held.initial_stop is not None else held.planned_stop
+                    level = trail_after_r_stop(
+                        long=long,
+                        entry=held.entry,
+                        base_stop=base,
+                        current_stop=held.planned_stop,
+                        r_mult=trail.r,
+                        bars=trail.bars,
+                        rows=gauge.rows,
+                        opened_at=held.opened_at,
+                        span=frame_span(book.timeframe),
+                    )
+                    safe = level is not None and (level < bar.close if long else level > bar.close)
+                    if level is not None and safe:
+                        held = replace(held, planned_stop=level)
+                        self._open = held
+                        self.ledger.replace(held)
+                        self.journal()
+                        self._count("trail_after_r")
             if book.trail_stops:
                 state = self._frame(book.timeframe, None)
                 if state is not None:
@@ -5571,6 +5661,35 @@ class Session:
                 },
             )
             held("hold:ref_volpct")
+            return None
+        if hold in ("ref_volrank", "rel_lag", "washed"):
+            # 기준 변동성 순위 · 기준 대비 뒤처짐 · 씻긴 시장 문 — 그 봉엔 새로 안 든다.
+            # 보유분은 그대로.
+            # 🔴 모르면(None) 보류한다 — 신규 진입은 리스크 증가 행동이다(절대 규칙 #8-1).
+            self._count(hold)
+            lag = chosen.playbook.entry_rel_lag
+            own = None if lag is None else self.own_return(lag.days)
+            _logger.info(
+                "session_entry_rule_held",
+                payload={
+                    "rule": hold,
+                    "ref_vol_rank": None if self.ref_vol_rank is None else str(self.ref_vol_rank),
+                    "own_ret": None if own is None else str(own),
+                    "ref_lag_ret": None if self.ref_lag_ret is None else str(self.ref_lag_ret),
+                    "ref_washed_ret": (
+                        None if self.ref_washed_ret is None else str(self.ref_washed_ret)
+                    ),
+                    "market_breadth": (
+                        None if self.market_breadth is None else str(self.market_breadth)
+                    ),
+                    "market_lag_ret": (
+                        None if self.market_lag_ret is None else str(self.market_lag_ret)
+                    ),
+                    "funding": None if self.recent_funding is None else str(self.recent_funding),
+                    "note": "진입 문이 닫혀 있다(또는 값을 모른다) — 이 봉엔 새로 안 든다",
+                },
+            )
+            held(f"hold:{hold}")
             return None
         if hold == "warm_hold":
             # T811 — 판이 열리기 전부터 켜져 있던 조건: 연구라면 이미 들고 있어 이 봉엔 안 산다.
