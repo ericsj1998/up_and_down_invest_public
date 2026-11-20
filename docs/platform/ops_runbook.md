@@ -46,6 +46,9 @@ bash scripts/deploy/ship.sh                 # main 에서만 · 태그 = v<버�
    부터 대기 진입 지정가는 입양이 **이어받는다**(`live_pending_restored`). 배포 뒤 그 수가 같은지 확인한다 —
    줄었으면 로그의 `live_pending_dropped`/`leftover_zombie_entry_swept` 를 본다.
 3. 장중 큰 움직임이 아닐 때. 이미지 전송(600 MB gunzip)이 1 GB 서버 CPU 를 잠깐 다 쓴다.
+3-1. (비공개 저장소에서) 플레이북 = `docs/strategy/live_trading_logic.md` 첫 줄 버전이 이번 태그 · 문서 끝 판 기록 표에 이번 태그 줄 —
+   매매법이 바뀐 배포면 고치기 전 판을 `docs/strategy/history/live_trading_logic_v<옛 버전>.md` 로 옮기고 본문도 새 선언으로 (2026-11-20 · CLAUDE.md).
+   `ship.sh` 가 첫 줄 · 판 기록을 검사해 어긋나면 멈춘다(`PLAYBOOK_CHECK=0` 은 급할 때만).
 4. (비공개 저장소에서) `make predeploy-check` 의 한 장 보고(`logs/predeploy/<시각>/report.md`)를 읽는다 — 받아 둔
    스냅샷으로 "지금 떠 있는 태그 대 배포할 작업 트리" 를 같은 과거 구간에서 돌려 새로 생기는 · 사라지는 · 값이 바뀌는
    매매를 보여 준다. 서버에 안 붙고 로컬 CPU 만 쓴다(실측 약 4 분 · 2026-11-11 · 판 58 · 4 일 창). 끝 값 2 = 환경 검사(선언 · 기준 봉 · 시드 창)에서

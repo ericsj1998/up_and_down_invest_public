@@ -47,6 +47,19 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "ERROR: 커밋 안 된 변경이 있다 — 배포는 커밋된 상태에서만 한다"; git status --short --untracked-files=no | head; exit 1
 fi
 
+# 🔴 플레이북 버전 = 배포 버전 (사용자 2026-11-20 "배포될 때마다 플레이북 갱신 · 버전 관리").
+#    마스터 매매법 문서 첫 줄에 "(<태그> · …)" 가 있고 문서의 판 기록 표에 "| <태그> |" 줄이 있어야 한다.
+#    문서는 비공개 저장소에만 있다 — 없으면(공개본) 건너뛴다. 급할 때만 PLAYBOOK_CHECK=0(그때도 배포 뒤 바로 고친다).
+PLAYBOOK=docs/strategy/live_trading_logic.md
+if [ "${PLAYBOOK_CHECK:-1}" = "1" ] && [ -f "$PLAYBOOK" ]; then
+  if ! head -1 "$PLAYBOOK" | grep -qF "($TAG "; then
+    echo "ERROR: 플레이북 첫 줄 버전이 $TAG 가 아니다 — $PLAYBOOK 머리 · 판 기록을 이 배포로 갱신한다(CLAUDE.md 배포 규칙)"; head -1 "$PLAYBOOK"; exit 1
+  fi
+  if ! grep -qF "| $TAG |" "$PLAYBOOK"; then
+    echo "ERROR: 플레이북 판 기록 표에 $TAG 줄이 없다 — 무엇이 바뀌었나 · 근거 · 옛 판을 한 줄로 적는다"; exit 1
+  fi
+fi
+
 # ⛔ Docker Desktop 연동이 끊기면 WSL 의 `docker` 는 안내문만 찍고 **0 을 돌려준다** — 빌드가 된 척
 #    스크립트가 조용히 끝난다 (2026-09-05 실측). 데몬에 실제로 붙는지 먼저 본다.
 docker info >/dev/null 2>&1 || { echo "ERROR: docker 데몬에 붙을 수 없다 — Docker Desktop 이 꺼져 있거나 WSL 연동이 끊겼다"; exit 1; }
