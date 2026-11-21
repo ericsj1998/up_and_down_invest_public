@@ -351,6 +351,37 @@ def escape_plan(
     )
 
 
+async def live_spec(orders: Any, instrument: Instrument) -> dict[str, Any]:
+    """계약 명세에 **지금 표시가**를 덮어 준다 (T970 · 2026-11-22).
+
+    Args:
+        orders: 주문 어댑터 — `contract_spec`(필수) · `mark_now`(있으면 쓴다).
+        instrument: 종목.
+
+    Returns:
+        명세 사본 — `mark_now` 가 있으면 `mark_price` 가 지금 값이다.
+
+    Raises:
+        Exception: 명세나 지금 표시가를 못 읽으면 그대로 올린다(부르는 쪽이 정한다 —
+            호가 검사는 막지 않고, 탈출가 화면은 값을 지어내지 않는다).
+
+    Note:
+        🔴 **명세는 한 시간 기억한 값이다**(`speccache` · 호가 단위 · 승수 때문에 옳다).
+        그런데 그 안의 `mark_price` 도 같이 한 시간 묵어, 호가 검사가 지금 호가를 한 시간 전
+        값과 견줬다 — 실계좌 2026-11-21 넷(TAO 184.6 대 시장 174.4 · RIVER 0.646 대 0.618 ·
+        0.598 대 0.568 · ZEC 689.62 대 733.46) 모두 "말랐다" 로 막혔고, 진짜 놓친 급락 되돌림이
+        셋이다. 값이 빨리 움직일 때만 생겨 그 다리가 정통으로 맞는다.
+
+        ⚠️ `mark_now` 가 없는 어댑터(주식 페이퍼는 명세에 이미 지금 값을 덮는다 · 모의는
+        조회 어댑터 명세를 바로 쓴다)는 명세 그대로다.
+    """
+    spec = dict(await orders.contract_spec(instrument))
+    fresh = getattr(orders, "mark_now", None)
+    if fresh is not None:
+        spec["mark_price"] = str(await fresh(instrument))
+    return spec
+
+
 async def probe_book(orders: Any, instrument: Instrument, notional: Decimal) -> Liquidity:
     """**주문이 나가는 곳**의 호가창을 읽어 판정한다.
 
@@ -370,7 +401,9 @@ async def probe_book(orders: Any, instrument: Instrument, notional: Decimal) -> 
     if not THRESHOLDS:
         return _blind(symbol)
     try:
-        spec = await orders.contract_spec(instrument)
+        # 🔴 표시가는 지금 값으로(`live_spec` · T970) — 명세 기억통의 한 시간 묵은 값과
+        #    지금 호가를 견주면 값이 빨리 움직일 때 멀쩡한 호가를 "말랐다" 로 막는다.
+        spec = await live_spec(orders, instrument)
         book = await orders.book_here(instrument)
     except Exception as exc:
         _logger.warning(

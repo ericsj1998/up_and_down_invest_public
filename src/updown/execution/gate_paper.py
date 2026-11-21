@@ -976,6 +976,29 @@ class GatePaperAdapter:
         """
         return await self._trade.contract(to_contract(instrument))
 
+    async def mark_now(self, instrument: Instrument) -> Decimal:
+        """**주문이 나가는 곳**의 지금 표시가 — 기억통을 안 거친다 (T970 · 2026-11-22).
+
+        Args:
+            instrument: 대상 종목.
+
+        Returns:
+            표시가(`mark_price` · 없으면 `last`).
+
+        Raises:
+            GateApiError: 조회 실패 · 값이 0 이하.
+
+        Note:
+            🔴 `contract_spec` 은 한 시간 기억한 명세라 그 안의 `mark_price` 가 한 시간
+            묵는다 — 호가 검사 · 탈출가 계산은 표시가를 이것으로 읽는다
+            (`orchestration.liquidity.live_spec`). 호가 단위 · 승수는 명세 그대로 쓴다.
+        """
+        row = await self._trade.ticker(to_contract(instrument))
+        mark = Decimal(str(row.get("mark_price") or row.get("last") or "0"))
+        if mark <= 0:
+            raise GateApiError(f"표시가가 없다({instrument.symbol}): {row!r}"[:300])
+        return mark
+
     async def identity(self) -> dict[str, str]:
         """이 어댑터가 붙은 계정의 식별자.
 

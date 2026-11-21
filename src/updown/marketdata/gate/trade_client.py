@@ -1038,6 +1038,44 @@ class GateTradeClient:
             raise GateApiError(f"호가 응답이 객체가 아니다: {type(found).__name__}")
         return cast("dict[str, Any]", found)
 
+    async def ticker(self, contract: str) -> dict[str, Any]:
+        """**주문이 나가는 곳**의 티커 한 줄 — 지금 표시가(`mark_price`)를 읽는 길 (T970).
+
+        Args:
+            contract: `BTC_USDT`.
+
+        Returns:
+            티커 원문 한 줄(`mark_price` · `last` · `highest_bid` · `lowest_ask` …).
+
+        Raises:
+            GateApiError: 응답이 비었거나, 배열이 아니거나, 다른 계약이 왔다.
+
+        Note:
+            🔴 **기억통을 안 거친다.** 명세(`contract`)는 한 시간 기억하는데, 그 안의
+            `mark_price` 도 같이 한 시간 묵는다. 호가 검사가 그 값을 표시가로 써서 지금
+            호가를 한 시간 전 값과 견줬다 — 실계좌 2026-11-21 TAO 표시가 184.6(한 시간 전)
+            대 시장 174.4 → "매수호가가 5.2% 떨어졌다" 로 멀쩡한 진입을 막았다(T970 · 놓친
+            급락 되돌림 3 건). 표시가는 이 길로 읽는다.
+
+            ⚠️ `/tickers` 는 계약을 지정해도 **배열**로 준다 — 이름을 확인한다(남의 값으로
+            판단하지 않는다 · 조회 어댑터 `get_quote` 와 같은 까닭).
+        """
+        found = await self._request(
+            "GET", f"/futures/{SETTLE}/tickers", params={"contract": contract}
+        )
+        if not isinstance(found, list) or not found:
+            raise GateApiError(f"티커 응답이 비었거나 배열이 아니다({contract}): {found!r}"[:300])
+        rows = cast("list[object]", found)
+        row = rows[0]
+        if not isinstance(row, dict):
+            raise GateApiError(f"티커 줄이 객체가 아니다({contract})")
+        got = cast("dict[str, Any]", row)
+        if str(got.get("contract", "")) != contract:
+            raise GateApiError(
+                f"티커가 다른 계약을 돌려줬다: 요청 {contract} · 응답 {got.get('contract')!r}"
+            )
+        return got
+
     async def list_stops(
         self, contract: str | None, *, status: str = "open", limit: int | None = None
     ) -> list[dict[str, Any]]:

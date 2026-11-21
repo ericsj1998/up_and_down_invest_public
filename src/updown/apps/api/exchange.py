@@ -54,7 +54,7 @@ from updown.marketdata.calendar_check import (
 )
 from updown.marketdata.provider import MarketDataProvider
 from updown.marketdata.ratelimit import meter
-from updown.orchestration.liquidity import Liquidity, escape_plan, probe_book
+from updown.orchestration.liquidity import Liquidity, escape_plan, live_spec, probe_book
 from updown.orchestration.report.performance import (
     book_reaches,
     kst_day_and_month,
@@ -536,7 +536,7 @@ async def sizing_of(
     orders = _orders_adapter(market)
     instrument = _instrument(symbol, market)
     try:
-        spec = await orders.contract_spec(instrument)
+        spec = await live_spec(orders, instrument)  # 1 계약 값은 지금 표시가로(T970)
     except Exception as exc:
         _logger.warning(
             "sizing_unreadable",
@@ -1381,7 +1381,8 @@ async def escape_view(symbol: str = DEFAULT_SYMBOL, market: str = "GATE") -> dic
     held = await orders.position_snapshot(instrument)
     if not held:
         return {"plan": None, "why": f"{symbol} 에 열린 포지션이 없다"}
-    spec = await orders.contract_spec(instrument)
+    # 🔴 한계가(표시가 ±20%)는 **지금 표시가**로 — 명세 기억통 값은 한 시간 묵는다(T970).
+    spec = await live_spec(orders, instrument)
     book = await orders.book_here(instrument)
     plan = escape_plan(symbol, spec, book, held)
     if plan is None:
@@ -1440,7 +1441,8 @@ async def escape_place(payload: Annotated[dict[str, Any], Body()]) -> dict[str, 
     held = await orders.position_snapshot(instrument)
     if not held:
         raise HTTPException(409, f"{symbol} 에 열린 포지션이 없다 — 나갈 것이 없다")
-    spec = await orders.contract_spec(instrument)
+    # 🔴 한계가(표시가 ±20%)는 **지금 표시가**로 — 명세 기억통 값은 한 시간 묵는다(T970).
+    spec = await live_spec(orders, instrument)
     book = await orders.book_here(instrument)
     plan = escape_plan(symbol, spec, book, held)
     if plan is None:
