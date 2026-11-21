@@ -103,5 +103,26 @@ def test_fear_row_and_prices() -> None:
         {"contract": "DOGE_USDT", "last": "0.1", "change_percentage": "1"},
     ]
     assert price_rows(ticks, ("BTC_USDT", "ETH_USDT")) == [
-        {"symbol": "BTC_USDT", "last": "60500", "change_pct": "3.1"}
+        {"symbol": "BTC_USDT", "last": "60500", "change_pct": "3.1", "run": "", "leg": ""}
     ]
+
+
+def test_price_rows_link_to_run_or_engine_leg() -> None:
+    """누르면 갈 곳 — 판이 있으면 판 · 판 없이 엔진 다리면 엔진 다리 · 둘 다 아니면 없음."""
+    ticks = [
+        {"contract": "BTC_USDT", "last": "60500", "change_percentage": "3.1"},
+        {"contract": "ETH_USDT", "last": "3000", "change_percentage": "-1"},
+        {"contract": "NAS100_USDT", "last": "21000", "change_percentage": "0.4"},
+    ]
+    rows = price_rows(
+        ticks,
+        ("BTC_USDT", "ETH_USDT", "NAS100_USDT"),
+        run_of={"BTC_USDT": "live-gate-btc"},
+        engines=("NAS100_USDT", "BTC_USDT"),
+    )
+    by = {r["symbol"]: (r["run"], r["leg"]) for r in rows}
+    assert by == {
+        "BTC_USDT": ("live-gate-btc", ""),  # 판이 먼저
+        "ETH_USDT": ("", ""),
+        "NAS100_USDT": ("", "1"),
+    }

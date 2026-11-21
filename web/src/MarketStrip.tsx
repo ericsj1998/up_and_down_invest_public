@@ -5,8 +5,10 @@
  * 화면 폴링이 서버 CPU 의 큰 몫이라(2026-09-30 사고) **펼칠 때만** 묻고, 펼친 동안 5 분에 한 번 · 탭이 보일 때만
  * 다시 묻는다. 서버도 60 초 묶음이고 새로 계산하지 않는다(판이 넣어 둔 값 · 거시 캐시).
  */
-import { useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { type MarketData, marketStrip } from "./api";
+import { useOpenRuns } from "./shell/openRuns";
 
 const POLL_MS = 300_000;
 const CARD =
@@ -29,6 +31,44 @@ function stateTone(state: string): string {
   if (state === "열림") return "bg-gain-wash text-gain";
   if (state === "쉼") return "bg-loss-wash text-loss";
   return "bg-blue-gray-50 text-blue-gray-600 dark:bg-gray-800 dark:text-blue-gray-200";
+}
+
+const TILE = "rounded-lg bg-blue-gray-50/60 p-2 dark:bg-gray-800";
+
+/** 시세 칸 — 판이 있으면 그 판 상세 · 엔진 다리(나스닥)면 엔진 다리 상세로(첫 화면 포지션 줄과 같은 규칙). */
+export function PriceTile({
+  symbol,
+  run,
+  leg,
+  children,
+}: {
+  symbol: string;
+  run: string;
+  leg: string;
+  children: ReactNode;
+}) {
+  const runs = useOpenRuns();
+  const clickable = `${TILE} block hover:ring-2 hover:ring-blue-gray-200 dark:hover:ring-gray-600`;
+  if (run) {
+    return (
+      <Link
+        to={`/paper/${run}`}
+        onClick={() => runs.open(run, symbol)}
+        className={clickable}
+        aria-label={`${symbol} 상세`}
+      >
+        {children}
+      </Link>
+    );
+  }
+  if (leg) {
+    return (
+      <Link to={`/leg/${symbol}`} className={clickable} aria-label={`${symbol} 상세`}>
+        {children}
+      </Link>
+    );
+  }
+  return <div className={TILE}>{children}</div>;
 }
 
 export function MarketStrip() {
@@ -83,9 +123,10 @@ export function MarketStrip() {
             <>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {data.prices.map((p) => (
-                  <div key={p.symbol} className="rounded-lg bg-blue-gray-50/60 p-2 dark:bg-gray-800">
-                    <div className="text-xs text-blue-gray-500 dark:text-blue-gray-300">
-                      {p.symbol.replace("_USDT", "")}
+                  <PriceTile key={p.symbol} symbol={p.symbol} run={p.run} leg={p.leg}>
+                    <div className="flex items-center justify-between text-xs text-blue-gray-500 dark:text-blue-gray-300">
+                      <span>{p.symbol.replace("_USDT", "")}</span>
+                      {p.run || p.leg ? <span aria-hidden="true">상세 ›</span> : null}
                     </div>
                     <div className="font-mono font-semibold text-blue-gray-900 dark:text-white">
                       {Number(p.last).toLocaleString("ko-KR", { maximumFractionDigits: 4 })}
@@ -93,7 +134,7 @@ export function MarketStrip() {
                     <div className={`font-mono text-xs ${pctTone(p.change_pct)}`}>
                       {signedPct(p.change_pct)} · 24시간
                     </div>
-                  </div>
+                  </PriceTile>
                 ))}
                 {data.macro.map((m) => (
                   <div key={m.key} className="rounded-lg bg-blue-gray-50/60 p-2 dark:bg-gray-800">

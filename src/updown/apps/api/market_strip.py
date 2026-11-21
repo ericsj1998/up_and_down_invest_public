@@ -265,10 +265,25 @@ def fear_row(
 
 
 def price_rows(
-    tickers: Iterable[Mapping[str, Any]], symbols: Sequence[str]
+    tickers: Iterable[Mapping[str, Any]],
+    symbols: Sequence[str],
+    run_of: Mapping[str, str] | None = None,
+    engines: Iterable[str] = (),
 ) -> list[dict[str, str]]:
-    """거래소 공개 티커 → 고른 종목의 시세 · 24 시간 등락(%)."""
+    """거래소 공개 티커 → 고른 종목의 시세 · 24 시간 등락(%) · 누르면 갈 상세(판 · 엔진 다리).
+
+    Args:
+        tickers: 공개 티커 행들.
+        symbols: 고른 종목.
+        run_of: 종목 → 실계좌 판 열쇠(있으면 화면이 그 판 상세로 간다).
+        engines: 엔진 다리 종목(판이 없으면 엔진 다리 상세로 간다).
+
+    Returns:
+        `{symbol, last, change_pct, run, leg}` — `run` 빈 값 = 판 없음 · `leg` "1" = 엔진 다리.
+    """
     by = {str(t.get("contract")): t for t in tickers}
+    runs = run_of or {}
+    legs = set(engines)
     out: list[dict[str, str]] = []
     for sym in symbols:
         t = by.get(sym)
@@ -279,6 +294,8 @@ def price_rows(
                 "symbol": sym,
                 "last": str(t.get("last") or ""),
                 "change_pct": str(t.get("change_percentage") or ""),
+                "run": runs.get(sym, ""),
+                "leg": "1" if sym in legs and sym not in runs else "",
             }
         )
     return out

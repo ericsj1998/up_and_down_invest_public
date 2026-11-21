@@ -438,9 +438,17 @@ async def market() -> dict[str, Any]:
     now = datetime.now(UTC)
     failures: list[dict[str, str]] = []
     prices: list[dict[str, str]] = []
+    engines = running_on("GATE")
+    # 누르면 갈 상세 — 판이 있으면 그 판 · 없고 엔진 다리면 엔진 다리(첫 화면 포지션 줄과 같은 규칙)
+    run_of = {runner.instrument.symbol: key for key, runner in LIVE_RUNNERS.items()}
     try:
         quotes = MarketDataProvider().adapter_for(Market.GATE)
-        prices = price_rows(await quotes.tickers(), MARKET_SYMBOLS)  # type: ignore[attr-defined]
+        prices = price_rows(
+            await quotes.tickers(),  # type: ignore[attr-defined]
+            MARKET_SYMBOLS,
+            run_of,
+            engines.keys(),
+        )
     except Exception as exc:  # 외부 I/O — 칸만 비운다
         failures.append({"key": "prices", "reason": str(exc)[:160]})
     macro_rows: list[dict[str, Any]] = []
@@ -455,7 +463,6 @@ async def market() -> dict[str, Any]:
         failures.append({"key": "macro", "reason": str(exc)[:160]})
     sessions = [r._session for r in LIVE_RUNNERS.values()]  # pyright: ignore[reportPrivateUsage]
     gates = [g.as_json() for g in gate_rows(sessions, now)]
-    engines = running_on("GATE")
     nas = engines.get("NAS100_USDT")
     threshold = None
     status: dict[str, Any] | None = None

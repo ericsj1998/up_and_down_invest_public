@@ -303,7 +303,8 @@ export type MarketGate = {
 
 export type MarketData = {
   at: string;
-  prices: { symbol: string; last: string; change_pct: string }[];
+  /** `run` = 누르면 갈 실계좌 판(빈 값 = 판 없음) · `leg` "1" = 판 없는 엔진 다리(나스닥). */
+  prices: { symbol: string; last: string; change_pct: string; run: string; leg: string }[];
   macro: MacroIndicator[];
   gates: MarketGate[];
   failures: { key: string; reason: string }[];
