@@ -105,6 +105,7 @@ from updown.orchestration.rebalancer.legs import (
     isolated_attributions,
     member_leverage,
     member_playbook,
+    redeclared_legs,
     refresh_legs,
 )
 from updown.orchestration.rebalancer.rotation import (
@@ -2902,16 +2903,23 @@ def _refresh_stored_legs(
     declared_rev = _declared_legs_revision(playbook_id)
     if not legs or declared_rev <= stored_revision:
         return legs, stored_revision
+    del members  # 🔴 종목 범위는 저장본 다리에서 받는다(아래) — 펀드 종목으로 다시 검사하지 않는다
+    books = load_playbooks()
+    wrapper = next((item for item in books if item.playbook_id == playbook_id), None)
     try:
-        declared = _legs_for(playbook_id, members)
-    except HTTPException as exc:
+        if wrapper is None:
+            raise LegError(f"묶음 선언 {playbook_id!r} 이 없다")
+        # 🔴 1.50.0 배포 사고(2026-11-22 · 분기 우주 펀드): 고정 바구니 범위로 다리를 다시 만들어
+        #    "어느 다리에도 안 속하는 종목" 으로 거절됐다 → 저장본 범위 그대로 값만 다시 읽는다.
+        declared = redeclared_legs(wrapper, books, legs)
+    except LegError as exc:
         _events.error(
             "fund_legs_refresh_failed",
             payload={
                 "fund_id": fund_id,
                 "from": stored_revision,
                 "to": declared_rev,
-                "error": str(exc.detail)[:300],
+                "error": str(exc)[:300],
                 "note": "선언이 안 맞아 저장본 다리로 되살렸다 — 새 다리 값이 안 들어갔다",
             },
         )

@@ -233,74 +233,137 @@ def declared_legs(
     by_id = {item.playbook_id: item for item in books}
     out: list[FundLeg] = []
     for name in wrapper.bundle:
-        book = by_id.get(name)
-        if book is None:
-            raise LegError(f"{wrapper.playbook_id}.bundle 의 {name!r} 선언이 없다")
-        if book.weight_mode != "slots" or book.slots <= 0:
-            raise LegError(f"{name} — 다리는 자리 배분(weight_mode: slots · slots)이어야 한다")
-        if book.slots != wrapper.slots:
-            raise LegError(f"{name}.slots {book.slots} 가 묶음의 자리 수 {wrapper.slots} 와 다르다")
-        if book.leverage is None or book.leverage <= 0:
-            raise LegError(f"{name} — 다리는 leverage 를 선언해야 한다")
         scope = [str(item) for item in scopes.get(name, ())]
         if not scope:
+            # 구성원 선언 검사가 먼저다(옛 순서) — 선언 없는 다리를 "범위 없음" 으로 말하지 않는다.
+            _member_book(wrapper, by_id, name)
             raise LegError(f"{name} — 종목 범위(baskets.yml by_playbook.{name})가 없다")
         mine = tuple(symbol for symbol in members if symbol in set(scope))
         if not mine:
+            _member_book(wrapper, by_id, name)
             raise LegError(f"{name} — 펀드 종목 중에 이 다리의 종목이 하나도 없다")
-        peer: tuple[str, int] | None = None
-        if book.entry_peer_open_max is not None:
-            cap = book.entry_peer_open_max
-            peer_book = by_id.get(cap.leg)
-            if peer_book is None or cap.leg not in wrapper.bundle or cap.leg == name:
-                raise LegError(
-                    f"{name}.entry_peer_open_max.leg {cap.leg!r} — 같은 묶음의 다른 구성원이 아니다"
-                )
-            peer = (peer_book.attribution, cap.count)
-        boost: tuple[tuple[str, ...], int, Decimal] | None = None
-        if book.entry_peer_open_boost is not None:
-            spec = book.entry_peer_open_boost
-            attrs: list[str] = []
-            for peer_name in spec.legs:
-                boost_book = by_id.get(peer_name)
-                if boost_book is None or peer_name not in wrapper.bundle or peer_name == name:
-                    raise LegError(
-                        f"{name}.entry_peer_open_boost.legs {peer_name!r} — "
-                        "같은 묶음의 다른 구성원이 아니다"
-                    )
-                attrs.append(boost_book.attribution)
-            boost = (tuple(attrs), spec.min, spec.mult)
-        out.append(
-            FundLeg(
-                playbook=book.playbook_id,
-                attribution=book.attribution,
-                symbols=mine,
-                leverage=book.leverage,
-                exposure=book.leverage if book.leg_exposure is None else book.leg_exposure,
-                timeframe=book.timeframe.value,
-                slots=book.slots if book.leg_slots is None else book.leg_slots,
-                halt_after_stops=book.halt_after_stops,
-                notional_cap=book.notional_cap,
-                notional_fit=book.notional_fit,
-                drawdown_brake=book.drawdown_brake,
-                breadth_cap=book.breadth_cap,
-                halt_dd_at=book.entry_fund_dd_max,
-                isolated=book.drawdown_isolated,
-                entry_limit=book.entry_limit,
-                entry_cap=book.entry_exposure_cap,
-                peer_open_max=peer,
-                peer_open_boost=boost,
-                engine=book.engine,
-                engine_settings=(
-                    None if book.engine_settings is None else dict(book.engine_settings)
-                ),
-            )
-        )
+        out.append(_leg_of(wrapper, by_id, name, mine))
     covered = {symbol for leg in out for symbol in leg.symbols}
     orphans = [symbol for symbol in members if symbol not in covered]
     if orphans:
         raise LegError(f"어느 다리에도 안 속하는 종목이 있다: {', '.join(orphans)}")
     return tuple(out)
+
+
+def redeclared_legs(
+    wrapper: Playbook,
+    books: Sequence[Playbook],
+    stored: Sequence[FundLeg],
+) -> tuple[FundLeg, ...]:
+    """돌던 펀드 다리를 **지금 선언 값으로** 다시 만든다 — 종목은 저장본 그대로 (411차 · 1.50.0).
+
+    Args:
+        wrapper: 펀드가 도는 묶음 매매법.
+        books: 선언된 매매법 전부.
+        stored: 저장본 다리들(종목 범위를 여기서 받는다).
+
+    Returns:
+        묶음에 적힌 순서의 다리들 — 저장본에 없는 구성원(새 다리)은 빠진다(`refresh_legs` 는
+        귀속 키로 짝짓고, 새 다리를 돌던 펀드에 붙이는 것은 갱신이 아니라 전환이다).
+
+    Raises:
+        LegError: 구성원 선언이 없거나 · 자리 배분이 아니거나 · 자리 수가 다르거나 · 배율이
+            없는 경우.
+
+    Note:
+        🔴 `declared_legs` 는 종목 범위를 고정 바구니(`baskets.yml by_playbook`)에서 받아 펀드
+        종목을 **다시 검사**한다. 분기 우주 펀드(T758)는 범위가 그 분기 스냅샷이라, 그 길로 다시
+        만들면 "어느 다리에도 안 속하는 종목" 으로 거절되고 새 값이 안 들어간다 — 1.50.0 배포
+        (2026-11-22 01:16 KST) 실계좌가 그랬다(`fund_legs_refresh_failed` · 나스닥 공포 조각이
+        꺼진 채 되살아남). 갱신이 바꾸는 것은 계좌 층 값뿐이므로(종목 · 귀속은 저장본 ·
+        `refresh_legs`) 범위 검사를 다시 하지 않고 저장본 범위를 그대로 쓴다.
+    """
+    if not wrapper.split_legs:
+        return ()
+    by_id = {item.playbook_id: item for item in books}
+    mine = {leg.playbook: leg.symbols for leg in stored}
+    return tuple(
+        _leg_of(wrapper, by_id, name, mine[name]) for name in wrapper.bundle if name in mine
+    )
+
+
+def _member_book(wrapper: Playbook, by_id: Mapping[str, Playbook], name: str) -> Playbook:
+    """묶음 구성원 선언 — 다리가 될 수 있는지(자리 배분 · 자리 수 · 배율)까지 본다.
+
+    Raises:
+        LegError: 선언이 없거나 다리 조건을 못 채운다.
+    """
+    book = by_id.get(name)
+    if book is None:
+        raise LegError(f"{wrapper.playbook_id}.bundle 의 {name!r} 선언이 없다")
+    if book.weight_mode != "slots" or book.slots <= 0:
+        raise LegError(f"{name} — 다리는 자리 배분(weight_mode: slots · slots)이어야 한다")
+    if book.slots != wrapper.slots:
+        raise LegError(f"{name}.slots {book.slots} 가 묶음의 자리 수 {wrapper.slots} 와 다르다")
+    if book.leverage is None or book.leverage <= 0:
+        raise LegError(f"{name} — 다리는 leverage 를 선언해야 한다")
+    return book
+
+
+def _leg_of(
+    wrapper: Playbook,
+    by_id: Mapping[str, Playbook],
+    name: str,
+    symbols: tuple[str, ...],
+) -> FundLeg:
+    """구성원 선언 하나 → 다리 하나(종목은 받은 그대로 · `declared_legs` · `redeclared_legs` 공용).
+
+    Raises:
+        LegError: 구성원 선언이 다리 조건을 못 채우거나 짝 다리 선언이 틀렸다.
+    """
+    book = _member_book(wrapper, by_id, name)
+    leverage = book.leverage
+    if leverage is None:  # _member_book 이 이미 막는다 — 타입 좁히기
+        raise LegError(f"{name} — 다리는 leverage 를 선언해야 한다")
+    peer: tuple[str, int] | None = None
+    if book.entry_peer_open_max is not None:
+        cap = book.entry_peer_open_max
+        peer_book = by_id.get(cap.leg)
+        if peer_book is None or cap.leg not in wrapper.bundle or cap.leg == name:
+            raise LegError(
+                f"{name}.entry_peer_open_max.leg {cap.leg!r} — 같은 묶음의 다른 구성원이 아니다"
+            )
+        peer = (peer_book.attribution, cap.count)
+    boost: tuple[tuple[str, ...], int, Decimal] | None = None
+    if book.entry_peer_open_boost is not None:
+        spec = book.entry_peer_open_boost
+        attrs: list[str] = []
+        for peer_name in spec.legs:
+            boost_book = by_id.get(peer_name)
+            if boost_book is None or peer_name not in wrapper.bundle or peer_name == name:
+                raise LegError(
+                    f"{name}.entry_peer_open_boost.legs {peer_name!r} — "
+                    "같은 묶음의 다른 구성원이 아니다"
+                )
+            attrs.append(boost_book.attribution)
+        boost = (tuple(attrs), spec.min, spec.mult)
+    return FundLeg(
+        playbook=book.playbook_id,
+        attribution=book.attribution,
+        symbols=symbols,
+        leverage=leverage,
+        exposure=leverage if book.leg_exposure is None else book.leg_exposure,
+        timeframe=book.timeframe.value,
+        slots=book.slots if book.leg_slots is None else book.leg_slots,
+        halt_after_stops=book.halt_after_stops,
+        notional_cap=book.notional_cap,
+        notional_fit=book.notional_fit,
+        drawdown_brake=book.drawdown_brake,
+        breadth_cap=book.breadth_cap,
+        halt_dd_at=book.entry_fund_dd_max,
+        isolated=book.drawdown_isolated,
+        entry_limit=book.entry_limit,
+        entry_cap=book.entry_exposure_cap,
+        peer_open_max=peer,
+        peer_open_boost=boost,
+        engine=book.engine,
+        engine_settings=(None if book.engine_settings is None else dict(book.engine_settings)),
+    )
 
 
 def refresh_legs(
