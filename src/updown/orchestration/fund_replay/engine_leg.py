@@ -99,6 +99,27 @@ class ReplayEngineLeg:
             total += Decimal(unit.fill) * Decimal(int(unit.contracts)) * self.quanto / self.leverage
         return total
 
+    def unrealized(self) -> Decimal:
+        """몫 장부의 평가 손익 — 마지막으로 흘린 1H 봉 종가 기준 (T971 · 비용 전).
+
+        Returns:
+            `Σ (종가 - 체결가) x 계약 x 명목 배수`(유령 · 계약 0 제외). 아직 흘린 봉이 없으면 0.
+
+        Note:
+            엔진 다리는 롱만 든다(나스닥 다리 선언). 몇 주씩 들고 있어 자정 실현 잔고만 보면
+            물린 깊이가 낙폭에 안 잡힌다 — 펀드 재현 평가 잔고(`ReplayResult.mtm`)가 이 값을 더한다.
+        """
+        if self.engine is None or self._k_hour == 0:
+            return Decimal(0)
+        last = Decimal(str(self.hours[self._k_hour - 1].close))
+        total = Decimal(0)
+        for unit in self.engine.book.units.values():
+            contracts = int(getattr(unit, "contracts", 0) or 0)
+            if getattr(unit, "ghost", False) or contracts <= 0:
+                continue
+            total += (last - Decimal(unit.fill)) * Decimal(contracts) * self.quanto
+        return total
+
     async def advance(self, t: datetime) -> list[tuple[str, str]]:
         """시계를 `t` 로 민다 — 끝난 1H 봉을 흘리고, 처리 시각이 지난 거래일을 마감한다.
 

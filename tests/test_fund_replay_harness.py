@@ -19,6 +19,7 @@ from updown.orchestration.fund_replay.harness import (
     ReplayBoard,
     ReplayInputError,
     assemble,
+    marked_pnl,
 )
 from updown.orchestration.fund_replay.runner_rules import ContractSpec
 from updown.orchestration.walkforward.ledger import (
@@ -63,6 +64,16 @@ class ScriptSession:
         self._script = script
         self._n = 0
         self.cursor = START
+        self.last_price: Decimal | None = None
+        # 평가 잔고(T971)가 읽는 두 면 — 마지막 닫힌 봉 종가 · 보유 몫
+        self.feed = SimpleNamespace(judged=self._judged)
+
+    def _judged(self, _frame: Timeframe) -> list[SimpleNamespace]:
+        return [] if self.last_price is None else [SimpleNamespace(close=self.last_price)]
+
+    @property
+    def positions(self) -> tuple[TradeRecord, ...]:
+        return tuple(r for r in self.ledger.records if r.outcome is Outcome.OPEN)
 
     def release(self) -> None:
         self.released += 1
@@ -74,6 +85,9 @@ class ScriptSession:
         if act is None:
             return
         kind, price = act
+        self.last_price = price
+        if kind == "mark":  # 값만 움직인다(매매 없음)
+            return
         if kind == "open":
             self.ledger.add(
                 TradeRecord(
@@ -169,6 +183,67 @@ class TestReplay:
         assert [t for t, _ in result.equity] == [datetime(2026, 1, 2, tzinfo=UTC)]
 
 
+class TestMarkToMarket:
+    """T971 — 자정 평가 잔고 = 실현 잔고 + 열린 매매 평가 손익(연구 엔진의 평가 MDD 와 같은 자)."""
+
+    def test_flat_book_marks_the_same_as_realized(self) -> None:
+        replay, _a, _b = build()
+        result = replay.run(START, START + timedelta(hours=6))
+        assert result.mtm == result.equity  # 자정에 열린 매매가 없다
+
+    def test_an_open_trade_is_marked_at_the_last_closed_bar(self) -> None:
+        # 1 걸음 130 에 15 계약(실제 노출 1950 ÷ 500) · 자정(4 걸음) 전 3 걸음에 값만 117(-10%)
+        a = ScriptSession("AAA_USDT", {1: ("open", Decimal(130)), 3: ("mark", Decimal(117))})
+        boards = [
+            ReplayBoard(symbol="AAA_USDT", session=cast("Any", a), spec=ContractSpec(Decimal(1)))
+        ]
+        coordinator = assemble(boards, legs=(), capital=Decimal(1000), slots=2)
+        result = FundReplay(boards, coordinator, ref_4h=(), seed=1).run(
+            START, START + timedelta(hours=6)
+        )
+        (_, realized), (_, marked) = result.equity[0], result.mtm[0]
+        # 1950 명목 x -10% = -195 — 실현 잔고는 안 움직이고 평가 잔고만 내려간다
+        assert realized == Decimal(1000)
+        assert abs(marked - (Decimal(1000) - Decimal(195))) < Decimal("1e-9")
+
+
+class TestMarkedPnl:
+    @staticmethod
+    def rec(**kw: Any) -> TradeRecord:
+        base: dict[str, Any] = {
+            "trade_id": "t",
+            "playbook": "p@0.1.0",
+            "actor": Actor.SYSTEM,
+            "placed_at": START,
+            "opened_at": START,
+            "entry": Decimal(100),
+            "direction": Direction.LONG,
+            "outcome": Outcome.OPEN,
+            "leverage": Decimal(3),
+            "margin_used": Decimal(100),
+        }
+        base.update(kw)
+        return TradeRecord(**base)
+
+    def test_long_short_and_unknown_margin(self) -> None:
+        assert marked_pnl(self.rec(), Decimal(110)) == Decimal(30)
+        assert marked_pnl(self.rec(direction=Direction.SHORT), Decimal(90)) == Decimal(30)
+        assert marked_pnl(self.rec(margin_used=None), Decimal(110)) == Decimal(0)
+
+    def test_filled_exposure_wins_over_intent(self) -> None:
+        """재현은 계약으로 채운 노출을 지갑에 닻 내린다 — 같은 자로 평가한다."""
+        got = marked_pnl(self.rec(filled_leverage=Decimal("2.5")), Decimal(110))
+        assert got == Decimal(25)
+
+    def test_half_taken_and_pyramid_add_and_booked_adjust(self) -> None:
+        half = self.rec(half_at=START, half_price=Decimal(106))
+        assert marked_pnl(half, Decimal(110)) == Decimal(24)  # 평균 108 → 100 x 3 x 8%
+        add = self.rec(add_exposure=Decimal("1.5"), add_price=Decimal(105))
+        want = Decimal(30) + Decimal(100) * Decimal("1.5") * Decimal(5) / Decimal(105)
+        assert abs(marked_pnl(add, Decimal(110)) - want) < Decimal("1e-12")
+        assert marked_pnl(self.rec(realized_adjust=Decimal(-4)), Decimal(100)) == Decimal(-4)
+
+
 class MemberSession(ScriptSession):
     """분기 우주 각본 세션 — 범위가 비고 보유가 없으면 커서만(`Session.idle_advance` 꼴)."""
 
@@ -240,7 +315,7 @@ class TestInputCheck:
 
     def test_declared_gates_need_their_inputs(self) -> None:
         boards, coordinator = self._boards()
-        boards[0].session.playbooks = [
+        cast("Any", boards[0].session).playbooks = [
             SimpleNamespace(
                 entry_event_window=SimpleNamespace(hours=Decimal(8)), entry_washed=SimpleNamespace()
             )
@@ -252,7 +327,7 @@ class TestInputCheck:
 
     def test_schedule_must_cover_the_window(self) -> None:
         boards, coordinator = self._boards()
-        boards[0].session.playbooks = [
+        cast("Any", boards[0].session).playbooks = [
             SimpleNamespace(entry_event_window=SimpleNamespace(hours=Decimal(8)), entry_washed=None)
         ]
         short = ReleaseSchedule(since=START, horizon=START + timedelta(days=1), times={})

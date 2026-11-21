@@ -144,6 +144,19 @@ def test_held_margin_counts_real_units_only() -> None:
     assert leg.held_margin() == Decimal(20)
 
 
+def test_unrealized_marks_real_units_at_the_last_fed_close() -> None:
+    """T971 — 평가 잔고용: 흘린 마지막 1H 봉 종가(100)로 몫을 평가 · 유령 · 계약 0 제외."""
+    leg, engine, _s = _leg(3, [])
+    engine.book.units = {
+        "b1": _Unit(Decimal(90), 10),  # (100 - 90) x 10 x 0.0001 = 0.01
+        "g1": _Unit(Decimal(50), 0, ghost=True),
+        "c1": _Unit(Decimal(110), 20),  # (100 - 110) x 20 x 0.0001 = -0.02
+    }
+    assert leg.unrealized() == Decimal(0)  # 아직 흘린 봉이 없다
+    asyncio.run(leg.advance(T0 + timedelta(hours=3)))
+    assert leg.unrealized() == Decimal("-0.01")
+
+
 def test_margin_view_replaces_available_with_fund_spare() -> None:
     leg, _e, sim = _leg(1, [])
     view: Any = leg.margin_view(lambda: Decimal("123.45"))

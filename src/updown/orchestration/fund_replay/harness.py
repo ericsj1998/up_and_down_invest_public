@@ -64,10 +64,50 @@ if TYPE_CHECKING:
     from updown.common.domain.candle import Candle
     from updown.orchestration.fund_replay.engine_leg import ReplayEngineLeg
     from updown.orchestration.rebalancer.legs import FundLeg
+    from updown.orchestration.walkforward.ledger import TradeRecord
     from updown.orchestration.walkforward.session import Session
 
 HOUR = timedelta(hours=1)
 FOUR = timedelta(hours=4)
+
+
+def marked_pnl(record: TradeRecord, mark: Decimal) -> Decimal:
+    """열린 매매 하나의 **평가 손익**(USDT · 비용 · 펀딩 전) — 걷기 식을 지금 값으로 (T971).
+
+    Args:
+        record: 보유 중인 매매(`margin_used` 가 있는 펀드 멤버 기록).
+        mark: 지금 값(그 판의 마지막 닫힌 봉 종가).
+
+    Returns:
+        `margin_used x 실제 노출 x 값 변화율` + 불타기 추가분 + 이미 실현된 보정.
+        실제 노출 = 체결이 만든 노출(`filled_leverage` · 재현은 계약으로 채운다) · 없으면
+        `채운 비율 x 배율`(원장 의도 식). `margin_used` 가 없거나 값이 0 이하면 0.
+
+    Note:
+        청산 때 재현이 지갑에 닻 내리는 값은 계약 손익(= 실제 노출)이라 같은 자로 평가한다 — 청산
+        순간 평가 ≈ 실현(비용 · 펀딩만 다르다). 반익을 덜었으면 그 절반은 덜어 낸 값, 나머지는 지금
+        값으로 평균한다(`exit_average` 와 같다). 실현 잔고만 재면 열린 매매가 깊이 물린 날이 낙폭에
+        안 잡혀 효율이 부풀었다(T968 §11 ③ — 재현 MDD 가 자정 실현 잔고라 평가 MDD 보다 얕을 수
+        있음).
+    """
+    if record.margin_used is None or record.entry <= 0 or mark <= 0:
+        return Decimal(0)
+    sign = record.direction.sign
+    if record.half_at is None:
+        average = mark
+    else:
+        taken = record.planned_first if record.half_price is None else record.half_price
+        average = (taken + mark) / Decimal(2)
+    base = record.margin_used
+    exposure = (
+        record.filled_leverage
+        if record.filled_leverage is not None
+        else record.filled_ratio * record.leverage
+    )
+    pnl = base * exposure * (average - record.entry) * sign / record.entry
+    if record.add_exposure > 0 and record.add_price is not None and record.add_price > 0:
+        pnl += base * record.add_exposure * (mark - record.add_price) * sign / record.add_price
+    return pnl + record.realized_adjust
 
 
 class ReplayInputError(RuntimeError):
@@ -137,10 +177,13 @@ class ReplayResult:
     Attributes:
         equity: `(UTC 자정, 펀드 잔고)` — 틱이 본 실현 잔고.
         events: 러너 규칙 사건.
+        mtm: `(UTC 자정, 평가 잔고)` — 실현 잔고 + 열린 매매 평가 손익(코인 판 · 엔진 다리 ·
+            비용 · 펀딩 전 · T971). 연구 엔진의 평가 MDD 와 같은 자로 재려고 둔다.
     """
 
     equity: list[tuple[datetime, Decimal]] = field(default_factory=list[tuple[datetime, Decimal]])
     events: list[ReplayEvent] = field(default_factory=list[ReplayEvent])
+    mtm: list[tuple[datetime, Decimal]] = field(default_factory=list[tuple[datetime, Decimal]])
 
 
 def assemble(
@@ -329,8 +372,30 @@ class FundReplay:
             if on_hour and t.hour % 4 == 0:
                 self.coordinator.tick()
             if on_hour and t.hour == 0:
-                self.result.equity.append((t, self.coordinator.engine.balance))
+                balance = self.coordinator.engine.balance
+                self.result.equity.append((t, balance))
+                self.result.mtm.append((t, balance + self.open_value()))
         return self.result
+
+    def open_value(self) -> Decimal:
+        """지금 열린 매매 전부의 평가 손익 — 코인 판(마지막 닫힌 봉 종가) + 엔진 다리 몫 (T971).
+
+        Returns:
+            USDT 합(비용 · 펀딩 전). 보유가 없으면 0.
+        """
+        total = Decimal(0)
+        for board in self.boards:
+            held = board.session.positions
+            if not held:
+                continue
+            bars = board.session.feed.judged(board.session.step_frame)
+            if not bars:
+                continue
+            mark = Decimal(str(bars[-1].close))
+            total += sum((marked_pnl(record, mark) for record in held), Decimal(0))
+        for leg in self.engines:
+            total += leg.unrealized()
+        return total
 
     def _halt_if_exhausted(self, board: ReplayBoard, t: datetime) -> None:
         """러너와 같다 — 판 원장이 몫을 다 잃었으면(`halted_at`) 새 진입을 끈다.
