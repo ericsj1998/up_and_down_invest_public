@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
@@ -157,10 +157,41 @@ def parse_cboe_vix_csv(text: str) -> tuple[Decimal, Decimal | None, str]:
     )
 
 
+def parse_cboe_vix_history(text: str) -> dict[date, Decimal]:
+    """CBOE `VIX_History.csv` → 날짜 → 공식 종가 **전부**(1990 ~).
+
+    CBOE 는 미국 휴장일에도 행을 내는 날이 있다(앞 값 그대로) — 그대로 둔다. 거래일로 찾는 쪽이
+    자기 달력의 날짜로 읽는다.
+
+    Args:
+        text: CSV 본문(`DATE,OPEN,HIGH,LOW,CLOSE` · 날짜 `MM/DD/YYYY`).
+
+    Returns:
+        날짜 → 종가.
+
+    Raises:
+        MacroParseError: 행이 없거나 날짜 · 종가가 깨졌다(값을 건너뛰어 지어내지 않는다).
+    """
+    out: dict[date, Decimal] = {}
+    for line in text.strip().splitlines():
+        row = line.split(",")
+        if len(row) < 5 or not row[0][:1].isdigit():
+            continue
+        try:
+            day = datetime.strptime(row[0].strip(), "%m/%d/%Y").date()
+        except ValueError as exc:
+            raise MacroParseError(f"CBOE 날짜가 깨졌다: {row[0]!r}"[:160]) from exc
+        out[day] = _decimal(row[4].strip(), "VIX 종가")
+    if not out:
+        raise MacroParseError("CBOE CSV 행 없음")
+    return out
+
+
 __all__ = [
     "MacroParseError",
     "parse_bls_series",
     "parse_cboe_vix_csv",
+    "parse_cboe_vix_history",
     "parse_effr",
     "parse_yahoo_chart",
 ]

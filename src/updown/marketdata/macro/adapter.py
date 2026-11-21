@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -20,6 +20,7 @@ from updown.marketdata.macro.client import MacroClient
 from updown.marketdata.macro.parse import (
     parse_bls_series,
     parse_cboe_vix_csv,
+    parse_cboe_vix_history,
     parse_effr,
     parse_yahoo_chart,
 )
@@ -187,8 +188,8 @@ class MacroAdapter:
                 raise
             # ⭐ VIX 만은 폴백이 있다 — CBOE 일별 CSV(장 마감 값).
             close, prev_close, day = parse_cboe_vix_csv(await self._client.cboe_vix_csv())
-            month, date, year = day.split("/")
-            as_of = datetime(int(year), int(month), int(date), tzinfo=UTC)
+            month, mday, year = day.split("/")
+            as_of = datetime(int(year), int(month), int(mday), tzinfo=UTC)
             return self._vix(close, prev_close, as_of, "CBOE (일별 CSV · 장 마감)")
         value = price * spec.scale
         prev_scaled = None if prev is None else prev * spec.scale
@@ -204,6 +205,22 @@ class MacroAdapter:
             change_pct=pct_change(value, prev_scaled),
             note=spec.note,
         )
+
+    async def vix_closes(self) -> dict[date, Decimal]:
+        """VIX 일별 공식 종가 전부 — CBOE `VIX_History.csv`(장 마감 값 · 1990 ~).
+
+        규칙 입력용이라 화면 지표(`indicators`)와 달리 다른 출처로 대신하지 않는다 — 출처가 바뀌면
+        값의 시점 · 정의가 달라질 수 있다. 못 받으면 예외를 그대로 올려 부르는 쪽이 그날 판단을
+        쉬게 한다(조용한 대체 금지 · 규칙 #8). 부를 때마다 새로 받는다(하루 한두 번 · 옛 값을
+        안 쓴다).
+
+        Returns:
+            날짜 → 종가.
+
+        Raises:
+            Exception: 출처 호출 · 파싱 실패.
+        """
+        return parse_cboe_vix_history(await self._client.cboe_vix_csv())
 
     @staticmethod
     def _vix(

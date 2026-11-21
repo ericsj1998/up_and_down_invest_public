@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from decimal import Decimal
 from typing import Any
 from urllib.parse import unquote
@@ -17,6 +18,7 @@ from updown.marketdata.macro.parse import (
     MacroParseError,
     parse_bls_series,
     parse_cboe_vix_csv,
+    parse_cboe_vix_history,
     parse_effr,
     parse_yahoo_chart,
 )
@@ -128,6 +130,18 @@ class TestParsers:
         with pytest.raises(MacroParseError):
             parse_cboe_vix_csv("DATE,OPEN\n")
 
+    def test_cboe_history_all_rows(self) -> None:
+        got = parse_cboe_vix_history(CBOE)
+        assert got == {date(2026, 9, 8): Decimal("15.72"), date(2026, 9, 9): Decimal("16.46")}
+
+    def test_cboe_history_bad_rows_are_loud(self) -> None:
+        with pytest.raises(MacroParseError):
+            parse_cboe_vix_history("DATE,OPEN,HIGH,LOW,CLOSE\n")
+        with pytest.raises(MacroParseError):
+            parse_cboe_vix_history("DATE,OPEN,HIGH,LOW,CLOSE\n09/09/2026,1,2,3,x\n")
+        with pytest.raises(MacroParseError):
+            parse_cboe_vix_history("DATE,OPEN,HIGH,LOW,CLOSE\n13/40/2026,1,2,3,4\n")
+
 
 class _Toss:
     def __init__(self, *, fail: bool = False) -> None:
@@ -200,6 +214,20 @@ class TestAdapter:
         failed = {f["key"]: f["reason"] for f in failures}
         assert set(failed) == {"nq", "cpi", "usdkrw", "kospi"}
         assert "429" in failed["nq"] and "BLS" in failed["cpi"] and "401" in failed["usdkrw"]
+
+    @pytest.mark.asyncio
+    async def test_vix_closes_whole_history_no_substitute(self) -> None:
+        made = MacroAdapter(_client(), None)
+        got = await made.vix_closes()
+        assert got[date(2026, 9, 9)] == Decimal("16.46") and len(got) == 2
+
+        def down(request: httpx.Request) -> httpx.Response:
+            del request
+            return httpx.Response(503, text="down")
+
+        broken = MacroAdapter(MacroClient(transport=httpx.MockTransport(down)), None)
+        with pytest.raises(Exception, match="503"):
+            await broken.vix_closes()  # 다른 출처로 대신하지 않는다
 
     @pytest.mark.asyncio
     async def test_keys_filter_and_no_toss(self) -> None:
