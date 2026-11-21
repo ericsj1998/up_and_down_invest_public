@@ -402,6 +402,87 @@ async def lite(request: Request) -> dict[str, Any]:
     return made
 
 
+MARKET_TTL_S = 60.0
+"""첫 화면 시장 칸 다시 만들기 간격(초) — 탭이 여럿이어도 공개 티커 · 거시 캐시는 한 벌."""
+MARKET_SYMBOLS = ("BTC_USDT", "ETH_USDT", "NAS100_USDT")
+"""첫 화면 시세 줄 — 기준(BTC) · 둘째 큰 코인 · 나스닥 엔진 계약."""
+MARKET_MACRO = ("vix", "nq", "sp500", "us10y", "dxy")
+"""첫 화면 거시 줄 — 거시 카드(`/macro`) 캐시에서 고른다."""
+_market_cache: tuple[float, dict[str, Any]] | None = None
+_vix_cache: tuple[datetime, dict[Any, Decimal]] | None = None
+
+
+@router.get("/market")
+async def market() -> dict[str, Any]:
+    """첫 화면 시장 칸 — 시세 · 거시 지표 · 매매법이 지금 읽는 문 값(사용자 2026-11-21).
+
+    Returns:
+        `{at, prices, macro, gates, failures}` — 문 값은 실계좌 판이 이미 넣은 값 · 문턱은 판이 든
+        선언(`market_strip.gate_rows`) · 못 읽은 칸은 비우고 `failures` 에 까닭(규칙 #8).
+
+    Note:
+        화면은 칸을 열 때만 부른다. 서버도 60 초 묶음 · 새 계산 없음(판 값 읽기 · 공개 티커 한 번 ·
+        거시 캐시 · VIX 공식 종가 한 시간 캐시).
+    """
+    global _market_cache, _vix_cache
+    now_m = monotonic()
+    if _market_cache is not None and now_m - _market_cache[0] < MARKET_TTL_S:
+        return _market_cache[1]
+    from updown.apps.api.macro import macro_snapshot
+    from updown.apps.api.market_strip import VIX_TTL, fear_row, gate_rows, price_rows
+    from updown.apps.api.walkforward import LIVE_RUNNERS
+    from updown.common.domain.instrument import Market
+    from updown.marketdata.provider import MarketDataProvider, macro_adapter
+    from updown.orchestration.leg_engines import running_on
+
+    now = datetime.now(UTC)
+    failures: list[dict[str, str]] = []
+    prices: list[dict[str, str]] = []
+    try:
+        quotes = MarketDataProvider().adapter_for(Market.GATE)
+        prices = price_rows(await quotes.tickers(), MARKET_SYMBOLS)  # type: ignore[attr-defined]
+    except Exception as exc:  # 외부 I/O — 칸만 비운다
+        failures.append({"key": "prices", "reason": str(exc)[:160]})
+    macro_rows: list[dict[str, Any]] = []
+    try:
+        snap = await macro_snapshot(MARKET_MACRO)
+        macro_rows = list(snap.get("indicators", []))
+        failures += [
+            {"key": str(f.get("key")), "reason": str(f.get("reason"))}
+            for f in snap.get("failures", [])
+        ]
+    except Exception as exc:
+        failures.append({"key": "macro", "reason": str(exc)[:160]})
+    sessions = [r._session for r in LIVE_RUNNERS.values()]  # pyright: ignore[reportPrivateUsage]
+    gates = [g.as_json() for g in gate_rows(sessions, now)]
+    engines = running_on("GATE")
+    nas = engines.get("NAS100_USDT")
+    threshold = None
+    status: dict[str, Any] | None = None
+    if nas is not None:
+        params = getattr(getattr(nas, "config", None), "params", None)
+        threshold = getattr(params, "fear_vix_at", None)
+        status = nas.status()
+    if threshold:
+        if _vix_cache is None or now - _vix_cache[0] > VIX_TTL:
+            try:
+                _vix_cache = (now, dict(await macro_adapter().vix_closes()))
+            except Exception as exc:
+                failures.append({"key": "vix_closes", "reason": str(exc)[:160]})
+        row = fear_row(status, float(threshold), None if _vix_cache is None else _vix_cache[1])
+        if row is not None:
+            gates.append(row.as_json())
+    made = {
+        "at": now.isoformat(),
+        "prices": prices,
+        "macro": macro_rows,
+        "gates": gates,
+        "failures": failures,
+    }
+    _market_cache = (now_m, made)
+    return made
+
+
 BRIEF_TTL_S = 60.0
 """약식 리포트 다시 만들기 간격(초) — 기간 단추를 오가도 DB · 거래소 조회는 이 간격에 한 벌이다."""
 _brief_cache: dict[int, tuple[float, dict[str, Any]]] = {}

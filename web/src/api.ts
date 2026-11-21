@@ -289,6 +289,30 @@ export function liteHome(): Promise<LiteHomeData> {
   return request("/report/lite");
 }
 
+/** 첫 화면 시장 칸 — 시세 · 거시 · 매매법이 지금 읽는 문 값 (2026-11-21). */
+export type MarketGate = {
+  key: string;
+  name: string;
+  legs: string[];
+  value: string;
+  rule: string;
+  /** "열림" · "쉼" · "모름"(모름 = 그 다리 새 진입 보류). */
+  state: string;
+  note: string;
+};
+
+export type MarketData = {
+  at: string;
+  prices: { symbol: string; last: string; change_pct: string }[];
+  macro: MacroIndicator[];
+  gates: MarketGate[];
+  failures: { key: string; reason: string }[];
+};
+
+export function marketStrip(): Promise<MarketData> {
+  return request("/report/market");
+}
+
 /** 첫 화면 약식 리포트 — 거래소를 못 읽으면 금액 칸은 null. */
 export type LiteBrief = {
   since: string;

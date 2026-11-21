@@ -22,6 +22,7 @@ import {
 import { fmtPrice } from "./chart/trades";
 import { exitText, noteText } from "./engineFacts";
 import { heldText, legNames, liteFacts } from "./liteFacts";
+import { MarketStrip } from "./MarketStrip";
 import { useOpenRuns } from "./shell/openRuns";
 
 const POLL_MS = 60_000;
@@ -759,6 +760,8 @@ export function LiteHome() {
           />
         </div>
       </div>
+
+      <MarketStrip />
 
       <BriefReport />
 

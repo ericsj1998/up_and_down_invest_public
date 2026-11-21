@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -513,3 +514,39 @@ def test_outside_row_is_ok_when_only_our_orders() -> None:
 def test_outside_row_without_book_is_info() -> None:
     row = outside_row(_snap([], {}), NOW, 7)
     assert row.status == "info"
+
+
+def test_book_dry_flips_are_not_errors_and_get_their_own_row() -> None:
+    """2026-11-21 — 호가 마름 깜박임은 오류 칸에서 빠지고 따로 마른 분 · 놓친 후보로 센다."""
+    from updown.orchestration.live_review.check import _error_counts, book_dry_row
+
+    def ev(kind: str, minutes: int, sym: str, level: str = "warning") -> dict[str, Any]:
+        at = NOW - timedelta(minutes=minutes)
+        return {
+            "ts": at.isoformat(),
+            "level": level,
+            "event_type": kind,
+            "payload": {"symbol": sym},
+        }
+
+    events = [
+        ev("live_book_dry", 120, "BLESS_USDT", "error"),  # 옛 서버는 오류 등급으로 적었다
+        ev("live_book_wet", 110, "BLESS_USDT", "info"),
+        ev("live_book_dry", 30, "BLESS_USDT"),
+        ev("live_book_wet", 25, "BLESS_USDT", "info"),
+        ev("live_book_dry", 10, "EVAA_USDT"),  # 아직 마른 채
+        ev("live_order_failed", 5, "BTC_USDT", "error"),
+    ]
+    errs, warns = _error_counts(events, NOW - timedelta(days=1))
+    assert errs == Counter({"live_order_failed": 1}) and not warns
+    snap = Snapshot(Path(), NOW, [], [], [], {}, events, {}, blocked=[])
+    row = book_dry_row(snap, NOW)
+    assert row.status == "info"
+    assert "마름 3번 · 2종목" in row.value and "BLESS_USDT 2번 · 15분" in row.value
+    assert "EVAA_USDT 1번 · 10분" in row.value
+    missed = [
+        {"ts": (NOW - timedelta(minutes=8)).isoformat(), "code": "book_dry", "symbol": "EVAA_USDT"}
+    ]
+    snap2 = Snapshot(Path(), NOW, [], [], [], {}, events, {}, blocked=missed)
+    row2 = book_dry_row(snap2, NOW)
+    assert row2.status == "warn" and "놓친 후보 EVAA_USDT" in row2.value

@@ -34,8 +34,15 @@ SLIP_STOP_WARN = Decimal("0.3")
 """손절 체결이 계획 손절보다 이만큼(%) 넘게 불리하면 ⚠️."""
 FILL_BP_WARN = 30.0
 """진입 체결가가 원장 진입가와 이만큼(bp) 넘게 다르면 ⚠️ — 10bp 안팎은 정상(T372)."""
-LEV_WARN = Decimal("0.25")
-"""체결 배율이 계획 배율과 이 비율 넘게 다르면 ⚠️."""
+LEV_OVER = Decimal(2)
+"""체결 배율이 계획의 이 배 이상이면 ⚠️(최소 1 계약 등으로 계획보다 크게 삼 = 위험이 큼).
+
+2026-11-21 T969 실측: 1.5 배 넘게 크게 산 매매는 고친 펀드 재현 1,417 건 중 1 건(+0.3 USDT 차) ·
+실계좌 7 일 1 건(SOL) — 드물고 작아 1.25 배 문턱은 소음이었다. 규칙(살지 말지)은 그대로 · 표시만."""
+LEV_UNDER = Decimal("0.5")
+"""체결 배율이 계획의 이 배 이하이면 ⚠️(덜 참 — 일부 체결 의심)."""
+NOTE_WHEN_WALLET_OK = ("거래소 닫힌 포지션 기록과 못 맞춤(원장 추정)",)
+"""장부 = 지갑이 맞으면 '먼저 볼 것' 에 안 올리는 표시(매매 한 건 짝짓기만 못 함 · 총액은 맞음)."""
 EQUITY_TOL = Decimal("0.5")
 """펀드 장부 equity 와 거래소 지갑 총액의 허용 차(USDT)."""
 ANCHOR_STALE = timedelta(hours=24)
@@ -453,11 +460,79 @@ def _error_counts(
             continue
         lvl = str(ev.get("level", "")).lower()
         kind = str(ev.get("event_type", ""))
+        if kind in BOOK_FLIPS:
+            continue  # 호가 마름 깜박임은 `book_dry_row` 가 따로 센다(시장 상태 · 오류 아님)
         if lvl == "error" and kind != "live_audit_found":
             errs[kind] += 1
         elif lvl == "warning" and kind not in ("live_step_slow", "preview_sweep_slow"):
             warns[kind] += 1
     return errs, warns
+
+
+BOOK_FLIPS = ("live_book_dry", "live_book_wet")
+"""호가가 말랐다 · 돌아왔다(얇은 알트가 하루 수십 번 깜박인다) — 오류 · 경고 칸에서 빼고 따로."""
+
+
+def book_dry_row(snap: Snapshot, now: datetime) -> Row:
+    """1절 한 줄 — 24 시간 호가 마름: 종목별 마름 횟수 · 마른 분 · 그동안 놓친 후보.
+
+    호가가 마르면 그 판은 새 진입만 막는다(보유 · 손절 · 청산은 그대로). 깜박임 자체는 시장 상태라
+    참고로 두고, **그 사이 규칙이 사려던 후보가 막혔을 때만** ⚠️ 다(놓친 매매).
+
+    Args:
+        snap: 스냅샷.
+        now: 지금.
+
+    Returns:
+        줄 하나.
+    """
+    since = now - timedelta(days=1)
+    open_at: dict[str, datetime] = {}
+    flips: Counter[str] = Counter()
+    dry_min: Counter[str] = Counter()
+    for ev in sorted(snap.events, key=lambda e: str(e.get("ts", ""))):
+        kind = str(ev.get("event_type", ""))
+        if kind not in BOOK_FLIPS:
+            continue
+        at = when(ev.get("ts"))
+        raw: object = ev.get("payload")
+        payload: Mapping[str, Any] = (
+            cast("Mapping[str, Any]", raw) if isinstance(raw, Mapping) else {}
+        )
+        sym = str(payload.get("symbol") or "?")
+        if at is None:
+            continue
+        if kind == "live_book_dry":
+            open_at[sym] = at
+            if at >= since:
+                flips[sym] += 1
+        else:
+            start = open_at.pop(sym, None)
+            if start is not None and at >= since:
+                dry_min[sym] += int((at - max(start, since)).total_seconds() // 60)
+    for sym, start in open_at.items():  # 아직 마른 채
+        dry_min[sym] += int((now - max(start, since)).total_seconds() // 60)
+    missed = [
+        r
+        for r in (snap.blocked or [])
+        if str(r.get("code") or "") == "book_dry"
+        and (when(r.get("ts")) or when(r.get("at")) or since) >= since
+    ]
+    top = ", ".join(f"{s} {flips[s]}번 · {dry_min[s]}분" for s, _ in flips.most_common(6))
+    value = f"마름 {sum(flips.values())}번 · {len(flips)}종목" + (f"({top})" if top else "")
+    if missed:
+        value += " · 놓친 후보 " + ", ".join(
+            f"{r.get('symbol') or '?'} {kst(when(r.get('ts')) or when(r.get('at')))}"
+            for r in missed
+        )
+    return Row(
+        "now",
+        "호가 마름(24시간)",
+        "warn" if missed else "info",
+        value,
+        "호가가 표시가에서 5% 넘게 벌어지거나 깊이가 모자라면 그 판은 새 진입만 막는다 — "
+        "놓친 후보가 있을 때만 ⚠️(마른 분이 길고 잦은 종목은 분기 종목 고르기에서 볼 재료)",
+    )
 
 
 def _last_traces(events: Sequence[Mapping[str, Any]]) -> dict[str, datetime]:
@@ -1068,8 +1143,16 @@ def _trade_flags(
         slip = -raw if t.is_long else raw
         if slip > SLIP_STOP_WARN:
             flags.append(f"손절 체결이 계획보다 {float(slip):.2f}% 불리")
-    if t.leverage and t.filled_leverage and abs(t.filled_leverage / t.leverage - 1) > LEV_WARN:
-        flags.append(f"체결 배율 {_f(t.filled_leverage)} · 계획 {_f(t.leverage)}")
+    if t.leverage and t.filled_leverage:
+        ratio = t.filled_leverage / t.leverage
+        if ratio >= LEV_OVER:
+            flags.append(
+                f"체결 배율 {_f(t.filled_leverage)} · 계획 {_f(t.leverage)}(계획의 {ratio:.1f} 배)"
+            )
+        elif ratio <= LEV_UNDER:
+            flags.append(
+                f"체결 배율 {_f(t.filled_leverage)} · 계획 {_f(t.leverage)}(계획의 절반 미만)"
+            )
     if t.closed and t.fee_actual is None:
         flags.append("거래소 수수료 기록 없음(원장 모형값)")
     if t.closed and m.source != "exchange":
@@ -1271,13 +1354,19 @@ def _first_lines(rows: Sequence[Row], trades: Sequence[TradeCheck]) -> list[str]
     flagged = sorted(
         (r for r in rows if r.status in ("bad", "warn")), key=lambda r: r.status != "bad"
     )
-    t_flag = [c for c in trades if c.flags]
+    # 2026-11-21 — 장부 = 지갑이 맞으면 "짝짓기 못 함" 은 참고(2절 표에는 그대로 남는다).
+    wallet_ok = any(r.item.startswith("펀드 장부 ↔ 거래소 지갑") and r.status == "ok" for r in rows)
+    t_flag = [
+        (c, shown)
+        for c in trades
+        if (shown := [f for f in c.flags if not (wallet_ok and f in NOTE_WHEN_WALLET_OK)])
+    ]
     if not flagged and not t_flag:
         return ["- 없음 — 1절 항목이 전부 기준 안이고 최근 매매 점검 표시도 없다."]
     out = [f"- {MARK[r.status]} **{r.item}** — {r.value} _(기준: {r.basis})_" for r in flagged]
-    for c in t_flag:
+    for c, shown in t_flag:
         t = c.money.trade
-        out.append(f"- ⚠️ 매매 {t.symbol} {t.leg} {kst(t.opened_at)} — {' · '.join(c.flags)}")
+        out.append(f"- ⚠️ 매매 {t.symbol} {t.leg} {kst(t.opened_at)} — {' · '.join(shown)}")
     return out
 
 

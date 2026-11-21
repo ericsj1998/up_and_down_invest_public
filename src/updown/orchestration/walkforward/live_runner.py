@@ -5428,7 +5428,10 @@ class LiveRunner:
             # 🔴 **바뀌는 순간에만 크게 남긴다.** 5분마다 같은 줄을 쌓으면 진짜 사건이
             #    그 안에 묻힌다 (밤사이 `live_account_unreadable` 3979줄을 겪었다).
             self._fired("book_dry", got.why)
-            self._log.error(
+            # 경고 등급(오류 아님) — 시장 상태다(얇은 알트 호가가 몇 분씩 마르고 돌아온다).
+            # 오류로 적으면 점검표 "오류" 칸이 이 깜박임으로 차서 진짜 오류가 묻힌다
+            # (2026-11-21 · 24 시간 73 번). 막는 동작은 그대로 · 점검표가 따로 센다.
+            self._log.warning(
                 "live_book_dry",
                 payload={**(self.dry or {}), "symbol": self.instrument.symbol},
             )
