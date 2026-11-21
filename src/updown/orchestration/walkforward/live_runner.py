@@ -118,6 +118,14 @@ from updown.orchestration.walkforward.order_mapping import (
     share_target_order,
     take_profit_orders,
 )
+from updown.orchestration.walkforward.ref_inputs import (
+    apply_ref_regime,
+    clear_ref_regime,
+    market_day_of,
+    ref_fetch_bars,
+    ref_warm_extra,
+    washed_rule_of,
+)
 from updown.orchestration.walkforward.session import STEP_FRAME, Session
 from updown.orchestration.walkforward.store import RunStore
 
@@ -8678,9 +8686,7 @@ class LiveRunner:
         #   첫 급락 봉을 막은 뒤 늦은 진입). 칸이 없는 대역(시험의 자리표)은 "안 함" 으로 읽는다.
         warm = bool(getattr(self, "_warm_pending", False))
         warm_extra = (
-            3 * max((b.max_hold_bars or 0 for b in self._session.playbooks), default=0) + 4
-            if needs.vol_pct_bars is not None and hasattr(self, "_warm_pending")
-            else 0
+            ref_warm_extra(needs, self._session.playbooks) if hasattr(self, "_warm_pending") else 0
         )
         # ⭐ T852 — 기억한 값이 **지금도 마지막으로 닫힌 4H 봉의 것**이면 거래소에 묻지 않는다.
         #    그 봉(시작 `at`)은 `at + 4h` 에 닫혔고, 다음 닫힌 봉은 `at + 8h` 에야 생긴다 — 그
@@ -8693,7 +8699,7 @@ class LiveRunner:
         try:
             end = datetime.now(UTC)
             # T852 E1 — 판들이 같은 기준 봉을 한 번만 받는다(`ref_rows`).
-            rows = await ref_rows(self._quotes, ref, need + 20 + warm_extra, end)
+            rows = await ref_rows(self._quotes, ref, ref_fetch_bars(needs, warm_extra), end)
             # 마감봉만 (마지막 봉이 진행 중이면 제외 — 판정은 닫힌 봉으로)
             closed = [c for c in rows if c.ts + timedelta(hours=4) <= end]
             if len(closed) <= need:
@@ -8704,31 +8710,7 @@ class LiveRunner:
             if self._ref_regime_at == last_ts:
                 return  # 같은 4h 봉 — 재계산 불필요 (주입값 유지)
             got = reference_regime(closed, needs)
-            if needs.ma_n is not None:
-                self._session.ref_above = got.above
-            if needs.band_n is not None:
-                self._session.ref_return = got.ret
-            if needs.surge_days is not None:
-                self._session.ref_surge = got.surge
-            if needs.sma_bars is not None:
-                self._session.ref_sma_down = got.sma_down
-            if needs.vol_days is not None:
-                self._session.ref_vol = got.vol
-            if needs.vol_pct_bars is not None:
-                self._session.ref_vol_pct = got.vol_pct
-            if needs.pivot_k is not None:
-                self._session.ref_pivot_s1 = got.pivot_s1
-                self._session.ref_pivot_s4 = got.pivot_s4
-            if needs.dist_days is not None:
-                self._session.ref_dist_pct = got.dist_pct
-            if needs.vol_off_days is not None:
-                self._session.ref_vol_sd_pct = got.vol_sd_pct
-            if needs.vol_rank_days is not None:
-                self._session.ref_vol_rank = got.vol_rank
-            if needs.lag_days is not None:
-                self._session.ref_lag_ret = got.lag_ret
-            if needs.washed_days is not None:
-                self._session.ref_washed_ret = got.washed_ret
+            apply_ref_regime(self._session, needs, got)  # T968 — 재현과 같은 한 길
             self._ref_regime_at = last_ts
         except Exception as exc:
             if attempt + 1 < REF_REGIME_TRIES and not isinstance(exc, ValueError):
@@ -8737,18 +8719,9 @@ class LiveRunner:
                 await asyncio.sleep(REF_REGIME_WAIT)
                 await LiveRunner._inject_ref_regime(self, attempt=attempt + 1)
                 return
-            self._session.ref_above = None  # 모름 = 게이트 잠듦 (0.2.0 동작 폴백)
-            self._session.ref_return = None  # 모름 = 국면 문 잠듦 (T290 · 같은 폴백)
-            self._session.ref_surge = None  # 모름 = 급등 상한 보류 (T304 #8 · 같은 폴백)
-            self._session.ref_sma_down = None  # 모름 = 하락 문 보류 (T304 #2)
-            self._session.ref_vol = ()  # 모름 = 변동성 목표 크기 보류 (T304)
-            self._session.ref_vol_pct = None  # 모름 = 변동성 백분위 문 보류 (T329)
-            self._session.ref_pivot_s1 = self._session.ref_pivot_s4 = None  # 모름 = 배수 1 (T436)
-            self._session.ref_dist_pct = None  # 모름 = 배수 1 (T783)
-            self._session.ref_vol_sd_pct = None  # 모름 = 막지 않음 (T612 SV1)
-            self._session.ref_vol_rank = None  # 모름 = 변동성 순위 문 보류
-            self._session.ref_lag_ret = None  # 모름 = 뒤처짐 문 보류
-            self._session.ref_washed_ret = None  # 모름 = 씻긴 시장 문 보류
+            clear_ref_regime(
+                self._session
+            )  # 모름 = 문 보류 · 배수 기본값(T968 — 재현과 같은 한 길)
             self._ref_regime_at = None
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
 
@@ -8768,13 +8741,11 @@ class LiveRunner:
             except ReleaseConfigError as exc:
                 self._session.release_schedule = None
                 self._log.warning("live_releases_unreadable", payload={"error": str(exc)[:140]})
-        rule = next(
-            (b.entry_washed for b in self._session.playbooks if b.entry_washed is not None), None
-        )
+        rule = washed_rule_of(self._session.playbooks)
         if rule is None:
             return
         now = datetime.now(UTC)
-        day = (now - timedelta(days=1)).date()
+        day = market_day_of(now)
         try:
             got = await market_day_values(self.instrument.market.value, day, rule, now=now)
         except Exception as exc:

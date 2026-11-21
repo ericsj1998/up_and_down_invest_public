@@ -50,6 +50,12 @@ from updown.orchestration.rebalancer.legs import isolated_attributions
 from updown.orchestration.rebalancer.live_adapter import SessionBridge
 from updown.orchestration.rebalancer.wiring import wire_legs
 from updown.orchestration.walkforward.ledger import Outcome
+from updown.orchestration.walkforward.ref_inputs import (
+    apply_ref_regime,
+    clear_ref_regime,
+    market_day_of,
+    washed_rule_of,
+)
 from updown.portfolio.performance import TwrLedger
 
 if TYPE_CHECKING:
@@ -62,6 +68,12 @@ if TYPE_CHECKING:
 
 HOUR = timedelta(hours=1)
 FOUR = timedelta(hours=4)
+
+
+class ReplayInputError(RuntimeError):
+    """재현에 판이 선언한 진입 문의 입력이 빠졌다 — 걷기 전에 멈춘다(T968 · 규칙 #8)."""
+
+
 _FRAME_MINUTES = {Timeframe.M15: 15, Timeframe.H1: 60, Timeframe.H4: 240}
 
 
@@ -186,6 +198,7 @@ class FundReplay:
         market_values: Callable[[date, WashedRule], tuple[Decimal | None, Decimal | None] | None]
         | None = None,
         release_schedule: ReleaseSchedule | None = None,
+        allow_unknown_inputs: bool = False,
     ) -> None:
         """걸음을 준비한다.
 
@@ -204,6 +217,11 @@ class FundReplay:
                 값을 모르는 것으로 돈다(`entry_washed` 를 선언한 다리는 진입을 보류한다).
             release_schedule: 발표 일정(`entry_event_window`) — 실계좌는 러너가 설정 파일에서
                 읽어 넣는다. None 이면 모르는 것으로 돈다(그 문을 선언한 다리는 진입 보류).
+            allow_unknown_inputs: 참이면 선언한 문의 입력(일정 · 시장 값)이 없어도 돈다(옛 재현과
+                맞대기용). 거짓(기본)이면 시작 점검(`check_inputs`)이 막는다.
+
+        Raises:
+            ReplayInputError: 판의 매매법이 선언한 문의 입력이 없을 때(`allow_unknown_inputs` 거짓).
         """
         self.boards = list(boards)
         self.coordinator = coordinator
@@ -214,9 +232,59 @@ class FundReplay:
         self._rnd = random.Random(seed)
         self._membership = membership
         self._market_values = market_values
+        self._release_schedule = release_schedule
+        self._allow_unknown = allow_unknown_inputs
         for board in self.boards:
             board.session.release_schedule = release_schedule
         self.result = ReplayResult()
+        if not allow_unknown_inputs:
+            self.check_inputs()
+
+    def check_inputs(self, start: datetime | None = None, end: datetime | None = None) -> None:
+        """판들이 선언한 진입 문의 **입력이 다 들어왔나** 걷기 전에 본다 (T968).
+
+        실계좌 러너는 일정 · 시장 전체 값 · 기준 봉을 넣는데 재현이 빠뜨리면 세션은 "모름 = 보류"
+        (규칙 #8-1)로 그 다리 진입을 조용히 막고, 결과는 그럴듯한 숫자로 나온다(T968 — 숏 다리
+        0 · 열 달 거의 무매매). 그래서 재현에서는 모름을 결과로 두지 않고 시작 전에 멈춘다.
+
+        Args:
+            start: 걷기 시작(주면 기준 봉 · 일정이 그 시각을 덮는지도 본다).
+            end: 걷기 끝(주면 일정 끝도 본다).
+
+        Raises:
+            ReplayInputError: 빠진 입력 · 모자란 기준 봉 · 창을 못 덮는 일정.
+        """
+        books = [b for board in self.boards for b in board.session.playbooks]
+        missing: list[str] = []
+        windows = [b.entry_event_window for b in books if b.entry_event_window is not None]
+        if windows and self._release_schedule is None:
+            missing.append("발표 일정(entry_event_window)")
+        if windows and self._release_schedule is not None and start is not None and end is not None:
+            span = max(timedelta(hours=float(w.hours)) for w in windows)
+            if (
+                start - span < self._release_schedule.since
+                or end + span > self._release_schedule.horizon
+            ):
+                missing.append(
+                    f"발표 일정이 창을 못 덮음({self._release_schedule.since:%Y-%m-%d} ~ "
+                    f"{self._release_schedule.horizon:%Y-%m-%d})"
+                )
+        if any(b.entry_washed is not None for b in books) and self._market_values is None:
+            missing.append("시장 전체 값(entry_washed)")
+        if start is not None:
+            have = bisect_right(self._ref_ends, start)
+            need = max(
+                (
+                    board.needs.bars
+                    for board in self.boards
+                    if board.needs and not board.needs.empty
+                ),
+                default=0,
+            )
+            if need and have <= need:
+                missing.append(f"기준 4H 봉 {have} 개 ≤ 국면값 요구 {need} 개(시작 전 마감 봉)")
+        if missing:
+            raise ReplayInputError("재현 입력 빠짐 — " + " · ".join(missing))
 
     def run(self, start: datetime, end: datetime) -> ReplayResult:
         """`start` 다음 시간부터 `end` 까지 한 시간씩 민다.
@@ -231,6 +299,8 @@ class FundReplay:
         # ⭐ 시계 눈금 = 판들 걸음 중 가장 잔 것(최대 1시간). 전부 1H · 4H 면 예전과 한 시간씩 ·
         #    같은 순서 · 같은 난수 소비라 결과가 한 비트도 안 바뀐다. 15분 판(T345 조기 진입)이
         #    있으면 15분씩 밀되 정시 일(기준 국면 · 펀딩 · 펀드 틱 · 자정 잔고)은 정시에만 한다.
+        if not self._allow_unknown:
+            self.check_inputs(start, end)
         tick = min([HOUR, *(timedelta(minutes=b.minutes) for b in self.boards)])
         t = start
         while t < end:
@@ -299,49 +369,19 @@ class FundReplay:
                 if isinstance(got, ValueError):
                     raise got
             except ValueError:
-                s.ref_above = s.ref_return = s.ref_surge = s.ref_sma_down = None
-                s.ref_vol = ()
-                s.ref_vol_pct = None
-                s.ref_pivot_s1 = s.ref_pivot_s4 = None
-                s.ref_dist_pct = None
-                s.ref_vol_sd_pct = None
-                s.ref_vol_rank = s.ref_lag_ret = s.ref_washed_ret = None
+                clear_ref_regime(s)  # T968 — 실계좌 러너와 같은 한 길(ref_inputs)
                 continue
-            if needs.ma_n is not None:
-                s.ref_above = got.above
-            if needs.band_n is not None:
-                s.ref_return = got.ret
-            if needs.surge_days is not None:
-                s.ref_surge = got.surge
-            if needs.sma_bars is not None:
-                s.ref_sma_down = got.sma_down
-            if needs.vol_days is not None:
-                s.ref_vol = got.vol
-            if needs.vol_pct_bars is not None:
-                s.ref_vol_pct = got.vol_pct
-            if needs.pivot_k is not None:
-                s.ref_pivot_s1 = got.pivot_s1
-                s.ref_pivot_s4 = got.pivot_s4
-            if needs.dist_days is not None:
-                s.ref_dist_pct = got.dist_pct
-            if needs.vol_off_days is not None:
-                s.ref_vol_sd_pct = got.vol_sd_pct
-            if needs.vol_rank_days is not None:
-                s.ref_vol_rank = got.vol_rank
-            if needs.lag_days is not None:
-                s.ref_lag_ret = got.lag_ret
-            if needs.washed_days is not None:
-                s.ref_washed_ret = got.washed_ret
+            apply_ref_regime(s, needs, got)
 
     def _inject_market(self, t: datetime) -> None:
         """4H 경계마다 시장 전체 값(전날 종가까지)을 넣는다 — `entry_washed` 를 선언한 판만.
 
         실계좌 `_inject_market_values` 와 같은 날 셈이다: 값의 날 = `t` 기준 마지막으로 닫힌 UTC 날.
         """
-        day = (t - timedelta(days=1)).date()
+        day = market_day_of(t)
         for board in self.boards:
             s = board.session
-            rule = next((b.entry_washed for b in s.playbooks if b.entry_washed is not None), None)
+            rule = washed_rule_of(s.playbooks)
             if rule is None:
                 continue
             got = None if self._market_values is None else self._market_values(day, rule)

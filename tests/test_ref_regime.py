@@ -269,3 +269,71 @@ class TestPureFunction:
             ma_n=None, band_n=360, surge_days=7, sma_bars=None, sma_lag=None, vol_days=30
         )
         assert needs.bars == 360
+
+
+class TestOneRoad:
+    """T968 — 실계좌 러너와 펀드 재현이 같은 기준 봉에서 세션에 **같은 값**을 넣는다(한 길).
+
+    둘이 따로 넣다가 재현만 기준 봉을 모자라게 받아 국면값이 통째로 "모름" 이 된 적이 있다.
+    """
+
+    CURRENT = (
+        "private_strategy",
+        "private_strategy",
+        "private_strategy",
+        "private_strategy",
+        "private_strategy",
+    )
+    FIELDS = (
+        "ref_above",
+        "ref_return",
+        "ref_surge",
+        "ref_sma_down",
+        "ref_vol",
+        "ref_vol_pct",
+        "ref_pivot_s1",
+        "ref_pivot_s4",
+        "ref_dist_pct",
+        "ref_vol_sd_pct",
+        "ref_vol_rank",
+        "ref_lag_ret",
+        "ref_washed_ret",
+    )
+
+    def _replay(self, books: tuple[str, ...], bars: list[Any]) -> Any:
+        from updown.analysis.indicators.reference import needs_of
+        from updown.orchestration.fund_replay.harness import FundReplay
+
+        declared = {b.playbook_id: b for b in load_playbooks()}
+        session = SimpleNamespace(  # `fake_runner` 세션과 같은 처음 칸
+            playbooks=[declared[name] for name in books],
+            ref_above=None,
+            ref_return=None,
+            ref_surge=None,
+            ref_sma_down=None,
+            ref_vol=(),
+        )
+        board = SimpleNamespace(session=session, needs=needs_of(session.playbooks))
+        host = SimpleNamespace(
+            boards=[board], _ref=bars, _ref_ends=[c.ts + timedelta(hours=4) for c in bars]
+        )
+        cast("Any", FundReplay)._inject_ref(host, datetime.now(UTC))
+        return session
+
+    @pytest.mark.parametrize("n", [2600, 700])
+    def test_same_fields(self, n: int) -> None:
+        bars = [
+            SimpleNamespace(ts=b.ts, open=b.close, high=b.close, low=b.close, close=b.close)
+            for b in closed_bars(n, seed=11)
+        ]
+        runner = fake_runner(self.CURRENT, bars)
+        inject(runner)
+        replay = self._replay(self.CURRENT, bars)
+        live = runner._session
+        got = {f: getattr(replay, f, "빈칸") for f in self.FIELDS}
+        want = {f: getattr(live, f, "빈칸") for f in self.FIELDS}
+        assert got == want
+        if n == 700:  # 2,382 봉 요구에 모자람 → 둘 다 전부 모름
+            assert want["ref_vol"] == () and want["ref_vol_rank"] is None
+        else:
+            assert want["ref_vol"] != () and want["ref_vol_rank"] is not None

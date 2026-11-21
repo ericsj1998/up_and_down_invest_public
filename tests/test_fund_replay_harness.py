@@ -10,8 +10,16 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from updown.common.domain.instrument import Timeframe
-from updown.orchestration.fund_replay.harness import FundReplay, ReplayBoard, assemble
+from updown.common.domain.releases import ReleaseSchedule
+from updown.orchestration.fund_replay.harness import (
+    FundReplay,
+    ReplayBoard,
+    ReplayInputError,
+    assemble,
+)
 from updown.orchestration.fund_replay.runner_rules import ContractSpec
 from updown.orchestration.walkforward.ledger import (
     Actor,
@@ -216,3 +224,50 @@ class TestMembership:
         coordinator = assemble(boards, legs=(), capital=Decimal(1000), slots=2)
         FundReplay(boards, coordinator, ref_4h=(), seed=1).run(START, START + timedelta(hours=4))
         assert a.idled == 0 and len(a.seen_legs) == 4 and set(a.seen_legs) == {None}
+
+
+class TestInputCheck:
+    """T968 — 판이 선언한 진입 문의 입력이 빠지면 걷기 전에 멈춘다(모름 = 보류로 안 돎)."""
+
+    @staticmethod
+    def _boards() -> tuple[list[ReplayBoard], Any]:
+        a = ScriptSession("AAA_USDT", {})
+        boards = [
+            ReplayBoard(symbol="AAA_USDT", session=cast("Any", a), spec=ContractSpec(Decimal(1)))
+        ]
+        coordinator = assemble(boards, legs=(), capital=Decimal(1000), slots=2)
+        return boards, coordinator
+
+    def test_declared_gates_need_their_inputs(self) -> None:
+        boards, coordinator = self._boards()
+        boards[0].session.playbooks = [
+            SimpleNamespace(
+                entry_event_window=SimpleNamespace(hours=Decimal(8)), entry_washed=SimpleNamespace()
+            )
+        ]
+        with pytest.raises(ReplayInputError, match=r"발표 일정.*시장 전체 값"):
+            FundReplay(boards, coordinator, ref_4h=(), seed=1)
+        # 옛 재현과 맞대기는 모름을 허용한다
+        FundReplay(boards, coordinator, ref_4h=(), seed=1, allow_unknown_inputs=True)
+
+    def test_schedule_must_cover_the_window(self) -> None:
+        boards, coordinator = self._boards()
+        boards[0].session.playbooks = [
+            SimpleNamespace(entry_event_window=SimpleNamespace(hours=Decimal(8)), entry_washed=None)
+        ]
+        short = ReleaseSchedule(since=START, horizon=START + timedelta(days=1), times={})
+        replay = FundReplay(boards, coordinator, ref_4h=(), seed=1, release_schedule=short)
+        with pytest.raises(ReplayInputError, match="창을 못 덮음"):
+            replay.run(START, START + timedelta(hours=4))
+
+    def test_reference_bars_must_cover_the_needs(self) -> None:
+        boards, coordinator = self._boards()
+        boards[0].needs = cast("Any", SimpleNamespace(bars=10, empty=False))
+        with pytest.raises(ReplayInputError, match="기준 4H 봉 0 개"):
+            FundReplay(boards, coordinator, ref_4h=(), seed=1).run(
+                START, START + timedelta(hours=4)
+            )
+
+    def test_no_declared_gates_walks_as_before(self) -> None:
+        boards, coordinator = self._boards()
+        FundReplay(boards, coordinator, ref_4h=(), seed=1).run(START, START + timedelta(hours=4))
