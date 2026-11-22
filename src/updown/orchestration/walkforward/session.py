@@ -511,6 +511,38 @@ def early_clock(rows: Sequence[Candle], frame: Timeframe) -> datetime | None:
     return rows[-1].ts + interval(frame)
 
 
+def board_axis(books: Sequence[Playbook]) -> Timeframe:
+    """판이 **걷는 축** — 실은 매매법들 가운데 첫 자리의 축 (T973 · 순수).
+
+    Args:
+        books: 판에 실은 매매법들(묶음 순서). 비어 있으면 안 된다.
+
+    Returns:
+        급전 진입 축 · 웹소켓 축 · 커서 전진 단위.
+
+    Note:
+        🔴 실계좌(API)와 재현 장치가 **이 함수 하나**로 정한다. 재현 장치가 따로 "가장 짧은 축"
+        으로 걸었던 탓에, 1h 판에 실린 15 분 다리가 실계좌에서 정시에만 판정되는 것을 배포 전
+        재현이 못 잡았다(2026-11-22 · 1.51.0). 걷는 축보다 짧은 축의 다리는 `sub_frames` 가
+        알려 주고 러너의 봉 사이 시계가 그 다리만 따로 깨운다.
+    """
+    return books[0].timeframe
+
+
+def sub_frames(books: Sequence[Playbook], axis: Timeframe) -> tuple[Timeframe, ...]:
+    """걷는 축보다 **짧은 축**을 가진 다리들의 축 — 봉 사이 보조 판정이 필요한 축 (T973 · 순수).
+
+    Args:
+        books: 판에 실은 매매법들.
+        axis: 판이 걷는 축(`board_axis`).
+
+    Returns:
+        짧은 축부터. 없으면 빈 튜플(대부분의 판).
+    """
+    found = {item.timeframe for item in books if interval(item.timeframe) < interval(axis)}
+    return tuple(sorted(found, key=interval))
+
+
 def signal_bar(rows: Sequence[Candle], tick: Candle, frame: Timeframe) -> Candle:
     """체결 봉 시각까지 닫힌 진입 TF 의 마지막 봉 — 크기 기울이기의 돌파봉 (T336 · 순수).
 
@@ -903,6 +935,16 @@ class Session:
 
     early_entered: int = 0
     """조기 진입 수 (관측용 · §1-0s)."""
+
+    sub_now: datetime | None = None
+    """봉 사이 보조 판정(`_sub_enter`)이 도는 동안의 "지금" — 그 다리 축 봉이 막 닫힌 시각 (T973).
+
+    커서는 걷는 축 마감에 묶여 있어 봉 사이에는 앞 정시를 가리킨다. 신선도 문(`_fresh_close`)이
+    이 값이 있으면 이것과 관측 창의 봉으로 잰다. 보조 판정 밖에서는 늘 None.
+    """
+
+    sub_entered: int = 0
+    """봉 사이 보조 판정으로 든 수 (관측용 · §1-0s · T973)."""
 
     early_unmet: int = 0
     """조기 진입 뒤 마감 룰 미충족으로 나간 수 (관측용)."""
@@ -2417,15 +2459,31 @@ class Session:
             커서(= 마지막 마감 봉의 다음 시작) - 신호 TF 봉 경계 < N 시간. 일봉이면 UTC 00:00 뒤
             첫 N 시간이다 — 재현(`t370_fund_replay --dchA`)이 1H 걸음에서 커서 00:00 만 들인 것과
             같은 뜻이고, 라이브 5분 걸음은 00:00 ~ 00:55 커서가 든다.
+
+            🔴 T973(2026-11-22) — 분 단위 선언(`fresh_close_minutes`)은 **신호 봉 자체**도 본다:
+            그 축의 마지막 봉이 끝난 지 N 분이 안 됐어야 한다. 시계만 보면 그 축 봉을 거래소에서
+            제때 못 받은 걸음에서 한 봉 앞 신호로 지금 값에 사게 된다(손절 거리가 선언과 달라진다).
+            봉이 빠짐없는 봉인 급전에서는 위 시계 조건과 같은 말이라 재현 · 연구 값은 그대로다.
+            봉 사이 보조 판정 중에는 커서 대신 `sub_now` 와 관측 창의 봉으로 잰다.
         """
         hours = book.fresh_close_hours
         minutes = getattr(book, "fresh_close_minutes", None)
         if hours is None and minutes is None:
             return True
         limit = minutes * 60 if minutes is not None else (hours or 0) * 3600
-        span = int(frame_span(book.timeframe).total_seconds())
-        now = int(self.cursor.timestamp())
-        return now - (now // span) * span < limit
+        frame = book.timeframe
+        span = int(frame_span(frame).total_seconds())
+        sub = getattr(self, "sub_now", None)
+        at = sub or self.cursor
+        now = int(at.timestamp())
+        if now - (now // span) * span >= limit:
+            return False
+        if minutes is None or frame not in self.feed.timeframes:
+            return True
+        rows = self.feed.observed(frame) if sub is not None else self.feed.judged(frame)
+        if not rows:
+            return False
+        return (at - (rows[-1].ts + frame_span(frame))).total_seconds() < limit
 
     def _may_enter(self, *, idle: bool, tripped: bool) -> bool:
         """**신규 진입을 받아도 되는가** — 스위치를 한 자리에 모은다.
@@ -2924,8 +2982,12 @@ class Session:
         self.journal()
         return done
 
-    def step_early(self) -> Snapshot | None:
-        """봉 사이 조기 진입만 판정한다 (T345 · T814 — 라이브의 :30 걸음).
+    def step_early(self, sub_at: datetime | None = None) -> Snapshot | None:
+        """봉 사이 진입만 판정한다 — 조기 진입(T345 · T814 · :30)과 짧은 축 다리(T973).
+
+        Args:
+            sub_at: 걷는 축보다 짧은 축의 봉이 **막 닫힌 시각**(러너가 그 봉을 받은 것을 확인하고
+                넘긴다). None 이면 조기 진입만 본다(예전과 같다).
 
         Returns:
             스냅샷. 일시정지면 None.
@@ -2934,6 +2996,10 @@ class Session:
             ⚠️ `step()` 을 부르지 않는다 — 청산 판정과 닫힌 봉의 진입 후보를 봉 사이에 다시
             돌리면 연구에 없는 재진입이 생긴다. 커서도 안 민다. 재현(15 분 걸음)은 기존 `step()`
             안의 `_early_enter` 로 돌고, 이 길은 라이브에서 러너가 정해진 분에 부른다.
+
+            T973 — 짧은 축 다리(1h 판의 15 분 다리)도 같은 원칙으로 이 걸음에서만 따로 본다:
+            **그 다리의 진입만**. 다른 다리 · 청산은 걷는 축 마감 걸음 그대로다. 한 걸음에 한 건
+            이라 짧은 축 다리가 들면 그 걸음의 조기 진입은 쉰다(마감 걸음이 닫힌 봉으로 다시 본다).
         """
         if self.paused:
             return None
@@ -2945,12 +3011,16 @@ class Session:
         tripped = self.breaker_tripped_at is not None
         opened: TradeRecord | None = None
         self.tick_observed = True
+        noted = self.blocked_seq
         try:
             if self._may_enter(idle=idle, tripped=tripped):
-                opened = self._early_enter(shot)
+                if sub_at is not None:
+                    opened = self._sub_enter(shot, sub_at)
+                if opened is None:
+                    opened = self._early_enter(shot)
         finally:
             self.tick_observed = False
-        if opened is not None:
+        if opened is not None or self.blocked_seq != noted:
             self.journal()
         return Snapshot(
             at=shot.at,
@@ -2960,6 +3030,98 @@ class Session:
             opened=opened,
             closed=(),
         )
+
+    def _sub_enter(self, shot: Snapshot, at: datetime) -> TradeRecord | None:
+        """걷는 축보다 **짧은 축 다리**의 닫힌 봉 판정 — 봉 사이에 그 다리만 (T973).
+
+        Args:
+            shot: 이 걸음의 스냅샷(걷는 축 마감 판정) — 추세 · 박스 · 선언을 같이 쓴다.
+            at: 그 짧은 축 봉이 막 닫힌 시각.
+
+        Returns:
+            체결된 기록. 볼 다리가 없거나 · 봉이 그 시각 것이 아니거나 · 후보가 없으면 None.
+
+        Note:
+            🔴 왜: 판은 첫 다리 축(1h)으로만 걸어, 1h 판에 실린 15 분 다리가 정시에만 판정됐다
+            (1.51.0). 판 전체를 15 분으로 걸으면 다른 다리의
+            청산 · 진입 후보가 봉 사이에 다시 돌아 연구에 없는 길이 생긴다(`step_early` 의 원칙).
+            그래서 **그 축 다리의 진입만** 따로 본다 — 조기 진입(:30)과 같은 꼴이다.
+
+            컨텍스트는 걷는 축 마감 것 그대로에 그 축 봉만 관측 창(방금 닫힌 봉까지)으로 바꾼다.
+            다른 축은 닫힌 봉 그대로다. 진입 · 손절 · 크기 · 문은 전부 `_enter` 그대로(규칙 #4).
+
+            ⛔ 걷는 축 마감과 겹치는 시각 · 커서가 뒤처진 때(마감 걸음이 아직 안 돈 봉)는 안 본다 —
+            그 봉은 마감 걸음이 본다. 조기 진입 표시(`early_ids`)는 안 붙인다(닫힌 봉 진입이다).
+        """
+        axis = getattr(self.feed, "entry", None)
+        if axis is None:
+            return None
+        frames = sub_frames(self.playbooks, axis)
+        if not frames:
+            return None
+        if not self.cursor < at < self.cursor + interval(axis):
+            self._count("sub:off_axis")
+            return None
+        ctx = self.context()
+        override = self._regime_override()
+        found: tuple[Proposal, ...] = ()
+        for frame in frames:
+            if frame not in self.feed.timeframes:
+                continue
+            rows = self.feed.observed(frame)
+            if not rows or rows[-1].ts + interval(frame) != at:
+                # 이 시각에 닫히는 봉이 없는 축이거나, 그 봉을 아직 못 받았다 — 낡은 봉으로 안 본다.
+                self._count(f"sub:no_bar:{frame.value}")
+                continue
+            mine = [item for item in self.playbooks if item.timeframe is frame]
+            ctx2 = replace(ctx, candles={**ctx.candles, frame: list(rows)}, as_of=at)
+            box = self._frame(frame, None)
+            found += tuple(
+                propose(
+                    ctx2,
+                    timeframe=frame,
+                    has_box=box.has_box if box is not None else shot.has_box,
+                    playbooks=mine,
+                    trend_override=override,
+                    registry=self.registry,
+                )
+            )
+            self._count(f"sub:judged:{frame.value}")
+        # 관측 규약 (§1-0s) — 마감 걸음과 같은 칸에 센다(깔때기가 봉 사이 후보도 보게).
+        self.seen_proposals += len(found)
+        self.seen_blocked += sum(1 for item in found if item.blocked)
+        for item in found:
+            self._count(f"cand:{item.playbook.playbook_id}")
+            if item.blocked:
+                self._count(f"blocked:{item.playbook.playbook_id}")
+        if not found:
+            return None
+        sub_shot = Snapshot(
+            at=at,
+            proposals=found,
+            trend=dict(shot.trend),
+            has_box=shot.has_box,
+            declared=shot.declared,
+        )
+        self.sub_now = at
+        try:
+            opened = self._enter(sub_shot)
+        finally:
+            self.sub_now = None
+        if opened is not None:
+            self.sub_entered += 1
+            self._count("sub_entered")
+            _logger.info(
+                "session_sub_entered",
+                payload={
+                    "trade_id": opened.trade_id,
+                    "at": at.isoformat(),
+                    "entry": str(opened.entry),
+                    "stop": str(opened.planned_stop),
+                    "note": "봉 사이 보조 판정 — 걷는 축보다 짧은 축 다리의 닫힌 봉 진입 (T973)",
+                },
+            )
+        return opened
 
     def _engulf_reversal(self, *, against: bool) -> bool:
         """보유 방향에 **거스르는 장악형 또는 도지**가 확인됐는가 (flip_on_engulf).

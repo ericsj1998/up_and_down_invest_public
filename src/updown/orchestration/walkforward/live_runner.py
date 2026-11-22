@@ -127,7 +127,7 @@ from updown.orchestration.walkforward.ref_inputs import (
     ref_warm_extra,
     washed_rule_of,
 )
-from updown.orchestration.walkforward.session import STEP_FRAME, Session
+from updown.orchestration.walkforward.session import STEP_FRAME, Session, sub_frames
 from updown.orchestration.walkforward.store import RunStore
 from updown.orchestration.walkforward.venue_inputs import (
     VenueCache,
@@ -1858,6 +1858,10 @@ class LiveRunner:
         """이번 걸음이 봉 사이 조기 진입 걸음인가 (T814)."""
         self.early_steps = 0
         """정해진 분에 돈 조기 판정 수 (T814 · E1 이 센다 · 선언 판에서 0 이면 배선이 죽었다)."""
+        self._sub_at: datetime | None = None
+        """이번 봉 사이 걸음이 볼 짧은 축 봉의 마감 시각 (T973 · 그 봉을 받았을 때만)."""
+        self.sub_steps = 0
+        """짧은 축 다리의 봉 사이 판정이 돈 수 (T973 · 그런 판에서 0 이면 배선이 죽었다)."""
         self._exit_backoff: dict[str, float] = {}
         """매매 → 청산 재시도를 미룰 monotonic 시각 (T815 C1 · 거부 뒤 `EXIT_RETRY_BACKOFF_S`)."""
         self._share_tp_seen: set[str] = set()
@@ -2787,6 +2791,8 @@ class LiveRunner:
             payload={
                 "symbol": self.instrument.symbol,
                 "entry": self.entry.value,
+                # T973 — 걷는 축보다 짧은 축의 다리(봉 사이 시계가 따로 깨운다). 비면 없음.
+                "sub": [frame.value for frame in self._sub_frames()],
                 "testnet_orders": getattr(self._orders, "is_testnet", None),
                 "live_data": not self._stream.is_testnet,
             },
@@ -4590,12 +4596,32 @@ class LiveRunner:
             )
             await self._step_this_bar()
 
-    async def _keep_early_clock(self) -> None:
-        """조기 진입 선언이 있는 판을 **정해진 분에 깨운다** (T814 · T345).
+    def _sub_frames(self) -> tuple[Timeframe, ...]:
+        """걷는 축보다 짧은 축을 가진 다리들의 축 — 봉 사이 시계가 깨울 축 (T973).
+
+        Returns:
+            짧은 축부터. 급전에 없는 축 · 걷는 축 봉을 고르게 못 나누는 축은 뺀다(시계가 경고한다).
+        """
+        entry = interval_seconds(self.entry)
+        return tuple(
+            frame
+            for frame in sub_frames(self._session.playbooks, self.entry)
+            if frame in self._feed.timeframes and entry % interval_seconds(frame) == 0
+        )
+
+    def _between_marks(self, now: float) -> tuple[float, bool, tuple[Timeframe, ...]]:
+        """지금 뒤 **가장 가까운 봉 사이 판정 시각** (T973 · T814).
+
+        Args:
+            now: 지금(유닉스 초).
+
+        Returns:
+            (시각 · 조기 진입을 볼 분인가 · 그 시각에 봉이 닫히는 짧은 축들). 볼 것이 없는 판이면
+            시각이 무한대다.
 
         Note:
-            🔴 걸음은 진입축 마감 · 방아쇠 축에서만 돌아 :30 판정이 라이브에서 한 번도 안 돌았다
-            (재현은 15 분 걸음이라 돌았다). 선언 없는 판은 바로 끝난다.
+            조기 진입은 선언한 분(매시 N 분), 짧은 축 다리는 그 축 봉이 닫히는 시각 가운데 걷는
+            축 마감과 **안 겹치는** 것만이다 — 겹치는 시각은 마감 걸음이 그 봉을 본다.
         """
         minutes = sorted(
             {
@@ -4604,14 +4630,56 @@ class LiveRunner:
                 if book.early_entry is not None
             }
         )
-        if not minutes:
+        hour = now - now % 3600
+        found: dict[float, list[Timeframe]] = {}
+        early: set[float] = set()
+        for base in (hour, hour + 3600):
+            for minute in minutes:
+                at = base + minute * 60
+                if at > now:
+                    early.add(at)
+                    found.setdefault(at, [])
+        entry = interval_seconds(self.entry)
+        for frame in self._sub_frames():
+            span = interval_seconds(frame)
+            at = now - now % span + span
+            while at % entry == 0:
+                at += span
+            found.setdefault(at, []).append(frame)
+        if not found:
+            return float("inf"), False, ()
+        mark = min(found)
+        return mark, mark in early, tuple(found[mark])
+
+    async def _keep_early_clock(self) -> None:
+        """봉 사이에 볼 것이 있는 판을 **정해진 시각에 깨운다** (T814 · T345 · T973).
+
+        Note:
+            🔴 걸음은 진입축 마감 · 방아쇠 축에서만 돌아 :30 판정이 라이브에서 한 번도 안 돌았다
+            (재현은 15 분 걸음이라 돌았다). 선언 없는 판은 바로 끝난다.
+
+            🔴 T973 — 같은 뿌리로, 걷는 축(1h)보다 짧은 축(15 분) 다리가 정시에만 판정됐다
+            (1.51.0). 그 축 봉이 닫히는 시각에도 깨워 **그 다리의 진입만** 본다(`step_early` 의
+            `sub_at`). 그 봉을 거래소에서 못 받았으면 낡은 봉으로 보지 않고 건너뛴다.
+        """
+        subs = self._sub_frames()
+        wanted = sub_frames(self._session.playbooks, self.entry)
+        if set(wanted) - set(subs):
+            # 조용한 실패 금지(#8) — 그 다리는 걷는 축 마감에만 판정된다(1.51.0 의 결함 그대로).
+            self._log.error(
+                "live_sub_frame_unwalkable",
+                payload={
+                    "frames": [frame.value for frame in wanted if frame not in subs],
+                    "entry": self.entry.value,
+                    "note": "짧은 축 다리를 봉 사이에 못 깨운다 — 급전에 축이 없거나 못 나눈다",
+                },
+            )
+        if self._between_marks(datetime.now(UTC).timestamp())[0] == float("inf"):
             return
         step = interval_seconds(STEP_FRAME)
         while True:
             now = datetime.now(UTC).timestamp()
-            hour = now - now % 3600
-            marks = [hour + m * 60 for m in minutes] + [hour + 3600 + minutes[0] * 60]
-            mark = next(item for item in marks if item > now)
+            mark, early, due = self._between_marks(now)
             await asyncio.sleep(mark - now + EARLY_SETTLE_S)
             try:
                 for _ in range(EARLY_REFRESH_TRIES):
@@ -4626,20 +4694,31 @@ class LiveRunner:
                         payload={"note": "5 분봉이 안 와서 이번 조기 판정을 건너뛴다"},
                     )
                     continue
+                sub_at = await self._sub_mark(mark, due)
+                if sub_at is None and not early:
+                    continue
                 # T852 D7 — 겹쳐 건너뛰었으면 잠깐 뒤 다시 건다. 돈 것만 "돌았다" 로 센다(예전엔
                 # 건너뛰어도 세고 기록해, 눈금이 거짓말했다). 조기 깃발은 걸음이 자물쇠 안에서
                 # 켠다(T852 S8) — 여기서 켜 두지 않는다.
                 ran = False
                 for attempt in range(STEP_REDO_TRIES + 1):
-                    ran = await self._one_step(early=True)
+                    ran = await self._one_step(early=True, sub_at=sub_at)
                     if ran or attempt == STEP_REDO_TRIES:
                         break
                     await asyncio.sleep(STEP_REDO_WAIT)
                 if ran:
-                    self.early_steps += 1
+                    if early:
+                        self.early_steps += 1
+                    if sub_at is not None:
+                        self.sub_steps += 1
                     self._log.info(
                         "live_early_step",
-                        payload={"n": self.early_steps, "at": datetime.now(UTC).isoformat()},
+                        payload={
+                            "n": self.early_steps,
+                            "sub_n": self.sub_steps,
+                            "sub": None if sub_at is None else sub_at.isoformat(),
+                            "at": datetime.now(UTC).isoformat(),
+                        },
                     )
                 else:
                     self._log.error(
@@ -4652,6 +4731,56 @@ class LiveRunner:
                 self.failures += 1
                 self.last_error = f"조기 판정: {exc}"[:200]
                 self._log.error("live_early_step_failed", payload={"error": str(exc)[:200]})
+
+    async def _sub_mark(self, mark: float, due: tuple[Timeframe, ...]) -> datetime | None:
+        """이 시각에 닫힌 **짧은 축 봉을 받아 두고** 그 마감 시각을 돌려준다 (T973).
+
+        Args:
+            mark: 봉 사이 판정 시각(유닉스 초).
+            due: 그 시각에 봉이 닫히는 짧은 축들.
+
+        Returns:
+            한 축이라도 그 봉을 받았으면 마감 시각. 볼 축이 없거나 전부 못 받았으면 None.
+
+        Note:
+            ⛔ 못 받은 축은 낡은 봉으로 판정하지 않는다 — 세션(`_sub_enter`)이 마지막 봉의 끝이 이
+            시각과 같은 축만 본다. 여기서는 받기를 몇 번 시도하고 못 받은 사실만 남긴다(#8).
+        """
+        if not due:
+            return None
+        left = list(due)
+        for attempt in range(EARLY_REFRESH_TRIES):
+            if attempt:
+                await asyncio.sleep(EARLY_SETTLE_S)
+            for frame in list(left):
+                try:
+                    await self.refresh(frame, force=True)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # 조회 실패가 같은 시각의 조기 진입(:30)까지 막지 않게 여기서 삼킨다 — 그 축은
+                    # 아래에서 "못 받음" 으로 남는다.
+                    self._log.warning(
+                        "live_sub_refresh_failed",
+                        payload={"frame": frame.value, "error": str(exc)[:140]},
+                    )
+                    continue
+                rows = self._feed.observed(frame)
+                if rows and rows[-1].ts.timestamp() + interval_seconds(frame) >= mark:
+                    left.remove(frame)
+            if not left:
+                break
+        if left:
+            self._log.warning(
+                "live_sub_stale",
+                payload={
+                    "frames": [frame.value for frame in left],
+                    "note": "짧은 축 봉이 안 와서 이번 봉 사이 판정에서 그 축을 건너뛴다",
+                },
+            )
+        if len(left) == len(due):
+            return None
+        return datetime.fromtimestamp(mark, UTC)
 
     async def _keep_watching_exits(self) -> None:
         """목표 · 손절에 닿았는데 **거래소에서 안 닫힌 포지션**을 뺀다 (T816 · T815 S1 · T1).
@@ -5946,11 +6075,12 @@ class LiveRunner:
                 },
             )
 
-    async def _one_step(self, *, early: bool = False) -> bool:
+    async def _one_step(self, *, early: bool = False, sub_at: datetime | None = None) -> bool:
         """봉 하나를 판정하고 주문까지 낸다 — **한 번에 하나만 돈다**.
 
         Args:
             early: 조기 진입 판정(정해진 분 · `Session.step_early`)인가. 기본은 닫힌 봉 판정.
+            sub_at: 봉 사이 걸음이 볼 짧은 축 봉의 마감 시각(T973 · `early` 일 때만 뜻이 있다).
 
         Returns:
             걸음이 **돌았으면** 참. 다른 걸음 · 감시가 자물쇠를 쥐고 있어 건너뛰었거나, 가격 축이
@@ -5996,10 +6126,12 @@ class LiveRunner:
             #    그 사이 다른 길(끊긴 뒤 따라잡기)이 걸으면 닫힌 봉 판정 대신 조기 판정이 불려
             #    그 봉의 청산 · 진입 판정이 빠질 수 있었다.
             self._early_step = early
+            self._sub_at = sub_at if early else None
             try:
                 await self._walk_once()
             finally:
                 self._early_step = False
+                self._sub_at = None
                 # 걸음이 뒤쪽(대조·감사·저장)에서 터져도 앞쪽에서 닫은 기록은 닫힌 것이다 —
                 # 훅은 finally 에서 본다 (배포 전 검토 2026-09-22).
                 _notice_closes(self, before)
@@ -6386,7 +6518,12 @@ class LiveRunner:
             item for item in self._session.ledger.records if item.outcome is Outcome.OPEN
         ]
         started = time.perf_counter()
-        shot = self._session.step_early() if self._early_step else self._session.step()
+        if not self._early_step:
+            shot = self._session.step()
+        elif self._sub_at is None:
+            shot = self._session.step_early()
+        else:
+            shot = self._session.step_early(self._sub_at)
         took_ms = (time.perf_counter() - started) * MS_PER_S
         self.step_ms.append(took_ms)
         if took_ms >= STEP_SLOW_MS:

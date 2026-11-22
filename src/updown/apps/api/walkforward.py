@@ -155,7 +155,7 @@ from updown.orchestration.walkforward.live_runner import (
 from updown.orchestration.walkforward.order_mapping import run_tag
 from updown.orchestration.walkforward.sealed import SealBreachError
 from updown.orchestration.walkforward.sealed_filler import SealedFiller
-from updown.orchestration.walkforward.session import STEP_FRAME
+from updown.orchestration.walkforward.session import STEP_FRAME, board_axis
 from updown.orchestration.walkforward.store import (
     REFILL_CAP_KEY,
     PlaybookDeclStore,
@@ -1134,7 +1134,8 @@ async def _live_start(
             quotes,
             instrument,
             frames,
-            book.timeframe,
+            # T973 — 판이 걷는 축(첫 자리 매매법의 축). 재현 장치가 같은 함수로 정한다.
+            board_axis(books),
             cap=load_app_settings().run_start_request_cap,
             counter=counter,
         )
@@ -1728,7 +1729,7 @@ async def _live_start(
     # 어느 스트림인지는 어댑터가 안다 (T63 §2b — candle_stream 팩토리). 계약은 같다
     # (LiveCandle · reconnects · is_testnet).
     stream = quotes.candle_stream(
-        [instrument], book.timeframe, Decimal(str(spec["quanto_multiplier"]))
+        [instrument], board_axis(books), Decimal(str(spec["quanto_multiplier"]))
     )
     runner = LiveRunner(
         session, feed, stream, quotes, orders, decision_frames=frames if decision else ()
