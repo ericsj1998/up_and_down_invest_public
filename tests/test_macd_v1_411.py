@@ -316,7 +316,12 @@ class TestLiveDeclaration:
         assert books["private_strategy"].legs_revision == 2  # P2 다리 크기(437차)
 
     def test_time_exit_is_only_on_the_new_macd_books(self) -> None:
-        on = {b.playbook_id for b in load_playbooks() if b.max_hold_bars is not None}
+        # 다른 거래소 봉을 읽는 구성원(`venue_bars`)의 시간 청산은 그 구성원의 시험이 본다
+        on = {
+            b.playbook_id
+            for b in load_playbooks()
+            if b.max_hold_bars is not None and b.venue_bars is None
+        }
         assert on == {
             "private_strategy",
             "private_strategy",
