@@ -1110,12 +1110,19 @@ async def _live_start(
         # ⭐ T406 — 봉 특징 띠(`bar_tilts` · CL0 · DB)가 읽는 축도 늘 데운다. 지금 묶음은 4H 다리가
         #    있어 이미 들어 있지만, 4H 다리 없는 판이면 조용히 1 배(모름)가 되므로 축을 직접 넣는다.
         tilt_frames = [rule.timeframe for item in books for rule in item.bar_tilts]
+        # ⭐ T973 — 다른 축 ATR 되돌림 청산이 읽는 축도 늘 데운다(진입 축 한 칸 위가 아닐 수 있다).
+        exit_frames = [
+            spec.timeframe
+            for item in books
+            if (spec := getattr(item, "trail_exit_atr_long", None)) is not None
+        ]
         decision = decision_frames(
             [item.timeframe for item in books],
             step=STEP_FRAME,
             extra=[
                 *(frame for frame in (rule_trigger, trigger_asked) if frame is not None),
                 *tilt_frames,
+                *exit_frames,
             ],
         )
         frames = list(quotes.supported_frames(decision))

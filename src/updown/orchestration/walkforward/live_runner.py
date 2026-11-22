@@ -72,6 +72,7 @@ from updown.decision.risk.policy import load_settings as load_risk_settings
 from updown.decision.sizing import MAINTENANCE_MARGIN
 from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter, RequestCounting
 from updown.marketdata.ingest.timeframes import interval_seconds
+from updown.marketdata.provider import venue_flow_source
 from updown.marketdata.shared_read import shared as shared_read
 from updown.marketdata.stream import CandleStream
 from updown.orchestration import leg_engines
@@ -128,6 +129,11 @@ from updown.orchestration.walkforward.ref_inputs import (
 )
 from updown.orchestration.walkforward.session import STEP_FRAME, Session
 from updown.orchestration.walkforward.store import RunStore
+from updown.orchestration.walkforward.venue_inputs import (
+    VenueCache,
+    venue_bars_of,
+    venue_symbol,
+)
 
 _logger = get_logger("walkforward.live_runner")
 
@@ -1332,6 +1338,12 @@ REF_REGIME_TRIES = 3
 """기준(BTC) 4H 봉을 못 받았을 때 받아 보는 횟수(처음 포함) — 새 봉이 닫힌 뒤일 때만 (T852 A3)."""
 REF_REGIME_WAIT = 1.0
 """기준 봉 다시 받기 사이 쉼(초)."""
+VENUE_TRIES = 2
+"""다른 거래소 15 분봉을 못 받았을 때 받아 보는 횟수(처음 포함 · T973)."""
+VENUE_WAIT = 3.0
+"""다시 받기 사이 쉼(초) — 봉이 닫힌 직후 그 거래소가 아직 안 낸 경우."""
+LIVE_VENUE = VenueCache(venue_flow_source)
+"""프로세스 하나에 하나 — 판(세션)이 여럿이어도 한 종목은 한 번만 받는다(T973)."""
 MARKET_VALUES_TRIES = 5
 """그날의 시장 전체 값 줄이 아직 없을 때 읽어 보는 횟수(처음 포함) — 자정 직후일 때만."""
 MARKET_VALUES_WAIT = 1.0
@@ -6364,6 +6376,7 @@ class LiveRunner:
             self._log.warning("live_funding_unreadable", payload={"error": str(exc)[:120]})
         await self._inject_ref_regime()
         await self._inject_market_values()
+        await self._inject_venue()
         before = next(
             (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),
             None,
@@ -8727,6 +8740,44 @@ class LiveRunner:
             )  # 모름 = 문 보류 · 배수 기본값(T968 — 재현과 같은 한 길)
             self._ref_regime_at = None
             self._log.warning("live_ref_regime_unreadable", payload={"error": str(exc)[:140]})
+
+    async def _inject_venue(self) -> None:
+        """다른 거래소 같은 종목 15 분봉 열을 세션에 넣는다 — `venue_bars` 를 선언한 판만 (T973).
+
+        Note:
+            새 봉이 닫힌 뒤 첫 걸음에서 덧붙여 받는다(같은 15 분 안의 걸음은 기억을 쓴다 · 거래소
+            조회 없음).
+            🔴 못 받았거나 마지막으로 닫힌 봉이 없으면 잠깐 뒤 한 번 더 받고, 그래도 안 되면 None =
+            모름 →
+            그 선언을 가진 다리는 새 진입만 쉰다(규칙 #8-1) · 로그는 남긴다(#8). 보유 · 손절 ·
+            청산에는
+            닿지 않는다. 선언이 없으면 아무것도 안 한다(비용 0).
+        """
+        want = venue_bars_of(self._session.playbooks)
+        if not want:
+            return
+        symbol = venue_symbol(self.instrument.symbol)
+        # 끊긴 동안 걸음마다 경고가 쌓이지 않게(재현: 9 일 끊김 = 1,119 줄) 상태가 바뀔 때만 남긴다.
+        was_bad = bool(getattr(self, "_venue_bad", False))
+        for attempt in range(VENUE_TRIES):
+            try:
+                self._session.venue_series = await LIVE_VENUE.get(symbol, want, datetime.now(UTC))
+            except Exception as exc:
+                if attempt + 1 < VENUE_TRIES:
+                    await asyncio.sleep(VENUE_WAIT)
+                    continue
+                self._session.venue_series = None
+                self._venue_bad = True
+                if not was_bad:
+                    self._log.warning(
+                        "live_venue_unreadable",
+                        payload={"symbol": symbol, "error": str(exc)[:160]},
+                    )
+                return
+            if was_bad:
+                self._venue_bad = False
+                self._log.info("live_venue_recovered", payload={"symbol": symbol})
+            return
 
     async def _inject_market_values(self) -> None:
         """시장 전체 값(종목 폭 · 뒤처진 묶음 수익) · 발표 일정을 세션에 넣는다 — 선언한 판만.

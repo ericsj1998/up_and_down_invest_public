@@ -28,6 +28,7 @@ from updown.analysis import plugins
 from updown.analysis.playbook import db_source
 from updown.analysis.playbook.types import (
     AddOn,
+    AtrTrailExit,
     BarTilt,
     BreadthCap,
     ConflictAction,
@@ -921,6 +922,30 @@ def _positive_int(body: Mapping[str, object], key: str, name: str) -> int | None
     return raw
 
 
+def _atr_trail_exit(body: Mapping[str, object], name: str) -> AtrTrailExit | None:
+    """`trail_exit_atr_long: {timeframe, period, mult}` 한 줄 (T973).
+
+    Raises:
+        PlaybookConfigError: 모양이 틀렸거나 값이 범위 밖인 경우.
+    """
+    raw = body.get("trail_exit_atr_long")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise PlaybookConfigError(
+            f"{name}.trail_exit_atr_long — {{timeframe, period, mult}} 꼴이어야 한다"
+        )
+    spec = cast("Mapping[str, object]", raw)
+    try:
+        return AtrTrailExit(
+            timeframe=Timeframe(str(spec["timeframe"])),
+            period=int(str(spec["period"])),
+            mult=Decimal(str(spec["mult"])),
+        )
+    except (KeyError, ValueError, ArithmeticError) as exc:
+        raise PlaybookConfigError(f"{name}.trail_exit_atr_long — {exc}") from exc
+
+
 def _size_mult_power(body: Mapping[str, object], name: str) -> Decimal | None:
     """`size_mult_power` 한 줄 — 0 < 값 ≤ 3(T15 기울기 제곱).
 
@@ -1049,6 +1074,7 @@ def _parse_declared(declared: object) -> list[Playbook]:
                     trail_stops=bool(body.get("trail_stops", False)),
                     hold_while_trend=bool(body.get("hold_while_trend", False)),
                     needs_delta=bool(body.get("needs_delta", False)),
+                    venue_bars=_positive_int(body, "venue_bars", f"playbooks.{name}"),
                     hold_level=bool(body.get("hold_level", False)),
                     ratchet_boxes=bool(body.get("ratchet_boxes", False)),
                     trail_ma=(None if body.get("trail_ma") is None else int(body["trail_ma"])),
@@ -1092,6 +1118,7 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         if body.get("breakeven_after_r") is None
                         else Decimal(str(body["breakeven_after_r"]))
                     ),
+                    trail_exit_atr_long=_atr_trail_exit(body, f"playbooks.{name}"),
                     trail_exit_pct_long=(
                         None
                         if body.get("trail_exit_pct_long") is None
@@ -1221,6 +1248,9 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         else size_windows(body["size_windows"], f"playbooks.{name}")
                     ),
                     fresh_close_hours=_positive_int(body, "fresh_close_hours", f"playbooks.{name}"),
+                    fresh_close_minutes=_positive_int(
+                        body, "fresh_close_minutes", f"playbooks.{name}"
+                    ),
                     entry_limit=(
                         None
                         if body.get("entry_limit") is None

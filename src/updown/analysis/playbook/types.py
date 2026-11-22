@@ -1228,6 +1228,37 @@ class EntryLimit:
 
 
 @dataclass(frozen=True, slots=True)
+class AtrTrailExit:
+    """다른 시간축 ATR 되돌림 청산 선언 (T973).
+
+    롱 보유 중 **다른 시간축** 종가가 진입 뒤 그 축 종가 최고 - `mult` x ATR 아래로 마감하면
+    나간다. 진입 축(예 15 분)보다 느린 축(예 1 시간)으로 되돌림을 재서, 오른 보유를
+    추세가 꺾일 때까지 든다. 최고는 진입 뒤 마감한 그 축 봉의 종가로만 갱신한다(진입 봉이 든
+    봉 포함 · 갱신한 봉에서 바로 판정 — 같은 봉이면 최고 = 종가라 안 걸린다).
+    ATR 은 그 축 마감 봉의 TR 단순 평균(그 봉 포함).
+
+    Attributes:
+        timeframe: 재는 축.
+        period: ATR 봉 수.
+        mult: ATR 배수.
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+    """
+
+    timeframe: Timeframe
+    period: int
+    mult: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 청산 규칙으로서 말이 되는지."""
+        if self.period < 1:
+            raise ValueError(f"ATR 봉 수는 1 이상: {self.period}")
+        if self.mult <= 0:
+            raise ValueError(f"ATR 배수는 0 보다 커야: {self.mult}")
+
+
+@dataclass(frozen=True, slots=True)
 class PeerOpenCap:
     """**다른 다리가 몰려 있으면** 이 다리는 새로 안 든다 — 짝 다리 보유가 `count` 이상 (512차 N4).
 
@@ -1386,6 +1417,13 @@ class Playbook:
     ⚠️ 이 값은 **선언일 뿐 판정이 아니다.** 실제 CVD 확인 여부는 셋업 룰의
     `cvd_confirm` 파라미터가 정한다. 둘을 나눈 이유: 플레이북은 "재료를 실어라",
     룰은 "그 재료로 무엇을 하라" 이기 때문이다.
+    """
+    venue_bars: int | None = None
+    """다른 거래소 같은 종목 15 분봉(테이커 매수 포함)을 **이만큼** 실어라 (T973).
+
+    주문 거래소 이력이 짧은 판정(1 년 문턱 등)용. 세션이 러너에서 받은 열을 컨텍스트
+    `venue` 에 싣는다. 못 받았거나 늦으면 `venue` 가 None — 탐지기가 판정 불가로 센다(규칙 #8).
+    ⛔ None 이면 동결이다 (§5.6.2) — 읽지도 받지도 않는다.
     """
     hold_while_trend: bool = False
     """**추세가 반대로 선언되기 전까지 보유한다** (T32 후보 D · 2026-08-22).
@@ -1711,6 +1749,13 @@ class Playbook:
     `fakebreak/exits.py` trail 정의 그대로). SMA 마감 청산과 같은 봉에 둘 다 맞으면 결과는
     같다(종가 청산). ⛔ None 이면 동결이다 (§5.6.2) — 실계좌 매매법은 이 키를 안 쓴다.
     """
+    trail_exit_atr_long: AtrTrailExit | None = None
+    """롱 보유 중 다른 축 종가가 진입 뒤 최고 - k x ATR 아래로 마감하면 전량 나간다 (T973).
+
+    모양은 `AtrTrailExit`.
+
+    손절이 먼저다(같은 판정 걸음이면 손절). ⛔ None 이면 동결이다 (§5.6.2).
+    """
     macd_exit_below_long: bool | None = None
     """롱 보유 중 판정 TF 의 MACD 선이 시그널 **아래에서 마감**하면 전량 나간다 (419 · 420차).
 
@@ -1839,6 +1884,10 @@ class Playbook:
     늦은 걸음에서 같은 신호로 드는 것(자리가 늦게 빈 경우 등)을 건너뛴다.
 
     ⛔ None 이면 동결이다 (§5.6.2)."""
+    fresh_close_minutes: int | None = None
+    """`fresh_close_hours` 의 분 단위 — 15 분 신호 TF 처럼 시간 단위가 너무 큰 축(T973).
+
+    둘 다 있으면 분이 이긴다. ⛔ None 이면 동결이다 (§5.6.2)."""
     entry_limit: EntryLimit | None = None
     """다리의 신규 진입 수 상한(452차) — 펀드 문이 센다.
 

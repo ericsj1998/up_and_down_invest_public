@@ -62,8 +62,10 @@ from updown.common.domain.reports import TrendDirection
 from updown.common.domain.session import MarketCalendar
 from updown.common.domain.setup import TradeSetup
 from updown.common.domain.trade_tick import BarDelta
+from updown.common.domain.venue_series import VenueSeries
 from updown.common.logging.setup import get_logger
 from updown.decision.portfolio_rules import Grant
+from updown.decision.risk.atr_trail import atr_trail_exit_hit
 from updown.decision.risk.breakeven import breakeven_stop
 from updown.decision.risk.merged_liquidation import (
     MergedLeg,
@@ -710,6 +712,11 @@ class Session:
     """
     ref_sma_held: int = 0
     """SMA 하락 문(`entry_ref_sma_down`)이 보류시킨 진입 수 — 관측용 (§1-0s)."""
+    venue_series: VenueSeries | None = None
+    """다른 거래소 같은 종목 15 분봉 열 — 러너가 주입한다 (T973 · `Playbook.venue_bars`).
+
+    🔴 None = 못 받았거나 늦음 → 컨텍스트 `venue` 가 None → 탐지기가 판정 불가로 센다(규칙 #8-1).
+    """
     ref_vol_pct: Decimal | None = None
     """기준 종목(BTC) 4H 실현변동성 백분위(0 ~ 1) — 러너가 주입한다 (T329 급락 되돌림 롱).
 
@@ -1721,6 +1728,11 @@ class Session:
             geometry={},
             trend=trend,
             deltas=self._bar_deltas(),
+            venue=(
+                self.venue_series
+                if any(getattr(item, "venue_bars", None) for item in self.playbooks)
+                else None
+            ),
         )
 
     def _frame(self, frame: Timeframe, at: datetime | None) -> FrameState | None:
@@ -2407,11 +2419,13 @@ class Session:
             같은 뜻이고, 라이브 5분 걸음은 00:00 ~ 00:55 커서가 든다.
         """
         hours = book.fresh_close_hours
-        if hours is None:
+        minutes = getattr(book, "fresh_close_minutes", None)
+        if hours is None and minutes is None:
             return True
+        limit = minutes * 60 if minutes is not None else (hours or 0) * 3600
         span = int(frame_span(book.timeframe).total_seconds())
         now = int(self.cursor.timestamp())
-        return now - (now // span) * span < hours * 3600
+        return now - (now // span) * span < limit
 
     def _may_enter(self, *, idle: bool, tripped: bool) -> bool:
         """**신규 진입을 받아도 되는가** — 스위치를 한 자리에 모은다.
@@ -3581,6 +3595,21 @@ class Session:
                     flipped = trail_exit_hit(
                         held.entry, held.opened_at, gauge.rows, book.trail_exit_pct_long
                     )
+            # ⭐ T973 — 다른 축(예 1H) 종가가 진입 뒤 그 축 종가 최고 - k x ATR 아래로
+            #    마감하면 전량.
+            #    손절은 거래소에 걸려 먼저 돈다. None 이면 이 가지는 없는 것과 같다.
+            atr_exit = getattr(book, "trail_exit_atr_long", None)
+            if not flipped and long and atr_exit is not None and held.opened_at is not None:
+                gauge = self._frame(atr_exit.timeframe, None)
+                if gauge is not None and atr_trail_exit_hit(
+                    gauge.rows,
+                    opened_at=held.opened_at,
+                    span=frame_span(atr_exit.timeframe),
+                    period=atr_exit.period,
+                    mult=atr_exit.mult,
+                ):
+                    flipped = True
+                    self._count("atr_trail_exit")
             # 🔴 **숏 거울상** (T290) — 판정 TF 종가가 SMA(N) **위로 마감**하면 숏을 전량 정리한다.
             #    닫힌 삼각수렴 하방 이탈 숏의 청산이다. None 이면 이 가지는 없는 것과 같다.
             if not flipped and not long and book.ma_exit_above_short is not None:
@@ -4636,6 +4665,7 @@ class Session:
                     item.adx_exit_long,
                     item.adx_exit_above_long,
                     item.macd_exit_below_long,
+                    getattr(item, "trail_exit_atr_long", None),
                 )
             )
             if any(value is not None for value in mine):

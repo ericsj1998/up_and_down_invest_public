@@ -30,6 +30,7 @@ from updown.common.domain.setup import TradeSetup
 from updown.common.domain.structure import Structure
 from updown.common.domain.trade_tick import BarDelta
 from updown.common.domain.trend import TrendState
+from updown.common.domain.venue_series import VenueSeries
 
 type ParamValue = Decimal | int | float | bool | str
 """룰 파라미터로 허용하는 값 타입.
@@ -147,6 +148,13 @@ class MarketContext:
 
     ⚠️ as-of 는 부르는 쪽이 아니라 **탐지기가** 지킨다 — 여기엔 로드된 전체가 실리고,
     탐지기는 판정 봉 시각 이하만 잘라 쓴다 (`CvdSeries` 규약).
+    """
+    venue: VenueSeries | None = None
+    """다른 거래소 같은 종목 15 분봉 열(테이커 매수 포함 · 긴 이력 · T973).
+
+    `venue_bars` 를 선언한 매매법의 판에만 실린다. None = 안 실었거나 못 받았거나 늦음 —
+    탐지기는 **판정 불가**로 센다(없는 값으로 판정한 척하지 않는다 · 규칙 #8).
+    as-of 는 탐지기가 지킨다(`as_of` 앞에 시작한 봉 중 마감한 것만 쓴다).
     """
 
 

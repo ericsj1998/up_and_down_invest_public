@@ -47,6 +47,7 @@ from updown.common.logging.setup import get_logger
 from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter
 from updown.marketdata.binance.adapter import BinanceAdapter
 from updown.marketdata.binance.client import LIVE_BASE, BinanceClient
+from updown.marketdata.binance.flow_source import BinanceFlowSource
 from updown.marketdata.binance.universe_source import BinanceUniverseSource
 from updown.marketdata.binance.venue import binance_base, binance_ws
 from updown.marketdata.calendar.adapter import CalendarAdapter
@@ -503,6 +504,25 @@ def universe_source(*, pace_s: float = 0.25) -> BinanceUniverseSource:
         (`await source.aclose()`).
     """
     return BinanceUniverseSource(BinanceClient(base_url=LIVE_BASE), pace_s=pace_s)
+
+
+def venue_flow_source(*, pace_s: float = 0.2) -> BinanceFlowSource:
+    """다른 거래소(바이낸스 USDT-M) 봉 + 테이커 매수 읽기 (규칙 #0 · T973).
+
+    **조회 경로의 유일한 획득 지점** 이다.
+
+    Args:
+        pace_s: 요청 사이 최소 간격(초).
+
+    Returns:
+        실거래 공개 주소 위의 읽기 전용 소스(키 없음). 부르는 쪽이 닫는다
+        (`await source.aclose()`).
+
+    Note:
+        데모(테스트넷) 프로세스도 실거래 봉을 읽는다 — 판정 자료는 실제 시장이어야 한다(우주 순위와
+        같은 원칙).
+    """
+    return BinanceFlowSource(BinanceClient(base_url=LIVE_BASE), pace_s=pace_s)
 
 
 def gate_universe_facts() -> GateUniverseFacts:

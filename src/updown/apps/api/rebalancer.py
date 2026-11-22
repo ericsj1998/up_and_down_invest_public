@@ -105,6 +105,7 @@ from updown.orchestration.rebalancer.legs import (
     isolated_attributions,
     member_leverage,
     member_playbook,
+    new_member_legs,
     redeclared_legs,
     refresh_legs,
 )
@@ -2911,7 +2912,8 @@ def _refresh_stored_legs(
             raise LegError(f"묶음 선언 {playbook_id!r} 이 없다")
         # 🔴 1.50.0 배포 사고(2026-11-22 · 분기 우주 펀드): 고정 바구니 범위로 다리를 다시 만들어
         #    "어느 다리에도 안 속하는 종목" 으로 거절됐다 → 저장본 범위 그대로 값만 다시 읽는다.
-        declared = redeclared_legs(wrapper, books, legs)
+        # ⭐ T973 — 분기 우주 펀드는 선언에 새로 든 다리도 붙인다(종목은 우주 점검이 판을 띄울 때).
+        declared = redeclared_legs(wrapper, books, legs, append_new=wrapper.universe is not None)
     except LegError as exc:
         _events.error(
             "fund_legs_refresh_failed",
@@ -2925,6 +2927,10 @@ def _refresh_stored_legs(
         )
         return legs, stored_revision
     fresh, notes = refresh_legs(legs, declared)
+    added = new_member_legs(legs, declared)
+    if added:  # ⭐ T973 — 우주 펀드에 새 다리(종목 없이 · 우주 점검이 판을 띄울 때 붙음)
+        fresh = (*fresh, *added)
+        notes = (*notes, *(f"{leg.attribution}: 새 다리 붙음(종목은 우주 점검이)" for leg in added))
     _events.warning(
         "fund_legs_refreshed",
         payload={

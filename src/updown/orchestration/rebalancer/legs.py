@@ -254,6 +254,8 @@ def redeclared_legs(
     wrapper: Playbook,
     books: Sequence[Playbook],
     stored: Sequence[FundLeg],
+    *,
+    append_new: bool = False,
 ) -> tuple[FundLeg, ...]:
     """돌던 펀드 다리를 **지금 선언 값으로** 다시 만든다 — 종목은 저장본 그대로 (411차 · 1.50.0).
 
@@ -261,6 +263,7 @@ def redeclared_legs(
         wrapper: 펀드가 도는 묶음 매매법.
         books: 선언된 매매법 전부.
         stored: 저장본 다리들(종목 범위를 여기서 받는다).
+        append_new: 저장본에 없는 구성원도 종목 없는 다리로 만든다(분기 우주 펀드만 · T973).
 
     Returns:
         묶음에 적힌 순서의 다리들 — 저장본에 없는 구성원(새 다리)은 빠진다(`refresh_legs` 는
@@ -277,13 +280,23 @@ def redeclared_legs(
         (2026-11-22 01:16 KST) 실계좌가 그랬다(`fund_legs_refresh_failed` · 나스닥 공포 조각이
         꺼진 채 되살아남). 갱신이 바꾸는 것은 계좌 층 값뿐이므로(종목 · 귀속은 저장본 ·
         `refresh_legs`) 범위 검사를 다시 하지 않고 저장본 범위를 그대로 쓴다.
+
+        ⭐ T973 — `append_new` 면(분기 우주 펀드만) 저장본에 없는 구성원도 **종목 없는** 다리로
+        만든다.
+        종목은 우주 점검(`_universe_step` · `plan_rotation`)이 스냅샷과 지금 세션 세트를 맞대며
+        붙인다 —
+        평평한 판은 새 세트로 다시 띄우고(RESPAWN), 포지션이 있는 판은 평평해진 뒤 띄운다. 종목을
+        처음부터
+        넣으면 "이미 싣고 있다" 로 읽혀 다시 띄우지 않는다.
     """
     if not wrapper.split_legs:
         return ()
     by_id = {item.playbook_id: item for item in books}
     mine = {leg.playbook: leg.symbols for leg in stored}
     return tuple(
-        _leg_of(wrapper, by_id, name, mine[name]) for name in wrapper.bundle if name in mine
+        _leg_of(wrapper, by_id, name, mine.get(name, ()))
+        for name in wrapper.bundle
+        if name in mine or append_new
     )
 
 
@@ -396,6 +409,24 @@ def refresh_legs(
             notes.append(f"{leg.attribution}: {leg.to_dict()} → {made.to_dict()}")
         out.append(made)
     return tuple(out), tuple(notes)
+
+
+def new_member_legs(stored: Sequence[FundLeg], declared: Sequence[FundLeg]) -> tuple[FundLeg, ...]:
+    """선언에 새로 든 구성원의 다리 — 저장본에 같은 매매법 id 가 없는 것만 · 종목 없이 (T973).
+
+    Args:
+        stored: 저장본 다리들.
+        declared: 지금 선언으로 만든 다리들(`redeclared_legs(append_new=True)`).
+
+    Returns:
+        붙일 다리들(묶음 순서). 종목은 우주 점검이 판을 띄울 때 붙는다.
+
+    Note:
+        매매법 id 로 가른다 — 귀속 키(버전)만 바뀐 다리는 새 다리가 아니다(`refresh_legs` 가
+        저장본을 그대로 둔다). 귀속 키로 가르면 같은 다리가 두 번 붙는다.
+    """
+    have = {leg.playbook for leg in stored}
+    return tuple(replace(leg, symbols=()) for leg in declared if leg.playbook not in have)
 
 
 def isolated_attributions(legs: Sequence[FundLeg]) -> frozenset[str]:
