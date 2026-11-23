@@ -230,6 +230,38 @@ class TestAdapter:
             await broken.vix_closes()  # 다른 출처로 대신하지 않는다
 
     @pytest.mark.asyncio
+    async def test_cboe_move_is_followed_once_inside_cboe_only(self) -> None:
+        """출처가 주소를 옮기면 같은 출처 안에서만 한 번 따라간다(2026-11-24 CBOE 307)."""
+        seen: list[str] = []
+
+        def moved(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.host)
+            if request.url.host == "cdn-api.cboe.com":
+                return httpx.Response(307, headers={"location": "https://files.cboe.com/v.csv"})
+            return httpx.Response(200, text=CBOE)
+
+        made = MacroAdapter(MacroClient(transport=httpx.MockTransport(moved)), None)
+        got = await made.vix_closes()
+        assert got[date(2026, 9, 9)] == Decimal("16.46")
+        assert seen == ["cdn-api.cboe.com", "files.cboe.com"]
+
+        def elsewhere(request: httpx.Request) -> httpx.Response:
+            del request
+            return httpx.Response(307, headers={"location": "https://example.org/v.csv"})
+
+        other = MacroAdapter(MacroClient(transport=httpx.MockTransport(elsewhere)), None)
+        with pytest.raises(Exception, match="다른 출처"):
+            await other.vix_closes()  # 다른 도메인으로는 따라가지 않는다
+
+        def loop(request: httpx.Request) -> httpx.Response:
+            del request
+            return httpx.Response(307, headers={"location": "https://cdn-api.cboe.com/again.csv"})
+
+        looping = MacroAdapter(MacroClient(transport=httpx.MockTransport(loop)), None)
+        with pytest.raises(Exception, match="307"):
+            await looping.vix_closes()  # 한 번만 따라간다
+
+    @pytest.mark.asyncio
     async def test_keys_filter_and_no_toss(self) -> None:
         made = MacroAdapter(_client(), None)
         found, failures = await made.indicators(("effr", "usdkrw"))

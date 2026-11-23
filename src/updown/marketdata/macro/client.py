@@ -18,7 +18,10 @@ _logger = get_logger("marketdata.macro")
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 NYFED_EFFR = "https://markets.newyorkfed.org/api/rates/unsecured/effr/last/1.json"
 BLS_SERIES = "https://api.bls.gov/publicAPI/v1/timeseries/data/{series}"
-CBOE_VIX_CSV = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+CBOE_VIX_CSV = "https://cdn-api.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+"""2026-11-24 — 옛 호스트 `cdn.cboe.com` 이 이 주소로 307 을 낸다(같은 파일)."""
+CBOE_DOMAIN = "cboe.com"
+REDIRECTS = frozenset({301, 302, 307, 308})
 CPI_SERIES = "CUUR0000SA0"
 HTTP_OK = 200
 """BLS CPI-U 전 품목 · 도시 전체 · 계절조정 없음(전년 대비에 쓴다)."""
@@ -124,9 +127,22 @@ class MacroClient:
 
         Raises:
             MacroSourceError: 실패.
+
+        Note:
+            출처가 주소를 옮기면(3xx) **같은 출처(cboe.com) 안에서만 한 번** 따라간다. 2026-11-24
+            에 CBOE 가 호스트를 옮기며 307 을 냈고, 따라가지 않아 지수 다리의 그 날 판정이
+            빠졌다(`index_leg_fear_vix_unavailable`). 다른 도메인으로의 옮김은 따라가지 않고
+            실패로 올린다 — 값이 주문 크기에 닿는 자료라 출처가 바뀌면 사람이 봐야 한다.
         """
         try:
             response = await self._http.request("GET", CBOE_VIX_CSV)
+            if response.status_code in REDIRECTS:
+                moved = httpx.URL(CBOE_VIX_CSV).join(response.headers.get("location", ""))
+                host = moved.host
+                if host != CBOE_DOMAIN and not host.endswith("." + CBOE_DOMAIN):
+                    raise MacroSourceError(f"상태 {response.status_code} · 다른 출처로 옮김")
+                _logger.warning("macro_cboe_moved", payload={"to_host": host})
+                response = await self._http.request("GET", str(moved))
         except OutboundError as exc:
             raise MacroSourceError(str(exc)[:160]) from exc
         if response.status_code != HTTP_OK:
