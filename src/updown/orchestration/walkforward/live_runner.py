@@ -159,6 +159,61 @@ WARM_BARS = 5
 그 사이 구멍이 영영 안 메워진다.
 """
 
+ENTRY_LOCK_WAIT_S = 30.0
+"""계좌 진입 줄에서 기다리는 최대 초 — 넘으면 줄 없이 보낸다(앞 판이 멈춰도 굶기지 않는다)."""
+
+_ENTRY_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _entry_lock(account: str) -> asyncio.Lock:
+    """그 계좌(거래소)의 진입 줄 — 이벤트 루프마다 하나(루프가 다르면 자물쇠를 나눠 쓸 수 없다)."""
+    key = (account, id(asyncio.get_running_loop()))
+    lock = _ENTRY_LOCKS.get(key)
+    if lock is None:
+        lock = _ENTRY_LOCKS[key] = asyncio.Lock()
+    return lock
+
+
+async def serialized_entry(
+    account: str,
+    send: Callable[[], Awaitable[None]],
+    *,
+    wait_s: float = ENTRY_LOCK_WAIT_S,
+    on_timeout: Callable[[], None] | None = None,
+) -> None:
+    """진입 주문 하나를 **계좌마다 한 줄로** 보낸다 (2026-11-23 XRP 사고).
+
+    Args:
+        account: 줄을 나눠 쓰는 계좌 이름(거래소).
+        send: 가용 증거금 읽기 → 양보 → 맞춤 → 주문까지 하는 함수.
+        wait_s: 줄에서 기다리는 최대 초.
+        on_timeout: 그 안에 차례가 안 오면 부른다(흔적용) — 그 뒤 줄 없이 보낸다.
+
+    Note:
+        🔴 **왜**: 판마다 "가용 증거금 읽기 → 맞춤 → 주문" 을 따로 한다. 같은 봉 마감에 여러 종목이
+        신호를 내면 판들이 **같은 가용**을 읽고 다 온전한 크기로 내서, 늦게 도착한 주문을 거래소가
+        `INSUFFICIENT_AVAILABLE` 로 거절한다(여섯 종목 동시 돌파 · 마지막 XRP 가 거절돼 30 분 뒤
+        2.9% 비싸게 다시 들었다). 한 줄로 세우면 뒤 판은 앞 판이 쓴 뒤의 가용을 읽어
+        **줄여서 들거나 엔진 다리에 양보를 묻는다** — 펀드 재현(`fund_replay.harness`)의 순서 모형과
+        같아진다. 크기 · 문 · 주문 내용은 그대로다(순서만).
+
+        기다리다 못 얻으면 줄 없이 보낸다 — 앞 판의 주문이 응답 없이 멈춰도 다른 판의 진입을
+        막지 않는다(그때는 예전처럼 거래소가 거절할 수 있고 그 흔적은 `placed` 에 남는다).
+    """
+    lock = _entry_lock(account)
+    try:
+        await asyncio.wait_for(lock.acquire(), wait_s)
+    except TimeoutError:
+        if on_timeout is not None:
+            on_timeout()
+        await send()
+        return
+    try:
+        await send()
+    finally:
+        lock.release()
+
+
 MARGIN_HEADROOM = Decimal("0.99")
 """라이브 주문 크기에 두는 여유 (1%).
 
@@ -8135,7 +8190,20 @@ class LiveRunner:
                     #    여기서 또 사면 원장 몰래 계약이 쌓인다 (실측 BTC 67→333).
                     await self._protect(record)
                 else:
-                    await self._send(record, spec)
+                    # T992 — 같은 마감에 여러 판이 같은 가용 증거금을 읽고 다 큰 크기로 내지 않게
+                    #   계좌마다 한 줄로 보낸다(뒤 판은 줄여서 들거나 양보를 묻는다).
+                    await serialized_entry(
+                        self.instrument.market.value,
+                        lambda record=record: self._send(record, spec),
+                        on_timeout=lambda record=record: self._log.warning(
+                            "live_entry_lock_timeout",
+                            payload={
+                                "trade_id": record.trade_id,
+                                "wait_s": ENTRY_LOCK_WAIT_S,
+                                "note": "진입 줄에서 차례가 안 와 줄 없이 보낸다",
+                            },
+                        ),
+                    )
             except Exception as exc:
                 # ⛔ 삼키지 않고 남긴다. 주문이 안 나간 채로 원장만 진입한 상태이므로
                 #    사람이 봐야 한다 (절대 규칙 #8).

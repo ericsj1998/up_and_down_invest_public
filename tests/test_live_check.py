@@ -137,6 +137,22 @@ def test_stop_far_from_plan_and_partial_size_are_flagged() -> None:
     assert "다 못 닫는다" in probs and "계획 손절" in probs
 
 
+def test_shared_position_stops_are_summed_per_share() -> None:
+    """몫 둘(6 + 9 계약)이 한 포지션 · 손절도 둘 — 합과 몫마다 값이 맞으면 문제없다(11-23 ZEC)."""
+    a = _trade(trade_id="a" * 12, contracts=6, planned_stop=Decimal("4.78"))
+    b = _trade(trade_id="b" * 12, contracts=9, planned_stop=Decimal("5.05"), playbook="pb2@0.1.0")
+    ok = {"positions": [_pos()], "price_orders": [_stop("5.05", -9), _stop("4.7866", -6)]}
+    assert position_checks(_snap([a, b], ok))[0][0].problems == ()
+    # 한 몫의 손절이 빠지면 합도 모자라고 그 몫의 값도 없다
+    short = {"positions": [_pos()], "price_orders": [_stop("5.05", -9)]}
+    probs = " ".join(position_checks(_snap([a, b], short))[0][0].problems)
+    assert "다 못 닫는다" in probs and "계획 손절 4.78 에 맞는 손절이 없다" in probs
+    # 합은 맞는데 한 몫의 값이 계획과 다르면 그 몫을 짚는다
+    off = {"positions": [_pos()], "price_orders": [_stop("5.05", -9), _stop("4.3", -6)]}
+    probs = " ".join(position_checks(_snap([a, b], off))[0][0].problems)
+    assert "다 못 닫는다" not in probs and "에 맞는 손절이 없다" in probs
+
+
 def _engine_snap(
     positions: list[dict[str, Any]],
     stops: list[dict[str, Any]],

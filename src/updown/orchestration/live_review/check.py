@@ -223,6 +223,40 @@ def _problems(
     return out
 
 
+def _share_problems(
+    trades: Sequence[Trade], size: int, stops: Sequence[tuple[Decimal | None, int | None]]
+) -> list[str]:
+    """한 종목에 몫이 여럿 — 같은 방향 다리들이 한 포지션을 나눠 쓰면 손절도 몫마다 따로 걸린다.
+
+    한 줄 크기로 재면 멀쩡해도 "다 못 닫는다" · "계획 손절과 다르다" 가 된다(2026-11-23 ZEC:
+    급락 되돌림 6 계약 + 돌파 롱 62 계약 = 68 · 손절 둘이 합쳐 68 을 덮는데 ⛔ 로 떴다).
+    수량은 **합**으로, 값은 **몫마다 그 계획 손절에 맞는 주문이 있나**로 본다.
+
+    Args:
+        trades: 그 종목의 원장 열린 매매들(몫).
+        size: 거래소 포지션 수량(롱이면 양수).
+        stops: 그 계약에 걸린 조건부 주문들 `(발동가, 수량)`.
+
+    Returns:
+        문제들.
+    """
+    out: list[str] = []
+    if any(t.is_long != (size > 0) for t in trades):
+        out.append("원장 방향과 거래소 방향이 반대다")
+    if not stops:
+        out.append("거래소에 걸린 손절이 없다")
+        return out
+    total = sum(ssize or 0 for _trig, ssize in stops)
+    if total != -size:
+        out.append(f"손절 합 {total} 이 포지션 {size} 을 다 못 닫는다")
+    trigs = [trig for trig, _ssize in stops if trig is not None]
+    for t in trades:
+        plan = t.planned_stop
+        if plan and not any(abs(trig - plan) / plan <= STOP_TRIGGER_TOL for trig in trigs):
+            out.append(f"몫 {t.playbook} 의 계획 손절 {plan} 에 맞는 손절이 없다")
+    return out
+
+
 def _engine_problems(
     size: int, stop_sum: int | None, pending_tp: int = 0
 ) -> tuple[list[str], list[str]]:
@@ -306,16 +340,20 @@ def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
     stops: dict[str, tuple[Decimal | None, int | None]] = {}
     stop_count: dict[str, int] = {}
     stop_sum: dict[str, int] = {}
+    stops_all: dict[str, list[tuple[Decimal | None, int | None]]] = {}
     for o in _rows_of(ex.get("price_orders")):
         contract, trig, ssize = _stop_of(o)
         stops.setdefault(contract, (trig, ssize))
+        stops_all.setdefault(contract, []).append((trig, ssize))
         stop_count[contract] = stop_count.get(contract, 0) + 1
         stop_sum[contract] = stop_sum.get(contract, 0) + (ssize or 0)
     engines = engine_symbols(snap.fund)
     pending_tp = _engine_pending_tp(snap) if engines else {}
     by_sym: dict[str, Trade] = {}
+    shares: dict[str, list[Trade]] = {}
     for t in open_trades(snap):
         by_sym.setdefault(t.symbol, t)
+        shares.setdefault(t.symbol, []).append(t)
     out: list[PositionCheck] = []
     for p in positions:
         sym = str(p.get("contract", ""))
@@ -343,7 +381,13 @@ def position_checks(snap: Snapshot) -> tuple[list[PositionCheck], list[str]]:
                 problems=(
                     tuple(eng_probs)
                     if sym in engines
-                    else tuple(_problems(trade, size, stop))
+                    else tuple(
+                        # 몫이 여럿이거나 손절이 여럿이면 합 · 몫별로 본다(한 줄이면 예전 그대로)
+                        _share_problems(shares[sym], size, stops_all.get(sym, []))
+                        if sym in shares
+                        and (len(shares[sym]) > 1 or len(stops_all.get(sym, [])) > 1)
+                        else _problems(trade, size, stop)
+                    )
                     + (
                         (f"조건부 손절 {stop_count[sym]}건 — 겹쳐 쌓였다",)
                         if stop_count.get(sym, 0) > STOP_COUNT_LIMIT
