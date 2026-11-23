@@ -31,7 +31,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from updown.analysis.indicators.breadth import MarketValues, market_values
-from updown.analysis.playbook.types import Playbook
+from updown.analysis.playbook.types import BreadthDays, Playbook
 from updown.common.db.models.market import MarketBreadthDay, MarketDailyClose
 from updown.common.logging.setup import get_logger
 
@@ -106,16 +106,16 @@ def params_of(playbooks: Iterable[Playbook]) -> tuple[BreadthParams, ...]:
         playbooks: 선언 전부.
 
     Returns:
-        `entry_washed` 를 선언한 매매법들의 일수 셋 — 정렬된 고유 목록. 없으면 빈 튜플
-        (= 작업이 할 일이 없다).
+        `entry_washed` · 브레이크 풀기(`drawdown_brake.release` · T985)를 선언한 매매법들의
+        일수 셋 — 정렬된 고유 목록. 없으면 빈 튜플(= 작업이 할 일이 없다).
     """
-    found = {
-        BreadthParams(
-            b.entry_washed.breadth_ma, b.entry_washed.lag_days, b.entry_washed.lag_rank_days
-        )
-        for b in playbooks
-        if b.entry_washed is not None
-    }
+    rules: list[BreadthDays] = []
+    for b in playbooks:
+        if b.entry_washed is not None:
+            rules.append(b.entry_washed)
+        if b.drawdown_brake is not None and b.drawdown_brake.release is not None:
+            rules.append(b.drawdown_brake.release)
+    found = {BreadthParams(r.breadth_ma, r.lag_days, r.lag_rank_days) for r in rules}
     return tuple(sorted(found, key=lambda p: (p.ma_days, p.lag_days, p.rank_days)))
 
 

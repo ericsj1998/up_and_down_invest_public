@@ -49,7 +49,7 @@ from updown.analysis.detectors.rules import load_rules
 from updown.analysis.indicators.reference import RefNeeds, btc_vol_pct_series, reference_regime
 from updown.analysis.indicators.reference import btc_daily_vol as btc_daily_vol
 from updown.analysis.indicators.reference import needs_of as ref_needs_of
-from updown.analysis.playbook.types import RefVolPct, WashedRule
+from updown.analysis.playbook.types import BreadthDays, RefVolPct
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.db.models.enums import LogLevel
 from updown.common.domain.candle import Candle
@@ -121,6 +121,7 @@ from updown.orchestration.walkforward.order_mapping import (
 )
 from updown.orchestration.walkforward.ref_inputs import (
     apply_ref_regime,
+    brake_release_of,
     clear_ref_regime,
     market_day_of,
     ref_fetch_bars,
@@ -927,7 +928,7 @@ def early_ids_alive(
 
 
 MarketValuesReader = Callable[
-    [str, date, WashedRule], Awaitable[tuple[Decimal | None, Decimal | None] | None]
+    [str, date, BreadthDays], Awaitable[tuple[Decimal | None, Decimal | None] | None]
 ]
 """`(거래소, 날, 선언) → (종목 폭, 뒤처진 묶음 수익)` — 줄이 없으면 None(앱이 읽개를 꽂는다)."""
 
@@ -972,7 +973,7 @@ def release_schedule_now() -> ReleaseSchedule:
 
 
 async def market_day_values(
-    market: str, day: date, rule: WashedRule, *, now: datetime
+    market: str, day: date, rule: BreadthDays, *, now: datetime
 ) -> tuple[Decimal | None, Decimal | None] | None:
     """그날(`day` 종가까지)의 시장 전체 값 — **같은 프로세스의 판들이 한 번만 읽는다**.
 
@@ -8932,11 +8933,23 @@ class LiveRunner:
             except ReleaseConfigError as exc:
                 self._session.release_schedule = None
                 self._log.warning("live_releases_unreadable", payload={"error": str(exc)[:140]})
+        now = datetime.now(UTC)
+        day = market_day_of(now)
+        release = brake_release_of(self._session.playbooks)
+        if release is not None:
+            # T985 — 브레이크 풀기가 보는 시장 폭(이평 일수가 풀기 선언의 것). 못 읽으면 None =
+            # 모름 → 펀드 문이 안 푼다(풀기는 위험을 늘리는 쪽 · #8-1).
+            try:
+                freed = await market_day_values(self.instrument.market.value, day, release, now=now)
+            except Exception as exc:
+                freed = None
+                self._log.warning(
+                    "live_market_values_unreadable", payload={"error": str(exc)[:140]}
+                )
+            self._session.brake_release_breadth = None if freed is None else freed[0]
         rule = washed_rule_of(self._session.playbooks)
         if rule is None:
             return
-        now = datetime.now(UTC)
-        day = market_day_of(now)
         try:
             got = await market_day_values(self.instrument.market.value, day, rule, now=now)
         except Exception as exc:

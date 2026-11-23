@@ -16,7 +16,13 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any, cast
 
-from updown.analysis.playbook.types import BreadthCap, DrawdownBrake, EntryLimit, Playbook
+from updown.analysis.playbook.types import (
+    BrakeRelease,
+    BreadthCap,
+    DrawdownBrake,
+    EntryLimit,
+    Playbook,
+)
 from updown.decision.portfolio_rules import drawdown_scale
 from updown.orchestration.rebalancer.gate import LegGate, LegPorts, SlotGate
 
@@ -92,7 +98,26 @@ class FundLeg:
             "drawdown_brake": (
                 None
                 if self.drawdown_brake is None
-                else {"at": str(self.drawdown_brake.at), "scale": str(self.drawdown_brake.scale)}
+                else {
+                    "at": str(self.drawdown_brake.at),
+                    "scale": str(self.drawdown_brake.scale),
+                    # T985 — 풀기 선언이 있을 때만 적는다(없는 다리의 저장본 꼴은 그대로).
+                    **(
+                        {}
+                        if self.drawdown_brake.release is None
+                        else {
+                            "release": {
+                                "breadth_min": self.drawdown_brake.release.breadth_min,
+                                "alt_breadth_below": str(
+                                    self.drawdown_brake.release.alt_breadth_below
+                                ),
+                                "breadth_ma": self.drawdown_brake.release.breadth_ma,
+                                "lag_days": self.drawdown_brake.release.lag_days,
+                                "lag_rank_days": self.drawdown_brake.release.lag_rank_days,
+                            }
+                        }
+                    ),
+                }
             ),
             "breadth_cap": (
                 None
@@ -166,7 +191,20 @@ class FundLeg:
         brake = None
         if isinstance(raw_brake, Mapping):
             body = cast("Mapping[str, Any]", raw_brake)
-            brake = DrawdownBrake(at=Decimal(str(body["at"])), scale=Decimal(str(body["scale"])))
+            raw_release = body.get("release")  # T985 앞 저장본엔 없다 — 없으면 풀기 없음
+            release = None
+            if isinstance(raw_release, Mapping):
+                rel = cast("Mapping[str, Any]", raw_release)
+                release = BrakeRelease(
+                    breadth_min=int(rel["breadth_min"]),
+                    alt_breadth_below=Decimal(str(rel["alt_breadth_below"])),
+                    breadth_ma=int(rel["breadth_ma"]),
+                    lag_days=int(rel["lag_days"]),
+                    lag_rank_days=int(rel["lag_rank_days"]),
+                )
+            brake = DrawdownBrake(
+                at=Decimal(str(body["at"])), scale=Decimal(str(body["scale"])), release=release
+            )
         breadth = None
         if isinstance(raw_breadth, Mapping):
             body = cast("Mapping[str, Any]", raw_breadth)
@@ -526,6 +564,7 @@ def leg_gate(
             drawdown=drawdown if watch else None,
             brake_at=Decimal(0) if brake is None else brake.at,
             brake_scale=Decimal(1) if brake is None else brake.scale,
+            brake_release=None if brake is None else brake.release,
             breadth_min=0 if breadth is None else breadth.min,
             breadth_cap=None if breadth is None else breadth.cap,
             halt_dd_at=Decimal(0) if leg.halt_dd_at is None else leg.halt_dd_at,

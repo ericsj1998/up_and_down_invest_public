@@ -802,6 +802,12 @@ class Session:
     """
     market_lag_ret: Decimal | None = None
     """뒤처진 종목 묶음의 최근 수익률 — 러너 주입(`entry_washed` 조건 ③). 🔴 None = 모름 → 보류."""
+    brake_release_breadth: Decimal | None = None
+    """브레이크 풀기(`drawdown_brake.release`)가 보는 시장 폭 — 러너 주입(T985).
+
+    `market_breadth` 와 같은 값이되 이평 일수가 풀기 선언의 것이다(칸을 따로 둔다 — 씻긴 시장
+    문과 일수가 다르다). 세션은 쓰지 않고 펀드 문이 포트로 읽는다. 🔴 None = 모름 → 안 푼다.
+    """
     release_schedule: ReleaseSchedule | None = None
     """예정된 큰 지표 발표 일정 — 러너 주입(`entry_event_window`).
 

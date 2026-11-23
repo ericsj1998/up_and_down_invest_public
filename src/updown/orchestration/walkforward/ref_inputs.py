@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from updown.analysis.indicators.reference import RefNeeds, RefRegime
-    from updown.analysis.playbook.types import Playbook, WashedRule
+    from updown.analysis.playbook.types import BrakeRelease, Playbook, WashedRule
 
 REF_MARGIN_BARS = 20
 """요구 봉 수 위에 더 받는 여유(실계좌 · 재현 같은 값)."""
@@ -110,6 +110,18 @@ def clear_ref_regime(session: Any) -> None:
 def washed_rule_of(playbooks: Iterable[Playbook]) -> WashedRule | None:
     """씻긴 시장 문(`entry_washed`)을 처음 선언한 매매법의 선언 — 없으면 None(시장 값 안 넣음)."""
     return next((b.entry_washed for b in playbooks if b.entry_washed is not None), None)
+
+
+def brake_release_of(playbooks: Iterable[Playbook]) -> BrakeRelease | None:
+    """브레이크 풀기(`drawdown_brake.release`)를 처음 선언한 매매법의 선언 — 없으면 None (T985)."""
+    return next(
+        (
+            b.drawdown_brake.release
+            for b in playbooks
+            if b.drawdown_brake is not None and b.drawdown_brake.release is not None
+        ),
+        None,
+    )
 
 
 def market_day_of(now: datetime) -> date:

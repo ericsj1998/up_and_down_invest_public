@@ -30,6 +30,7 @@ from updown.analysis.playbook.types import (
     AddOn,
     AtrTrailExit,
     BarTilt,
+    BrakeRelease,
     BreadthCap,
     ConflictAction,
     ConflictRule,
@@ -203,19 +204,56 @@ def _conflict(raw: Mapping[str, Any]) -> ConflictRule:
     )
 
 
-def _brake(raw: object, name: str) -> DrawdownBrake:
-    """낙폭 브레이크 한 줄 — `{at: "0.12", scale: "0.5"}` (T286).
+def _brake(raw: object, name: str, *, breadth_declared: bool = False) -> DrawdownBrake:
+    """낙폭 브레이크 한 줄 — `{at: "0.12", scale: "0.5"}` (T286) · 풀기 `release` 는 선택(T985).
+
+    Args:
+        raw: 선언 조각.
+        name: 오류에 붙일 자리 이름.
+        breadth_declared: 같은 매매법이 조건부 상한(`breadth_cap`)을 선언했나 — 풀기의 동시 돌파
+            폭은 그 선언이 있어야 세어진다.
 
     Raises:
-        PlaybookConfigError: 문턱이 0~1 밖이거나 배수가 (0, 1] 밖인 경우.
+        PlaybookConfigError: 문턱이 0~1 밖이거나 배수가 (0, 1] 밖인 경우 · 모르는 칸 · 폭을 못
+            세는 매매법에 풀기를 선언한 경우.
 
     Note:
         범위 검사는 `DrawdownBrake` 자체가 한다 — 저장본 복원 경로도 같은 검사를 지나게
         하려면 자료형에 붙어 있어야 한다. 여기서는 선언 오류의 **자리 이름**만 붙여 준다.
     """
     body = _mapping(raw, f"{name}.drawdown_brake")
+    # 🔴 모르는 칸을 조용히 넘기지 않는다 — `release` 를 오타로 적으면 풀기 없이 돈다(규칙 #8).
+    extra = set(body) - {"at", "scale", "release"}
+    if extra:
+        raise PlaybookConfigError(f"{name}.drawdown_brake 에 모르는 칸: {sorted(extra)}")
     try:
-        return DrawdownBrake(at=Decimal(str(body["at"])), scale=Decimal(str(body["scale"])))
+        release: BrakeRelease | None = None
+        if body.get("release") is not None:
+            rel = _mapping(body["release"], f"{name}.drawdown_brake.release")
+            days = ("breadth_ma", "lag_days", "lag_rank_days")
+            extra = set(rel) - {"breadth_min", "alt_breadth_below", *days}
+            if extra:
+                raise PlaybookConfigError(
+                    f"{name}.drawdown_brake.release 에 모르는 칸: {sorted(extra)}"
+                )
+            if not breadth_declared:
+                # 동시 돌파 폭은 `breadth_cap` 을 선언한 다리의 종목에서만 센다 — 없으면 폭이
+                # 늘 0 이라 적어 놓고 영영 안 풀리는 선언이 된다(규칙 #8).
+                raise PlaybookConfigError(
+                    f"{name}.drawdown_brake.release 는 breadth_cap 을 선언한 매매법에만 쓴다"
+                )
+            release = BrakeRelease(
+                breadth_min=int(rel["breadth_min"]),
+                alt_breadth_below=Decimal(str(rel["alt_breadth_below"])),
+                **{key: int(rel[key]) for key in days if rel.get(key) is not None},
+            )
+        return DrawdownBrake(
+            at=Decimal(str(body["at"])), scale=Decimal(str(body["scale"])), release=release
+        )
+    except PlaybookConfigError:
+        raise
+    except KeyError as exc:
+        raise PlaybookConfigError(f"{name}.drawdown_brake — 빠진 칸 {exc}") from exc
     except (ArithmeticError, ValueError) as exc:
         raise PlaybookConfigError(f"{name}.drawdown_brake — {exc}") from exc
 
@@ -1330,7 +1368,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                     drawdown_brake=(
                         None
                         if body.get("drawdown_brake") is None
-                        else _brake(body["drawdown_brake"], f"playbooks.{name}")
+                        else _brake(
+                            body["drawdown_brake"],
+                            f"playbooks.{name}",
+                            breadth_declared=body.get("breadth_cap") is not None,
+                        )
                     ),
                     breadth_cap=(
                         None

@@ -12,7 +12,7 @@ from typing import Any, cast
 import pytest
 
 from updown.analysis.indicators.breadth import MarketValues, market_values
-from updown.analysis.playbook.types import WashedRule
+from updown.analysis.playbook.types import BreadthDays, WashedRule
 from updown.marketdata.gate.universe_facts import GateUniverseFacts
 from updown.orchestration.rebalancer.breadth_job import (
     SOURCE_CANDLE,
@@ -228,7 +228,7 @@ def reader_calls() -> Any:
 
 
 def test_values_are_read_once_per_day_and_shared(reader_calls: list[date]) -> None:
-    async def read(_market: str, day: date, _rule: WashedRule) -> Any:
+    async def read(_market: str, day: date, _rule: BreadthDays) -> Any:
         reader_calls.append(day)
         return (Decimal("0.3"), Decimal("-0.02"))
 
@@ -247,7 +247,7 @@ def test_values_are_read_once_per_day_and_shared(reader_calls: list[date]) -> No
 def test_missing_row_is_unknown_and_only_retried_right_after_midnight(
     reader_calls: list[date], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def read(_market: str, day: date, _rule: WashedRule) -> Any:
+    async def read(_market: str, day: date, _rule: BreadthDays) -> Any:
         reader_calls.append(day)
         return None
 

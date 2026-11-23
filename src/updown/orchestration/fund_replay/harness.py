@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 from updown.analysis.indicators.reference import RefNeeds, needs_of, reference_regime
-from updown.analysis.playbook.types import WashedRule
+from updown.analysis.playbook.types import BreadthDays
 from updown.common.domain.instrument import Timeframe
 from updown.common.domain.releases import ReleaseSchedule
 from updown.decision.allocation import Basket, as_members
@@ -52,6 +52,7 @@ from updown.orchestration.rebalancer.wiring import wire_legs
 from updown.orchestration.walkforward.ledger import Outcome
 from updown.orchestration.walkforward.ref_inputs import (
     apply_ref_regime,
+    brake_release_of,
     clear_ref_regime,
     market_day_of,
     washed_rule_of,
@@ -238,7 +239,7 @@ class FundReplay:
         seed: int,
         engines: Sequence[ReplayEngineLeg] = (),
         membership: Callable[[str, datetime], frozenset[str] | None] | None = None,
-        market_values: Callable[[date, WashedRule], tuple[Decimal | None, Decimal | None] | None]
+        market_values: Callable[[date, BreadthDays], tuple[Decimal | None, Decimal | None] | None]
         | None = None,
         release_schedule: ReleaseSchedule | None = None,
         allow_unknown_inputs: bool = False,
@@ -314,6 +315,8 @@ class FundReplay:
                 )
         if any(b.entry_washed is not None for b in books) and self._market_values is None:
             missing.append("시장 전체 값(entry_washed)")
+        if brake_release_of(books) is not None and self._market_values is None:
+            missing.append("시장 전체 값(drawdown_brake.release)")
         if start is not None:
             have = bisect_right(self._ref_ends, start)
             need = max(
@@ -446,6 +449,11 @@ class FundReplay:
         day = market_day_of(t)
         for board in self.boards:
             s = board.session
+            release = brake_release_of(s.playbooks)
+            if release is not None:
+                # T985 — 브레이크 풀기가 보는 시장 폭(실계좌 러너와 같은 날 셈 · 모르면 안 푼다).
+                freed = None if self._market_values is None else self._market_values(day, release)
+                s.brake_release_breadth = None if freed is None else freed[0]
             rule = washed_rule_of(s.playbooks)
             if rule is None:
                 continue

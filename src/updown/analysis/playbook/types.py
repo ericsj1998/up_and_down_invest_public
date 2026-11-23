@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from enum import StrEnum
+from typing import Protocol
 
 from updown.common.domain.candle import Candle
 from updown.common.domain.evidence import Family, Grade
@@ -184,6 +185,80 @@ class ConflictRule:
     """
 
 
+class BreadthDays(Protocol):
+    """그날의 시장 전체 값 줄을 찾는 **일수 셋** — `WashedRule` · `BrakeRelease` 가 맞춘다 (T985).
+
+    러너 · 재현 장치의 시장 값 읽개는 선언이 무엇인지 몰라도 이 셋만 있으면 줄을 찾는다.
+    """
+
+    @property
+    def breadth_ma(self) -> int:
+        """종목 폭을 재는 이평 일수."""
+        ...
+
+    @property
+    def lag_days(self) -> int:
+        """뒤처진 묶음의 최근 수익 일수."""
+        ...
+
+    @property
+    def lag_rank_days(self) -> int:
+        """뒤처진 묶음을 고르는 수익 일수."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class BrakeRelease:
+    """낙폭 브레이크를 **그 진입에만** 풀어 주는 조건 — 동시 돌파 폭과 시장 폭으로 (T985).
+
+    선언하지 않으면(None) 브레이크는 지금까지와 같다. 선언하면 아래 둘이 다 참인 진입만
+    브레이크 배수를 안 맞는다.
+
+    조건(둘 다 · 진입 시각까지 닫힌 값):
+      ① 동시 돌파 폭(펀드 문이 다리 종목에서 세는 `band_breaks` 합 · 자기 포함) ≥ `breadth_min`
+      ② 시장 폭(전체 종목 중 종가가 `breadth_ma` 일 이평 위인 비율 · 마지막 닫힌 UTC 날까지)
+         < `alt_breadth_below`                                  (`Session.brake_release_breadth`)
+
+    Attributes:
+        breadth_min: 동시 돌파 폭 문턱.
+        alt_breadth_below: 시장 폭 문턱(0 ~ 1) — 이 값 **미만**일 때만 푼다.
+        breadth_ma: 시장 폭 이평 일수(기본 50).
+        lag_days: 그날의 시장 값 줄을 찾는 열쇠(뒤처짐 값은 이 장치가 쓰지 않는다 · 기본 3).
+        lag_rank_days: 위와 같다(기본 30).
+
+    Raises:
+        ValueError: 값이 말이 안 되는 경우.
+
+    Note:
+        🔴 풀기는 **위험을 늘리는 쪽**이다 — 시장 폭을 모르면(None) 풀지 않는다(규칙 #8-1).
+        동시 돌파 폭은 조건부 상한(`breadth_cap`)과 같은 수를 쓴다 — 그 선언이 없는 다리는 폭이
+        늘 0 이라 선언 파서가 거절한다(조용히 안 풀리는 선언을 만들지 않는다).
+    """
+
+    breadth_min: int
+    alt_breadth_below: Decimal
+    breadth_ma: int = 50
+    lag_days: int = 3
+    lag_rank_days: int = 30
+
+    def __post_init__(self) -> None:
+        """값이 말이 되는지 — 선언 경로와 복원 경로가 같은 검사를 지난다."""
+        if self.breadth_min < 1:
+            raise ValueError(f"브레이크 풀기의 동시 돌파 폭 문턱은 1 이상: {self.breadth_min}")
+        if not (Decimal(0) < self.alt_breadth_below <= Decimal(1)):
+            raise ValueError(
+                f"브레이크 풀기의 시장 폭 문턱은 0 초과 1 이하: {self.alt_breadth_below}"
+            )
+        if min(self.breadth_ma, self.lag_days, self.lag_rank_days) < 1:
+            raise ValueError("브레이크 풀기의 일수는 1 이상")
+
+    def releases(self, breadth: int, market_breadth: Decimal | None) -> bool:
+        """이 값들이면 그 진입의 브레이크를 푸는가 — 시장 폭을 모르면 안 푼다."""
+        if market_breadth is None:
+            return False
+        return breadth >= self.breadth_min and market_breadth < self.alt_breadth_below
+
+
 @dataclass(frozen=True, slots=True)
 class DrawdownBrake:
     """낙폭 브레이크 선언 — 고점 대비 `at` 이상 빠져 있으면 신규 진입을 `scale` 배로 (T286).
@@ -191,6 +266,7 @@ class DrawdownBrake:
     Attributes:
         at: 문턱(0~1 · `0.12` = 12%). 144차가 1% 단위로 쓸어 고른 10~13% 고원의 가운데.
         scale: 걸렸을 때 곱할 배수(`0.5`). 건너뛰는 것이 아니라 **크기만** 줄인다.
+        release: 그 진입에만 브레이크를 푸는 조건(T985) — None = 없음(지금까지와 같다).
 
     Raises:
         ValueError: 문턱이 (0, 1) 밖이거나 배수가 (0, 1] 밖인 경우.
@@ -208,6 +284,7 @@ class DrawdownBrake:
 
     at: Decimal
     scale: Decimal
+    release: BrakeRelease | None = None
 
     def __post_init__(self) -> None:
         """값이 낙폭 브레이크로서 말이 되는지 — 선언 경로와 복원 경로가 같은 검사를 지난다."""

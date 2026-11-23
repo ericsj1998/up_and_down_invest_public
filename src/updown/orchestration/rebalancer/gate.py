@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
+from updown.analysis.playbook.types import BrakeRelease
 from updown.common.logging.setup import get_logger
 from updown.decision.portfolio_rules import (
     Grant,
@@ -101,6 +102,15 @@ class BreadthTimed(Protocol):
 
 
 @runtime_checkable
+class ReleaseAware(Protocol):
+    """브레이크 풀기에 쓰는 **시장 폭**을 줄 수 있는 포트 (T985). 못 주는 포트는 모름으로 친다."""
+
+    def release_breadth(self) -> Decimal | None:
+        """전체 종목 가운데 이평 위 비율(마지막 닫힌 UTC 날까지 · 러너 주입) — 모르면 None."""
+        ...
+
+
+@runtime_checkable
 class OpenBefore(Protocol):
     """**이 시각 앞서** 연 보유 수를 줄 수 있는 포트 (T400 · 혼합 3.3 숏 열림 키우기)."""
 
@@ -153,6 +163,15 @@ class SlotGate:
 
     brake_scale: Decimal = Decimal(1)
     """브레이크가 걸렸을 때 신규 진입에 곱할 배수(0.5). 걸려도 건너뛰지 않고 **크기만** 줄인다."""
+
+    brake_release: BrakeRelease | None = None
+    """브레이크를 **그 진입에만** 푸는 조건(T985) — None = 없음.
+
+    동시 돌파 폭(`breadth(at)`)이 넓고 시장 폭(포트의 `release_breadth()`)이 좁으면 그 진입은
+    브레이크 배수를 안 맞는다. 🔴 풀기는 위험을 늘리는 쪽이라 **시장 폭을 모르면 안 푼다**(#8-1)."""
+
+    brake_releases: int = 0
+    """브레이크를 풀어 준 진입 수 — **관측 전용**(판정에 안 쓴다 · §1-0s 관측 규약)."""
 
     halt_dd_at: Decimal = Decimal(0)
     """펀드 낙폭이 이 값 **이상**이면 신규 진입을 **막는다** — 0 = 없음.
@@ -353,7 +372,11 @@ class SlotGate:
         shrunk: list[str] = []
         if self.drawdown is not None and self.brake_at > 0:
             scale = drawdown_scale(self.drawdown(), self.brake_at, self.brake_scale)
-            if scale != 1:
+            if scale != 1 and exposure > 0 and self._released(at):
+                # T985 — 풀기 조건이 맞은 진입은 브레이크 배수를 안 맞는다(불타기도 같은 길).
+                # 줄인 것이 아니므로 `shrunk` 에 적지 않고 따로 센다.
+                self.brake_releases += 1
+            elif scale != 1:
                 want *= scale
                 shrunk.append("brake")
         if exposure > 0 and want <= 0:
@@ -387,6 +410,46 @@ class SlotGate:
         return sum(
             port.band_breaks(at) for port in self.ports.values() if isinstance(port, BreadthAware)
         )
+
+    def _released(self, at: datetime) -> bool:
+        """이 진입은 브레이크를 안 맞나 — 풀기 선언이 있고 조건 둘이 다 참일 때만 (T985).
+
+        Args:
+            at: 진입하려는 봉의 시각(UTC).
+
+        Returns:
+            풀면 True. 선언이 없거나 시장 폭을 아는 포트가 없으면 False(모름 = 안 푼다 · #8-1).
+
+        Note:
+            시장 폭은 다리의 판들이 같은 날 값을 받는다. 자정 앞뒤로 판마다 다른 날 값을 들고
+            있으면 **가장 넓은 값**으로 본다(풀기에 불리한 쪽 = 위험을 덜 늘리는 쪽).
+        """
+        rule = self.brake_release
+        if rule is None:
+            return False
+        known = [
+            value
+            for port in self.ports.values()
+            if isinstance(port, ReleaseAware) and (value := port.release_breadth()) is not None
+        ]
+        if not known:
+            return False
+        breadth, market = self.breadth(at), max(known)
+        freed = rule.releases(breadth, market)
+        if freed:
+            # 🔴 관측이 진입을 막으면 안 된다 — 로그를 적다 난 예외는 삼킨다(판정은 위에서 끝났다).
+            with contextlib.suppress(Exception):
+                _logger.info(
+                    "fund_gate_brake_release",
+                    payload={
+                        "at": at.isoformat(),
+                        "breadth": breadth,
+                        "min": rule.breadth_min,
+                        "market_breadth": str(market),
+                        "below": str(rule.alt_breadth_below),
+                    },
+                )
+        return freed
 
     def _cap_at(self, at: datetime) -> Decimal | None:
         """이 진입에 쓸 총 명목 상한 — 시장 전체 돌파면 `breadth_cap`, 아니면 `notional_cap`.
@@ -522,6 +585,13 @@ class LegPort:
         if not self.in_scope or not isinstance(source, BreadthTimed):
             return None
         return source.breadth_bar_at()
+
+    def release_breadth(self) -> Decimal | None:
+        """브레이크 풀기의 시장 폭 — 범위 밖이거나 원본이 모르면 None (T985)."""
+        source = self.source
+        if not self.in_scope or not isinstance(source, ReleaseAware):
+            return None
+        return source.release_breadth()
 
 
 @dataclass(slots=True)

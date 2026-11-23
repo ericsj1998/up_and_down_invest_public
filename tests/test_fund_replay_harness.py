@@ -317,7 +317,9 @@ class TestInputCheck:
         boards, coordinator = self._boards()
         cast("Any", boards[0].session).playbooks = [
             SimpleNamespace(
-                entry_event_window=SimpleNamespace(hours=Decimal(8)), entry_washed=SimpleNamespace()
+                entry_event_window=SimpleNamespace(hours=Decimal(8)),
+                entry_washed=SimpleNamespace(),
+                drawdown_brake=None,
             )
         ]
         with pytest.raises(ReplayInputError, match=r"발표 일정.*시장 전체 값"):
@@ -325,10 +327,27 @@ class TestInputCheck:
         # 옛 재현과 맞대기는 모름을 허용한다
         FundReplay(boards, coordinator, ref_4h=(), seed=1, allow_unknown_inputs=True)
 
+    def test_brake_release_needs_market_values(self) -> None:
+        # T985 — 브레이크 풀기를 선언했는데 시장 폭이 없으면 "모름 = 안 푼다" 로 조용히 돌지 않는다.
+        boards, coordinator = self._boards()
+        cast("Any", boards[0].session).playbooks = [
+            SimpleNamespace(
+                entry_event_window=None,
+                entry_washed=None,
+                drawdown_brake=SimpleNamespace(release=SimpleNamespace()),
+            )
+        ]
+        with pytest.raises(ReplayInputError, match=r"drawdown_brake\.release"):
+            FundReplay(boards, coordinator, ref_4h=(), seed=1)
+
     def test_schedule_must_cover_the_window(self) -> None:
         boards, coordinator = self._boards()
         cast("Any", boards[0].session).playbooks = [
-            SimpleNamespace(entry_event_window=SimpleNamespace(hours=Decimal(8)), entry_washed=None)
+            SimpleNamespace(
+                entry_event_window=SimpleNamespace(hours=Decimal(8)),
+                entry_washed=None,
+                drawdown_brake=None,
+            )
         ]
         short = ReleaseSchedule(since=START, horizon=START + timedelta(days=1), times={})
         replay = FundReplay(boards, coordinator, ref_4h=(), seed=1, release_schedule=short)

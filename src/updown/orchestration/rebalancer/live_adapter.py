@@ -306,6 +306,10 @@ class SessionBridge:
             and item.playbook == leg
         ]
 
+    def release_breadth(self) -> Decimal | None:
+        """브레이크 풀기가 보는 시장 폭 — 러너가 세션에 넣어 둔 값 그대로(모르면 None · T985)."""
+        return self.session.brake_release_breadth
+
     def band_breaks(self, at: datetime) -> int:
         """이 종목이 최근 몇 봉 안에 **밴드 상단 밖에서 마감**했나 — 1 또는 0 (T289 폭의 입력).
 
