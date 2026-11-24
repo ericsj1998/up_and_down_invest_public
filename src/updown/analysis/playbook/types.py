@@ -35,6 +35,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol
 
+from updown.analysis.indicators.atr import atr
 from updown.common.domain.candle import Candle
 from updown.common.domain.evidence import Family, Grade
 from updown.common.domain.instrument import MarketGroup, Timeframe
@@ -1439,6 +1440,142 @@ class BreadthCap:
 
 
 @dataclass(frozen=True, slots=True)
+class EntryRiskGuard:
+    """진입 한 건의 **손절 폭 대 허용 크기** 검사 선언 — 넘으면 그 진입을 안 든다 (T1004).
+
+    펀드 문이 허용 크기 S(명목 ÷ 자리 예산)를 정한 뒤, 손절 폭 d%(진입가 대비)가
+    `100 ÷ S - maint_pct` 이상이면 막는다. 자리 예산을 증거금으로 본 청산 거리보다 손절이
+    먼 진입 = 한 건이 자리 하나 몫을 통째로 잃을 수 있는 진입이다.
+
+    Attributes:
+        maint_pct: 유지 증거금 가정(% · 0 이상 100 미만). 검사식의 `100 ÷ S` 에서 뺀다.
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+
+    Note:
+        첫 진입에만 건다 — 더 싣기(추가)는 처음 실제 노출의 비율이라 따로 안 본다.
+        판단식은 `decision.portfolio_rules.stop_past_slot_margin` 에 있다(여기는 선언 값만).
+    """
+
+    maint_pct: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 유지 증거금 가정으로서 말이 되는지."""
+        if not 0 <= self.maint_pct < 100:
+            raise ValueError(f"유지 증거금 가정은 0 이상 100 미만(%): {self.maint_pct}")
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterRiskCap:
+    """같은 때 든 진입들의 **손절 기준 위험 합** 상한 선언 — 넘으면 뒤 진입을 줄인다 (T1004).
+
+    한 진입의 위험 = 허용 크기 ÷ 자리 수 x 손절 폭 %(= 계좌 대비 %). 같은 다리에서 직전
+    `window_minutes` 분 안에 든 진입들의 위험 합에 이 진입을 더해 `cap_pct` 를 넘으면, 이 진입이
+    그 창의 `min_n` 번째 이상일 때만 남은 몫에 맞춰 줄인다(허용 하한보다 작으면 안 든다).
+
+    Attributes:
+        cap_pct: 위험 합 상한(계좌 % · 0 초과).
+        min_n: 창 안에서 이 번째 진입부터 건다(1 이상). 앞의 `min_n - 1` 건은 안 건드린다.
+        window_minutes: 같은 때로 보는 창(분 · 1 ~ 1440).
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+
+    Note:
+        진입만 센다 — 더 싣기(추가)는 안 센다. 센 것은 원장 기록(주문 낸 시각 · 그때 허용된
+        크기 · 처음 손절)이라 재시작해도 어긋나지 않는다(`EntryLimit` 과 같다).
+        판단식은 `decision.portfolio_rules.cluster_risk_room` 에 있다.
+    """
+
+    cap_pct: Decimal
+    min_n: int = 3
+    window_minutes: int = 30
+
+    def __post_init__(self) -> None:
+        """값이 위험 합 상한으로서 말이 되는지."""
+        if self.cap_pct <= 0:
+            raise ValueError(f"위험 합 상한은 0 보다 커야 한다(%): {self.cap_pct}")
+        if self.min_n < 1:
+            raise ValueError(f"거는 순번은 1 이상: {self.min_n}")
+        if not 1 <= self.window_minutes <= 1440:
+            raise ValueError(f"창은 1 ~ 1440분: {self.window_minutes}")
+
+
+@dataclass(frozen=True, slots=True)
+class WeakBarSkip:
+    """신호 봉이 **작고 뚫은 자리 바로 위**면 그 진입을 건너뛰는 선언 (T1004).
+
+    두 조건이 **다** 참일 때만 건너뛴다:
+
+    - (고가 - 저가) ÷ ATR(`atr_period` · 직전 봉까지) < `range_atr`
+    - (종가 ÷ 직전 `lookback` 봉 최고가 - 1) x 100 < `ext_pct`
+
+    Attributes:
+        range_atr: 봉 범위 문턱(ATR 배수 · 0 초과).
+        ext_pct: 뚫은 자리 위 거리 문턱(% · 직전 최고가 대비).
+        atr_period: ATR 봉 수(Wilder · 탐지기의 관통 깊이와 같은 ATR).
+        lookback: 뚫은 자리를 재는 직전 봉 수(신호 봉 제외).
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+
+    Note:
+        값을 모르면(봉 부족 · ATR 0) 건너뛰지 않는다 — 판단 불가를 "약하다" 로 읽지 않는다.
+    """
+
+    range_atr: Decimal
+    ext_pct: Decimal
+    atr_period: int = 14
+    lookback: int = 20
+
+    def __post_init__(self) -> None:
+        """값이 문턱으로서 말이 되는지."""
+        if self.range_atr <= 0:
+            raise ValueError(f"봉 범위 문턱은 0 보다 커야 한다(ATR 배수): {self.range_atr}")
+        if self.atr_period < 1:
+            raise ValueError(f"ATR 봉 수는 1 이상: {self.atr_period}")
+        if self.lookback < 1:
+            raise ValueError(f"돌아볼 봉 수는 1 이상: {self.lookback}")
+
+    def measure(self, bars: Sequence[Candle]) -> tuple[Decimal, Decimal] | None:
+        """신호 봉의 (범위 ÷ ATR, 뚫은 자리 위 거리 %) — 판정에 쓰는 두 값.
+
+        Args:
+            bars: 진입 축의 봉들(오래된 것 → 최근 · 마지막이 신호 봉). 조기 진입이면 마지막이
+                그 시점까지의 부분 봉이다.
+
+        Returns:
+            (봉 범위 ÷ 직전 봉까지의 ATR, 종가가 직전 최고가 위로 나간 거리 %). 잴 수 없으면 None.
+        """
+        if len(bars) < max(self.lookback, self.atr_period + 1) + 1:
+            return None
+        spans = atr(
+            [c.high for c in bars], [c.low for c in bars], [c.close for c in bars], self.atr_period
+        )
+        prior = spans[-2]
+        last = bars[-1]
+        top = max(c.high for c in bars[-1 - self.lookback : -1])
+        if prior is None or prior <= 0 or top <= 0:
+            return None
+        return (last.high - last.low) / prior, (last.close / top - 1) * 100
+
+    def weak(self, bars: Sequence[Candle]) -> bool | None:
+        """닫힌 봉들(오래된 것 → 최근 · 마지막이 신호 봉)로 약한 봉인지 본다.
+
+        Args:
+            bars: 진입 축의 봉들. 조기 진입이면 마지막이 그 시점까지의 부분 봉이다.
+
+        Returns:
+            두 조건이 다 참이면 True · 하나라도 아니면 False · 잴 수 없으면 None.
+        """
+        got = self.measure(bars)
+        if got is None:
+            return None
+        return got[0] < self.range_atr and got[1] < self.ext_pct
+
+
+@dataclass(frozen=True, slots=True)
 class Playbook:
     """매매법 하나의 선언.
 
@@ -1981,6 +2118,22 @@ class Playbook:
     """짝 다리(숏)가 이 진입 앞서 열려 있으면 진입을 키운다(T400 · 혼합 3.3) — 펀드 문이 센다.
 
     펀드 다리 값이라 돌던 펀드엔 묶음 `legs_revision` 을 올려야 들어간다.
+
+    ⛔ None 이면 동결이다 (§5.6.2)."""
+    entry_risk_guard: EntryRiskGuard | None = None
+    """손절 폭이 허용 크기의 자리 증거금 청산 거리 이상이면 그 진입을 안 든다(T1004 · 펀드 문).
+
+    펀드 다리 값이라 돌던 펀드엔 묶음 `legs_revision` 을 올려야 들어간다.
+
+    ⛔ None 이면 동결이다 (§5.6.2)."""
+    cluster_risk_cap: ClusterRiskCap | None = None
+    """같은 때 든 진입들의 손절 기준 위험 합 상한(T1004) — 펀드 문이 뒤 진입을 줄인다.
+
+    펀드 다리 값이라 돌던 펀드엔 묶음 `legs_revision` 을 올려야 들어간다.
+
+    ⛔ None 이면 동결이다 (§5.6.2)."""
+    weak_bar_skip: WeakBarSkip | None = None
+    """신호 봉이 작고 뚫은 자리 바로 위면 그 진입을 건너뛴다(T1004) — 세션이 진입 직전에 본다.
 
     ⛔ None 이면 동결이다 (§5.6.2)."""
     entry_exposure_cap: Decimal | None = None

@@ -175,3 +175,77 @@ def drawdown_scale(drawdown: Decimal, at: Decimal, scale: Decimal) -> Decimal:
     if at <= 0:
         return Decimal(1)
     return scale if drawdown > at else Decimal(1)
+
+
+def stop_past_slot_margin(size: Decimal, stop_pct: Decimal, maint_pct: Decimal) -> bool:
+    """손절 폭이 **자리 예산을 증거금으로 본 청산 거리** 이상인가 (T1004).
+
+    Args:
+        size: 허용 크기(명목 ÷ 자리 예산). 0 이하면 검사할 것이 없다.
+        stop_pct: 손절 폭(진입가 대비 % · 양수).
+        maint_pct: 유지 증거금 가정(%).
+
+    Returns:
+        `stop_pct >= 100 ÷ size - maint_pct` 면 True — 그 진입은 손절 전에 자리 하나 몫을
+        다 잃을 수 있다.
+
+    Note:
+        자리 예산이 증거금의 전부라고 보면 배율은 `size` 이고 청산 거리는 `100 ÷ size - 유지` 다.
+        연구 걸음(`scripts/research/scenarios/t296_wave62.py` 의 청산선 검사)과 같은 식 ·
+        같은 부등호(`>=`)다.
+    """
+    if size <= 0:
+        return False
+    return stop_pct >= Decimal(100) / size - maint_pct
+
+
+def cluster_risk_room(
+    size: Decimal,
+    stop_pct: Decimal,
+    slots: int,
+    *,
+    used: Decimal,
+    count: int,
+    cap_pct: Decimal,
+    min_n: int,
+) -> Decimal | None:
+    """같은 때 든 진입들의 위험 합 상한에 맞춘 **허용 크기** (T1004).
+
+    Args:
+        size: 이 진입의 허용 크기(명목 ÷ 자리 예산).
+        stop_pct: 이 진입의 손절 폭(진입가 대비 % · 양수).
+        slots: 자리 수. 0 이하면 위험을 계좌 비율로 못 바꾼다.
+        used: 같은 창에 앞서 든 진입들의 위험 합(계좌 %).
+        count: 같은 창에 앞서 든 진입 수.
+        cap_pct: 위험 합 상한(계좌 %).
+        min_n: 창 안에서 이 번째 진입부터 건다.
+
+    Returns:
+        줄여야 하면 남은 몫에 맞춘 크기(0 이하일 수 있다 — 호출자가 막는다). 안 줄여도 되면 None.
+
+    Note:
+        한 진입의 위험 = `size ÷ slots x stop_pct`. 연구 걸음(`t296_wave62.py` 의
+        `long_risk_cap` · `long_risk_min_n`)과 같은 식이다 — 앞 `min_n - 1` 건은 상한을 넘겨도
+        안 건드린다.
+    """
+    if slots <= 0 or stop_pct <= 0 or count + 1 < min_n:
+        return None
+    risk = size / Decimal(slots) * stop_pct
+    if used + risk <= cap_pct:
+        return None
+    return (cap_pct - used) / stop_pct * Decimal(slots)
+
+
+def stop_distance_pct(entry: Decimal, stop: Decimal) -> Decimal | None:
+    """진입가에서 손절가까지의 거리(진입가의 %) — 방향과 무관한 크기 (T1004).
+
+    Args:
+        entry: 계획 진입가.
+        stop: 손절가.
+
+    Returns:
+        거리 %. 진입가가 0 이하면 None(모름).
+    """
+    if entry <= 0:
+        return None
+    return abs(entry - stop) / entry * Decimal(100)

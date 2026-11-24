@@ -17,15 +17,17 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
-from updown.analysis.playbook.types import BrakeRelease
+from updown.analysis.playbook.types import BrakeRelease, ClusterRiskCap, EntryRiskGuard
 from updown.common.logging.setup import get_logger
 from updown.decision.portfolio_rules import (
     Grant,
+    cluster_risk_room,
     day_halted,
     drawdown_scale,
     notional_room,
     peer_crowded,
     slot_free,
+    stop_past_slot_margin,
 )
 
 _logger = get_logger("rebalancer.gate")
@@ -89,6 +91,18 @@ class EntryLogged(Protocol):
 
     def entries(self) -> list[datetime] | None:
         """취소 안 된 시스템 매매의 주문 시각(`placed_at`) — 열린 것 · 닫힌 것 모두. 모르면 None."""
+        ...
+
+
+@runtime_checkable
+class EntryRiskLogged(Protocol):
+    """시스템 진입의 크기와 손절 폭을 줄 수 있는 포트 (T1004 · 같은 때 든 진입의 위험 합 입력).
+
+    `EntryLogged` 와 따로 둔 이유는 같다 — 이 한도를 안 쓰는 포트까지 강제하지 않는다.
+    """
+
+    def entry_risks(self) -> list[tuple[datetime, Decimal, Decimal]] | None:
+        """취소 안 된 시스템 매매의 (주문 시각, 허용 노출, 처음 손절 폭 %) — 모르면 None."""
         ...
 
 
@@ -238,6 +252,34 @@ class SlotGate:
     boost_mult: Decimal = Decimal(1)
     """짝 다리 보유 문턱을 넘었을 때 신규 진입에 곱할 배수(1.5). 불타기(`grant_add`)엔 안 건다."""
 
+    risk_guard: EntryRiskGuard | None = None
+    """손절 폭이 허용 크기의 자리 증거금 청산 거리 이상이면 그 진입을 막는다 (T1004 · None = 없음).
+
+    크기를 다 정한 **뒤**(브레이크 · 상한 · 총 명목 여유 · `cluster_risk` 뒤)의 허용 크기로 잰다 —
+    줄어든 크기는 청산 거리가 멀어져 통과할 수 있다. 손절 폭을 넘긴 물음(`stop_pct`)에만 건다.
+    불타기(`grant_add`)엔 안 건다."""
+
+    cluster_risk: ClusterRiskCap | None = None
+    """같은 때 든 진입들의 손절 기준 위험 합(계좌 %) 상한 (T1004 · None = 없음).
+
+    위험 = 허용 크기 ÷ `slots` x 손절 폭 %. 창 안 `min_n` 번째 이상 진입이 상한을 넘기면 남은
+    몫까지 줄이고(`cluster_risk`), `min_grant` 보다 작아지면 막는다. `slots` 가 0 이면 위험을 잴
+    분모가 없어 만들 때 예외다. 불타기(`grant_add`)엔 안 건다."""
+
+    risk_guard_blocks: int = 0
+    """`risk_guard` 가 막은 횟수 — 관측 전용."""
+
+    cluster_risk_fits: int = 0
+    """`cluster_risk` 가 줄인 횟수 — 관측 전용."""
+
+    cluster_risk_blocks: int = 0
+    """`cluster_risk` 가 막은 횟수(남은 몫이 최소 진입 미만) — 관측 전용."""
+
+    def __post_init__(self) -> None:
+        """선언끼리 어긋나면 만들 때 멈춘다 — 조용히 꺼진 한도를 두지 않는다 (#8)."""
+        if self.cluster_risk is not None and self.slots <= 0:
+            raise ValueError("cluster_risk 는 slots 가 있어야 한다 — 위험(계좌 %)의 분모다")
+
     def blocks(self, at: datetime, exposure: Decimal = Decimal(0)) -> str | None:
         """지금 새 자리를 열면 안 되는 이유 — 없으면 None.
 
@@ -257,12 +299,15 @@ class SlotGate:
         """
         return self.grant(at, exposure).blocked
 
-    def grant(self, at: datetime, exposure: Decimal) -> Grant:
+    def grant(self, at: datetime, exposure: Decimal, *, stop_pct: Decimal | None = None) -> Grant:
         """이 크기로 열어도 되는지 묻고 **허용 크기**를 돌려준다 (T286).
 
         Args:
             at: 진입하려는 봉의 시각(UTC).
             exposure: 열려는 자리의 **실제** 노출(명목/증거금 = 배율 x 크기 승수).
+            stop_pct: 계획 손절 폭(진입가의 %) — 넘기면 `cluster_risk` · `risk_guard` 를
+                크기를 정한 뒤에 건다(T1004). None(기본)이면 그 둘을 안 본다 — 손절을 모르는
+                물음(`blocks` · 연구 걸음)은 예전과 같다.
 
         Returns:
             `Grant` — 허용 크기 · 막은 사유 · 줄인 장치.
@@ -295,12 +340,114 @@ class SlotGate:
                 return Grant(Decimal(0), "peer_open")
         boost = self._boost(at) if exposure > 0 else None
         if boost is None:
-            return self._sized(at, exposure, cap=self.entry_cap)
-        given = self._sized(at, exposure * boost, cap=self.entry_cap)
-        if given.blocked is not None:
+            given = self._sized(at, exposure, cap=self.entry_cap)
+        else:
+            given = self._sized(at, exposure * boost, cap=self.entry_cap)
+            if given.blocked is None:
+                # §1-0s — 키운 것도 장치로 적는다(`gate:fit:boost`) · 브레이크 · 상한이 뒤에서
+                #    다시 줄인다.
+                given = Grant(
+                    given.size, None, "boost" if given.shrunk is None else f"boost+{given.shrunk}"
+                )
+        if stop_pct is None or given.blocked is not None or given.size <= 0:
             return given
-        # §1-0s — 키운 것도 장치로 적는다(`gate:fit:boost`) · 브레이크 · 상한이 뒤에서 다시 줄인다.
-        return Grant(given.size, None, "boost" if given.shrunk is None else f"boost+{given.shrunk}")
+        return self._risk_checked(at, given, stop_pct)
+
+    def _risk_checked(self, at: datetime, given: Grant, stop_pct: Decimal) -> Grant:
+        """크기를 정한 뒤 손절 기준 위험으로 한 번 더 본다 (T1004) — 선언이 없으면 그대로.
+
+        Args:
+            at: 진입하려는 봉의 시각(UTC).
+            given: 자리 · 정지 · 브레이크 · 상한 · 총 명목 여유를 지난 허용 크기.
+            stop_pct: 계획 손절 폭(진입가의 %).
+
+        Returns:
+            그대로 · 줄인 것(`cluster_risk`) · 막은 것(`cluster_risk` · `risk_guard` · `risk_log`).
+
+        Note:
+            순서는 **위험 합 상한(줄임) → 청산 거리 문(막음)** 이다 — 줄어든 크기는 청산 거리가
+            멀어지므로 뒤집으면 다른 규칙이 된다. 측정(`t296_wave62.run`)도 이 순서다.
+        """
+        size = given.size
+        shrunk = given.shrunk
+        rule = self.cluster_risk
+        if rule is not None:
+            seen = self._cluster_used(at, rule.window_minutes)
+            if seen is None:
+                # 🔴 앞선 진입의 위험을 못 세는 포트가 섞였다 — 한도를 지킬 수 없으면 막는다(#8-1).
+                return Grant(Decimal(0), "risk_log")
+            used, count = seen
+            room = cluster_risk_room(
+                size,
+                stop_pct,
+                self.slots,
+                used=used,
+                count=count,
+                cap_pct=rule.cap_pct,
+                min_n=rule.min_n,
+            )
+            if room is not None:
+                _logger.info(
+                    "fund_gate_cluster_risk",
+                    payload={
+                        "at": at.isoformat(),
+                        "used_pct": str(used),
+                        "count": count,
+                        "stop_pct": str(stop_pct),
+                        "want": str(size),
+                        "room": str(room),
+                        "cap_pct": str(rule.cap_pct),
+                    },
+                )
+                if room <= 0 or room < self.min_grant:
+                    self.cluster_risk_blocks += 1
+                    return Grant(Decimal(0), "cluster_risk")
+                self.cluster_risk_fits += 1
+                size = room
+                shrunk = "cluster_risk" if shrunk is None else f"{shrunk}+cluster_risk"
+        guard = self.risk_guard
+        if guard is not None and stop_past_slot_margin(size, stop_pct, guard.maint_pct):
+            self.risk_guard_blocks += 1
+            _logger.info(
+                "fund_gate_risk_guard",
+                payload={
+                    "at": at.isoformat(),
+                    "size": str(size),
+                    "stop_pct": str(stop_pct),
+                    "maint_pct": str(guard.maint_pct),
+                },
+            )
+            return Grant(Decimal(0), "risk_guard")
+        if size == given.size:
+            return given
+        return Grant(size, None, shrunk)
+
+    def _cluster_used(self, at: datetime, window_minutes: int) -> tuple[Decimal, int] | None:
+        """직전 창(`at` · 창 시작 둘 다 포함) 안 진입들의 위험 합(계좌 %)과 건수.
+
+        Args:
+            at: 진입하려는 봉의 시각(UTC).
+            window_minutes: 창 길이(분).
+
+        Returns:
+            (위험 합, 건수). 진입 위험을 못 주는 포트가 하나라도 있으면 None(모름).
+
+        Note:
+            창 시작을 **포함**한다 — 측정(`t296_wave62` 의 `x_[0] >= lo_r`)과 같다. 30 분 창이면
+            반 시간 앞 조기 진입이 정시 진입의 창에 든다.
+        """
+        since = at - timedelta(minutes=window_minutes)
+        used = Decimal(0)
+        count = 0
+        for port in self.ports.values():
+            got = port.entry_risks() if isinstance(port, EntryRiskLogged) else None
+            if got is None:
+                return None
+            for placed, size, stop in got:
+                if since <= placed <= at:
+                    used += size / Decimal(self.slots) * stop
+                    count += 1
+        return used, count
 
     def _boost(self, at: datetime) -> Decimal | None:
         """짝 다리들 보유(`at` 앞서 연 것)가 문턱 이상이면 키울 배수 — 아니면 None (T400)."""
@@ -534,6 +681,15 @@ class EntryLogSource(Protocol):
         ...
 
 
+@runtime_checkable
+class EntryRiskSource(Protocol):
+    """다리별 진입 위험을 줄 수 있는 세션 다리 (T1004) — `SessionBridge` 가 구현한다."""
+
+    def entry_risks_of(self, leg: str) -> list[tuple[datetime, Decimal, Decimal]]:
+        """그 다리의 취소 안 된 시스템 매매의 (주문 시각, 허용 노출, 처음 손절 폭 %)."""
+        ...
+
+
 @dataclass(slots=True, frozen=True)
 class LegPort:
     """세션 하나를 **다리 하나의 눈으로** 본 포트 (T291).
@@ -574,6 +730,11 @@ class LegPort:
         """이 다리의 진입 시각 — 원본이 못 주면 None(문이 모름으로 보고 막는다)."""
         source = self.source
         return source.entries_of(self.leg) if isinstance(source, EntryLogSource) else None
+
+    def entry_risks(self) -> list[tuple[datetime, Decimal, Decimal]] | None:
+        """이 다리의 진입 위험 — 원본이 못 주면 None(문이 모름으로 보고 막는다 · T1004)."""
+        source = self.source
+        return source.entry_risks_of(self.leg) if isinstance(source, EntryRiskSource) else None
 
     def band_breaks(self, at: datetime) -> int:
         """폭의 입력 — 다리의 종목 범위 밖이면 0."""
@@ -658,6 +819,30 @@ class LegGate:
         if gate is None:
             return Grant(Decimal(0), "leg")
         return gate.grant(at, exposure)
+
+    def grant_stop_for(
+        self, leg: str, at: datetime, exposure: Decimal, stop_pct: Decimal | None
+    ) -> Grant:
+        """그 다리의 문에 **손절 폭과 함께** 묻는다 (T1004) — 없는 다리면 막는다.
+
+        Args:
+            leg: 진입을 낸 매매법의 귀속 키.
+            at: 진입하려는 봉의 시각(UTC).
+            exposure: 열려는 자리의 실제 노출.
+            stop_pct: 계획 손절 폭(진입가의 %). 모르면 None.
+
+        Returns:
+            `Grant`. 그 다리에 위험 검사가 선언돼 있는데 손절 폭을 모르면 `"risk_stop"` 으로
+            막는다 — 지킬 수 없는 한도는 보류다(#8-1). 선언이 없으면 `grant_for` 와 같다.
+        """
+        gate = self.legs.get(leg)
+        if gate is None:
+            return Grant(Decimal(0), "leg")
+        if stop_pct is None:
+            if gate.risk_guard is not None or gate.cluster_risk is not None:
+                return Grant(Decimal(0), "risk_stop")
+            return gate.grant(at, exposure)
+        return gate.grant(at, exposure, stop_pct=stop_pct)
 
     def grant_add_for(self, leg: str, at: datetime, exposure: Decimal) -> Grant:
         """그 다리의 문에 불타기 크기를 묻는다 (T308) — 없는 다리면 막는다."""

@@ -64,7 +64,7 @@ from updown.common.domain.setup import TradeSetup
 from updown.common.domain.trade_tick import BarDelta
 from updown.common.domain.venue_series import VenueSeries
 from updown.common.logging.setup import get_logger
-from updown.decision.portfolio_rules import Grant
+from updown.decision.portfolio_rules import Grant, stop_distance_pct
 from updown.decision.risk.atr_trail import atr_trail_exit_hit
 from updown.decision.risk.breakeven import breakeven_stop
 from updown.decision.risk.merged_liquidation import (
@@ -224,6 +224,32 @@ class LegAwareAddGate(Protocol):
             leg: 매매를 낸 매매법의 귀속 키.
             at: 추가하려는 시각(UTC).
             exposure: 더 실으려는 노출.
+
+        Returns:
+            허용 크기 · 막은 사유 · 크기를 줄인 장치.
+        """
+        ...
+
+
+@runtime_checkable
+class StopAwareGate(Protocol):
+    """다리와 **계획 손절 폭**을 같이 받아 답하는 문 (T1004 · `LegAwareGate` 의 손절 짝).
+
+    손절 기준 위험을 보는 펀드 규칙(한 건 청산 거리 문 · 같은 때 든 진입의 위험 합 상한)은 크기만
+    받아서는 판단할 수 없다. 구현은 `orchestration/rebalancer/gate.LegGate`. 이 프로토콜이 없는
+    문은 지금까지처럼 `grant_for` · `grant` 로 묻는다.
+    """
+
+    def grant_stop_for(
+        self, leg: str, at: datetime, exposure: Decimal, stop_pct: Decimal | None
+    ) -> Grant:
+        """그 다리의 문에 손절 폭과 함께 묻는다.
+
+        Args:
+            leg: 진입을 낸 매매법의 귀속 키.
+            at: 진입하려는 봉의 시각(UTC).
+            exposure: 열려는 자리의 실제 노출.
+            stop_pct: 계획 손절 폭(진입가의 %). 모르면 None.
 
         Returns:
             허용 크기 · 막은 사유 · 크기를 줄인 장치.
@@ -919,6 +945,15 @@ class Session:
 
     🔴 **역선택을 보는 값이다.** 지정가는 가격이 계속 불리하게 갈 때 제일 잘 채워지므로,
     체결률만 보면 *"좋은 자리만 놓치고 있다"* 가 안 보인다.
+    """
+
+    early_windows: dict[Timeframe, list[Candle]] = field(
+        default_factory=lambda: dict[Timeframe, list[Candle]]()
+    )
+    """조기 진입을 판정하는 **동안만** 채워지는 진입 축별 봉 창(마감 봉들 + 부분 봉 · T1004).
+
+    신호 봉을 다시 재는 규칙(`weak_bar_skip`)이 탐지기가 본 그 부분 봉으로 재게 한다.
+    `_early_enter` 가 `_enter` 를 부르기 직전에 채우고 끝나면 비운다 — 평소엔 비어 있다.
     """
 
     early_ids: set[str] = field(default_factory=lambda: set[str]())
@@ -2274,6 +2309,52 @@ class Session:
         else:
             self._count("depth:down" if mult < 1 else ("depth:up" if mult > 1 else "depth:mid"))
         return mult
+
+    def _weak_bar(self, book: Playbook, bar: Candle) -> bool:
+        """신호 봉이 작고 뚫은 자리 바로 위라 이 진입을 건너뛸지 (T1004 · `weak_bar_skip`).
+
+        Args:
+            book: 후보를 낸 매매법.
+            bar: 신호봉(`_signal_bar`).
+
+        Returns:
+            건너뛰면 True. 선언이 없으면 False(동결 · §5.6.2).
+
+        Note:
+            탐지기가 판정한 그 창에서 잰다 — 마감 진입은 `judged` 의 신호 봉까지, 조기 진입은
+            `_early_enter` 가 탐지기에 넘긴 창(마감 봉들 + 그 시점까지의 부분 봉 · `early_windows`).
+            🔴 조기 진입을 **닫힌 봉**으로 재지 않는다 — 그 봉은 아직 안 닫혔다(앞보기).
+            모르면(창 부족 · 신호 봉이 그 축에 없음 · ATR 0) 건너뛰지 않는다 — 판단 불가를
+            "약하다" 로 읽지 않는다. 깔때기에 `weak_bar:in · out · unknown` 을 세고, 잰 두 값은
+            로그(`session_weak_bar`)에 남긴다(§1-0s — 규칙이 만든 값의 분포).
+        """
+        rule = book.weak_bar_skip
+        if rule is None:
+            return False
+        frame = book.timeframe
+        window: list[Candle] | None = self.early_windows.get(frame)
+        if window is None and bar.timeframe is frame and frame in self.feed.timeframes:
+            upto = [c for c in self.feed.judged(frame) if c.ts <= bar.ts]
+            if upto and upto[-1].ts == bar.ts:
+                window = upto
+        got = None if window is None else rule.measure(window)
+        if got is None:
+            self._count("weak_bar:unknown")
+            return False
+        weak = got[0] < rule.range_atr and got[1] < rule.ext_pct
+        self._count("weak_bar:in" if weak else "weak_bar:out")
+        _logger.info(
+            "session_weak_bar",
+            payload={
+                "at": bar.ts.isoformat(),
+                "playbook": book.attribution,
+                "range_atr": str(got[0]),
+                "ext_pct": str(got[1]),
+                "weak": weak,
+                "partial": frame in self.early_windows,
+            },
+        )
+        return weak
 
     def _sma_tilt_mult(self, book: Playbook, bar: Candle) -> Decimal:
         """상위 봉 이평 띠 크기(T359 · 혼합 3.1 Q4 · S2Z · T · M) — 띠 안인 선언의 배수를 곱한다.
@@ -4762,11 +4843,19 @@ class Session:
         if self.entry_gate is None:
             return exposure
         gate = self.entry_gate
-        given = (
-            gate.grant_for(leg, at, exposure)
-            if leg is not None and isinstance(gate, LegAwareGate)
-            else gate.grant(at, exposure)
-        )
+        if leg is not None and isinstance(gate, StopAwareGate):
+            # T1004 — 손절 기준 위험을 보는 펀드 규칙이 있을 수 있다. 계획 손절 폭을 같이 넘긴다
+            #    (모르면 None — 그 규칙이 선언된 다리면 문이 보류로 막는다 · #8-1).
+            stop_pct = (
+                None
+                if entry is None or setup is None
+                else stop_distance_pct(entry, setup.stop_loss)
+            )
+            given = gate.grant_stop_for(leg, at, exposure, stop_pct)
+        elif leg is not None and isinstance(gate, LegAwareGate):
+            given = gate.grant_for(leg, at, exposure)
+        else:
+            given = gate.grant(at, exposure)
         if given.blocked is not None:
             self.gate_held += 1
             self._count(f"gate:{given.blocked}")
@@ -5593,6 +5682,7 @@ class Session:
         ctx = self.context()
         override = self._regime_override()
         now: datetime | None = None
+        windows: dict[Timeframe, list[Candle]] = {}  # T1004 — 탐지기가 본 창(부분 봉 포함)
         for frame in sorted({b.timeframe for b in books}, key=lambda f: f.value):
             mine = [b for b in books if b.timeframe is frame and b.early_entry is not None]
             # 부분 봉 재료 = 진입 TF 보다 잘고 봉인된 축 중 가장 잔 것(방아쇠 축 · 없으면 걸음 축).
@@ -5636,7 +5726,8 @@ class Session:
             rows = list(ctx.candles.get(frame, ()))
             if rows and rows[-1].ts >= start:
                 continue  # 이 봉은 이미 닫혀 있다(마감 판정이 본다)
-            ctx2 = replace(ctx, candles={**ctx.candles, frame: [*rows, partial]}, as_of=now)
+            windows[frame] = [*rows, partial]
+            ctx2 = replace(ctx, candles={**ctx.candles, frame: windows[frame]}, as_of=now)
             box = self._frame(frame, None)
             found += tuple(
                 propose(
@@ -5657,7 +5748,12 @@ class Session:
             has_box=shot.has_box,
             declared=shot.declared,
         )
-        opened = self._enter(early_shot)
+        # T1004 — 신호 봉을 다시 재는 규칙이 탐지기와 같은 부분 봉을 보게 한다(끝나면 비운다).
+        self.early_windows = windows
+        try:
+            opened = self._enter(early_shot)
+        finally:
+            self.early_windows = {}
         if opened is not None:
             self.early_ids.add(opened.trade_id)
             self.early_entered += 1
@@ -6012,6 +6108,11 @@ class Session:
         if bar_tilt <= 0:
             self._count("gate:bar_tilt")
             held("gate:bar_tilt", exposure)
+            return None
+        # ⭐ T1004 — 신호 봉 건너뜀(선언이 있을 때만 · 없으면 아무 일도 없다).
+        if self._weak_bar(chosen.playbook, sig):
+            self._count("gate:weak_bar")
+            held("gate:weak_bar", exposure)
             return None
         # ⭐ T436 · T557 · 혼합 4.3 — BTC 일봉 전고점 국면 배수(급락 되돌림 S1 · MACD 숏 S4 ·
         #    모름 1).

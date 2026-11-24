@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from updown.analysis.indicators.bands import closed_above_upper
 from updown.common.domain.instrument import Timeframe
+from updown.decision.portfolio_rules import stop_distance_pct
 from updown.orchestration.walkforward import Session
 from updown.orchestration.walkforward.ledger import Actor, Outcome
 from updown.orchestration.walkforward.sealed import SealBreachError
@@ -305,6 +306,34 @@ class SessionBridge:
             and item.outcome is not Outcome.CANCELLED
             and item.playbook == leg
         ]
+
+    def entry_risks_of(self, leg: str) -> list[tuple[datetime, Decimal, Decimal]]:
+        """그 다리의 시스템 매매마다 (주문 시각, 허용 노출, 처음 손절 폭 %) (T1004).
+
+        Args:
+            leg: 귀속 키.
+
+        Returns:
+            취소 안 된 시스템 매매의 목록 — 열린 것 · 닫힌 것 모두.
+
+        Note:
+            손절은 **처음 손절**(`initial_stop`)이다 — `planned_stop` 은 추적 손절이 덮어써서
+            들 때의 위험이 아니다. 처음 손절이 없는 옛 기록만 `planned_stop` 으로 본다.
+            노출은 첫 진입에 허용된 크기(`leverage`)이고 불타기 추가분은 안 센다.
+            진입가가 0 이하인 기록(있을 수 없다)은 폭 0 으로 센다 — 건수에는 남는다.
+        """
+        out: list[tuple[datetime, Decimal, Decimal]] = []
+        for item in self.session.ledger.records:
+            if (
+                item.actor is not Actor.SYSTEM
+                or item.outcome is Outcome.CANCELLED
+                or item.playbook != leg
+            ):
+                continue
+            stop = item.planned_stop if item.initial_stop is None else item.initial_stop
+            pct = stop_distance_pct(item.entry, stop)
+            out.append((item.placed_at, item.leverage, Decimal(0) if pct is None else pct))
+        return out
 
     def release_breadth(self) -> Decimal | None:
         """브레이크 풀기가 보는 시장 폭 — 러너가 세션에 넣어 둔 값 그대로(모르면 None · T985)."""

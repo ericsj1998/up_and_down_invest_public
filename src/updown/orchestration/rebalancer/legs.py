@@ -19,8 +19,10 @@ from typing import Any, cast
 from updown.analysis.playbook.types import (
     BrakeRelease,
     BreadthCap,
+    ClusterRiskCap,
     DrawdownBrake,
     EntryLimit,
+    EntryRiskGuard,
     Playbook,
 )
 from updown.decision.portfolio_rules import drawdown_scale
@@ -57,6 +59,8 @@ class FundLeg:
             (512차 N4). None = 없음.
         peer_open_boost: (짝 다리 귀속 키들, 문턱, 배수) — 짝 다리들 보유(이 진입 앞서 연 것)가 문턱
             이상이면 신규 진입 x 배수(T400 · 혼합 3.3). None = 없음.
+        risk_guard: 손절 폭이 허용 크기의 자리 증거금 청산 거리 이상이면 안 든다(T1004).
+        cluster_risk: 같은 때 든 진입들의 손절 기준 위험 합 상한(T1004). None = 없음.
         engine: 이 다리를 돌리는 외부 엔진 이름(`orchestration.leg_engines`). None = 세션 다리.
         engine_settings: 그 엔진에 넘길 선언 값(`Playbook.engine_settings`). None = 빈 값.
     """
@@ -79,6 +83,8 @@ class FundLeg:
     entry_cap: Decimal | None = None
     peer_open_max: tuple[str, int] | None = None
     peer_open_boost: tuple[tuple[str, ...], int, Decimal] | None = None
+    risk_guard: EntryRiskGuard | None = None
+    cluster_risk: ClusterRiskCap | None = None
     engine: str | None = None
     engine_settings: Mapping[str, Any] | None = None
 
@@ -152,6 +158,23 @@ class FundLeg:
             ),
             "engine": self.engine,
             "engine_settings": None if self.engine_settings is None else dict(self.engine_settings),
+            # T1004 — 선언이 있을 때만 적는다(없는 다리의 저장본 꼴은 그대로).
+            **(
+                {}
+                if self.risk_guard is None
+                else {"entry_risk_guard": {"maint_pct": str(self.risk_guard.maint_pct)}}
+            ),
+            **(
+                {}
+                if self.cluster_risk is None
+                else {
+                    "cluster_risk_cap": {
+                        "cap_pct": str(self.cluster_risk.cap_pct),
+                        "min_n": self.cluster_risk.min_n,
+                        "window_minutes": self.cluster_risk.window_minutes,
+                    }
+                }
+            ),
         }
 
     @classmethod
@@ -205,6 +228,20 @@ class FundLeg:
             brake = DrawdownBrake(
                 at=Decimal(str(body["at"])), scale=Decimal(str(body["scale"])), release=release
             )
+        raw_guard = data.get("entry_risk_guard")  # T1004 앞 저장본엔 없다 — 없으면 끔
+        guard = None
+        if isinstance(raw_guard, Mapping):
+            body = cast("Mapping[str, Any]", raw_guard)
+            guard = EntryRiskGuard(maint_pct=Decimal(str(body["maint_pct"])))
+        raw_cluster = data.get("cluster_risk_cap")  # T1004 앞 저장본엔 없다 — 없으면 끔
+        cluster = None
+        if isinstance(raw_cluster, Mapping):
+            body = cast("Mapping[str, Any]", raw_cluster)
+            cluster = ClusterRiskCap(
+                cap_pct=Decimal(str(body["cap_pct"])),
+                min_n=int(body["min_n"]),
+                window_minutes=int(body["window_minutes"]),
+            )
         breadth = None
         if isinstance(raw_breadth, Mapping):
             body = cast("Mapping[str, Any]", raw_breadth)
@@ -230,6 +267,8 @@ class FundLeg:
             entry_cap=None if raw_entry_cap in (None, "") else Decimal(str(raw_entry_cap)),
             peer_open_max=peer,
             peer_open_boost=boost,
+            risk_guard=guard,
+            cluster_risk=cluster,
             # 엔진 다리 앞 저장본엔 없다 — 없으면 세션 다리(그때 돌던 그대로)
             engine=None if data.get("engine") in (None, "") else str(data["engine"]),
             # 엔진 값 앞 저장본엔 없다 — 없으면 빈 값(엔진 기본값 · 그때 돌던 그대로)
@@ -412,6 +451,8 @@ def _leg_of(
         entry_cap=book.entry_exposure_cap,
         peer_open_max=peer,
         peer_open_boost=boost,
+        risk_guard=book.entry_risk_guard,
+        cluster_risk=book.cluster_risk_cap,
         engine=book.engine,
         engine_settings=(None if book.engine_settings is None else dict(book.engine_settings)),
     )
@@ -576,6 +617,8 @@ def leg_gate(
             boost_ports=boost_ports,
             boost_open_min=boost_min,
             boost_mult=boost_mult,
+            risk_guard=leg.risk_guard,
+            cluster_risk=leg.cluster_risk,
         )
     return LegGate(gates)
 

@@ -32,6 +32,7 @@ from updown.analysis.playbook.types import (
     BarTilt,
     BrakeRelease,
     BreadthCap,
+    ClusterRiskCap,
     ConflictAction,
     ConflictRule,
     ConflictSide,
@@ -40,6 +41,7 @@ from updown.analysis.playbook.types import (
     DrawdownBrake,
     EarlyEntry,
     EntryLimit,
+    EntryRiskGuard,
     EventWindow,
     NewHighTilt,
     PeerOpenBoost,
@@ -61,6 +63,7 @@ from updown.analysis.playbook.types import (
     TrailAfterR,
     VolTarget,
     WashedRule,
+    WeakBarSkip,
 )
 from updown.common.domain.evidence import Family, Grade
 from updown.common.domain.instrument import MarketGroup, Timeframe
@@ -447,6 +450,104 @@ def peer_open_boost(raw: object, name: str) -> PeerOpenBoost:
         return PeerOpenBoost(legs=legs, min=int(body["min"]), mult=Decimal(str(body["mult"])))
     except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
         raise PlaybookConfigError(f"{name}.entry_peer_open_boost — {exc}") from exc
+
+
+def _declared_body(raw: object, where: str, allowed: frozenset[str]) -> Mapping[str, Any]:
+    """선언 조각을 매핑으로 읽고 **모르는 칸을 오류로** 올린다 (T1004 · 규칙 #8).
+
+    Args:
+        raw: 선언 값.
+        where: 오류 메시지에 쓸 위치.
+        allowed: 허용 칸 이름.
+
+    Returns:
+        선언 매핑.
+
+    Raises:
+        PlaybookConfigError: 매핑이 아니거나 모르는 칸이 있는 경우 — 오타로 적은 칸이 조용히
+            빠지면 선언한 규칙이 안 도는 채로 돈다.
+    """
+    body = _mapping(raw, where)
+    extra = set(body) - allowed
+    if extra:
+        raise PlaybookConfigError(f"{where} 에 모르는 칸: {sorted(extra)}")
+    return body
+
+
+def entry_risk_guard(raw: object, name: str) -> EntryRiskGuard:
+    """손절 폭 대 허용 크기 검사 한 줄 (T1004) — `{maint_pct: "0.5"}`.
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 칸이 빠졌거나 · 모르는 칸이 있거나 · 값이 범위 밖인 경우.
+    """
+    where = f"{name}.entry_risk_guard"
+    body = _declared_body(raw, where, frozenset({"maint_pct"}))
+    try:
+        return EntryRiskGuard(maint_pct=Decimal(str(body["maint_pct"])))
+    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        raise PlaybookConfigError(f"{where} — {exc}") from exc
+
+
+def cluster_risk_cap(raw: object, name: str) -> ClusterRiskCap:
+    """같은 때 든 진입들의 위험 합 상한 한 줄 (T1004).
+
+    꼴: `{cap_pct: "10", min_n: 3, window_minutes: 30}` — 뒤 둘은 선택이다.
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 칸이 빠졌거나 · 모르는 칸이 있거나 · 값이 범위 밖인 경우.
+    """
+    where = f"{name}.cluster_risk_cap"
+    optional = ("min_n", "window_minutes")
+    body = _declared_body(raw, where, frozenset({"cap_pct", *optional}))
+    try:
+        return ClusterRiskCap(
+            cap_pct=Decimal(str(body["cap_pct"])),
+            **{key: int(body[key]) for key in optional if body.get(key) is not None},
+        )
+    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        raise PlaybookConfigError(f"{where} — {exc}") from exc
+
+
+def weak_bar_skip(raw: object, name: str) -> WeakBarSkip:
+    """작은 신호 봉 건너뛰기 한 줄 (T1004).
+
+    꼴: `{range_atr: "2", ext_pct: "1", atr_period: 14, lookback: 20}` — 뒤 둘은 선택이다.
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 칸이 빠졌거나 · 모르는 칸이 있거나 · 값이 범위 밖인 경우.
+    """
+    where = f"{name}.weak_bar_skip"
+    optional = ("atr_period", "lookback")
+    body = _declared_body(raw, where, frozenset({"range_atr", "ext_pct", *optional}))
+    try:
+        return WeakBarSkip(
+            range_atr=Decimal(str(body["range_atr"])),
+            ext_pct=Decimal(str(body["ext_pct"])),
+            **{key: int(body[key]) for key in optional if body.get(key) is not None},
+        )
+    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        raise PlaybookConfigError(f"{where} — {exc}") from exc
 
 
 def _ref_band(raw: object, name: str) -> RefReturnBand:
@@ -1303,6 +1404,21 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         None
                         if body.get("entry_peer_open_boost") is None
                         else peer_open_boost(body["entry_peer_open_boost"], f"playbooks.{name}")
+                    ),
+                    entry_risk_guard=(
+                        None
+                        if body.get("entry_risk_guard") is None
+                        else entry_risk_guard(body["entry_risk_guard"], f"playbooks.{name}")
+                    ),
+                    cluster_risk_cap=(
+                        None
+                        if body.get("cluster_risk_cap") is None
+                        else cluster_risk_cap(body["cluster_risk_cap"], f"playbooks.{name}")
+                    ),
+                    weak_bar_skip=(
+                        None
+                        if body.get("weak_bar_skip") is None
+                        else weak_bar_skip(body["weak_bar_skip"], f"playbooks.{name}")
                     ),
                     entry_exposure_cap=_entry_exposure_cap(body, f"playbooks.{name}"),
                     entry_fund_dd_max=_fund_dd_max(body, f"playbooks.{name}"),
