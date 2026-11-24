@@ -1,8 +1,7 @@
 """혼합 3.3 (T400 · 2026-10-07) — 돌파 롱 · 짝 다리(삼각 · MACD 숏)가 앞서 열려 있으면 x1.5.
 
 🔴 못 박는 것:
-  - 선언: 돌파 롱 다리에만 `entry_peer_open_boost`(삼각 숏 · MACD 숏 · 1개 · x1.5) ·
-    묶음 legs_revision 5.
+  - 선언: 지금은 어느 다리에도 `entry_peer_open_boost` 가 없다 · 선언 변환기는 그대로 읽는다.
   - 문: 짝 다리 보유가 문턱 이상이면 신규 진입 x1.5 — 브레이크 · 총 명목 여유 **앞에서**
     곱한다(연구 원장 순서) · 불타기엔 안 건다 · 막힌 물음은 그대로 막는다 · 키운 것도
     장치로 적는다(`boost`).
@@ -76,8 +75,10 @@ def _gate(before: int, **kw: object) -> SlotGate:
 class TestDeclaration:
     def test_only_the_breakout_leg_is_boosted(self) -> None:
         books = {b.playbook_id: b for b in load_playbooks()}
-        got = books["private_strategy"].entry_peer_open_boost
-        assert got == PeerOpenBoost(
+        # 선언에는 지금 이 칸이 없다 — 장치와 선언 변환기는 남아 있다.
+        assert books["private_strategy"].entry_peer_open_boost is None
+        legs = ["private_strategy", "private_strategy"]
+        assert peer_open_boost({"legs": legs, "min": 1, "mult": "1.5"}, "x") == PeerOpenBoost(
             legs=("private_strategy", "private_strategy"),
             min=1,
             mult=Decimal("1.5"),
