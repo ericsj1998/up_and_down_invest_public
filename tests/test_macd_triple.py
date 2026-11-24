@@ -225,6 +225,38 @@ class TestStopFloorVariant:
         assert at == plain, "하한과 같으면 든다"
         assert above is None, "손절 거리가 하한보다 짧으면 안 든다"
 
+    def test_ceiling_flips_exactly_at_the_stop_width(self) -> None:
+        window, plain = self.setup_with("0")
+        assert plain is not None
+        width = (plain.stop_loss - window[-1].close) / window[-1].close * 100
+
+        def with_ceiling(value: Decimal):  # type: ignore[no-untyped-def]
+            return private_strategy(
+                window,
+                Timeframe.H4,
+                Decimal("0.001"),
+                sides=-1,
+                atr_period=14,
+                sl_atr=Decimal("0.2"),
+                entry_stop_ceil_pct=value,
+                **PARAMS,
+            )
+
+        assert with_ceiling(Decimal(0)) == plain, "0 이면 안 본다"
+        assert with_ceiling(width + Decimal("0.0001")) == plain, "상한보다 짧으면 든다"
+        assert with_ceiling(width) is None, "손절 거리가 상한 이상이면 안 든다"
+
+    def test_only_the_measurement_variant_sets_the_ceiling(self) -> None:
+        rules = load_rules()
+        base, ceil = rules["private_strategy"].params, rules["private_strategy"].params
+        assert ceil["entry_stop_ceil_pct"] == "18"
+        assert {k: v for k, v in ceil.items() if k != "entry_stop_ceil_pct"} == base
+        others = {k for k, r in rules.items() if "entry_stop_ceil_pct" in r.params}
+        assert others == {"private_strategy"}
+        used = {s for b in load_playbooks() for s in b.setups}
+        assert "private_strategy" not in used, "실계좌 · 측정 플레이북 어디에도 안 걸려 있다"
+        assert "private_strategy" in SetupRegistry.from_plugins(rules).available()
+
     def test_variant_is_wired_with_one_extra_line(self) -> None:
         rules = load_rules()
         base, floor = rules[RULE_ID].params, rules[RULE_ID_FLOOR].params
