@@ -37,6 +37,7 @@ from updown.marketdata.ingest.universe import to_instrument
 BASE = "https://fapi.binance.com/fapi/v1/klines"
 STEP = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
 PAUSE = 0.4
+HTTP_BAD_REQUEST = 400
 
 
 def fetch(symbol: str, interval: str, start_ms: int) -> list[list]:
@@ -64,6 +65,7 @@ async def run(symbols: list[str], frames: list[str], start: datetime, resume: bo
     repo = CandleRepository(create_session_factory(engine))
     now_ms = int(datetime.now(UTC).timestamp() * 1000)
     calls = 0
+    skipped: list[str] = []
     try:
         for symbol in symbols:
             ident, item = await ensure_instrument(repo, symbol)
@@ -76,7 +78,19 @@ async def run(symbols: list[str], frames: list[str], start: datetime, resume: bo
                 )
                 total = 0
                 while cur < now_ms - step_ms:
-                    rows = fetch(symbol, frame, cur)
+                    try:
+                        rows = fetch(symbol, frame, cur)
+                    except urllib.error.HTTPError as err:
+                        if err.code != HTTP_BAD_REQUEST:
+                            raise
+                        # 거래소가 그 종목을 모른다(상장 폐지 등) — 이 종목 · 봉만 건너뛰고 나머지는 계속 받는다.
+                        # 한 종목 때문에 뒤 종목 전부가 안 받아지던 것을 막는다(조용히 넘기지 않고 크게 찍는다).
+                        skipped.append(f"{symbol} {frame}")
+                        print(
+                            f"SKIP {symbol} {frame} — 거래소 400(없는 종목으로 본다) · 다음으로",
+                            flush=True,
+                        )
+                        break
                     calls += 1
                     time.sleep(PAUSE)
                     if not rows:
@@ -109,6 +123,8 @@ async def run(symbols: list[str], frames: list[str], start: datetime, resume: bo
                 )
     finally:
         await engine.dispose()
+    if skipped:
+        print(f"⚠️ 건너뛴 것 {len(skipped)}: {' · '.join(skipped)}", flush=True)
     return 0
 
 
