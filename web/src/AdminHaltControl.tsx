@@ -12,8 +12,15 @@
  * 모두). 저장 · 자동완성 · 로그 없음. 서버에 `ADMIN_PW` 가 없으면 503 이 오고 그 말을 그대로 보인다.
  * 권한: `manage_roles` 가 없으면 배지만 — 버튼 · 입력란은 그리지 않는다(서버가 다시 막는다).
  */
-import { useState } from "react";
-import { setAccountStart, setAutoAll, type Who } from "./api";
+import { useEffect, useState } from "react";
+import {
+  fundBrakeRelease,
+  fundList,
+  setAccountStart,
+  setAutoAll,
+  type FundStatus,
+  type Who,
+} from "./api";
 import { HaltBanner, announceHaltChanged } from "./HaltBanner";
 
 export function AdminHaltControl({ who }: { who: Who | null }) {
@@ -104,7 +111,98 @@ export function AdminHaltControl({ who }: { who: Who | null }) {
       )}
       {done ? <p className="notice">{done}</p> : null}
       {error ? <p className="notice bad">{error}</p> : null}
+      {canToggle ? <BrakeReleaseControl /> : null}
       {canToggle ? <AccountStartControl /> : null}
+    </div>
+  );
+}
+
+/**
+ * 낙폭 브레이크를 한 번 푸는 버튼 (사용자 2026-11-24 "푸는 기능을 만들어서 원격으로 풀 수 있게").
+ * 펀드마다 지금 브레이크 낙폭 · 걸림 여부를 보여 주고, 누르면 그 펀드의 브레이크 고점을 지금 잔고로
+ * 다시 잡는다. 🔴 리스크가 느는 행동이라 문구가 매번 말한다 · 든 포지션 · 손절은 그대로.
+ */
+function BrakeReleaseControl() {
+  const [funds, setFunds] = useState<FundStatus[]>([]);
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState("");
+  const [note, setNote] = useState("");
+  const [bad, setBad] = useState("");
+
+  const load = () => {
+    fundList()
+      .then((out) => setFunds(out.funds.filter((fund) => fund.brake)))
+      .catch(() => setFunds([]));
+  };
+  useEffect(load, []);
+
+  const apply = (id: string) => {
+    setBusy(id);
+    setNote("");
+    setBad("");
+    fundBrakeRelease(id, pw)
+      .then((out) => {
+        setNote(
+          `브레이크를 풀었다 — 풀기 전 낙폭 ${Number(out.drawdown_before_pct).toFixed(2)}% · 다음 새 진입부터 줄이지 않은 크기`,
+        );
+        load();
+      })
+      .catch((exc: unknown) => setBad(String(exc)))
+      .finally(() => {
+        setPw("");
+        setBusy("");
+      });
+  };
+
+  if (funds.length === 0) return null;
+  return (
+    <div
+      className="mt-4 border-t border-blue-gray-100 pt-4 dark:border-gray-800"
+      data-testid="admin-brake-release"
+    >
+      <h3 className="mb-1 font-semibold">낙폭 브레이크 풀기</h3>
+      <p className="muted">
+        브레이크의 고점을 <b>지금 잔고</b>로 다시 잡는다 — 다음 새 진입부터
+        줄이지 않은 크기로 든다(리스크가 는다). 든 포지션 · 손절 · 실제 잔고는
+        그대로다. 매매법 · 다리 개정이 바뀌는 배포로는 풀리지 않고, 여기서
+        사람이 풀 때만 풀린다.
+      </p>
+      <label className="admin-halt-pw">
+        <span className="faint">관리자 비밀번호</span>
+        <input
+          className="input"
+          type="password"
+          name="brake-release-pw"
+          autoComplete="off"
+          spellCheck={false}
+          value={pw}
+          disabled={busy !== ""}
+          placeholder="서버 env ADMIN_PW"
+          onChange={(event) => setPw(event.target.value)}
+          aria-label="브레이크 풀기 관리자 비밀번호"
+        />
+      </label>
+      {funds.map((fund) => (
+        <p key={fund.fund_id} className="mt-2">
+          <span className="mr-2">
+            {fund.label} — 브레이크 낙폭{" "}
+            {Number(fund.brake?.drawdown_pct ?? 0).toFixed(2)}% ·{" "}
+            {fund.brake?.engaged
+              ? `걸림(새 진입 x${fund.brake.scale})`
+              : "안 걸림"}
+          </span>
+          <button
+            type="button"
+            className="admin-halt-btn resume"
+            disabled={busy !== "" || !pw}
+            onClick={() => apply(fund.fund_id)}
+          >
+            {busy === fund.fund_id ? "푸는 중…" : "브레이크 풀기"}
+          </button>
+        </p>
+      ))}
+      {note ? <p className="notice">{note}</p> : null}
+      {bad ? <p className="notice bad">{bad}</p> : null}
     </div>
   );
 }

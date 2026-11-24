@@ -3038,6 +3038,26 @@ export function fundDeposit(
   });
 }
 
+/**
+ * 낙폭 브레이크를 한 번 푼다 — 브레이크 원장의 고점을 지금 잔고로. 슈퍼관리자 + 관리자 비밀번호.
+ * 다음 새 진입부터 줄이지 않은 크기로 든다(리스크 증가) · 든 포지션 · 손절은 그대로.
+ */
+export function fundBrakeRelease(
+  id: string,
+  adminPw: string,
+): Promise<{
+  fund_id: string;
+  by: string;
+  at: string;
+  drawdown_before_pct: string;
+}> {
+  return request(`/rebalancer/${encodeURIComponent(id)}/brake/release`, {
+    method: "POST",
+    headers: JSON_POST,
+    body: JSON.stringify({ admin_pw: adminPw }),
+  });
+}
+
 export function fundDrop(
   id: string,
 ): Promise<{ dropped: string; sessions: string[] }> {

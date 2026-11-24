@@ -418,6 +418,10 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         tasks.append(asyncio.create_task(fund_retry_loop(), name="fund-retry"))
         # 🔴 **4h 자동 리밸런싱 루프** (T61). 예산만 갱신하는 저위험 틱 — 세션이 매매한다.
         tasks.append(asyncio.create_task(rebalance_loop(), name="fund-rebalancer"))
+        # 낙폭 브레이크 풀기 요청(DB 키)을 1 분마다 본다 — 사람이 남긴 요청만 집는다.
+        from updown.apps.api.rebalancer import brake_release_loop
+
+        tasks.append(asyncio.create_task(brake_release_loop(), name="fund-brake-release"))
         # ⭐ T758 — 분기 우주 펀드 점검(새 분기 스냅샷 → 진입 범위 · 묶음 띄우기 · 거두기).
         #    우주 펀드가 없으면 할 일 0.
         from updown.apps.api.rebalancer import universe_loop

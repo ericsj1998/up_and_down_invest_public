@@ -6842,6 +6842,11 @@ def live_shares() -> dict[str, list[dict[str, Any]]]:
     return out
 
 
+def settings_store() -> SettingsStore | None:
+    """앱 설정 저장소 — 붙기 전이면 None (다른 라우터가 같은 저장소를 쓸 때의 문)."""
+    return _settings
+
+
 async def entries_halted() -> bool | None:
     """신규 진입 정지 스위치 — 못 읽으면 None(풀렸다고 말하지 않는다 · 규칙 #8)."""
     if _settings is None:

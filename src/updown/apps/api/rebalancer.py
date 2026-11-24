@@ -41,7 +41,7 @@ from updown.analysis.playbook import db_source as playbook_db_source
 from updown.analysis.playbook.select import default_playbook, load_playbooks
 from updown.analysis.playbook.types import BreadthCap, DrawdownBrake, Playbook
 from updown.apps.api.admin import instrument_of
-from updown.apps.api.auth import require_market_trade, require_playbook_trade
+from updown.apps.api.auth import Cap, require_market_trade, require_playbook_trade
 from updown.apps.api.preview import preview_of, touch
 from updown.apps.api.walkforward import (
     LIVE_RUNNERS,
@@ -50,6 +50,7 @@ from updown.apps.api.walkforward import (
     SESSIONS,
     PlannedStart,
     StartBlock,
+    _check_admin_pw,
     _close_live_position,
     _drop_one,
     _live_start,
@@ -57,6 +58,7 @@ from updown.apps.api.walkforward import (
     leg_label,
     run_margins,
     run_store,
+    settings_store,
     start_blockers,
     start_books,
 )
@@ -5230,6 +5232,155 @@ async def _deposit_locked(
         "twr_return": str(report.twr_return),
         "flow": str(amount),
     }
+
+
+# ───────────────────────── 낙폭 브레이크 한 번 풀기 (사람의 결정) ─────────────────────────
+
+BRAKE_RELEASE_KEY = "fund_brake_release"
+"""app_settings 키 — **풀기 요청**. 값이 `all` 이거나 펀드 id 면 리더가 그 펀드의 브레이크 원장을
+지금 잔고에서 다시 열고 키를 지운다(`consume_brake_release`). 서버에서 사람이 스크립트로 적는다
+(`scripts/ops/request_brake_release.sh`) — 화면 버튼(관리자 비밀번호)과 같은 일을 한다."""
+
+BRAKE_RELEASE_LAST_KEY = "fund_brake_release_last"
+"""app_settings 키 — **마지막으로 푼 기록**(`시각|펀드|누가|풀기 전 낙폭 %`). 프로세스 로그는
+재배포에 사라지므로 누가 언제 풀었는지를 DB 에 남긴다. 새 상태가 아니다 — 읽기 전용 꼬리표."""
+
+BRAKE_RELEASE_EVERY = 60.0
+"""풀기 요청을 보는 간격(초) — 사람이 기다릴 만한 길이. DB 한 줄 읽기라 싸다."""
+
+
+def _release_brake(fund: Fund, by: str) -> dict[str, Any]:
+    """펀드의 브레이크 원장을 **지금 잔고에서 고점 1.0 으로** 다시 연다 — 펀드 락 안에서 부른다.
+
+    Args:
+        fund: 펀드.
+        by: 누가 풀었나(이메일 · 요청 경로).
+
+    Returns:
+        `{fund_id, by, at, drawdown_before_pct, key, balance}`.
+
+    Raises:
+        HTTPException: 409 — 브레이크 원장이 아직 없다(문이 안 붙은 펀드 · 풀 것이 없다).
+
+    Note:
+        🔴 **리스크를 늘리는 행동이다** — 다음 새 진입부터 줄이지 않은 크기로 든다. 그래서
+        사람의 결정(관리자 비밀번호 버튼 · 서버 스크립트)으로만 오고, 로그를 먼저 남긴다(P5).
+        다리 개정 · 매매법이 바뀌는 것만으로는 풀리지 않는다(`_ensure_brake_key` · T414 승계) —
+        이 길은 그 결정을 뒤집지 않고 "사람이 한 번 푼다" 를 따로 둔 것이다.
+        펀드 원장(실제 잔고) · 포지션 · 주문은 안 건드린다. 열쇠는 그대로 둔다.
+    """
+    coord = fund.coordinator
+    if coord.core is None:
+        raise HTTPException(409, f"{fund.fund_id} 에는 브레이크 원장이 아직 없다 — 풀 것이 없다")
+    before = coord.core.drawdown_pct
+    at = datetime.now(UTC)
+    out = {
+        "fund_id": fund.fund_id,
+        "by": by,
+        "at": at.isoformat(),
+        "drawdown_before_pct": str(before),
+        "key": coord.core_key,
+        "balance": str(coord.engine.balance),
+    }
+    _events.warning(
+        "fund_brake_released",
+        payload=out | {"note": "사람의 결정으로 브레이크 원장을 지금 잔고에서 다시 연다"},
+    )
+    coord.reset_brake(coord.core_key)
+    _save_fund(fund)
+    return out
+
+
+async def _note_brake_release(done: Mapping[str, Any]) -> None:
+    """마지막 풀기를 DB 에 남긴다 — 못 남겨도 풀기는 이미 끝났다(경고만)."""
+    store = settings_store()
+    if store is None:
+        return
+    line = "|".join(str(done.get(k, "")) for k in ("at", "fund_id", "by", "drawdown_before_pct"))
+    try:
+        await store.put(BRAKE_RELEASE_LAST_KEY, line, by=str(done.get("by", "")))
+    except Exception as exc:
+        _logger.warning("fund_brake_release_note_failed: %s", str(exc)[:160])
+
+
+@router.post("/{fund_id}/brake/release")
+async def release_brake(
+    fund_id: str, request: Request, payload: Annotated[dict[str, Any], Body()]
+) -> dict[str, Any]:
+    """낙폭 브레이크를 **한 번 푼다** — 브레이크 원장의 고점을 지금 잔고로 (사용자 2026-11-24).
+
+    Args:
+        fund_id: 펀드.
+        request: 요청 — 슈퍼관리자(`manage_roles`)만. 호출자가 없으면(시험 · 내부) 통과한다.
+        payload: `{admin_pw}` — 전 판 정지 스위치와 같은 관리자 비밀번호.
+
+    Returns:
+        `{fund_id, by, at, drawdown_before_pct, key, balance}`.
+
+    Raises:
+        HTTPException: 권한 · 비밀번호(403 · 429 · 503) · 펀드 없음(404) · 브레이크 원장 없음(409).
+
+    Note:
+        새 진입 크기가 바로 돌아온다(문은 낙폭을 매번 읽는다). 든 포지션 · 손절은 그대로다.
+    """
+    who = getattr(request.state, "caller", None)
+    if who is not None and not who.has(Cap.MANAGE_ROLES):
+        raise HTTPException(403, "브레이크 풀기는 슈퍼관리자만 할 수 있다")
+    _check_admin_pw(payload)
+    by = str(getattr(who, "email", "") or "") or "brake/release"
+    async with _fund_locked(fund_id) as fund:
+        done = _release_brake(fund, by)
+    await _note_brake_release(done)
+    return done
+
+
+async def consume_brake_release() -> list[dict[str, Any]]:
+    """DB 에 남은 풀기 요청이 있으면 한 번 풀고 요청을 지운다 (리더만).
+
+    Returns:
+        푼 펀드들의 기록. 요청이 없거나 리더가 아니면 빈 목록.
+
+    Note:
+        🔴 **요청을 먼저 지운다.** 풀고 나서 지우다 실패하면 1 분마다 다시 풀려 브레이크가 꺼진
+        것과 같아진다 — 지우기가 실패하면(DB 불통) 풀지 않고 다음 바퀴에 다시 본다.
+        펀드가 아직 다 안 붙었으면(기동 직후) 요청을 그대로 둔다 — 없는 펀드에 쓰고 버리지 않는다.
+    """
+    store = settings_store()
+    if store is None or not _still_leader() or not FUNDS or PENDING_FUNDS:
+        return []
+    wanted = (await store.get(BRAKE_RELEASE_KEY) or "").strip()
+    if not wanted:
+        return []
+    await store.put(BRAKE_RELEASE_KEY, "", by="ops-request")
+    targets = list(FUNDS) if wanted == "all" else [wanted]
+    done: list[dict[str, Any]] = []
+    for fund_id in targets:
+        async with _fund_lock(fund_id):
+            fund = FUNDS.get(fund_id)
+            if fund is None:
+                _logger.warning("fund_brake_release_unknown: %s", fund_id)
+                continue
+            try:
+                done.append(_release_brake(fund, "ops-request"))
+            except HTTPException as exc:
+                _logger.warning("fund_brake_release_skipped: %s %s", fund_id, exc.detail)
+    for item in done:
+        await _note_brake_release(item)
+    return done
+
+
+async def brake_release_loop(*, every: float = BRAKE_RELEASE_EVERY) -> None:
+    """풀기 요청을 주기적으로 본다 — 한 바퀴가 실패해도 고리는 산다.
+
+    Args:
+        every: 간격(초).
+    """
+    while True:
+        await asyncio.sleep(every)
+        try:
+            await consume_brake_release()
+        except Exception as exc:
+            _logger.warning("fund_brake_release_failed: %s", str(exc)[:160])
 
 
 # ───────────────────────── T758 5 단계 — 분기 우주 교체(리더) ─────────────────────────
