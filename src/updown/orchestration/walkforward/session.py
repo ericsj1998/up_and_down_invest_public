@@ -3425,9 +3425,15 @@ class Session:
         #    ⚠️ 확인 봉이 아니라 **5m 꼬리**로 판정한다. 규칙 B(몸통 확인)는 우리가
         #      만든 손절 규칙이고, 청산은 **거래소가 집행**하는 것이라 확인을 안 해 준다.
         #    ⭐ 반익했으면 남은 수량이 절반이라 청산가가 **두 배 멀다**.
+        #    🔴 T1007 — 펀드 멤버(`refill` 거짓 · 자리 예산)는 **거래소 배율**로 본다. 멤버의
+        #      포지션은 거래소에서 그 배율로 격리돼 있어 청산 거리가 `1 ÷ 거래소 배율` 이다.
+        #      매매의 노출(자리 예산 배수)로 보면 노출이 배율보다 큰 매매가 거래소에서는 아무 일도
+        #      없는 자리에서 원장만 닫혔다(재현 2026-09-26: 노출 20.1 · 6 배 → -4.47% 에서
+        #      "청산" · 잃는 돈은 명목 ÷ 6 으로 세어 계좌 -55%). 단독 판 · 백테스트(지갑 전체가
+        #      증거금)는 그대로다.
         liquidation = liquidation_price(
             held.entry,
-            held.leverage,
+            held.leverage if self.ledger.refill else self.ledger.leverage,
             long=long,
             remaining=HALF_LEFT if held.half_at is not None else Decimal(1),
         )
