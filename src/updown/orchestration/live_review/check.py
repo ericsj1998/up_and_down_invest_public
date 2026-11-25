@@ -673,10 +673,12 @@ def now_rows(
     )
     engines = engine_symbols(snap.fund)
     want = fund_symbols(snap.fund) - engines
-    have = {r.symbol for r in snap.runs if r.closed_at is None}
+    # 엔진 다리도 장부 줄(`eng…` 판 줄)을 하나 갖는다 — 그 줄은 "선언 밖 판" 이 아니다
+    # (2026-11-18 ~ 11-25 점검마다 NAS100 이 ⚠️ 로 떴던 표시 문제). 세는 것은 세션 판뿐이다.
+    have = {r.symbol for r in snap.runs if r.closed_at is None} - engines
     miss, extra = sorted(want - have), sorted(have - want)
     runs_value = f"열린 판 {len(have)} · 펀드 종목 {len(want)}"
-    runs_value += f" · 엔진 다리 {sorted(engines)}(판 없이 돈다)" if engines else ""
+    runs_value += f" · 엔진 다리 {sorted(engines)}(세션 판 없이 돈다)" if engines else ""
     runs_value += f" · 판 없음 {miss[:8]}" if miss else ""
     runs_value += f" · 선언 밖 판 {extra[:8]}" if extra else ""
     runs_ok = bool(want) and not miss and not extra

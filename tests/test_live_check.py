@@ -185,6 +185,26 @@ def test_engine_leg_position_is_not_an_orphan_and_stops_are_summed() -> None:
     assert checks[0].problems == ()
 
 
+def test_engine_ledger_row_is_not_an_undeclared_run() -> None:
+    """엔진 다리의 장부 줄(`eng…`)은 "선언 밖 판" 이 아니다(11-18 ~ 11-25 NAS100 ⚠️)."""
+    snap = _engine_snap([], [])
+    opened = NOW - timedelta(days=9)
+    snap.runs.append(
+        Run("r1", "live1", "NEAR_USDT", "pb", "pb", Decimal(4), Decimal(15), opened, None, "")
+    )
+    snap.runs.append(
+        Run("r2", "eng1", "NAS100_USDT", "eng", "eng", Decimal(3), Decimal(0), opened, None, "")
+    )
+    row = next(r for r in now_rows(snap, Health(), [], [], NOW) if r.item.startswith("열린 판"))
+    assert row.status == "ok" and "선언 밖 판" not in row.value and "열린 판 1" in row.value
+    # 엔진 종목이 아닌 선언 밖 판은 그대로 짚는다
+    snap.runs.append(
+        Run("r3", "live3", "DOGE_USDT", "pb", "pb", Decimal(4), Decimal(15), opened, None, "")
+    )
+    row = next(r for r in now_rows(snap, Health(), [], [], NOW) if r.item.startswith("열린 판"))
+    assert row.status == "warn" and "DOGE_USDT" in row.value
+
+
 def test_engine_leg_still_flags_missing_or_short_stops() -> None:
     checks, _ = position_checks(_engine_snap([_nas_pos()], []))
     assert "손절이 없다" in " ".join(checks[0].problems)
