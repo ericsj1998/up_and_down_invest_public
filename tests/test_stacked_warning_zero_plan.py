@@ -77,6 +77,34 @@ def test_a_plan_below_the_minimum_is_still_quiet() -> None:
     assert made.fired == [] and made._log.errors == []  # pyright: ignore[reportPrivateUsage]
 
 
+def rounded_up(*, stamped: str | None) -> Any:
+    """들 때 예산 191.2 x 배율 0.2723 = 52.1 · 계약 하나 34.21 → 1.52 계약을 2 로 올려 산 몫."""
+    return dc_replace(
+        share("0550a99bdb20", stop="30.8", contracts=2, playbook="crash@0.2.0"),
+        entry=Decimal("34.21"),
+        leverage=Decimal("0.27230629"),
+        margin_used=None if stamped is None else Decimal(stamped),
+    )
+
+
+def test_the_plan_is_counted_on_the_entry_budget_not_todays() -> None:
+    """2026-11-24 PEPE — 든 뒤 예산이 191 → 162 로 줄자 멀쩡한 2 계약이 "계획의 2 배" 로 떴다."""
+    made = Made(size_min="1")
+    made._session.ledger.sizing_base = Decimal("162.8")  # pyright: ignore[reportPrivateUsage]
+    warn(made, rounded_up(stamped="191.2"), 2)
+    assert made.fired == [] and made._log.errors == [], "들 때 예산으로는 계획이 2 계약이다"  # pyright: ignore[reportPrivateUsage]
+    # 진짜 겹침(같은 몫이 두 번 들어가 4 계약)은 들 때 예산으로 세도 그대로 말한다
+    warn(made, rounded_up(stamped="191.2"), 4)
+    assert made.fired and made.fired[0][0] == "stacked"
+
+
+def test_a_record_without_a_stamped_budget_falls_back_to_todays() -> None:
+    made = Made(size_min="1")
+    made._session.ledger.sizing_base = Decimal("191.2")  # pyright: ignore[reportPrivateUsage]
+    warn(made, rounded_up(stamped=None), 2)
+    assert made.fired == [] and made._log.errors == []  # pyright: ignore[reportPrivateUsage]
+
+
 def test_a_real_stack_is_still_reported_even_when_the_plan_is_zero() -> None:
     made = Made(size_min="0")
     warn(made, small(), 5)

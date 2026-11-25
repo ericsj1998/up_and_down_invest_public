@@ -53,6 +53,7 @@ from updown.analysis.playbook.types import BreadthDays, RefVolPct
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.db.models.enums import LogLevel
 from updown.common.domain.candle import Candle
+from updown.common.domain.capabilities import capabilities_of
 from updown.common.domain.instrument import Instrument, Market, Timeframe
 from updown.common.domain.market import Balance, Quote
 from updown.common.domain.order import OrderKind, OrderResult, OrderStatus
@@ -511,6 +512,26 @@ EARLY_SETTLE_S = 3.0
 
 EARLY_REFRESH_TRIES = 5
 """조기 판정에 쓸 5 분봉을 다시 받아 보는 횟수 (T814)."""
+
+CLOSE_CLOCK_GRACE_S = 20.0
+"""진입 축 봉이 닫힌 뒤 소켓의 마감 알림을 기다려 주는 초 — 넘기면 시계가 봉을 받아 판정한다.
+
+🔴 마감 판정은 "닫힌 뒤에 온 그 봉의 소켓 프레임" 에만 기대고 있었다(`frame_to_candles` 의
+`closed`). 한산한 종목은 그 프레임이 안 오거나 구독이 조용히 멎어, 무갱신 재연결(900 초)이
+돌 때까지 그 봉의 진입 · 청산 판정이 밀렸다 — 2026-11-21 ~ 25 실측: 따라잡기 54 번 가운데
+12 번이 5 ~ 24 분(한 번은 67 분) 늦었고 전부 한산한 알트였다(11-25 13:05 GIGGLE 숏이 5 분 늦게
+들어 0.19% 불리). 값의 근거 = 제때 온 나머지 42 번은 전부 마감 뒤 10 초 안이었다 — 그 두 배.
+"""
+
+CLOSE_CLOCK_SPREAD_S = 20
+"""판마다 위 유예에 더하는 흩뿌림의 폭(초 · 종목 이름으로 정해진다) — 소켓이 한꺼번에 조용할 때
+판 58 개의 봉 조회가 같은 초에 몰리지 않게 한다(조회 한도)."""
+
+CLOSE_CLOCK_RETRY_S = 60.0
+"""시계가 깨웠는데 닫힌 봉을 못 받았을 때 다시 묻기까지의 첫 간격(초) — 못 받을 때마다 두 배."""
+
+CLOSE_CLOCK_RETRY_MAX_S = 900.0
+"""위 간격의 상한 — 장이 닫힌 시장의 판이 봉을 계속 조르지 않게 한다(무갱신 재연결과 같은 값)."""
 
 EXIT_WATCH_IDLE = 30.0
 """포지션이 없을 때 감시 주기(초)."""
@@ -2902,6 +2923,8 @@ class LiveRunner:
             asyncio.create_task(self._keep_watching_book(), name="live-book"),
             # ⭐ 방아쇠 축이 진입 축과 다를 때만 실제로 돈다 (0.1 은 즉시 반환).
             asyncio.create_task(self._chase_trigger(), name="live-trigger"),
+            # ⭐ 소켓의 마감 알림이 안 와도 그 봉을 판정한다 (2026-11-25 · `CLOSE_CLOCK_GRACE_S`).
+            asyncio.create_task(self._keep_close_clock(), name="live-close"),
         ]
         for task in helpers:
             task.add_done_callback(self._helper_done)
@@ -4651,6 +4674,62 @@ class LiveRunner:
                 },
             )
             await self._step_this_bar()
+
+    async def _close_clock_once(self, retry: float) -> tuple[float, float]:
+        """진입 축 봉이 닫혔는데 마감 알림이 안 왔으면 **봉을 받아 판정한다** — 한 번.
+
+        Args:
+            retry: 이번에 봉을 못 받으면 다시 묻기까지 기다릴 초.
+
+        Returns:
+            (다음에 깨기까지 잘 초, 다음 번의 `retry`).
+
+        Note:
+            소켓이 제때 마감 봉을 주면 커서가 이미 넘어가 있어 **거래소에 묻지 않는다** — 유예
+            (`CLOSE_CLOCK_GRACE_S` + 판마다 흩뿌림)가 지나도 커서가 그대로일 때만 한 번 받는다.
+            받는 길은 재연결 뒤 따라잡기와 같다(`_catch_up_entry` — 같은 봉을 두 번 넣어도 걸음은
+            한 번이다 · 늦은 신호는 신선도 문이 거른다). 못 받으면(거래소가 아직 안 냈거나 장이
+            닫힌 시장) 간격을 두 배씩 늘려 다시 묻는다.
+        """
+        span = timedelta(seconds=interval_seconds(self.entry))
+        spread = zlib.crc32(self.instrument.symbol.encode()) % CLOSE_CLOCK_SPREAD_S
+        grace = CLOSE_CLOCK_GRACE_S + spread
+        late = (datetime.now(UTC) - (self._feed.cursor + span)).total_seconds()
+        if late < grace:
+            return grace - late, CLOSE_CLOCK_RETRY_S
+        before = self._feed.cursor
+        await self._catch_up_entry()
+        if self._feed.cursor == before:
+            return retry, min(retry * 2, CLOSE_CLOCK_RETRY_MAX_S)
+        self._log.warning(
+            "live_close_clock_caught",
+            payload={
+                "late_s": round(late, 1),
+                "cursor": self._feed.cursor.isoformat(),
+                "note": "소켓의 마감 알림이 안 와서 시계가 봉을 받아 판정했다",
+            },
+        )
+        return 1.0, CLOSE_CLOCK_RETRY_S
+
+    async def _keep_close_clock(self) -> None:
+        """봉 마감을 **시계로도** 지킨다 — 소켓이 조용해도 그 봉의 판정이 밀리지 않게.
+
+        Note:
+            24 시간 장에서만 돈다(능력표 `always_open`). 장이 닫히는 시장은 "봉이 안 온다" 가
+            정상이라 시계가 깨울 까닭이 없고, 그쪽 급전은 이미 시계로 봉을 닫는다.
+        """
+        if not capabilities_of(self.instrument.market).always_open:
+            return
+        retry = CLOSE_CLOCK_RETRY_S
+        while True:
+            try:
+                nap, retry = await self._close_clock_once(retry)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._log.error("live_close_clock_failed", payload={"error": str(exc)[:200]})
+                nap, retry = retry, min(retry * 2, CLOSE_CLOCK_RETRY_MAX_S)
+            await asyncio.sleep(max(nap, 1.0))
 
     def _sub_frames(self) -> tuple[Timeframe, ...]:
         """걷는 축보다 짧은 축을 가진 다리들의 축 — 봉 사이 시계가 깨울 축 (T973).
@@ -8838,14 +8917,26 @@ class LiveRunner:
             return
         spec = await self._contract_spec()
         multiplier = Decimal(str(spec["quanto_multiplier"]))
+        # 🔴 계획은 **그 매매가 들 때의 예산**으로 센다(원장 `margin_used` · `_budget_of` 와 같다).
+        #    지금 예산(`sizing_base`)으로 다시 세면, 든 뒤에 계좌가 줄었을 때 멀쩡한 몫이 "계획의
+        #    2 배" 로 읽힌다 — 2026-11-24 PEPE: 들 때 예산 191 로 1.5 계약 → 2 계약을 샀는데,
+        #    손실 뒤 예산 162 로 다시 세니 1 계약이라 거짓 경보가 두 번 떴고 그 판의 진입 문이
+        #    보유가 끝날 때까지 닫혔다. 찍힌 값이 없는 기록(단독 판 · 옛 기록)만 지금 예산을 쓴다.
+        #    반올림도 들 때와 같게 한다(진입은 0.5 계약부터 올려 산다 — 내림으로 세면 1.5 계약을
+        #    2 로 산 몫이 계획 1 로 읽힌다). 경보용 셈이라 배율 상한은 안 건다(넉넉한 쪽).
+        stamped = record.margin_used
+        budget = (
+            stamped if stamped is not None and stamped > 0 else self._session.ledger.sizing_base
+        )
         try:
             want = contracts_for(
-                self._session.ledger.sizing_base * record.filled_ratio,
+                budget * record.filled_ratio,
                 record.leverage,
                 record.entry,
                 multiplier,
                 size_min=int(spec.get("order_size_min", 1)),
                 size_max=int(spec.get("order_size_max", 0)) or None,
+                round_to_nearest=True,
             )
         except Exception:
             # ⛔ 크기를 못 세면 조용히 넘긴다 — 이것은 경보이지 관문이 아니다.

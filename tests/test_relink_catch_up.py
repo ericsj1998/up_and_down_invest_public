@@ -164,6 +164,55 @@ def test_a_market_that_has_been_shut_for_hours_is_asked_once(naps: list[float]) 
     assert naps == [], "닫힌 지 오래인 봉은 기다려도 안 온다"
 
 
+class Clocked(Runner):
+    """봉 마감 시계(`_close_clock_once`)까지 가진 최소 러너 — 메서드는 실제 것."""
+
+    _close_clock_once = LiveRunner._close_clock_once  # pyright: ignore[reportPrivateUsage]
+
+
+def tick(run: Clocked, retry: float = live_runner.CLOSE_CLOCK_RETRY_S) -> tuple[float, float]:
+    return asyncio.run(run._close_clock_once(retry))  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_close_clock_asks_nothing_while_the_socket_keeps_up() -> None:
+    """소켓이 마감 봉을 제때 줬으면(커서가 이번 봉 시작) 시계는 거래소에 묻지 않는다."""
+    quotes = Quotes(hour_floor() - H1)
+    run = Clocked(hour_floor() - H1, quotes)
+    nap, retry = tick(run)
+    assert quotes.calls == 0 and run.steps == 0
+    assert nap > 0 and retry == live_runner.CLOSE_CLOCK_RETRY_S
+
+
+def test_the_close_clock_fetches_and_judges_a_bar_the_socket_never_closed() -> None:
+    """2026-11-25 GIGGLE — 마감 알림이 안 와 5 분 늦게 들었다. 유예가 지나면 시계가 받는다."""
+    quotes = Quotes(hour_floor() - H1)
+    run = Clocked(hour_floor() - 2 * H1, quotes)  # 지난 봉이 닫혔는데 커서가 그대로다
+    late = (datetime.now(UTC) - hour_floor()).total_seconds()
+    grace = live_runner.CLOSE_CLOCK_GRACE_S + live_runner.CLOSE_CLOCK_SPREAD_S
+    if late < grace:  # 정시 직후에 돈 시험 — 유예 안이라 아직 안 묻는 것이 맞다
+        assert tick(run)[0] > 0 and quotes.calls == 0
+        return
+    nap, retry = tick(run)
+    assert quotes.calls == 1 and run.steps == 1
+    assert run._feed.cursor == hour_floor()  # pyright: ignore[reportPrivateUsage]
+    assert "live_close_clock_caught" in run._log.names  # pyright: ignore[reportPrivateUsage]
+    assert nap == 1.0 and retry == live_runner.CLOSE_CLOCK_RETRY_S
+    # 같은 봉을 다시 깨워도 묻지 않는다 — 걸음은 한 번이다
+    tick(run)
+    assert quotes.calls == 1 and run.steps == 1
+
+
+def test_the_close_clock_backs_off_when_the_bar_does_not_come() -> None:
+    """거래소가 봉을 안 낸다(장이 닫힌 시장 · 지연) — 간격을 두 배씩 늘리고 상한에서 멈춘다."""
+    quotes = Quotes(None)
+    run = Clocked(hour_floor() - 6 * H1, quotes)
+    nap, retry = tick(run, 60.0)
+    assert (nap, retry) == (60.0, 120.0) and quotes.calls == 1 and run.steps == 0
+    nap, retry = tick(run, 600.0)
+    assert (nap, retry) == (600.0, live_runner.CLOSE_CLOCK_RETRY_MAX_S)
+    assert tick(run, live_runner.CLOSE_CLOCK_RETRY_MAX_S)[1] == live_runner.CLOSE_CLOCK_RETRY_MAX_S
+
+
 class Idle:
     """마감 봉을 안 받는 급전 — 걸음까지 안 간다. 받은 횟수만 센다."""
 
