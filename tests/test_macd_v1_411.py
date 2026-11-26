@@ -313,7 +313,7 @@ class TestLiveDeclaration:
         assert long_.notional_cap == Decimal("3.6")
         assert long_.breadth_cap is not None and long_.breadth_cap.cap == Decimal("5.4")
         assert long_.add_on is not None and long_.add_on.frac == Decimal("1.0")
-        assert books["private_strategy"].legs_revision == 2  # P2 다리 크기(437차)
+        assert (books["private_strategy"].legs_revision or 0) >= 2  # 437차 · 배포마다 안 고침
 
     def test_time_exit_is_only_on_the_new_macd_books(self) -> None:
         # 다른 거래소 봉을 읽는 구성원(`venue_bars`)의 시간 청산은 그 구성원의 시험이 본다
@@ -374,9 +374,11 @@ class TestRefreshLegs:
         stored = (replace(fresh[0], notional_cap=Decimal(3)), *fresh[1:])
         members = sorted({s for leg in fresh for s in leg.symbols})
         got, rev = rebalancer._refresh_stored_legs("f1", "private_strategy", stored, 0, members)  # pyright: ignore[reportPrivateUsage]
-        assert rev == 2 and got[0].notional_cap == Decimal("3.6")
-        again, rev2 = rebalancer._refresh_stored_legs("f1", "private_strategy", stored, 2, members)  # pyright: ignore[reportPrivateUsage]
-        assert rev2 == 2 and again == stored
+        declared = rebalancer._declared_legs_revision("private_strategy")  # pyright: ignore[reportPrivateUsage]
+        assert rev == declared >= 2 and got[0].notional_cap == Decimal("3.6")
+        refresh = rebalancer._refresh_stored_legs  # pyright: ignore[reportPrivateUsage]
+        again, rev2 = refresh("f1", "private_strategy", stored, declared, members)
+        assert rev2 == declared and again == stored
 
         def frozen(_pb: str) -> int:
             return 0

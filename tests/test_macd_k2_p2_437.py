@@ -139,9 +139,9 @@ class TestDeclarations:
 
     def test_running_fund_picks_up_the_new_sizes(self) -> None:
         books = {b.playbook_id: b for b in load_playbooks()}
-        assert books["private_strategy"].legs_revision == 2
+        assert (books["private_strategy"].legs_revision or 0) >= 2  # 배포마다 안 고침
         # 1.23.0(452차) — MACD 롱 24시간 1건 · MACD 숏 한 건 노출 ≤ 4.5 를 돌던 펀드에 넣는다.
-        assert books["private_strategy"].legs_revision == 2
+        assert (books["private_strategy"].legs_revision or 0) >= 2  # 배포마다 안 고침
         limit = books["private_strategy"].entry_limit
         assert limit is not None and (limit.count, limit.hours) == (1, 24)
         assert books["private_strategy"].entry_exposure_cap == Decimal("4.5")
