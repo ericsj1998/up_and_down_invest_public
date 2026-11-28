@@ -54,6 +54,8 @@ from updown.marketdata.binance.venue import binance_base, binance_ws
 from updown.marketdata.calendar.adapter import CalendarAdapter
 from updown.marketdata.calendar.client import CalendarClient
 from updown.marketdata.calendar.config import CalendarConfig
+from updown.marketdata.coingecko.coins import CoinListSource
+from updown.marketdata.defillama.emissions import EmissionsSource
 from updown.marketdata.fundamentals.adapter import FundamentalsAdapter
 from updown.marketdata.fundamentals.client import EdgarClient
 from updown.marketdata.fundamentals.edgar import EdgarAdapter
@@ -541,6 +543,52 @@ def announcement_source(source: str) -> BinanceAnnouncementSource:
     if source != "BINANCE":
         raise ConfigurationError(f"공지 목록 원천 {source!r} 을 모른다 — BINANCE 만 받는다")
     return BinanceAnnouncementSource()
+
+
+def supply_schedule_source(source: str, *, pace_s: float = 0.1) -> EmissionsSource:
+    """토큰 공급 일정 공개 파일 읽기 — **조회 경로의 유일한 획득 지점** (규칙 #0 · T1057).
+
+    Args:
+        source: 일정 갈래 설정의 원천 이름(`config/announcements.yml` 의 `supply_events.*.source`).
+        pace_s: 파일 사이 쉼(초).
+
+    Returns:
+        공개 데이터셋 위의 읽기 전용 소스(키 없음 · 표준 라이브러리 · 동기). 짧게 사는 받기
+        프로세스(`apps.supply_fetch`)만 쓴다.
+
+    Raises:
+        ConfigurationError: 모르는 원천 — 조용히 다른 원천으로 바꾸지 않는다(규칙 #8).
+    """
+    if source != "DEFILLAMA":
+        raise ConfigurationError(f"공급 일정 원천 {source!r} 을 모른다 — DEFILLAMA 만 받는다")
+    return EmissionsSource(pace_s=pace_s)
+
+
+def rank_turnover_source(source: str, *, pace_s: float = 0.25) -> BinanceUniverseSource:
+    """사건 순위 문(거래대금 위 N)의 원천 — **조회 경로의 유일한 획득 지점** (규칙 #0 · T1057).
+
+    Args:
+        source: 갈래 설정의 순위 원천 이름(`supply_events.*.rank_source`).
+        pace_s: 호출 사이 최소 간격(초).
+
+    Returns:
+        실거래 공개 주소 위의 읽기 전용 소스(키 없음). 부르는 쪽이 닫는다.
+
+    Raises:
+        ConfigurationError: 모르는 원천 — 조용히 다른 원천으로 바꾸지 않는다(규칙 #8).
+    """
+    if source != "BINANCE":
+        raise ConfigurationError(f"순위 문 원천 {source!r} 을 모른다 — BINANCE 만 잰다")
+    return universe_source(pace_s=pace_s)
+
+
+def coin_list_source() -> CoinListSource:
+    """코인 목록(id · 기호 · 체인 주소) 읽기 — **조회 경로의 유일한 획득 지점** (규칙 #0 · T1057).
+
+    Returns:
+        CoinGecko 공개 API 위의 읽기 전용 소스(키 없음 · 표준 라이브러리 · 동기).
+    """
+    return CoinListSource()
 
 
 def gate_universe_facts() -> GateUniverseFacts:

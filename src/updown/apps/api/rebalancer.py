@@ -628,30 +628,31 @@ async def _announcement_scopes(fund: Fund, now: datetime) -> dict[str, tuple[str
         now: 지금(UTC).
 
     Returns:
-        `{다리 id: 계약 이름들}` — 공지 + 1 시간 + `active_hours` 안의 사건 종목(짝을 지은 것만).
-        사건 다리가 없거나 표를 못 읽으면 빈 사전(경고 · 이미 뜬 판 · 보유는 그대로 — 계획이 진입
-        범위만 좁힌다).
+        `{다리 id: 계약 이름들}` — (본 시각 · 사건 시각 - `lead_hours` 가운데 늦은 것) ~ 사건 +
+        1 시간 + `active_hours` 안의 사건 종목(짝을 지은 것만). 사건 다리가 없거나 표를 못 읽으면
+        빈 사전(경고 · 이미 뜬 판 · 보유는 그대로 — 계획이 진입 범위만 좁힌다).
 
     Note:
         진입 봉 = 공지 + 지연(룰 값 · 1 분) 뒤 첫 정시라 공지 + 1 시간 + 지연 안이다 — 범위를
         공지 + 1 시간 + `active_hours` 까지 두면 진입 봉 판정 걸음을 덮는다. 보유는 범위 밖이 돼도
         청산까지 남는다(`plan_rotation` 의 `WIND_DOWN` · `NARROW`). 판은 펀드 종목이 아닌 계약에도
         뜬다(사건 종목은 대개 분기 목록 밖) — Gate 폐지 공지가 붙은 계약은 짝을 안 지어 여기
-        안 온다.
+        안 온다. 미리 아는 사건(T1052 · 줄이 사건보다 몇 시간 앞에 생김)은 `lead_hours` 앞부터만
+        띄운다 — 공지는 본 시각 ≥ 공지 시각이라 `lead_hours` 0 이면 옛 범위와 같다.
     """
     books = {b.playbook_id: b for b in load_playbooks()}
-    wanted: dict[str, tuple[str, int]] = {}
+    wanted: dict[str, tuple[str, int, int]] = {}
     for leg in fund.legs:
         book = books.get(leg.playbook)
         rule = None if book is None or leg.engine is not None else book.entry_announcement
         if rule is not None:
-            wanted[leg.playbook] = (rule.kind, rule.active_hours)
+            wanted[leg.playbook] = (rule.kind, rule.active_hours, rule.lead_hours)
     if not wanted or _announce_store is None:
         return {}
-    longest = max(hours for _kind, hours in wanted.values())
+    longest = max(hours for _kind, hours, _lead in wanted.values())
     since = now - timedelta(hours=longest + 1)
     try:
-        rows = await _announce_store.active(sorted({k for k, _h in wanted.values()}), since)
+        rows = await _announce_store.active(sorted({k for k, _h, _l in wanted.values()}), since)
     except Exception as exc:
         if fund.fund_id not in _ANNOUNCE_WARNED:
             _ANNOUNCE_WARNED.add(fund.fund_id)
@@ -662,12 +663,15 @@ async def _announcement_scopes(fund: Fund, now: datetime) -> dict[str, tuple[str
         return {}
     _ANNOUNCE_WARNED.discard(fund.fund_id)
     out: dict[str, tuple[str, ...]] = {}
-    for leg_id, (kind, hours) in wanted.items():
+    for leg_id, (kind, hours, lead) in wanted.items():
         until = timedelta(hours=hours + 1)
+        ahead = timedelta(hours=lead)
         syms = {
             r.contract
             for r in rows
-            if r.kind == kind and r.contract and r.seen_at <= now < r.announced_at + until
+            if r.kind == kind
+            and r.contract
+            and max(r.seen_at, r.announced_at - ahead) <= now < r.announced_at + until
         }
         if syms:
             out[leg_id] = tuple(sorted(syms))

@@ -57,10 +57,24 @@ def test_factory_adds_the_universe_job_and_runs_it_soon() -> None:
     breadth = {"market_breadth", "market_breadth_check"} if params_of(books) else set[str]()
     # T1045 — 순위 폭 잡도 그 문(`entry_ranked_breadth`)을 선언한 매매법이 있을 때만
     ranked = {"ranked_breadth"} if ranked_rules_of(books) else set[str]()
-    # T1045 — 공지 사건 잡도 공지 사건 다리(`entry_announcement`)를 선언한 매매법이 있을 때만
-    from updown.orchestration.rebalancer.announce_job import announcement_kinds
+    # T1045 — 공지 사건 잡도 공지 사건 다리(`entry_announcement`)를 선언한 매매법이 있을 때만 ·
+    #   T1052 — 펀드가 돌릴 수 있는 매매법(묶음 구성원 · 목록)의 갈래만 · 상장 시각 갈래(설정
+    #   `listings`)는 따로 `listing_events` 잡이 맡는다
+    from updown.orchestration.rebalancer.announce_job import fund_announcement_kinds
 
-    announced = {"announcements"} if announcement_kinds(books) else set[str]()
+    kinds = set(fund_announcement_kinds(books))
+    listed: set[str] = set()
+    supplied: set[str] = set()
+    if kinds:
+        from updown.analysis.listings import load_listing_rules
+        from updown.analysis.supply_schedule import load_supply_rules
+
+        listed = kinds & set(load_listing_rules())
+        # T1057 — 공급 일정 갈래(설정 `supply_events`)는 `supply_events` 잡이 맡는다
+        supplied = kinds & set(load_supply_rules())
+    announced = {"announcements"} if kinds - listed - supplied else set[str]()
+    announced |= {"listing_events"} if listed else set[str]()
+    announced |= {"supply_events"} if supplied else set[str]()
     assert set(jobs) == {"resource_beat", "universe_snapshot"} | breadth | ranked | announced
     assert isinstance(first, datetime)
     assert first < datetime.now(UTC) + timedelta(seconds=UNIVERSE_RUN_SOON_S + 5)

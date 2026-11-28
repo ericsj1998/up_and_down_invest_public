@@ -655,21 +655,27 @@ def _wire_announcements(factory: Any) -> None:
         factory: DB 세션 팩토리. 없으면 꽂지 않는다(사건 모름 = 그 선언의 다리는 새로 들지 않는다).
 
     Note:
-        표는 엔진 작업(`announcements`)이 쓰고 러너는 읽기만 한다. 갈래 받기가 `stale_s` 넘게
-        멈췄으면 모름(None)을 돌려준다 — 러너가 경고하고 그 다리 새 진입을 쉰다(#8-1).
+        표는 엔진 작업(`announcements` · 상장 시각 갈래는 `listing_events` · 공급 일정 갈래는
+        `supply_events`)이 쓰고 러너는 읽기만 한다. 갈래 받기가 `stale_s`(상장 시각 · 공급 일정
+        갈래는 그 작업의 `stale_h`) 넘게 멈췄으면 모름(None)을 돌려준다 — 러너가 경고하고 그 다리
+        새 진입을 쉰다(#8-1).
     """
     from updown.orchestration.rebalancer.announce_job import (
         AnnouncementStore,
         load_announce_job_config,
     )
+    from updown.orchestration.rebalancer.listing_job import listing_stale_by_kind
+    from updown.orchestration.rebalancer.supply_job import supply_stale_by_kind
     from updown.orchestration.walkforward.live_runner import set_announcement_reader
 
     if factory is None:
         return
     store = AnnouncementStore(factory)
     stale_s = load_announce_job_config().stale_s
+    # T1057 — 공급 일정 갈래도 하루 한 번 받으므로 그 작업의 `stale_h`
+    by_kind = {**listing_stale_by_kind(), **supply_stale_by_kind()}
 
     async def read(kinds: Any, symbol: str, now: Any) -> Any:
-        return await store.for_symbol(kinds, symbol, now, stale_s)
+        return await store.for_symbol(kinds, symbol, now, stale_s, by_kind)
 
     set_announcement_reader(read)

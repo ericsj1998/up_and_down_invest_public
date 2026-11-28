@@ -1023,13 +1023,18 @@ class AnnouncementEntry:
         kind: 공지 갈래 이름.
         active_hours: 진입 봉 시작 뒤 이 시간까지 그 종목을 이 다리 범위에 둔다(판을 띄워 둔다).
             보유는 범위와 상관없이 청산까지 남는다(분기 교체의 `WIND_DOWN` · `NARROW` 와 같다).
+        lead_hours: 사건 시각 **앞** 이 시간부터 그 종목을 범위에 둔다(T1052). 공지는 본 뒤에야
+            알므로 0 이다(범위는 본 시각부터). 미리 아는 사건(상장 시각에서 셈한 날 ·
+            `analysis.listings`)은 줄이 사건 훨씬 앞에 생기므로, 판을 그 앞 몇 시간만 띄워 봉을
+            채우게 한다(판을 며칠씩 띄워 두지 않는다 — 1 GB 서버).
 
     Raises:
-        ValueError: 이름이 비었거나 시간이 1 보다 작은 경우.
+        ValueError: 이름이 비었거나 시간이 1 보다 작거나 앞 시간이 음수인 경우.
     """
 
     kind: str
     active_hours: int = 2
+    lead_hours: int = 0
 
     def __post_init__(self) -> None:
         """값이 말이 되는지."""
@@ -1037,6 +1042,8 @@ class AnnouncementEntry:
             raise ValueError("공지 갈래 이름이 비어 있다")
         if self.active_hours < 1:
             raise ValueError(f"범위에 두는 시간은 1 이상: {self.active_hours}")
+        if self.lead_hours < 0:
+            raise ValueError(f"사건 앞 범위 시간은 0 이상: {self.lead_hours}")
 
 
 @dataclass(frozen=True, slots=True)

@@ -276,6 +276,70 @@ class BinanceUniverseSource:
             cursor = last + hour_ms
         return out
 
+    async def _one_hour(
+        self, symbol: str, start_ms: int
+    ) -> tuple[datetime, Decimal, Decimal] | None:
+        """`start_ms` 이후 첫 1H 봉 `(시작, 종가, 거래량)` — 없으면 None(T1052).
+
+        가중치 1(`limit=1`). 상장 전 심볼(`-1122`)은 봉이 없다는 답이라 None 이다.
+        """
+        try:
+            body = await self._get(
+                "/fapi/v1/klines",
+                {"symbol": symbol, "interval": "1h", "startTime": str(start_ms), "limit": "1"},
+            )
+        except InvalidSymbolStatusError:
+            self.invalid_status.append(symbol)
+            return None
+        if not isinstance(body, list):
+            raise UniverseSourceError(f"{symbol} klines 모양이 틀렸다")
+        if not body:
+            return None
+        try:
+            row = cast("list[Any]", body[0])
+            open_ms = int(row[0])
+            close = Decimal(str(row[4]))
+            volume = Decimal(str(row[5]))
+        except (TypeError, ValueError, IndexError, ArithmeticError) as exc:
+            raise UniverseSourceError(f"klines 행 모양이 틀렸다: {body[0]!r:.80}") from exc
+        return datetime.fromtimestamp(open_ms / 1000, tz=UTC), close, volume
+
+    async def first_hour(self, symbol: str) -> tuple[datetime, Decimal, Decimal] | None:
+        """심볼의 **첫** 1H 봉 `(시작, 종가, 거래량)` — 상장 시각 재료 (T1052).
+
+        Args:
+            symbol: 바이낸스 이름.
+
+        Returns:
+            첫 봉. 봉이 없으면(상장 전) None.
+
+        Raises:
+            UniverseSourceError: 재시도 뒤에도 못 받았거나 행 모양이 틀렸을 때.
+
+        Note:
+            `startTime=0` 이면 거래소가 가진 가장 이른 봉을 준다(가중치 1). 같은 이름으로 다시
+            상장한 심볼은 거래소가 새 상장 뒤 봉만 내준다(옛 봉은 API 에 없다 — T1052 §4 실측).
+        """
+        return await self._one_hour(symbol, 0)
+
+    async def hour_at(self, symbol: str, at: datetime) -> tuple[Decimal, Decimal] | None:
+        """`at` 에 시작한 1H 봉 `(종가, 거래량)` — 그 시각 봉이 없으면 None (T1052).
+
+        Args:
+            symbol: 바이낸스 이름.
+            at: 봉 시작(UTC · 정시).
+
+        Returns:
+            종가 · 거래량. 그 시각에 시작한 봉이 없으면(뒤 봉만 있음 · 상장 전) None.
+
+        Raises:
+            UniverseSourceError: 재시도 뒤에도 못 받았거나 행 모양이 틀렸을 때.
+        """
+        got = await self._one_hour(symbol, _ms_at(at))
+        if got is None or got[0] != at:
+            return None
+        return got[1], got[2]
+
     async def daily_quotes(self, symbol: str, q: date, lookback_days: int) -> dict[date, float]:
         """심볼 하나의 [q - lookback - 1 일, q) 닫힌 일봉 거래대금.
 

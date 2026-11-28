@@ -783,7 +783,8 @@ def ranked_breadth(raw: object, name: str) -> RankedBreadthGate:
 def announcement_entry(raw: object, name: str) -> AnnouncementEntry:
     """공지 사건 다리 선언 한 줄 (T1045).
 
-    꼴: `{kind: <공지 갈래>, active_hours: N}`(`active_hours` 는 선택 · 기본 2).
+    꼴: `{kind: <공지 갈래>, active_hours: N, lead_hours: M}`(`active_hours` 선택 · 기본 2 ·
+    `lead_hours` 선택 · 기본 0 — 미리 아는 사건만 쓴다 · T1052).
 
     Args:
         raw: 선언 값.
@@ -796,11 +797,12 @@ def announcement_entry(raw: object, name: str) -> AnnouncementEntry:
         PlaybookConfigError: 칸이 빠졌거나 · 모르는 칸이 있거나 · 값이 범위 밖인 경우.
     """
     where = f"{name}.entry_announcement"
-    body = _declared_body(raw, where, frozenset({"kind", "active_hours"}))
+    body = _declared_body(raw, where, frozenset({"kind", "active_hours", "lead_hours"}))
     try:
         return AnnouncementEntry(
             kind=str(body["kind"]),
             active_hours=int(str(body.get("active_hours", 2))),
+            lead_hours=int(str(body.get("lead_hours", 0))),
         )
     except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
         raise PlaybookConfigError(f"{where} — {exc}") from exc

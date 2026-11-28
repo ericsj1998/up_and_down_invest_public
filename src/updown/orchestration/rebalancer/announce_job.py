@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -115,6 +115,24 @@ def announcement_kinds(playbooks: Iterable[Playbook]) -> tuple[str, ...]:
     return announcement_kinds_of(playbooks)
 
 
+def fund_announcement_kinds(playbooks: Iterable[Playbook]) -> tuple[str, ...]:
+    """펀드가 돌릴 수 있는 매매법이 선언한 갈래 — 받기 작업이 받을 것 (T1052).
+
+    펀드가 돌릴 수 있는 매매법 = 어느 묶음(`bundle`)의 구성원이거나 목록에 오른(`listed`) 것.
+    선언만 남고 묶음에서 빠진 사건 다리의 갈래는 받지 않는다(쓰지 않는 목록을 1 분마다 받지 않고 ·
+    그 목록이 막혀도 쓸데없는 알림을 내지 않게).
+
+    Args:
+        playbooks: 매매법 선언 전부(`load_playbooks()`).
+
+    Returns:
+        갈래들(정렬 · 고유). 없으면 받기 작업을 등록하지 않는다.
+    """
+    books = list(playbooks)
+    members = {name for book in books for name in book.bundle}
+    return announcement_kinds_of(b for b in books if b.playbook_id in members or b.listed)
+
+
 # ───────────────────────── 줄 ─────────────────────────
 @dataclass(frozen=True, slots=True)
 class EventRow:
@@ -157,6 +175,29 @@ class FeedState:
         if self.backfilled_at is None or self.ok_at is None:
             return False
         return (now - self.ok_at).total_seconds() <= stale_s
+
+
+def feeds_known(
+    state: Mapping[str, FeedState],
+    kinds: Sequence[str],
+    now: datetime,
+    stale_s: float,
+    stale_by_kind: Mapping[str, float] | None = None,
+) -> bool:
+    """판이 읽는 갈래를 **모두** 아는가 — 하나라도 모르면 거짓(그 다리 새 진입 보류 · #8-1).
+
+    Args:
+        state: 갈래 → 받기 상태(표에 없는 갈래는 모름).
+        kinds: 판의 다리들이 읽는 갈래.
+        now: 지금(UTC).
+        stale_s: 마지막 성공 받기 허용 나이(초) — 갈래 값이 없을 때.
+        stale_by_kind: 갈래마다 허용 나이(초 · T1052 — 받기 간격이 다른 갈래).
+
+    Returns:
+        모두 알면 참.
+    """
+    limits = dict(stale_by_kind or {})
+    return all(k in state and state[k].known(now, limits.get(k, stale_s)) for k in kinds)
 
 
 class AnnounceStore(Protocol):
@@ -258,12 +299,15 @@ class AnnouncementStore:
         added = 0
         async with self._factory() as session, session.begin():
             for chunk in range(0, len(values), 500):
+                # 여러 줄 INSERT 는 드라이버가 rowcount 를 -1 로 준다(T1057 실제 DB 시험) —
+                # 넣은 줄을 RETURNING 으로 센다.
                 result = await session.execute(
                     pg_insert(AnnouncementEvent)
                     .values(values[chunk : chunk + 500])
                     .on_conflict_do_nothing(index_elements=["kind", "token"])
+                    .returning(AnnouncementEvent.token)
                 )
-                added += int(getattr(result, "rowcount", 0) or 0)
+                added += len(result.all())
         return added
 
     async def mark(
@@ -298,7 +342,12 @@ class AnnouncementStore:
             )
 
     async def for_symbol(
-        self, kinds: Sequence[str], symbol: str, now: datetime, stale_s: float
+        self,
+        kinds: Sequence[str],
+        symbol: str,
+        now: datetime,
+        stale_s: float,
+        stale_by_kind: Mapping[str, float] | None = None,
     ) -> tuple[Announcement, ...] | None:
         """그 계약의 사건(본 것) — 갈래 하나라도 모르면 None(그 다리 새 진입 보류 · #8-1).
 
@@ -306,7 +355,9 @@ class AnnouncementStore:
             kinds: 판의 다리들이 읽는 갈래.
             symbol: 주문 계약 이름.
             now: 지금(UTC).
-            stale_s: 마지막 성공 받기 허용 나이(초).
+            stale_s: 마지막 성공 받기 허용 나이(초) — 갈래 값이 없을 때.
+            stale_by_kind: 갈래마다 허용 나이(초 · T1052). 하루 한 번 받는 상장 시각 갈래처럼 받기
+                간격이 다른 갈래가 쓴다. 없는 갈래는 `stale_s`.
 
         Returns:
             사건들(올린 시각 순) 또는 None.
@@ -321,7 +372,7 @@ class AnnouncementStore:
                 f.kind: FeedState(kind=f.kind, backfilled_at=f.backfilled_at, ok_at=f.ok_at)
                 for f in feeds
             }
-            if any(k not in state or not state[k].known(now, stale_s) for k in kinds):
+            if not feeds_known(state, kinds, now, stale_s, stale_by_kind):
                 return None
             rows = (
                 await session.execute(
@@ -347,6 +398,133 @@ class AnnouncementStore:
                 )
             ).scalars()
             return [_row(r) for r in rows]
+
+    async def waiting(
+        self, kind: str, reason: str, after: datetime, until: datetime
+    ) -> list[EventRow]:
+        """짝을 아직 안 지은 줄 가운데 사건 시각이 `(after, until]` 인 것 (T1052 · 미리 아는 사건).
+
+        Args:
+            kind: 갈래.
+            reason: 짝을 기다리는 줄의 이유 값(`analysis.listings.REASON_LISTED`).
+            after: 이 시각 **뒤**의 사건만(지난 사건은 짝지어도 진입 봉을 못 덮는다).
+            until: 이 시각까지의 사건.
+
+        Returns:
+            줄들(사건 시각 순).
+        """
+        async with self._factory() as session:
+            rows = (
+                await session.execute(
+                    sa.select(AnnouncementEvent)
+                    .where(AnnouncementEvent.kind == kind)
+                    .where(AnnouncementEvent.contract.is_(None))
+                    .where(AnnouncementEvent.reason == reason)
+                    .where(AnnouncementEvent.announced_at > after)
+                    .where(AnnouncementEvent.announced_at <= until)
+                    .order_by(AnnouncementEvent.announced_at)
+                )
+            ).scalars()
+            return [_row(r) for r in rows]
+
+    async def pending(self, kind: str, reasons: Collection[str], after: datetime) -> list[EventRow]:
+        """짝을 안 지은 줄 가운데 이유가 `reasons` 이고 사건 시각이 `after` 뒤인 것 (T1057).
+
+        Args:
+            kind: 갈래.
+            reasons: 아직 바뀔 수 있는 줄의 이유 값들(공급 일정 갈래 — 날마다 다시 본다).
+            after: 이 시각 **뒤**의 사건만.
+
+        Returns:
+            줄들(사건 시각 순).
+        """
+        async with self._factory() as session:
+            rows = (
+                await session.execute(
+                    sa.select(AnnouncementEvent)
+                    .where(AnnouncementEvent.kind == kind)
+                    .where(AnnouncementEvent.contract.is_(None))
+                    .where(AnnouncementEvent.reason.in_(list(reasons)))
+                    .where(AnnouncementEvent.announced_at > after)
+                    .order_by(AnnouncementEvent.announced_at)
+                )
+            ).scalars()
+            return [_row(r) for r in rows]
+
+    async def put_pending(self, rows: Sequence[EventRow], reasons: Collection[str]) -> int:
+        """줄을 넣거나, 이미 있으면 **아직 바뀔 수 있는 줄만** 새 값으로 고친다 (T1057).
+
+        Returns:
+            넣거나 고친 줄 수.
+
+        Note:
+            고치는 줄 = 짝을 안 지었고(`contract` 없음) 이유가 `reasons` 인 줄. 짝을 지은 줄 ·
+            짝짓기 결과(순위 밖 · 오래됨 · 계약 없음)를 적은 줄은 그대로 둔다 — 한 사건은 한 번만
+            정한다.
+        """
+        if not rows:
+            return 0
+        values = [
+            {
+                "kind": r.kind,
+                "token": r.token,
+                "announced_at": r.announced_at,
+                "seen_at": r.seen_at,
+                "article_id": r.article_id,
+                "title": r.title,
+                "rank_symbol": r.rank_symbol,
+                "contract": r.contract,
+                "reason": r.reason,
+            }
+            for r in rows
+        ]
+        done = 0
+        async with self._factory() as session, session.begin():
+            for chunk in range(0, len(values), 500):
+                stmt = pg_insert(AnnouncementEvent).values(values[chunk : chunk + 500])
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["kind", "token"],
+                    set_={
+                        "announced_at": stmt.excluded.announced_at,
+                        "seen_at": stmt.excluded.seen_at,
+                        "article_id": stmt.excluded.article_id,
+                        "title": stmt.excluded.title,
+                        "rank_symbol": stmt.excluded.rank_symbol,
+                        "reason": stmt.excluded.reason,
+                    },
+                    where=sa.and_(
+                        AnnouncementEvent.contract.is_(None),
+                        AnnouncementEvent.reason.in_(list(reasons)),
+                    ),
+                ).returning(AnnouncementEvent.token)
+                result = await session.execute(stmt)
+                done += len(result.all())  # 넣거나 고친 줄만 돌아온다(WHERE 에 걸린 줄은 안 옴)
+        return done
+
+    async def settle(self, rows: Sequence[EventRow]) -> int:
+        """기다리던 줄에 짝짓기 결과를 적는다(순위 이름 · 계약 · 이유 · 본 시각) — 고친 수 (T1052).
+
+        Note:
+            짝을 기다리던 줄(`contract` 없음)만 고친다 — 이미 짝을 지은 줄은 다시 바꾸지 않는다
+            (한 사건은 한 번만 짝짓는다 · 공지 갈래와 같다).
+        """
+        done = 0
+        async with self._factory() as session, session.begin():
+            for r in rows:
+                result = await session.execute(
+                    sa.update(AnnouncementEvent)
+                    .where(AnnouncementEvent.kind == r.kind)
+                    .where(AnnouncementEvent.token == r.token)
+                    .where(AnnouncementEvent.contract.is_(None))
+                    .values(
+                        rank_symbol=r.rank_symbol,
+                        contract=r.contract,
+                        reason=r.reason,
+                        seen_at=r.seen_at,
+                    )
+                )
+                done += int(getattr(result, "rowcount", 0) or 0)
+        return done
 
 
 def _row(r: AnnouncementEvent) -> EventRow:
@@ -413,13 +591,17 @@ class OrderFacts(Protocol):
         ...
 
 
-def make_event_mapper(rank: RankPrices, order: OrderFacts, rule: NameChainRule) -> EventMapper:
+def make_event_mapper(
+    rank: RankPrices, order: OrderFacts, rule: NameChainRule, *, exact: bool = False
+) -> EventMapper:
     """분기 목록과 같은 이름 사슬로 공지 이름을 계약에 짝짓는 함수.
 
     Args:
         rank: 순위 거래소 현재가(바이낸스 무기한 — 이름 `X` · `1000X` 를 고르는 재료이기도 하다).
         order: 주문 거래소 계약 표 · 현재가.
         rule: 이름 사슬 규칙(`config/universe.yml` 의 `name_chain` · 가격비 확인 포함).
+        exact: 참이면 이름이 이미 순위 거래소 계약 이름이다(상장 시각 사건 · T1052) — `X` ·
+            `1000X` 를 고르지 않고 그 이름이 지금 시세에 있을 때만 쓴다.
 
     Returns:
         짝짓기 함수 — 부를 때마다 두 거래소 시세 · 계약 표를 한 번씩 읽는다(새 이름이 있을 때만
@@ -438,7 +620,10 @@ def make_event_mapper(rank: RankPrices, order: OrderFacts, rule: NameChainRule) 
         order_prices = await order.last_prices()
         out: dict[str, tuple[str | None, str | None, str]] = {}
         for token in tokens:
-            name = rank_name(token, prices, rule.quote)
+            if exact:
+                name = token if token in prices else None
+            else:
+                name = rank_name(token, prices, rule.quote)
             if name is None:
                 out[token] = (None, None, REASON_NO_RANK)
                 continue
@@ -643,6 +828,8 @@ __all__ = [
     "FeedState",
     "KindOutcome",
     "announcement_kinds",
+    "feeds_known",
+    "fund_announcement_kinds",
     "load_announce_job_config",
     "make_event_mapper",
     "run_announcements",

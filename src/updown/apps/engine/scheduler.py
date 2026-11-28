@@ -560,43 +560,85 @@ def register_announcement_job(
         run_soon_s: 등록 뒤 이 초 뒤에 한 번 먼저 돈다(처음 받기를 바로 시작). None 이면 한 간격 뒤.
 
     Note:
-        `entry_announcement` 를 선언한 매매법이 없으면 등록하지 않는다(할 일이 없다). 처음 한 번은
+        `entry_announcement` 를 선언한 매매법이 없으면 등록하지 않는다(할 일이 없다 · 묶음 구성원도
+        목록에 오른 것도 아닌 선언은 세지 않는다 — `fund_announcement_kinds`). 처음 한 번은
         갈래마다 목록 전체(쪽 50 · 쪽 사이 0.4 초)를 받고, 그 뒤로는 갈래마다 요청 하나(첫 쪽)다.
         새 이름이 있을 때만 두 거래소 시세 · 계약 표를 한 번씩 읽어 계약에 짝짓는다(분기 목록과 같은
         이름 사슬 · 가격비 확인). 걸음마다 시작 · 끝을 적지 않는다(1 분 작업이라 로그가 덮인다) —
         새 사건 · 실패 · 처음 받기만 남긴다. 실패는 작업 안에서 표 · 경고 · 알림으로 남는다(#8).
+        상장 시각 갈래(설정 `listings` · T1052)는 같은 표를 쓰는 다른 작업(`listing_events` ·
+        `register_listing_job`)이, 공급 일정 갈래(설정 `supply_events` · T1057)는 `supply_events`
+        (`register_supply_job`)가 맡는다 — 이 함수가 함께 등록한다.
     """
     from datetime import UTC, datetime, timedelta
 
     from apscheduler.triggers.interval import IntervalTrigger
 
     from updown.analysis.announcements import load_title_rules
+    from updown.analysis.listings import load_listing_rules
     from updown.analysis.playbook.select import load_playbooks
+    from updown.analysis.supply_schedule import load_supply_rules
     from updown.decision.universe import DEFAULT_CONFIG_PATH as UNIVERSE_PATH
     from updown.decision.universe_names import load_name_chain
     from updown.marketdata.provider import announcement_source, gate_universe_facts, universe_source
     from updown.orchestration.rebalancer.announce_job import (
         AnnouncementStore,
-        announcement_kinds,
+        fund_announcement_kinds,
         load_announce_job_config,
         make_event_mapper,
         run_announcements,
     )
 
-    kinds = announcement_kinds(load_playbooks())
+    # T1052 — 펀드가 돌릴 수 있는 매매법(묶음 구성원 · 목록)의 갈래만(묶음에서 뺀 다리는 안 받는다)
+    kinds = fund_announcement_kinds(load_playbooks())
     if not kinds:
         _logger.info("announcement_job_idle", payload={"note": "선언한 매매법이 없다"})
         return
-    rules_all = load_title_rules()
-    missing = [k for k in kinds if k not in rules_all]
-    if missing:
+    # 하위 작업(상장 시각 · 공급 일정)의 설정 · 등록이 깨져도 공지 작업은 등록한다 — 깨진 갈래만
+    # 빠지고 오류(알림)로 남는다(규칙 #8 · 그 다리는 사건을 못 받아 새 진입이 없다).
+    listing_all = _load_or_log(load_listing_rules, "listings")
+    supply_all = _load_or_log(load_supply_rules, "supply_events")
+    rules_all = _load_or_log(load_title_rules, "kinds")
+    twice = [
+        k for k in kinds if sum(k in table for table in (listing_all, supply_all, rules_all)) > 1
+    ]
+    title_kinds = [
+        k for k in kinds if k not in listing_all and k not in supply_all and k not in twice
+    ]
+    missing = [k for k in title_kinds if k not in rules_all]
+    if missing or twice:
         # 🔴 조용히 넘기지 않는다(규칙 #8) — 사건이 안 생기면 그 다리는 진입이 없다.
         _logger.error(
             "announcement_job_unconfigured",
-            payload={"kinds": missing, "note": "선언한 공지 갈래의 제목 규칙이 없다 — 등록 안 함"},
+            payload={
+                "kinds": missing,
+                "both": twice,
+                "note": "선언한 공지 갈래의 규칙이 없거나 두 설정에 다 있다 — 그 갈래만 등록 안 함",
+            },
         )
+    title_kinds = [k for k in title_kinds if k not in missing]
+    listing_rules = [listing_all[k] for k in kinds if k in listing_all and k not in twice]
+    if listing_rules:
+        _register_or_log(
+            "listing_events",
+            lambda: register_listing_job(
+                scheduler,
+                factory,
+                listing_rules,
+                run_soon_s=None if run_soon_s is None else run_soon_s + 30.0,
+            ),
+        )
+    supply_rules = [supply_all[k] for k in kinds if k in supply_all and k not in twice]
+    if supply_rules:
+        # 먼저 한 번 돌리지 않는다 — 받기 프로세스(약 90 MB)가 리더가 뜨며 판을 되살리는 때와
+        # 겹치지 않게 다음 점검 분(`check_minute`)을 기다린다(같은 컨테이너 메모리 한도).
+        _register_or_log(
+            "supply_events",
+            lambda: register_supply_job(scheduler, factory, supply_rules, run_soon_s=None),
+        )
+    if not title_kinds:
         return
-    rules = [rules_all[k] for k in kinds]
+    rules = [rules_all[k] for k in title_kinds]
     cfg = load_announce_job_config()
     chain = load_name_chain(UNIVERSE_PATH)
     store = AnnouncementStore(factory)
@@ -655,5 +697,250 @@ def register_announcement_job(
     )
     _logger.info(
         "job_registered",
-        payload={"job": "announcements", "kinds": list(kinds), "poll_s": cfg.poll_s},
+        payload={"job": "announcements", "kinds": list(title_kinds), "poll_s": cfg.poll_s},
+    )
+
+
+def _load_or_log(load: Callable[[], dict[str, Any]], block: str) -> dict[str, Any]:
+    """사건 갈래 설정 한 블록을 읽는다 — 깨졌으면 오류(알림)로 남기고 빈 사전(그 갈래만 빠진다)."""
+    try:
+        return load()
+    except Exception as exc:
+        _logger.error(
+            "announcement_config_broken",
+            payload={"block": block, "error": f"{type(exc).__name__}: {exc}"[:200]},
+        )
+        return {}
+
+
+def _register_or_log(job: str, register: Callable[[], None]) -> None:
+    """하위 작업 하나를 등록한다 — 실패해도 다른 작업 등록을 막지 않는다(오류로 남긴다)."""
+    try:
+        register()
+    except Exception as exc:
+        _logger.error(
+            "job_register_failed",
+            payload={"job": job, "error": f"{type(exc).__name__}: {exc}"[:200]},
+        )
+
+
+def register_listing_job(
+    scheduler: AsyncIOScheduler,
+    factory: "async_sessionmaker[AsyncSession]",
+    rules: Any,
+    *,
+    run_soon_s: float | None = 45.0,
+) -> None:
+    """상장 시각 사건 작업 — 매시 한 번 점검 · 하루 한 번 목록 새로 읽기 · 사건 앞 짝짓기 (T1052).
+
+    Args:
+        scheduler: 엔진 스케줄러.
+        factory: DB 세션 팩토리.
+        rules: 상장 시각 갈래 규칙들(`analysis.listings.ListingRule` · 선언한 것만).
+        run_soon_s: 등록 뒤 이 초 뒤에 한 번 먼저 돈다. None 이면 다음 점검 분까지 기다린다.
+
+    Note:
+        점검 한 번 = DB 읽기 몇 번이 거의 전부다. 목록 새로 읽기(`refresh_h` · 하루 한 번)만 원천을
+        연다 — 무기한 목록 한 번(약 1.2 MB · 가중치 1) + 표에 없는 계약마다 1H 봉 하나(가중치 1)와
+        같은 시각 기준 계약 1H 봉 하나(가중치 1 · 같은 시각은 한 번). 처음 한 번은 최근 상장
+        (`recent_days`) 계약 수백 개를 묻는다(호출 간격 `pace_s` · 몇 분) — await 하며 쉬므로 이벤트
+        루프를 막지 않는다. 짝짓기는 사건이 `pair_within_h` 안에 있을 때만 두 거래소 시세 · 계약
+        표를 한 번씩 읽는다. 실패는 작업 안에서 표 · 경고 · 알림으로 남는다(#8).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from updown.decision.universe import DEFAULT_CONFIG_PATH as UNIVERSE_PATH
+    from updown.decision.universe_names import load_name_chain
+    from updown.marketdata.provider import gate_universe_facts, universe_source
+    from updown.orchestration.rebalancer.announce_job import AnnouncementStore, make_event_mapper
+    from updown.orchestration.rebalancer.listing_job import (
+        load_listing_job_config,
+        refresh_due,
+        run_listing_events,
+    )
+
+    if not rules:
+        return
+    cfg = load_listing_job_config()
+    chain = load_name_chain(UNIVERSE_PATH)
+    store = AnnouncementStore(factory)
+
+    async def mapper(tokens: Any) -> Any:
+        # 짝을 기다리는 사건이 있을 때만 두 거래소 클라이언트를 연다.
+        rank = universe_source()
+        order = gate_universe_facts()
+        try:
+            return await make_event_mapper(rank, order, chain, exact=True)(tokens)
+        finally:
+            await rank.aclose()
+            await order.aclose()
+
+    async def job() -> None:
+        now = datetime.now(UTC)
+        try:
+            feeds = [await store.feed(r.kind) for r in rules]
+            source = (
+                universe_source(pace_s=cfg.pace_s)
+                if any(refresh_due(f, now, cfg) for f in feeds)
+                else None
+            )
+            try:
+                await run_listing_events(store, source, mapper, rules, now=now, cfg=cfg)
+            finally:
+                if source is not None:
+                    await source.aclose()
+        except Exception as exc:  # 표를 못 읽는 등 작업 전체 실패 — 다음 점검에 다시
+            _logger.error(
+                "listing_job_failed", payload={"error": f"{type(exc).__name__}: {exc}"[:200]}
+            )
+
+    soon: dict[str, Any] = {}
+    if run_soon_s is not None:
+        soon["next_run_time"] = datetime.now(UTC) + timedelta(seconds=run_soon_s)
+    scheduler.add_job(  # pyright: ignore[reportUnknownMemberType]
+        _traced("listing_events", job),
+        trigger=CronTrigger(timezone="UTC", minute=cfg.check_minute, second=30),
+        id="listing_events",
+        name="listing_events",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=1800,
+        replace_existing=True,
+        **soon,
+    )
+    _logger.info(
+        "job_registered",
+        payload={
+            "job": "listing_events",
+            "kinds": [r.kind for r in rules],
+            "check_minute": cfg.check_minute,
+            "refresh_h": cfg.refresh_h,
+        },
+    )
+
+
+SUPPLY_FETCH_MODULE = "updown.apps.supply_fetch"
+"""공급 일정 받기 프로세스 — 같은 이미지 · 같은 파이썬으로 띄운다(짧게 살고 사라진다)."""
+
+
+def register_supply_job(
+    scheduler: AsyncIOScheduler,
+    factory: "async_sessionmaker[AsyncSession]",
+    rules: Any,
+    *,
+    run_soon_s: float | None = None,
+) -> None:
+    """공급 일정 사건 작업 — 매시 한 번 점검 · 하루 한 번 일정 받기(따로 된 프로세스) (T1057).
+
+    Args:
+        scheduler: 엔진 스케줄러.
+        factory: DB 세션 팩토리.
+        rules: 공급 일정 갈래 규칙들(`analysis.supply_schedule.SupplyRule` · 선언한 것만).
+        run_soon_s: 등록 뒤 이 초 뒤에 한 번 먼저 돈다. None 이면 다음 점검 분까지 기다린다.
+
+    Note:
+        점검 한 번 = DB 읽기 몇 번이 거의 전부다. 하루 한 번(`refresh_hour` 시 UTC 뒤) 무기한
+        목록 한 번(순위 거래소 · 가중치 1)을 읽어 **따로 된 짧은 프로세스**(`SUPPLY_FETCH_MODULE` ·
+        시크릿 없는 최소 환경 · 컨테이너 메모리 여유를 먼저 봄)를 띄운다 — 일정 파일 수백 개를
+        흘려 받는 메모리(최대 약 100 MB)가 이 프로세스(실계좌는 리더 api)에 남지 않는다.
+        짝짓기(사건 `pair_within_h` 앞 · 사건 있는 날만)는 순위 문 1H 봉을 순위 거래소 무기한마다
+        한 번(약 650 번 · 가중치 5 · 간격 `rank_pace_s` · 몇 분)과 두 거래소 시세 · 계약 표를 한
+        번씩 읽는다 — await 하며 쉬므로 이벤트 루프를 막지 않는다. 실패는 작업 안에서 표 · 경고 ·
+        알림으로 남는다(#8).
+    """
+    import sys
+    from datetime import UTC, date, datetime, timedelta
+
+    from updown.analysis.supply_schedule import SupplyRule
+    from updown.common.resources import cgroup_memory
+    from updown.decision.universe import DEFAULT_CONFIG_PATH as UNIVERSE_PATH
+    from updown.decision.universe_names import load_name_chain
+    from updown.marketdata.provider import (
+        gate_universe_facts,
+        rank_turnover_source,
+        universe_source,
+    )
+    from updown.orchestration.rebalancer.announce_job import AnnouncementStore, make_event_mapper
+    from updown.orchestration.rebalancer.supply_job import (
+        load_supply_job_config,
+        memory_headroom_mb,
+        rank_members,
+        run_supply_events,
+        spawn_fetch,
+    )
+
+    if not rules:
+        return
+    cfg = load_supply_job_config()
+    chain = load_name_chain(UNIVERSE_PATH)
+    store = AnnouncementStore(factory)
+
+    async def names() -> Any:
+        src = universe_source()
+        try:
+            return sorted(await src.listed_symbols())
+        finally:
+            await src.aclose()
+
+    async def members(rule: SupplyRule, day: date, now: datetime) -> frozenset[str]:
+        src = rank_turnover_source(rule.rank_source, pace_s=cfg.rank_pace_s)
+        try:
+            return await rank_members(src, rule, day, now)
+        finally:
+            await src.aclose()
+
+    async def mapper(tokens: Any) -> Any:
+        rank = universe_source()
+        order = gate_universe_facts()
+        try:
+            return await make_event_mapper(rank, order, chain, exact=True)(tokens)
+        finally:
+            await rank.aclose()
+            await order.aclose()
+
+    async def fetch(payload: Any) -> Any:
+        return await spawn_fetch(
+            [sys.executable, "-m", SUPPLY_FETCH_MODULE], payload, timeout_s=cfg.fetch_timeout_s
+        )
+
+    async def job() -> None:
+        try:
+            await run_supply_events(
+                store,
+                rules,
+                fetch=fetch,
+                names=names,
+                members=members,
+                mapper=mapper,
+                now=datetime.now(UTC),
+                cfg=cfg,
+                headroom=lambda: memory_headroom_mb(cgroup_memory()),
+            )
+        except Exception as exc:  # 표를 못 읽는 등 작업 전체 실패 — 다음 점검에 다시
+            _logger.error(
+                "supply_job_failed", payload={"error": f"{type(exc).__name__}: {exc}"[:200]}
+            )
+
+    soon: dict[str, Any] = {}
+    if run_soon_s is not None:
+        soon["next_run_time"] = datetime.now(UTC) + timedelta(seconds=run_soon_s)
+    scheduler.add_job(  # pyright: ignore[reportUnknownMemberType]
+        _traced("supply_events", job),
+        trigger=CronTrigger(timezone="UTC", minute=cfg.check_minute, second=40),
+        id="supply_events",
+        name="supply_events",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=1800,
+        replace_existing=True,
+        **soon,
+    )
+    _logger.info(
+        "job_registered",
+        payload={
+            "job": "supply_events",
+            "kinds": [r.kind for r in rules],
+            "check_minute": cfg.check_minute,
+            "refresh_hour": cfg.refresh_hour,
+        },
     )
