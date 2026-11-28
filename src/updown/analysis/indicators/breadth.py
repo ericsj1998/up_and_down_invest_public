@@ -9,8 +9,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 MIN_LAG_SYMBOLS = 30
@@ -94,3 +95,130 @@ def market_values(
     return MarketValues(
         breadth=breadth, lag_ret=lag_ret, breadth_count=total, lag_count=len(ranked)
     )
+
+
+# ── 순위 폭(T1045) — 거래대금 위 N 종목 가운데 1H 이평 위 비율 ─────────────────────────────
+#
+# 실계좌 작업(`orchestration.rebalancer.breadth_job.run_ranked_day`)과 펀드 재현의 과거 표가 **같은
+# 함수**를 부른다 — 재현만 다른 식으로 값을 내면 재현이 재는 문이 실계좌 문과 달라진다(T968 교훈).
+
+
+def hourly_day_turnover(bars: Iterable[tuple[datetime, Decimal, Decimal]]) -> dict[date, Decimal]:
+    """1H 봉 `(시작 시각, 종가, 거래량)` 열 → UTC 날마다 거래대금(종가 x 거래량의 합).
+
+    Args:
+        bars: 봉 시작 시각(UTC aware) · 종가 · 거래량(기초 자산 수량).
+
+    Returns:
+        `{봉 시작의 UTC 날: 합}`. 봉이 없는 날은 칸이 없다(0 으로 센다).
+    """
+    out: dict[date, Decimal] = {}
+    for start, close, volume in bars:
+        day = start.astimezone(UTC).date()
+        out[day] = out.get(day, Decimal(0)) + close * volume
+    return out
+
+
+def window_turnover(by_day: Mapping[date, Decimal], day: date, days: int) -> Decimal:
+    """날 `day` 의 순위 창 거래대금 — `day - days` ~ `day - 1` 합(그날 자신은 안 든다).
+
+    Args:
+        by_day: `hourly_day_turnover` 결과.
+        day: 값의 날(그날 0 시에 쓸 수 있는 값).
+        days: 창 길이(일).
+
+    Returns:
+        합. 칸이 없는 날은 0.
+
+    Raises:
+        ValueError: `days` 가 1 미만인 경우.
+    """
+    if days < 1:
+        raise ValueError(f"창 일수는 1 이상: {days}")
+    return sum(
+        (by_day.get(day - timedelta(days=k), Decimal(0)) for k in range(1, days + 1)),
+        Decimal(0),
+    )
+
+
+def top_by_turnover(
+    window: Mapping[str, Decimal],
+    listed: Mapping[str, date],
+    day: date,
+    *,
+    top: int,
+    min_age_days: int,
+) -> tuple[str, ...]:
+    """날 `day` 의 거래대금 위 `top` 종목.
+
+    Args:
+        window: 종목 → 순위 창 거래대금(`window_turnover`).
+        listed: 종목 → 상장(첫 봉) 날. 모르는 종목은 순위에 안 든다.
+        day: 값의 날.
+        top: 몇 종목.
+        min_age_days: `day - 상장 날` 이 이 일수를 **넘는** 종목만.
+
+    Returns:
+        거래대금이 큰 순서의 종목 이름(합이 0 이하인 종목은 안 든다 · 같은 합은 이름 순 —
+        결정론 · 규칙 #5).
+    """
+    pool = [
+        (-amount, name)
+        for name, amount in window.items()
+        if amount > 0 and name in listed and (day - listed[name]).days > min_age_days
+    ]
+    pool.sort()
+    return tuple(name for _neg, name in pool[:top])
+
+
+def close_above_ma(closes: Sequence[Decimal], ma_bars: int) -> bool | None:
+    """마지막 종가가 마지막 `ma_bars` 봉 종가의 단순 평균 **위**인가.
+
+    Args:
+        closes: 1H 종가 열(오름차순 · 값의 날 0 시 앞에 닫힌 봉까지).
+        ma_bars: 이평 봉 수.
+
+    Returns:
+        참 · 거짓. 봉이 `ma_bars` 보다 **많지 않으면** None(모름 — 이평 앞에 한 봉 더 있어야 센다).
+
+    Raises:
+        ValueError: `ma_bars` 가 1 미만인 경우.
+    """
+    if ma_bars < 1:
+        raise ValueError(f"이평 봉 수는 1 이상: {ma_bars}")
+    if len(closes) <= ma_bars:
+        return None
+    window = closes[-ma_bars:]
+    level = sum(window, Decimal(0)) / ma_bars
+    return window[-1] > level
+
+
+@dataclass(frozen=True, slots=True)
+class RankedBreadth:
+    """순위 폭 한 벌.
+
+    Attributes:
+        value: 위 종목 가운데 이평 값이 있는 종목의 이평 위 비율(0 ~ 1). 셀 종목이 없으면 None.
+        counted: 비율에 든 종목 수(이평 값이 있는 위 종목).
+        members: 순위 위 종목 수.
+    """
+
+    value: Decimal | None
+    counted: int
+    members: int
+
+
+def ranked_ma_breadth(members: Sequence[str], above: Mapping[str, bool | None]) -> RankedBreadth:
+    """순위 위 종목들의 이평 위 비율.
+
+    Args:
+        members: `top_by_turnover` 결과.
+        above: 종목 → `close_above_ma` 결과(없는 종목 · None 은 세지 않는다).
+
+    Returns:
+        `RankedBreadth`.
+    """
+    flags = [above.get(name) for name in members]
+    known = [flag for flag in flags if flag is not None]
+    value = None if not known else Decimal(sum(1 for flag in known if flag)) / Decimal(len(known))
+    return RankedBreadth(value=value, counted=len(known), members=len(members))

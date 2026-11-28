@@ -18,7 +18,12 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from updown.analysis.indicators.reference import RefNeeds, RefRegime
-    from updown.analysis.playbook.types import BrakeRelease, Playbook, WashedRule
+    from updown.analysis.playbook.types import (
+        BrakeRelease,
+        Playbook,
+        RankedBreadthGate,
+        WashedRule,
+    )
 
 REF_MARGIN_BARS = 20
 """요구 봉 수 위에 더 받는 여유(실계좌 · 재현 같은 값)."""
@@ -129,11 +134,49 @@ def market_day_of(now: datetime) -> date:
     return (now - timedelta(days=1)).date()
 
 
+RANKED_DAYS_BACK = 2
+"""순위 폭 줄을 며칠 치 넣나 — 판정 봉 시작이 든 날을 읽으므로(`Session.ranked_breadth_now`) 4H ·
+1D 판정 봉(전날에 시작)도 덮게 `market_day_of(지금)` 과 그 앞 하루 · 이틀을 넣는다."""
+
+
+def ranked_breadth_of(playbooks: Iterable[Playbook]) -> RankedBreadthGate | None:
+    """순위 폭 문(`entry_ranked_breadth`)을 처음 선언한 매매법의 선언 — 없으면 None(값 안 넣음)."""
+    # 재현 시험의 자리표(선언 칸 일부만 가진 것)도 받게 칸이 없으면 선언 없음으로 읽는다.
+    found = (getattr(b, "entry_ranked_breadth", None) for b in playbooks)
+    return next((rule for rule in found if rule is not None), None)
+
+
+def ranked_days(now: datetime) -> tuple[date, ...]:
+    """지금 넣을 순위 폭 줄의 날들(오래된 것부터) — 실계좌 러너 · 재현이 같은 날을 넣는다.
+
+    Args:
+        now: 지금(러너 = 벽시계 · 재현 = 시계 눈금).
+
+    Returns:
+        `market_day_of(now) - RANKED_DAYS_BACK` ~ `market_day_of(now)`.
+    """
+    last = market_day_of(now)
+    return tuple(last - timedelta(days=k) for k in range(RANKED_DAYS_BACK, -1, -1))
+
+
+def announcement_kinds_of(playbooks: Iterable[Playbook]) -> tuple[str, ...]:
+    """공지 사건 다리(`entry_announcement`)가 읽는 공지 갈래들(정렬 · 고유) — 없으면 빈 튜플.
+
+    실계좌 러너 · 재현이 같은 함수로 "이 판에 어느 갈래 사건을 넣나" 를 정한다(T1045 · T968 교훈).
+    """
+    found = (getattr(b, "entry_announcement", None) for b in playbooks)
+    return tuple(sorted({rule.kind for rule in found if rule is not None}))
+
+
 __all__ = [
+    "RANKED_DAYS_BACK",
     "REF_MARGIN_BARS",
+    "announcement_kinds_of",
     "apply_ref_regime",
     "clear_ref_regime",
     "market_day_of",
+    "ranked_breadth_of",
+    "ranked_days",
     "ref_fetch_bars",
     "ref_warm_extra",
     "washed_rule_of",

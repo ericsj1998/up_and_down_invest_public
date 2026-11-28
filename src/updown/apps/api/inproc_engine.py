@@ -22,6 +22,7 @@ from updown.apps.engine.resource_beat import register_resource_beat
 from updown.apps.engine.scheduler import (
     build_scheduler,
     job_ids,
+    register_announcement_job,
     register_breadth_job,
     register_universe_job,
 )
@@ -96,6 +97,13 @@ class InprocEngine:
                 Exception
             ) as exc:  # 잡 등록 실패가 거래 시작을 막지 않는다 · 조용히 넘기지 않는다
                 _logger.error("breadth_job_register_failed", payload={"error": str(exc)[:200]})
+            try:
+                # T1045 — 거래소 공지 사건(1 분마다 목록 첫 쪽 · 선언이 없으면 등록 안 함).
+                register_announcement_job(scheduler, self._factory)
+            except (
+                Exception
+            ) as exc:  # 잡 등록 실패가 거래 시작을 막지 않는다 · 조용히 넘기지 않는다
+                _logger.error("announcement_job_register_failed", payload={"error": str(exc)[:200]})
         start_loop_lag()  # T265 눈금 — 스냅샷의 `loop_lag_ms`
         scheduler.start()
         self._scheduler = scheduler

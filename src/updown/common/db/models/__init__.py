@@ -20,6 +20,8 @@ from updown.common.db.models.accounts import (
 from updown.common.db.models.analysis import AnalysisReport, Structure
 from updown.common.db.models.fundamentals import FinancialFactRow
 from updown.common.db.models.market import (
+    AnnouncementEvent,
+    AnnouncementFeed,
     Candle,
     CandleQualityIssue,
     MarketBreadthDay,
@@ -44,6 +46,8 @@ __all__ = [
     "AccountContact",
     "AiParticipant",
     "AnalysisReport",
+    "AnnouncementEvent",
+    "AnnouncementFeed",
     "ApiToken",
     "AppSetting",
     "AssistantDraft",

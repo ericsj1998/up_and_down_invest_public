@@ -46,6 +46,7 @@ from updown.common.domain.instrument import (
 from updown.common.logging.setup import get_logger
 from updown.marketdata.adapter import BrokerAdapter, QuoteAdapter
 from updown.marketdata.binance.adapter import BinanceAdapter
+from updown.marketdata.binance.announcements import BinanceAnnouncementSource
 from updown.marketdata.binance.client import LIVE_BASE, BinanceClient
 from updown.marketdata.binance.flow_source import BinanceFlowSource
 from updown.marketdata.binance.universe_source import BinanceUniverseSource
@@ -523,6 +524,23 @@ def venue_flow_source(*, pace_s: float = 0.2) -> BinanceFlowSource:
         같은 원칙).
     """
     return BinanceFlowSource(BinanceClient(base_url=LIVE_BASE), pace_s=pace_s)
+
+
+def announcement_source(source: str) -> BinanceAnnouncementSource:
+    """거래소 공지 목록 읽기 — **조회 경로의 유일한 획득 지점** (규칙 #0 · T1045).
+
+    Args:
+        source: 공지 갈래 설정의 원천 거래소 이름(`config/announcements.yml` 의 `source`).
+
+    Returns:
+        공개 웹 경로 위의 읽기 전용 소스(키 없음). 부르는 쪽이 닫는다(`await src.aclose()`).
+
+    Raises:
+        ConfigurationError: 모르는 원천 — 조용히 다른 원천으로 바꾸지 않는다(규칙 #8).
+    """
+    if source != "BINANCE":
+        raise ConfigurationError(f"공지 목록 원천 {source!r} 을 모른다 — BINANCE 만 받는다")
+    return BinanceAnnouncementSource()
 
 
 def gate_universe_facts() -> GateUniverseFacts:

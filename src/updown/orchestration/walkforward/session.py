@@ -28,7 +28,7 @@ from collections import deque
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -41,6 +41,7 @@ from updown.analysis.indicators.atr import atr as atr_series
 from updown.analysis.indicators.bands import bollinger
 from updown.analysis.indicators.ma import sma
 from updown.analysis.indicators.macd import macd
+from updown.analysis.indicators.open_bar import latest_open_bar, open_bar_verdict
 from updown.analysis.indicators.reversal import (
     dragonfly,
     engulfing,
@@ -55,11 +56,12 @@ from updown.analysis.structures.level_book import build_levels, roles_at
 from updown.analysis.structures.swing import SwingKind, find_pivots
 from updown.analysis.trend.service import evaluate as trend_evaluate
 from updown.common.costs import DEFAULT_CONFIG_PATH, MarketCosts, load_cost_table
+from updown.common.domain.announcement import Announcement
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Timeframe
 from updown.common.domain.releases import ReleaseSchedule
 from updown.common.domain.reports import TrendDirection
-from updown.common.domain.session import MarketCalendar
+from updown.common.domain.session import MarketCalendar, SessionConfigError
 from updown.common.domain.setup import TradeSetup
 from updown.common.domain.trade_tick import BarDelta
 from updown.common.domain.venue_series import VenueSeries
@@ -775,6 +777,13 @@ class Session:
 
     🔴 None = 못 받았거나 늦음 → 컨텍스트 `venue` 가 None → 탐지기가 판정 불가로 센다(규칙 #8-1).
     """
+    announcements: tuple[Announcement, ...] | None = None
+    """이 종목의 거래소 공지 사건(그때까지 본 것) — 러너 · 재현이 주입한다 (T1045 ·
+    `Playbook.entry_announcement`).
+
+    🔴 None = 사건 표를 모른다(작업이 멈춤 · 처음 받기 전 · 읽기 실패) → 컨텍스트 사건이 비어 그
+    선언의 다리는 새로 들지 않는다(규칙 #8-1) · 보유 · 손절 · 청산에는 닿지 않는다.
+    """
     ref_vol_pct: Decimal | None = None
     """기준 종목(BTC) 4H 실현변동성 백분위(0 ~ 1) — 러너가 주입한다 (T329 급락 되돌림 롱).
 
@@ -839,6 +848,21 @@ class Session:
 
     미리 공개되는 일정이라 봉과 같은 사실 입력이다. 🔴 None = 모름 → 이 문을 선언한 매매법은
     **진입을 보류**한다(규칙 #8-1).
+    """
+    ranked_breadth: dict[date, Decimal | None] = field(
+        default_factory=lambda: dict[date, Decimal | None]()
+    )
+    """순위 폭 값 — `표 줄의 날(market_day_of) → 값` · 러너 주입(`entry_ranked_breadth`).
+
+    세션은 종목 하나만 안다 — 시장 전체 값은 봉과 같은 **사실 입력**이다. 러너는 최근 며칠 줄을
+    넣고, 진입은 판정 봉 **시작**이 든 날의 줄을 읽는다(`ranked_breadth_now`).
+    🔴 칸이 없거나 None = 모름 → 이 문을 선언한 매매법은 **진입을 보류**한다(규칙 #8-1).
+    """
+    event_calendar: MarketCalendar | None = None
+    """다른 시장의 정규장 시각을 읽는 달력 — 러너 · 재현 주입(`open_bar_add`).
+
+    세션 자기 시장의 달력(`calendar` · 조기 마감 청산용)과 칸을 따로 둔다 — 코인 판은 24시간
+    장이라 `calendar` 가 None 이어야 한다. 🔴 None = 모름 → 더 싣지 않는다(규칙 #8-1).
     """
     ref_vol_sd_pct: Decimal | None = None
     """기준 종목(BTC) 일봉 로그수익 표본 표준편차 % — 러너 주입(T612 SV1 · `entry_ref_vol_off`).
@@ -1418,6 +1442,11 @@ class Session:
     _add_seen: dict[str, datetime] = field(default_factory=lambda: dict[str, datetime]())
     """불타기 판정이 이미 본 마지막 판정 TF 봉(매매별 · T308). 다시 훑지 않으려는 표시일 뿐 —
     판정 결과(`add_at` · `add_broken`)는 기록에 있어 재시작해도 같은 답이 나온다."""
+    _open_add_seen: dict[str, datetime] = field(default_factory=lambda: dict[str, datetime]())
+    """개장 점검 봉 더 싣기(`open_bar_add`)가 이미 본 점검 봉 시작(매매별 · T1045).
+
+    다시 보지 않으려는 표시일 뿐 — 판정 결과(`add_at`)는 기록에 있다. 재시작으로 비면 같은 점검
+    봉을 한 번 더 보고 같은 답을 내며, 늦은 판정은 러너가 `ADD_STALE` 로 버린다."""
     flip_on_event: bool = False
     """반대 **돌파 사건**이 뜨면 보유분을 즉시 청산하고 뒤집는다 (T46 ① · 플레이북 플래그).
 
@@ -1816,7 +1845,16 @@ class Session:
                 if any(getattr(item, "venue_bars", None) for item in self.playbooks)
                 else None
             ),
+            announcements=self._announced(),
         )
+
+    def _announced(self) -> tuple[Announcement, ...]:
+        """컨텍스트에 실을 공지 사건 — 그 선언을 가진 다리가 있고 표를 알 때만 (T1045)."""
+        if self.announcements is None:
+            return ()
+        if not any(getattr(item, "entry_announcement", None) for item in self.playbooks):
+            return ()
+        return self.announcements
 
     def _frame(self, frame: Timeframe, at: datetime | None) -> FrameState | None:
         """그 시간축의 계산 결과 — 봉이 안 늘었으면 캐시를 쓴다.
@@ -2005,8 +2043,8 @@ class Session:
 
         Returns:
             `ref_gate` · `ref_band` · `ref_surge` · `ref_sma` · `ref_volpct` · `ref_volrank` ·
-            `rel_lag` · `washed` · `event_window` · `warm_hold` · `funding` 중 처음 걸린 것.
-            없으면 None.
+            `rel_lag` · `washed` · `event_window` · `rank_breadth` · `warm_hold` · `funding` 중
+            처음 걸린 것. 없으면 None.
 
         Note:
             `_enter` 가 이 순서 그대로 읽고 센다 · 적는다. 마감 전 예비 신호(`preview`)도 같은
@@ -2053,6 +2091,11 @@ class Session:
             )
             if inside is not False:
                 return "event_window"
+        ranked = book.entry_ranked_breadth
+        if ranked is not None:
+            value = self.ranked_breadth_now(book)
+            if value is None or ranked.blocks(value):
+                return "rank_breadth"
         if self.warm_holds and self._warm_held_now(book):
             return "warm_hold"
         if funding_blocks(direction, self.recent_funding, book.funding_cap):
@@ -2078,6 +2121,28 @@ class Session:
         if len(rows) <= days or rows[-1 - days].close <= 0:
             return None
         return rows[-1].close / rows[-1 - days].close - 1
+
+    def ranked_breadth_now(self, book: Playbook) -> Decimal | None:
+        """이 매매법의 지금 진입에 쓰는 순위 폭 값 — 부작용 없음 (T1045).
+
+        Args:
+            book: 후보를 낸 매매법.
+
+        Returns:
+            판정 봉(진입 TF 마지막 마감 봉)의 **시작**이 든 UTC 날 V 의 값 = 주입 칸
+            `V - 1`(그날 0 시 앞에 닫힌 봉까지로 잰 줄). 판정 축 봉이 없거나 그 칸이 없으면 None.
+
+        Note:
+            판정 봉의 시작으로 날을 고르는 까닭: ① 연구 판정이 진입 기록 시각(4H 경계 다리는 판정
+            봉 시작)의 값을 읽었다 ② 날 V 의 값은 V 0 시에 닫히는 1H 봉까지 받아야 셀 수 있어,
+            0 시 마감 판정이 "그날 값" 을 읽으면 날마다 줄이 적히기 전이라 늘 모름 = 보류가 된다.
+            판정 봉 시작을 쓰면 0 시 마감 봉(전날 20 시 시작)은 전날 값을 읽고, 그 값은 하루 전에
+            이미 적혀 있다(미래 정보 없음).
+        """
+        gauge = self._frame(book.timeframe, None)
+        if gauge is None or not gauge.rows:
+            return None
+        return self.ranked_breadth.get((gauge.rows[-1].ts - timedelta(days=1)).date())
 
     def _warm_held_now(self, book: Playbook) -> bool:
         """판정 봉이 판 시작 전 "연구라면 들고 있었을 몫" 의 보유 안인가 (T811 · 부작용 없음).
@@ -2613,6 +2678,114 @@ class Session:
             and not tripped
         )
 
+    def _yield_for(self, shot: Snapshot, *, tripped: bool) -> TradeRecord | None:
+        """양보 다리 보유를 닫고 자리를 비운다 — 받는 다리 후보가 들 수 있어 보일 때만 (T1045).
+
+        Args:
+            shot: 이 봉의 스냅샷.
+            tripped: 낙폭 브레이커가 걸렸나(걸렸으면 어차피 못 들어 닫지 않는다).
+
+        Returns:
+            닫은 기록(`SIGNAL_EXIT` · 메모 `yield:<받는 다리>`). 닫지 않았으면 None.
+
+        Note:
+            든 다리의 선언 `yield_to` 에 적힌 다리의 후보만 받는다. 닫기 전에 받는 쪽 문 중
+            **부작용 없는 것**(진입 범위 · 진입 끔 · 현물 숏 · 규칙 문 `entry_hold` · 갓 닫힌 봉 ·
+            판 스위치 · 크기 0 문 `_sized_out`)을 본다 — 연구(`t296_wave62` `yield_grps`)는 받는
+            다리가 실제로 들 때만
+            닫았다. 펀드 문(자리 ·
+            증거금 · 브레이크)과 캔들 문은 진입 경로에서만 알 수 있어 그때 막히면 닫기만 한
+            것이 된다(`yield:wasted`). 닫는 값은 이 걸음 가격 축 종가 — 러너가 시장가로 닫는다.
+        """
+        if len(self._held) != 1 or self._waiting is not None:
+            return None  # 몫이 여럿인 판(같은 방향 몫 나눠 쓰기)은 양보 다리를 싣지 않는다
+        held = self._open
+        if held is None:
+            return None
+        receivers = self._book_of(held).yield_to
+        if not receivers or not self._may_enter(idle=True, tripped=tripped):
+            return None
+        taker: Proposal | None = None
+        for item in shot.proposals:
+            book = item.playbook
+            if item.blocked or book.playbook_id not in receivers or book.entry_off:
+                continue
+            if book.attribution == held.playbook:
+                continue
+            if self.entry_legs is not None and book.playbook_id not in self.entry_legs:
+                continue
+            short = item.setup.stop_loss > item.setup.avg_entry
+            if short and not self.short_allowed:
+                continue
+            side = Direction.SHORT if short else Direction.LONG
+            if self.entry_hold(book, side) is not None or not self._fresh_close(book):
+                continue
+            if self._sized_out(book):
+                continue
+            taker = item
+            break
+        if taker is None:
+            return None
+        bar = self._tick()
+        if bar is None:
+            return None
+        done = replace(
+            held.closed(
+                at=bar.ts,
+                price=bar.close,
+                outcome=Outcome.SIGNAL_EXIT,
+                cost_pct=self._exit_cost(held, Outcome.SIGNAL_EXIT),
+            ),
+            note=f"yield:{taker.playbook.playbook_id}",
+        )
+        self.ledger.replace(done)
+        self._open = None
+        self._count(f"yield:{held.playbook.split('@')[0]}")
+        _logger.info(
+            "session_leg_yield",
+            payload={
+                "trade_id": held.trade_id,
+                "leg": held.playbook,
+                "to": taker.playbook.playbook_id,
+                "price": str(bar.close),
+                "note": "양보 다리 보유를 닫고 받는 다리 후보에 자리를 내준다(T1045)",
+            },
+        )
+        self.journal()
+        return done
+
+    def _sized_out(self, book: Playbook) -> bool:
+        """받는 다리 후보가 진입 경로의 **크기 0 문**에 걸리나 — 깔때기는 그대로 둔다 (T1045).
+
+        진입 경로(`_enter`)가 같은 차례로 보는 이평 띠 · 봉 띠 · 약한 봉 · 기준 국면 · 기준 거리 ·
+        기준 변동성 문이다. 양보 전에 보는 까닭: 이 문들에 걸릴 후보에 자리를 내주면 닫기만 하고 못
+        든다(연구는 받는 다리가 실제로 들 때만 닫았다). 판정 함수들이 깔때기를 세므로 본 뒤 되돌린다
+        (진입 경로가 다시 셀 때 두 번 세지 않게).
+
+        Args:
+            book: 받는 다리 매매법.
+
+        Returns:
+            크기가 0 이 되면(또는 체결 봉이 없으면) 참.
+        """
+        bar = self._tick()
+        if bar is None:
+            return True
+        saved = dict(self.funnel)
+        try:
+            sig = self._signal_bar(book, bar)
+            return (
+                self._sma_tilt_mult(book, sig) <= 0
+                or self._bar_tilt_mult(book, sig) <= 0
+                or self._weak_bar(book, sig)
+                or self._ref_regime_tilt_mult(book) <= 0
+                or self._ref_dist_tilt_mult(book) <= 0
+                or self._ref_vol_off(book)
+            )
+        finally:
+            self.funnel.clear()
+            self.funnel.update(saved)
+
     def _count(self, key: str) -> None:
         """깔때기 칸 하나를 센다 (T50 ③)."""
         self.funnel[key] = self.funnel.get(key, 0) + 1
@@ -2767,6 +2940,14 @@ class Session:
             )
             self.journal()
         tripped = self.breaker_tripped_at is not None
+        # ⭐ T1045 — 양보 다리(`yield_to`)가 든 자리에 받는 다리 후보가 오면 먼저 닫고 비운다.
+        #    닫기 · 열기가 한 걸음에 이어진다(러너는 닫기를 먼저 옮긴다 · T852 S1).
+        yielded = self._yield_for(shot, tripped=tripped)
+        if yielded is not None:
+            closed = (*closed, yielded)
+            idle = (
+                len(self._held) <= 1 and self._open is None and self._waiting is None
+            ) or self._share_room()
         if not self.reconciled:
             self._count("blocked:unreconciled")
             # ⭐ T562 — 개수만 세면 어느 후보였는지 사후에 못 찾는다. 진입에 나설 후보
@@ -2804,6 +2985,9 @@ class Session:
         #    부분 봉으로 본다.
         if opened is None and self._may_enter(idle=idle, tripped=tripped):
             opened = self._early_enter(shot)
+        if yielded is not None and opened is None:
+            # 양보로 닫았는데 받는 다리가 못 들었다(펀드 문 · 캔들 문 등) — 관측(§1-0s).
+            self._count("yield:wasted")
         # 관측 규약 (§1-0s): 순간값만으로는 "관망"과 "탐지 정지"를 사후 구별 못 한다.
         self.seen_proposals += len(shot.proposals)
         self.seen_blocked += sum(1 for item in shot.proposals if item.blocked)
@@ -3905,6 +4089,12 @@ class Session:
             if not flipped and (book.add_on is not None or book.quiet_add is not None):
                 self._maybe_add(book, bar.ts)
                 held = self._open if self._open is not None else held
+            # ⭐ T1045 — 다른 시장 개장 시각의 점검 봉 더 싣기(`open_bar_add`). 같은 칸(한 매매
+            #    한 번)이라 위 불타기가 먼저 적었으면 안 본다. 판정만 적고 크기는 펀드 문 ·
+            #    러너가 정한다.
+            if not flipped and book.open_bar_add is not None:
+                self._maybe_open_add(book, bar)
+                held = self._open if self._open is not None else held
             # 🔴 **추세가 반대로 선언되기 전까지 보유** (T32 후보 D · `hold_while_trend`).
             #    전환 익절(캔들 패턴)은 15m 되돌림에 일찍 끊는다 — 돌파 롱 11건이 상승장에서
             #    -2.43% 였던 이유다. 이 스위치가 켜지면 캔들 패턴을 안 보고, 1h 주 추세가
@@ -4226,6 +4416,143 @@ class Session:
             },
         )
         return given
+
+    def _maybe_open_add(self, book: Playbook, bar: Candle) -> None:
+        """다른 시장 개장 시각의 점검 봉이 닫혔으면 한 번 더 싣기를 판정해 기록에 적는다 (T1045).
+
+        Args:
+            book: 이 매매를 낸 매매법(`open_bar_add` 가 있어야 부른다).
+            bar: 이 걸음의 가격 축 봉 — 그 끝까지 닫힌 봉만 본다 · 펀드 문에 묻는 시각은 그 시작
+                (`_maybe_add` 와 같은 자).
+
+        Note:
+            자격 · 판정은 `OpenBarAdd` 문서대로다. 점검 봉마다 한 번만 본다(`_open_add_seen`) —
+            안 넘은 점검 봉 뒤 다음 거래일 점검 봉이 넘으면 그때 더한다(매매당 첫 트리거 한 번).
+            🔴 모르면 안 더한다(규칙 #8-1): 달력 없음 · 휴장 표 밖 · 봉 모자람 · 평균 참범위 0.
+            추가가는 점검 봉 종가 · 시각은 그 봉의 끝이다 — 러너가 그 뒤 `ADD_STALE` 안에 시장가로
+            보내고, 늦으면 버린다. 손절은 원 매매 그대로다(이 함수는 손절을 안 건드린다 · 규칙 #4).
+        """
+        rule, held = book.open_bar_add, self._open
+        if rule is None or held is None or held.opened_at is None or held.add_at is not None:
+            return
+        upto = bar.ts + interval(self.price_frame or self.step_frame)
+        check: datetime | None = None
+        calendar = self.event_calendar
+        blind = calendar is None
+        if calendar is not None:
+            try:
+                check = latest_open_bar(calendar, rule.market, rule.timeframe, upto)
+            except SessionConfigError:
+                blind = True
+        if blind:
+            # 달력을 모른다 — 점검 봉이 언제인지 모르니 더 싣지 않는다. 매매마다 한 번만 센다.
+            if held.trade_id not in self._open_add_seen:
+                self._open_add_seen[held.trade_id] = upto
+                self._count("open_add:unknown:calendar")
+                _logger.warning(
+                    "session_open_add_unknown",
+                    payload={
+                        "trade_id": held.trade_id,
+                        "market": rule.market.value,
+                        "at": upto.isoformat(),
+                        "why": "calendar",
+                        "note": "달력이 없거나 휴장 표 밖 — 개장 점검 봉 더 싣기를 하지 않는다",
+                    },
+                )
+            return
+        if check is None:
+            return
+        seen = self._open_add_seen.get(held.trade_id)
+        if seen is not None and check <= seen:
+            return
+        self._open_add_seen[held.trade_id] = check
+        if check < held.opened_at:
+            return  # 매매가 생기기 전의 점검 봉 — 이 매매와 상관없다
+        filled = held.opened_at + interval(self.price_frame or self.step_frame)
+        if filled > check:
+            # 점검 봉 시작에 아직 체결되지 않았다 — 이 점검은 이 매매 몫이 아니다(다음 점검은 본다).
+            self._count("open_add:not_held")
+            return
+        rows, base = self._open_add_rows(rule.timeframe)
+        verdict = (
+            None
+            if rows is None or base is None
+            else open_bar_verdict(
+                rows,
+                base=base,
+                frame=rule.timeframe,
+                start=check,
+                period=rule.atr_period,
+                mult=rule.atr_mult,
+                sign=held.direction.sign,
+            )
+        )
+        if verdict is None or verdict.hit is None or verdict.bar is None:
+            why = "bars" if verdict is None else verdict.why
+            self._count(f"open_add:unknown:{why}")
+            _logger.warning(
+                "session_open_add_unknown",
+                payload={
+                    "trade_id": held.trade_id,
+                    "check": check.isoformat(),
+                    "why": why,
+                    "note": "점검 봉이나 그 앞 봉을 다 못 보거나 평균 참범위를 못 냈다 — 안 더한다",
+                },
+            )
+            return
+        if not verdict.hit:
+            self._count("open_add:miss")
+            return
+        span = interval(rule.timeframe)
+        price = verdict.bar.close
+        base_exposure = held.filled_leverage if held.filled_leverage is not None else held.leverage
+        given = self._gate_add(bar.ts, base_exposure * rule.frac, held.playbook)
+        given = self._fit_merged_add(held, given, price)
+        held = replace(
+            held,
+            add_at=check + span,
+            add_price=price,
+            add_frac=rule.frac,
+            add_exposure=given.size,
+            add_held=given.blocked,
+        )
+        self._count(f"open_add:{book.playbook_id}")
+        _logger.info(
+            "session_open_add",
+            payload={
+                "trade_id": held.trade_id,
+                "check": check.isoformat(),
+                "move": str(verdict.move),
+                "atr": str(verdict.atr),
+                "price": str(price),
+                "granted": str(given.size),
+                "why": given.blocked,
+                "note": "개장 점검 봉 문턱 넘음 — 점검 봉 종가에 한 번 더 싣는 판정(T1045)",
+            },
+        )
+        self._open = held
+        self.ledger.replace(held)
+        self.journal()
+
+    def _open_add_rows(self, frame: Timeframe) -> tuple[Sequence[Candle] | None, Timeframe | None]:
+        """점검 봉을 만들 봉 열과 그 축 — 5m 이 있으면 접고(실계좌), 없으면 그 축 그대로(재현).
+
+        Args:
+            frame: 점검 봉 축.
+
+        Returns:
+            `(봉 열, 축)`. 둘 다 없으면 `(None, None)`.
+
+        Note:
+            실계좌 판은 5m 걸음 축을 늘 들고 있다(`decision_frames`) — 같은 거래소의 5m 를 접으면
+            그 축 봉과 값이 같고, 판마다 1H 축을 더 시드 · 구독하지 않아도 된다(서버 메모리). 재현은
+            5m 가 없고 1H 를 든다.
+        """
+        frames = self.feed.timeframes
+        for source in (Timeframe.M5, frame):
+            if source in frames:
+                return self.feed.judged(source), source
+        return None, None
 
     def _first_reaction(
         self,
@@ -5979,11 +6306,14 @@ class Session:
             )
             held("hold:ref_volpct")
             return None
-        if hold in ("ref_volrank", "rel_lag", "washed", "event_window"):
-            # 기준 변동성 순위 · 기준 대비 뒤처짐 · 씻긴 시장 · 발표 앞뒤 문 — 그 봉엔 새로 안 든다.
-            # 보유분은 그대로.
+        if hold in ("ref_volrank", "rel_lag", "washed", "event_window", "rank_breadth"):
+            # 기준 변동성 순위 · 기준 대비 뒤처짐 · 씻긴 시장 · 발표 앞뒤 문 · 순위 폭 문 — 그 봉엔
+            # 새로 안 든다. 보유분은 그대로.
             # 🔴 모르면(None) 보류한다 — 신규 진입은 리스크 증가 행동이다(절대 규칙 #8-1).
             self._count(hold)
+            if hold == "rank_breadth" and self.ranked_breadth_now(chosen.playbook) is None:
+                # 값을 몰라 쉰 것과 값이 낮아 쉰 것을 가른다(관측 — 모름이 길면 작업이 멈춘 것이다).
+                self._count("rank_breadth:unknown")
             lag = chosen.playbook.entry_rel_lag
             own = None if lag is None else self.own_return(lag.days)
             _logger.info(
@@ -6004,6 +6334,11 @@ class Session:
                     ),
                     "funding": None if self.recent_funding is None else str(self.recent_funding),
                     "releases": self.release_schedule is not None,
+                    "ranked_breadth": (
+                        None
+                        if chosen.playbook.entry_ranked_breadth is None
+                        else str(self.ranked_breadth_now(chosen.playbook))
+                    ),
                     "note": "진입 문이 닫혀 있다(또는 값을 모른다) — 이 봉엔 새로 안 든다",
                 },
             )

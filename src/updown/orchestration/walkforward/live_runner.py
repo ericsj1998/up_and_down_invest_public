@@ -52,6 +52,7 @@ from updown.analysis.indicators.reference import needs_of as ref_needs_of
 from updown.analysis.playbook.types import BreadthDays, RefVolPct
 from updown.common.costs import DEFAULT_CONFIG_PATH, load_cost_table
 from updown.common.db.models.enums import LogLevel
+from updown.common.domain.announcement import Announcement
 from updown.common.domain.candle import Candle
 from updown.common.domain.capabilities import capabilities_of
 from updown.common.domain.instrument import Instrument, Market, Timeframe
@@ -65,7 +66,13 @@ from updown.common.domain.releases import (
     ReleaseSchedule,
     load_release_schedule,
 )
-from updown.common.domain.session import MarketCalendar, SessionConfigError, Tradability
+from updown.common.domain.session import DEFAULT_CONFIG_PATH as SESSIONS_PATH
+from updown.common.domain.session import (
+    MarketCalendar,
+    SessionConfigError,
+    Tradability,
+    load_calendar,
+)
 from updown.common.logging.setup import get_logger
 from updown.decision.risk.merged_liquidation import MergedLeg, check_merged_liquidation
 from updown.decision.risk.policy import funding_shortfall
@@ -121,10 +128,13 @@ from updown.orchestration.walkforward.order_mapping import (
     take_profit_orders,
 )
 from updown.orchestration.walkforward.ref_inputs import (
+    announcement_kinds_of,
     apply_ref_regime,
     brake_release_of,
     clear_ref_regime,
     market_day_of,
+    ranked_breadth_of,
+    ranked_days,
     ref_fetch_bars,
     ref_warm_extra,
     washed_rule_of,
@@ -1011,6 +1021,8 @@ MarketValuesReader = Callable[
 _market_reader: MarketValuesReader | None = None
 _MARKET_DAYS: dict[tuple[str, date, int, int, int], tuple[Decimal | None, Decimal | None]] = {}
 _MARKET_LOCKS: dict[tuple[str, date, int, int, int], asyncio.Lock] = {}
+_MARKET_MISS: dict[tuple[str, date, int, int, int], float] = {}
+"""기다리지 않는 읽기(`wait=False`)가 줄을 못 찾은 때(monotonic) — 잠깐 다시 안 묻는다(T1045)."""
 
 
 def set_market_values_reader(reader: MarketValuesReader | None) -> None:
@@ -1027,6 +1039,30 @@ def set_market_values_reader(reader: MarketValuesReader | None) -> None:
     _market_reader = reader
     _MARKET_DAYS.clear()
     _MARKET_LOCKS.clear()
+    _MARKET_MISS.clear()
+
+
+AnnouncementReader = Callable[
+    [tuple[str, ...], str, datetime], Awaitable[tuple[Announcement, ...] | None]
+]
+"""`(공지 갈래들, 계약 이름, 지금) → 그 계약의 사건(본 것)` — 표를 모르면 None (T1045)."""
+
+_announce_reader: AnnouncementReader | None = None
+
+
+def set_announcement_reader(reader: AnnouncementReader | None) -> None:
+    """거래소 공지 사건을 읽는 길을 꽂는다 — 프로세스에 하나(앱이 뜰 때 한 번 · T1045).
+
+    Args:
+        reader: 읽개. None 이면 사건을 모르는 것으로 돈다(그 선언의 다리는 새로 들지 않는다).
+
+    Note:
+        사건 표는 엔진 작업(`announcements`)이 쓰고 러너는 읽기만 한다 — 세션 · 러너는 DB 를
+        모르므로 앱이 길을 댄다. 기억해 두지 않는다 — 사건 판은 몇 개뿐이고, 진입 봉 직전에 본
+        공지를 그 걸음이 바로 읽어야 한다(기억이 한 걸음 늦추면 진입 봉을 놓친다).
+    """
+    global _announce_reader
+    _announce_reader = reader
 
 
 _releases: tuple[float, ReleaseSchedule] | None = None
@@ -1048,8 +1084,28 @@ def release_schedule_now() -> ReleaseSchedule:
     return _releases[1]
 
 
+_calendar: tuple[float, MarketCalendar] | None = None
+
+
+def event_calendar_now() -> MarketCalendar:
+    """시장 달력 — **같은 프로세스의 판들이 한 번만 읽는다**(파일이 바뀌면 다시 읽는다 · T1045).
+
+    Raises:
+        SessionConfigError: 설정을 못 읽었거나 꼴이 틀린 경우 — 부르는 쪽이 "모름" 으로 받는다.
+    """
+    global _calendar
+    path = SESSIONS_PATH
+    try:
+        stamp = path.stat().st_mtime
+    except OSError as exc:
+        raise SessionConfigError(f"시장 달력 설정이 없다: {path}") from exc
+    if _calendar is None or _calendar[0] != stamp:
+        _calendar = (stamp, load_calendar(path))
+    return _calendar[1]
+
+
 async def market_day_values(
-    market: str, day: date, rule: BreadthDays, *, now: datetime
+    market: str, day: date, rule: BreadthDays, *, now: datetime, wait: bool = True
 ) -> tuple[Decimal | None, Decimal | None] | None:
     """그날(`day` 종가까지)의 시장 전체 값 — **같은 프로세스의 판들이 한 번만 읽는다**.
 
@@ -1058,6 +1114,9 @@ async def market_day_values(
         day: 값에 들어간 마지막 닫힌 UTC 날.
         rule: 일수를 정하는 선언.
         now: 지금 시각 — 자정 직후인지 가른다.
+        wait: 자정 직후 줄이 없으면 잠깐씩 다시 읽나. 거짓이면 한 번만 읽고, 없으면
+            `MARKET_MISS_TTL_S` 동안 다시 안 읽는다(T1045 · 자정 뒤 몇 분 걸려 적히는 줄 — 판마다
+            기다리면 자정 걸음이 판 수만큼 늦어진다).
 
     Returns:
         `(종목 폭, 뒤처진 묶음 수익)`. 줄이 없거나 읽개가 없으면 None(모름).
@@ -1074,23 +1133,37 @@ async def market_day_values(
     reader = _market_reader
     if reader is None:
         return None
+    if not wait:
+        missed = _MARKET_MISS.get(key)
+        if missed is not None and time.monotonic() - missed < MARKET_MISS_TTL_S:
+            return None
     lock = _MARKET_LOCKS.setdefault(key, asyncio.Lock())
     async with lock:
         held = _MARKET_DAYS.get(key)
         if held is not None:
             return held
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        fresh = (now - midnight).total_seconds() <= MARKET_VALUES_FRESH_S
+        fresh = wait and (now - midnight).total_seconds() <= MARKET_VALUES_FRESH_S
+        if not wait:
+            missed = _MARKET_MISS.get(key)
+            if missed is not None and time.monotonic() - missed < MARKET_MISS_TTL_S:
+                return None  # 자물쇠를 기다리는 동안 다른 판이 막 읽고 없음을 적었다
         for attempt in range(MARKET_VALUES_TRIES if fresh else 1):
             got = await reader(market, day, rule)
             if got is not None:
-                for old in [k for k in _MARKET_DAYS if k[1] < day]:
+                # T1045 — 순위 폭은 며칠 치를 같이 읽는다(`ranked_days`) · 그 줄들이 서로를
+                # 지우지 않게 며칠 앞까지는 남긴다(줄은 고쳐지지 않아 오래 둬도 값이 같다).
+                floor = day - timedelta(days=MARKET_DAYS_KEEP)
+                for old in [k for k in _MARKET_DAYS if k[1] < floor]:
                     _MARKET_DAYS.pop(old, None)
                     _MARKET_LOCKS.pop(old, None)
                 _MARKET_DAYS[key] = got
+                _MARKET_MISS.pop(key, None)
                 return got
             if attempt + 1 < (MARKET_VALUES_TRIES if fresh else 1):
                 await asyncio.sleep(MARKET_VALUES_WAIT)
+        if not wait:
+            _MARKET_MISS[key] = time.monotonic()
     return None
 
 
@@ -1427,6 +1500,10 @@ MARKET_VALUES_WAIT = 1.0
 """시장 전체 값 다시 읽기 사이 쉼(초)."""
 MARKET_VALUES_FRESH_S = 90
 """자정 뒤 이 초 안에서만 다시 읽는다 — 그 뒤에 없으면 잡이 못 낸 것이다(기다려도 같다)."""
+MARKET_DAYS_KEEP = 3
+"""기억해 둔 시장 값 줄을 며칠 앞까지 남기나(T1045 · 여러 날을 같이 읽는 문이 있다)."""
+MARKET_MISS_TTL_S = 60.0
+"""기다리지 않는 읽기가 줄을 못 찾으면 이 초 동안 DB 에 다시 안 묻는다(판 · 걸음마다 안 묻게)."""
 STEP_REDO_TRIES = 5
 """봉 판정이 겹쳐 건너뛰었거나 미뤄졌을 때 다시 걸어 보는 횟수 (T852 D7)."""
 STEP_REDO_WAIT = 2.0
@@ -6644,6 +6721,7 @@ class LiveRunner:
         await self._inject_ref_regime()
         await self._inject_market_values()
         await self._inject_venue()
+        await self._inject_announcements()
         before = next(
             (item for item in self._session.ledger.records if item.outcome is Outcome.OPEN),
             None,
@@ -9076,6 +9154,42 @@ class LiveRunner:
                 self._log.info("live_venue_recovered", payload={"symbol": symbol})
             return
 
+    async def _inject_announcements(self) -> None:
+        """거래소 공지 사건(그때까지 본 것)을 세션에 넣는다 — 공지 사건 다리가 있는 판만 (T1045).
+
+        Note:
+            사건 표는 엔진 작업이 쓰고 러너는 읽기만 한다(`set_announcement_reader`). 🔴 읽개가
+            없거나 · 못 읽었거나 · 그 갈래 받기가 오래 멈췄으면(`stale_s`) None = 모름 → 세션이
+            그 다리 새 진입을 하지 않는다(규칙 #8-1) · 상태가 바뀔 때 한 번 경고한다. 보유 ·
+            손절 · 청산에는 닿지 않는다. 선언이 없으면 아무것도 안 한다(비용 0).
+        """
+        kinds = announcement_kinds_of(self._session.playbooks)
+        if not kinds:
+            return
+        reader = _announce_reader
+        got: tuple[Announcement, ...] | None = None
+        error = "읽개 없음"
+        if reader is not None:
+            try:
+                got = await reader(kinds, self.instrument.symbol, datetime.now(UTC))
+                error = "사건 표 모름(처음 받기 전 · 받기가 오래 멈춤)"
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {str(exc)[:120]}"
+        self._session.announcements = got
+        was = bool(getattr(self, "_announce_unknown", False))
+        if got is None and not was:
+            self._log.warning(
+                "live_announcements_unknown",
+                payload={
+                    "kinds": list(kinds),
+                    "error": error,
+                    "note": "공지 사건을 모른다 — 그 다리는 새로 들지 않는다(#8-1)",
+                },
+            )
+        elif got is not None and was:
+            self._log.info("live_announcements_recovered", payload={"kinds": list(kinds)})
+        self._announce_unknown = got is None
+
     async def _inject_market_values(self) -> None:
         """시장 전체 값(종목 폭 · 뒤처진 묶음 수익) · 발표 일정을 세션에 넣는다 — 선언한 판만.
 
@@ -9106,6 +9220,15 @@ class LiveRunner:
                     "live_market_values_unreadable", payload={"error": str(exc)[:140]}
                 )
             self._session.brake_release_breadth = None if freed is None else freed[0]
+        if any(b.open_bar_add is not None for b in self._session.playbooks):
+            # T1045 — 다른 시장 개장 시각(점검 봉)을 읽는 달력(설정 파일 · 미리 정해진 사실).
+            # 못 읽으면 None = 모름 → 세션이 더 싣지 않는다(리스크 증가 행동 · #8-1).
+            try:
+                self._session.event_calendar = event_calendar_now()
+            except SessionConfigError as exc:
+                self._session.event_calendar = None
+                self._log.warning("live_calendar_unreadable", payload={"error": str(exc)[:140]})
+        await self._inject_ranked_breadth(now)
         rule = washed_rule_of(self._session.playbooks)
         if rule is None:
             return
@@ -9119,6 +9242,54 @@ class LiveRunner:
             self._session.market_lag_ret = None
             return
         self._session.market_breadth, self._session.market_lag_ret = got
+
+    async def _inject_ranked_breadth(self, now: datetime) -> None:
+        """순위 폭 줄(최근 며칠 · `ranked_days`)을 세션에 넣는다 — 선언한 판만 (T1045).
+
+        Args:
+            now: 지금(UTC).
+
+        Note:
+            줄은 엔진 작업(`ranked_breadth`)이 쓰고 러너는 읽기만 한다 — 같은 프로세스의 판들이 한
+            번만 읽는다(`market_day_values`). 🔴 못 읽은 날은 칸을 비운다 = 모름 → 세션이 그 문을
+            선언한 다리의 **신규 진입만** 쉰다(규칙 #8-1) · 보유 · 손절 · 청산에는 닿지 않는다.
+            판정 봉 시작의 날 줄이 비면 세션이 보류를 세고(`rank_breadth:unknown`) 이 함수가 경고를
+            남긴다.
+        """
+        rule = ranked_breadth_of(self._session.playbooks)
+        if rule is None:
+            return
+        got: dict[date, Decimal | None] = {}
+        missing: list[str] = []
+        for day in ranked_days(now):
+            try:
+                # 기다리지 않는다 — 그날 줄은 자정 뒤 몇 분 걸려 적히고(그동안 그날 판정 봉은 전날
+                # 줄을 읽는다) 판마다 기다리면 자정 걸음이 판 수만큼 늦어진다.
+                row = await market_day_values(rule.table_market, day, rule, now=now, wait=False)
+            except Exception as exc:
+                row = None
+                self._log.warning(
+                    "live_ranked_breadth_unreadable", payload={"error": str(exc)[:140]}
+                )
+            if row is None or row[0] is None:
+                missing.append(day.isoformat())
+                continue
+            got[day] = row[0]
+        self._session.ranked_breadth = got
+        was = bool(getattr(self, "_ranked_missing", False))
+        # 자정 직후 그날 줄은 작업이 몇 분 뒤에 적는다 — 그 줄만 빠진 것은 정상(그날 판정 봉은 전날
+        # 줄을 읽는다). 앞날 줄까지 빠졌으면 작업이 멈춘 것이라 상태가 바뀔 때 한 번 남긴다.
+        stale = any(d != ranked_days(now)[-1].isoformat() for d in missing)
+        if stale and not was:
+            self._log.warning(
+                "live_ranked_breadth_missing",
+                payload={
+                    "market": rule.table_market,
+                    "days": missing,
+                    "note": "순위 폭 줄이 없다 — 그 문을 선언한 다리는 새 진입을 쉰다(#8-1)",
+                },
+            )
+        self._ranked_missing = stale
 
     def _inject_warm_holds(self, closed: Sequence[Candle], needs: RefNeeds, extra: int) -> None:
         """연구라면 들고 있었을 몫을 세션에 넣는다 (T811 · T812).

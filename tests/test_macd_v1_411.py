@@ -316,11 +316,14 @@ class TestLiveDeclaration:
         assert (books["private_strategy"].legs_revision or 0) >= 2  # 437차 · 배포마다 안 고침
 
     def test_time_exit_is_only_on_the_new_macd_books(self) -> None:
-        # 다른 거래소 봉을 읽는 구성원(`venue_bars`)의 시간 청산은 그 구성원의 시험이 본다
+        # 다른 거래소 봉을 읽는 구성원(`venue_bars`) · 공지 사건 구성원(`entry_announcement`)의
+        # 시간 청산은 그 구성원의 시험이 본다
         on = {
             b.playbook_id
             for b in load_playbooks()
-            if b.max_hold_bars is not None and b.venue_bars is None
+            if b.max_hold_bars is not None
+            and b.venue_bars is None
+            and getattr(b, "entry_announcement", None) is None
         }
         assert on == {
             "private_strategy",

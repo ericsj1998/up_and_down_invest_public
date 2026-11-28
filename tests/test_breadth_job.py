@@ -267,3 +267,36 @@ def test_missing_row_is_unknown_and_only_retried_right_after_midnight(
 def test_no_reader_means_unknown() -> None:
     live_runner.set_market_values_reader(None)
     assert asyncio.run(live_runner.market_day_values("GATE", DAY, RULE, now=MIDNIGHT)) is None
+
+
+def test_no_wait_read_does_not_retry_and_remembers_the_miss(
+    reader_calls: list[date], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T1045 — 자정 뒤 몇 분 걸려 적히는 줄은 판마다 기다리지 않는다(자정 걸음이 늦어진다)."""
+    rows: dict[date, Any] = {}
+
+    async def read(_market: str, day: date, _rule: BreadthDays) -> Any:
+        reader_calls.append(day)
+        return rows.get(day)
+
+    monkeypatch.setattr(live_runner, "MARKET_VALUES_WAIT", 5.0)  # 기다리면 시험이 늦어진다
+    live_runner.set_market_values_reader(read)
+    now = MIDNIGHT + timedelta(seconds=5)
+
+    async def many() -> list[Any]:
+        return await asyncio.gather(
+            *[
+                live_runner.market_day_values("RANKED", DAY, RULE, now=now, wait=False)
+                for _ in range(20)
+            ]
+        )
+
+    assert set(asyncio.run(many())) == {None} and reader_calls == [DAY]
+    # 없음을 기억하는 동안은 다시 안 묻고, 시간이 지나면 다시 묻는다(줄이 생겼으면 읽는다)
+    rows[DAY] = (Decimal("0.3"), None)
+    assert (
+        asyncio.run(live_runner.market_day_values("RANKED", DAY, RULE, now=now, wait=False)) is None
+    )
+    monkeypatch.setattr(live_runner, "MARKET_MISS_TTL_S", 0.0)
+    got = asyncio.run(live_runner.market_day_values("RANKED", DAY, RULE, now=now, wait=False))
+    assert got == (Decimal("0.3"), None) and reader_calls == [DAY, DAY]

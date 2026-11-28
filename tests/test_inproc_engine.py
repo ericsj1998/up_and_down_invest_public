@@ -49,12 +49,19 @@ def test_factory_adds_the_universe_job_and_runs_it_soon() -> None:
             eng.stop()
 
     from updown.analysis.playbook.select import load_playbooks
-    from updown.orchestration.rebalancer.breadth_job import params_of
+    from updown.orchestration.rebalancer.breadth_job import params_of, ranked_rules_of
 
     jobs, first = asyncio.run(run())
     # 시장 전체 값 잡은 그 값을 쓰는 진입 문(`entry_washed`)을 선언한 매매법이 있을 때만 붙는다
-    breadth = {"market_breadth", "market_breadth_check"} if params_of(load_playbooks()) else set()
-    assert set(jobs) == {"resource_beat", "universe_snapshot"} | breadth
+    books = load_playbooks()
+    breadth = {"market_breadth", "market_breadth_check"} if params_of(books) else set[str]()
+    # T1045 — 순위 폭 잡도 그 문(`entry_ranked_breadth`)을 선언한 매매법이 있을 때만
+    ranked = {"ranked_breadth"} if ranked_rules_of(books) else set[str]()
+    # T1045 — 공지 사건 잡도 공지 사건 다리(`entry_announcement`)를 선언한 매매법이 있을 때만
+    from updown.orchestration.rebalancer.announce_job import announcement_kinds
+
+    announced = {"announcements"} if announcement_kinds(books) else set[str]()
+    assert set(jobs) == {"resource_beat", "universe_snapshot"} | breadth | ranked | announced
     assert isinstance(first, datetime)
     assert first < datetime.now(UTC) + timedelta(seconds=UNIVERSE_RUN_SOON_S + 5)
 

@@ -94,6 +94,7 @@ from updown.orchestration.rebalancer.anchor import (
     outside_since,
     rows_reach,
 )
+from updown.orchestration.rebalancer.announce_job import AnnouncementStore
 from updown.orchestration.rebalancer.coordinator import (
     TickReport,
     brake_key,
@@ -608,8 +609,69 @@ _universe_store: UniverseSnapshotStore | None = None
 
 def attach_universe_store(factory: async_sessionmaker[AsyncSession]) -> None:
     """스냅샷 저장소를 붙인다 — `apps/api/main.py` 시작에서."""
-    global _universe_store
+    global _universe_store, _announce_store
     _universe_store = UniverseSnapshotStore(factory)
+    _announce_store = AnnouncementStore(factory)
+
+
+_announce_store: AnnouncementStore | None = None
+"""거래소 공지 사건 표 읽기 (T1045) — 우주 점검이 사건 종목을 공지 사건 다리 범위에 넣는다."""
+_ANNOUNCE_WARNED: set[str] = set()
+"""사건 표 읽기 실패를 경고한 펀드 — 5 분 점검마다 같은 경고를 쌓지 않는다."""
+
+
+async def _announcement_scopes(fund: Fund, now: datetime) -> dict[str, tuple[str, ...]]:
+    """공지 사건 다리마다 지금 범위에 둘 종목 — 사건이 정한다 (T1045).
+
+    Args:
+        fund: 우주 펀드.
+        now: 지금(UTC).
+
+    Returns:
+        `{다리 id: 계약 이름들}` — 공지 + 1 시간 + `active_hours` 안의 사건 종목(짝을 지은 것만).
+        사건 다리가 없거나 표를 못 읽으면 빈 사전(경고 · 이미 뜬 판 · 보유는 그대로 — 계획이 진입
+        범위만 좁힌다).
+
+    Note:
+        진입 봉 = 공지 + 지연(룰 값 · 1 분) 뒤 첫 정시라 공지 + 1 시간 + 지연 안이다 — 범위를
+        공지 + 1 시간 + `active_hours` 까지 두면 진입 봉 판정 걸음을 덮는다. 보유는 범위 밖이 돼도
+        청산까지 남는다(`plan_rotation` 의 `WIND_DOWN` · `NARROW`). 판은 펀드 종목이 아닌 계약에도
+        뜬다(사건 종목은 대개 분기 목록 밖) — Gate 폐지 공지가 붙은 계약은 짝을 안 지어 여기
+        안 온다.
+    """
+    books = {b.playbook_id: b for b in load_playbooks()}
+    wanted: dict[str, tuple[str, int]] = {}
+    for leg in fund.legs:
+        book = books.get(leg.playbook)
+        rule = None if book is None or leg.engine is not None else book.entry_announcement
+        if rule is not None:
+            wanted[leg.playbook] = (rule.kind, rule.active_hours)
+    if not wanted or _announce_store is None:
+        return {}
+    longest = max(hours for _kind, hours in wanted.values())
+    since = now - timedelta(hours=longest + 1)
+    try:
+        rows = await _announce_store.active(sorted({k for k, _h in wanted.values()}), since)
+    except Exception as exc:
+        if fund.fund_id not in _ANNOUNCE_WARNED:
+            _ANNOUNCE_WARNED.add(fund.fund_id)
+            _events.warning(
+                "fund_announcements_unreadable",
+                payload={"fund_id": fund.fund_id, "error": str(exc)[:200]},
+            )
+        return {}
+    _ANNOUNCE_WARNED.discard(fund.fund_id)
+    out: dict[str, tuple[str, ...]] = {}
+    for leg_id, (kind, hours) in wanted.items():
+        until = timedelta(hours=hours + 1)
+        syms = {
+            r.contract
+            for r in rows
+            if r.kind == kind and r.contract and r.seen_at <= now < r.announced_at + until
+        }
+        if syms:
+            out[leg_id] = tuple(sorted(syms))
+    return out
 
 
 async def _universe_legs(profile: str, quarter: date) -> dict[str, tuple[str, ...]] | None:
@@ -5546,6 +5608,10 @@ async def _universe_step(fund: Fund, now: datetime, cfg: RotationConfig) -> dict
         return {"action": "no_snapshot", "quarter": q.isoformat()}
     mine = {leg.playbook for leg in fund.legs if leg.engine is None}
     scopes = {k: v for k, v in legs_gate.items() if k in mine}
+    # ⭐ T1045 — 공지 사건 다리: 종목은 분기 목록이 아니라 사건이 정한다(진입 봉 판정 동안 판을
+    #    띄운다).
+    for leg_id, syms in (await _announcement_scopes(fund, now)).items():
+        scopes[leg_id] = tuple(sorted({*scopes.get(leg_id, ()), *syms}))
     # T852 F1 — 복원 때 못 떠서 적어 둔 멤버 중 **이번 목록에 없는 것은 잊는다**(파일에 도로
     # 쓰이지 않게). 목록에 있는 것은 아래 계획이 띄우거나, 판이 돌아오면 다시 묶인다.
     listed = {sym for syms in scopes.values() for sym in syms}

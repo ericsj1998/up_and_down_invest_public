@@ -35,6 +35,7 @@ from updown.apps.engine.liveness import LivenessBeacon
 from updown.apps.engine.resource_beat import register_resource_beat
 from updown.apps.engine.scheduler import (
     build_scheduler,
+    register_announcement_job,
     register_breadth_job,
     register_candle_collection,
     register_daily_report,
@@ -180,6 +181,8 @@ class EngineRunner:
             register_universe_job(self._scheduler, create_session_factory(self._engine))
             # 시장 전체 값 — 전 종목 종가를 쌓고 그날 줄 하나를 쓴다(선언이 없으면 등록 안 함).
             register_breadth_job(self._scheduler, create_session_factory(self._engine))
+            # 거래소 공지 사건(T1045) — 공지 목록 첫 쪽을 1 분마다(선언이 없으면 등록 안 함).
+            register_announcement_job(self._scheduler, create_session_factory(self._engine))
             start_loop_lag()  # T265 눈금
 
             boot = asyncio.create_task(

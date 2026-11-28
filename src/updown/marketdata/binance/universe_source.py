@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any, cast
 
 from updown.common.logging.setup import get_logger
@@ -53,15 +54,28 @@ class PerpSymbol:
     contract_type: str
     underlying_type: str
     quote_asset: str
+    onboard_ms: int | None = None
+    """상장 시각(`onboardDate` · ms) — 없으면 None(상장 일수를 모른다)."""
 
     @property
     def is_coin_perpetual(self) -> bool:
         """코인 무기한인가 — 순위 모집단 판정."""
         return self.contract_type == "PERPETUAL" and self.underlying_type == "COIN"
 
+    @property
+    def listed_day(self) -> date | None:
+        """상장 UTC 날 — `onboard_ms` 가 없으면 None."""
+        if self.onboard_ms is None:
+            return None
+        return datetime.fromtimestamp(self.onboard_ms / 1000, tz=UTC).date()
+
 
 def _ms(day: date) -> int:
     return int(datetime(day.year, day.month, day.day, tzinfo=UTC).timestamp() * 1000)
+
+
+def _ms_at(moment: datetime) -> int:
+    return int(moment.astimezone(UTC).timestamp() * 1000)
 
 
 def parse_daily_quotes(rows: list[Any], q: date) -> dict[date, float]:
@@ -165,6 +179,11 @@ class BinanceUniverseSource:
             raise UniverseSourceError("exchangeInfo 모양이 틀렸다")
         out: list[PerpSymbol] = []
         for raw in cast("list[dict[str, Any]]", body["symbols"]):
+            onboard = raw.get("onboardDate")
+            try:
+                onboard_ms = int(onboard) if onboard not in (None, "") else None
+            except (TypeError, ValueError):
+                onboard_ms = None
             out.append(
                 PerpSymbol(
                     symbol=str(raw.get("symbol", "")),
@@ -172,10 +191,90 @@ class BinanceUniverseSource:
                     contract_type=str(raw.get("contractType", "")),
                     underlying_type=str(raw.get("underlyingType", "")),
                     quote_asset=str(raw.get("quoteAsset", "")),
+                    onboard_ms=onboard_ms,
                 )
             )
         out.sort(key=lambda s: s.symbol)
         return tuple(out)
+
+    async def listed_symbols(self) -> dict[str, date | None]:
+        """코인 무기한 · 결제 USDT · 이름이 `…USDT` 인 심볼(상태 무관) → 상장 날 (T1045 순위 폭).
+
+        Returns:
+            `{심볼: 상장 UTC 날 | None}`. 상태(`TRADING` · `SETTLING` …)를 거르지 않는다 — 폐지
+            직전 종목도 순위 창 안 거래대금이 있으면 순위에 든다(과거 표와 같은 모집단).
+
+        Raises:
+            UniverseSourceError: 목록을 못 받았을 때(부분 목록을 돌려주지 않는다).
+        """
+        return {
+            s.symbol: s.listed_day
+            for s in await self.perpetual_symbols()
+            if s.is_coin_perpetual
+            and s.quote_asset == "USDT"
+            and s.symbol.isascii()
+            and s.symbol.endswith("USDT")
+        }
+
+    async def hourly_rows(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> list[tuple[datetime, Decimal, Decimal]]:
+        """심볼 하나의 `[start, end)` 에 시작한 1H 봉 `(시작, 종가, 거래량)` — 닫힌 봉만 (T1045).
+
+        Args:
+            symbol: 바이낸스 이름.
+            start: 첫 봉 시작(포함 · UTC).
+            end: 끝(제외 · UTC) — 이 시각에 닫히는 봉까지 든다. 부르는 쪽이 `end` 가 지난 뒤에
+                부른다(봉 마감 시각 = 다음 봉 시작).
+
+        Returns:
+            봉 열(오름차순). 봉이 없으면 빈 열(상장 전 · 폐지 뒤는 정상).
+
+        Raises:
+            UniverseSourceError: 재시도 뒤에도 못 받았거나 행 모양이 틀렸을 때.
+
+        Note:
+            한 요청에 최대 1,500 봉 — 그보다 긴 구간은 이어 받는다. 가중치: 봉 500 ~ 1,000 개 = 5.
+        """
+        hour_ms = 3_600_000
+        cursor, stop = _ms_at(start), _ms_at(end)
+        out: list[tuple[datetime, Decimal, Decimal]] = []
+        while cursor < stop:
+            want = min(1500, (stop - cursor) // hour_ms)
+            if want <= 0:
+                break
+            try:
+                body = await self._get(
+                    "/fapi/v1/klines",
+                    {
+                        "symbol": symbol,
+                        "interval": "1h",
+                        "startTime": str(cursor),
+                        "endTime": str(stop - 1),
+                        "limit": str(want),
+                    },
+                )
+            except InvalidSymbolStatusError:
+                self.invalid_status.append(symbol)
+                return out
+            if not isinstance(body, list):
+                raise UniverseSourceError(f"{symbol} klines 모양이 틀렸다")
+            if not body:
+                break
+            last = cursor
+            for raw in body:
+                try:
+                    row = cast("list[Any]", raw)
+                    open_ms = int(row[0])
+                    close = Decimal(str(row[4]))
+                    volume = Decimal(str(row[5]))
+                except (TypeError, ValueError, IndexError, ArithmeticError) as exc:
+                    raise UniverseSourceError(f"klines 행 모양이 틀렸다: {raw!r:.80}") from exc
+                if cursor <= open_ms < stop:
+                    out.append((datetime.fromtimestamp(open_ms / 1000, tz=UTC), close, volume))
+                last = max(last, open_ms)
+            cursor = last + hour_ms
+        return out
 
     async def daily_quotes(self, symbol: str, q: date, lookback_days: int) -> dict[date, float]:
         """심볼 하나의 [q - lookback - 1 일, q) 닫힌 일봉 거래대금.

@@ -22,16 +22,19 @@ from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+from updown.analysis.indicators.open_bar import OPEN_LOOKBACK_DAYS
 from updown.analysis.indicators.reference import RefNeeds, needs_of, reference_regime
-from updown.analysis.playbook.types import BreadthDays
+from updown.analysis.playbook.types import BreadthDays, OpenBarAdd
 from updown.common.domain.instrument import Timeframe
 from updown.common.domain.releases import ReleaseSchedule
+from updown.common.domain.session import MarketCalendar
 from updown.decision.allocation import Basket, as_members
+from updown.marketdata.ingest.timeframes import interval
 from updown.orchestration.fund_replay.runner_rules import (
     ContractSpec,
     add_contracts,
@@ -51,10 +54,13 @@ from updown.orchestration.rebalancer.live_adapter import SessionBridge
 from updown.orchestration.rebalancer.wiring import wire_legs
 from updown.orchestration.walkforward.ledger import Outcome
 from updown.orchestration.walkforward.ref_inputs import (
+    announcement_kinds_of,
     apply_ref_regime,
     brake_release_of,
     clear_ref_regime,
     market_day_of,
+    ranked_breadth_of,
+    ranked_days,
     washed_rule_of,
 )
 from updown.portfolio.performance import TwrLedger
@@ -62,6 +68,7 @@ from updown.portfolio.performance import TwrLedger
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from updown.common.domain.announcement import Announcement
     from updown.common.domain.candle import Candle
     from updown.orchestration.fund_replay.engine_leg import ReplayEngineLeg
     from updown.orchestration.rebalancer.legs import FundLeg
@@ -243,6 +250,8 @@ class FundReplay:
         | None = None,
         release_schedule: ReleaseSchedule | None = None,
         allow_unknown_inputs: bool = False,
+        event_calendar: MarketCalendar | None = None,
+        announcements: Sequence[Announcement] | None = None,
     ) -> None:
         """걸음을 준비한다.
 
@@ -263,6 +272,15 @@ class FundReplay:
                 읽어 넣는다. None 이면 모르는 것으로 돈다(그 문을 선언한 다리는 진입 보류).
             allow_unknown_inputs: 참이면 선언한 문의 입력(일정 · 시장 값)이 없어도 돈다(옛 재현과
                 맞대기용). 거짓(기본)이면 시작 점검(`check_inputs`)이 막는다.
+            event_calendar: 다른 시장의 정규장 달력(`open_bar_add` · T1045) — 실계좌는 러너가
+                설정 파일에서 읽어 넣는다. None 이면 모르는 것으로 돈다(그 선언의 다리는 안 싣는다).
+                `market_values` 는 순위 폭 선언(`entry_ranked_breadth`)도 받는다 — 그때 값은
+                `(순위 폭, None)` 이다(실계좌 표 줄과 같은 꼴).
+            announcements: 거래소 공지 사건 전부(T1045 · 실계좌 작업과 같은 제목 규칙 ·
+                짝짓기로 만든 것). 걸음마다 그 판 계약 · 그 판 다리 갈래 · **본 시각(`seen_at`)
+                ≤ 시계** 인 것만 세션에 넣는다(실계좌 러너 `_inject_announcements` 와 같은 꼴 ·
+                앞보기 없음). None 이면 모르는 것으로 돈다(그 선언의 다리는 진입 0 — 시작 점검이
+                막는다).
 
         Raises:
             ReplayInputError: 판의 매매법이 선언한 문의 입력이 없을 때(`allow_unknown_inputs` 거짓).
@@ -278,8 +296,21 @@ class FundReplay:
         self._market_values = market_values
         self._release_schedule = release_schedule
         self._allow_unknown = allow_unknown_inputs
+        self._event_calendar = event_calendar
+        self._announcements = announcements
+        # T1045 — 판마다 넣을 사건(그 판 계약 · 그 판 다리 갈래 · 본 시각 순)과 그 시각 열.
+        self._announced: dict[str, tuple[list[datetime], list[Announcement]]] = {}
         for board in self.boards:
             board.session.release_schedule = release_schedule
+            if any(getattr(b, "open_bar_add", None) is not None for b in board.session.playbooks):
+                board.session.event_calendar = event_calendar
+            kinds = announcement_kinds_of(board.session.playbooks)
+            if kinds and announcements is not None:
+                mine = sorted(
+                    (e for e in announcements if e.symbol == board.symbol and e.kind in kinds),
+                    key=lambda e: (e.seen_at, e.announced_at, e.token),
+                )
+                self._announced[board.symbol] = ([e.seen_at for e in mine], mine)
         self.result = ReplayResult()
         if not allow_unknown_inputs:
             self.check_inputs()
@@ -317,6 +348,11 @@ class FundReplay:
             missing.append("시장 전체 값(entry_washed)")
         if brake_release_of(books) is not None and self._market_values is None:
             missing.append("시장 전체 값(drawdown_brake.release)")
+        if ranked_breadth_of(books) is not None and self._market_values is None:
+            missing.append("순위 폭(entry_ranked_breadth)")
+        if announcement_kinds_of(books) and self._announcements is None:
+            missing.append("공지 사건(entry_announcement)")
+        missing += self._open_add_gaps(start, end)
         if start is not None:
             have = bisect_right(self._ref_ends, start)
             need = max(
@@ -331,6 +367,78 @@ class FundReplay:
                 missing.append(f"기준 4H 봉 {have} 개 ≤ 국면값 요구 {need} 개(시작 전 마감 봉)")
         if missing:
             raise ReplayInputError("재현 입력 빠짐 — " + " · ".join(missing))
+
+    def _open_add_gaps(self, start: datetime | None, end: datetime | None) -> list[str]:
+        """개장 점검 봉 더 싣기(`open_bar_add`)를 선언한 판의 입력 빠짐 (T1045 · T968 같은 꼴).
+
+        Args:
+            start: 걷기 시작(주면 달력이 그 시각부터 덮는지 본다).
+            end: 걷기 끝.
+
+        Returns:
+            빠진 것 설명들 — 달력 없음 · 달력이 창을 못 덮음 · 점검 봉 축(또는 5m)이 없는 판.
+        """
+        out: list[str] = []
+        rules: list[tuple[ReplayBoard, OpenBarAdd]] = [
+            (board, cast("OpenBarAdd", rule))
+            for board in self.boards
+            for b in board.session.playbooks
+            if (rule := getattr(b, "open_bar_add", None)) is not None
+        ]
+        if not rules:
+            return out
+        if self._event_calendar is None:
+            out.append("시장 달력(open_bar_add)")
+        elif start is not None and end is not None:
+            for market in sorted({rule.market for _board, rule in rules}):
+                known = self._event_calendar.known_range.get(market)
+                lo = (start - timedelta(days=OPEN_LOOKBACK_DAYS)).date()
+                if known is None or known[0] > lo or known[1] < end.date():
+                    have = "없음" if known is None else f"{known[0]} ~ {known[1]}"
+                    out.append(f"시장 달력 {market} 이 창을 못 덮음({have})")
+        bare = sorted(
+            {
+                board.symbol
+                for board, rule in rules
+                if Timeframe.M5 not in board.session.feed.timeframes
+                and rule.timeframe not in board.session.feed.timeframes
+            }
+        )
+        if bare:
+            out.append(f"점검 봉 축이 없는 판 {len(bare)}개({', '.join(bare[:5])})")
+        if start is not None:
+            # 시작 전에 점검 봉 앞 봉(평균 참범위 창)이 없으면 창 앞쪽 점검이 통째로 "모름" 이 된다.
+            short = sorted(
+                {
+                    board.symbol
+                    for board, rule in rules
+                    if board.symbol not in bare
+                    and len(
+                        board.session.feed.judged(
+                            Timeframe.M5
+                            if Timeframe.M5 in board.session.feed.timeframes
+                            else rule.timeframe
+                        )
+                    )
+                    <= rule.atr_period + 1
+                }
+            )
+            if short:
+                out.append(
+                    f"시작 전 점검 봉 축 봉이 모자란 판 {len(short)}개({', '.join(short[:5])})"
+                )
+        # 걸음이 점검 봉보다 굵으면 점검 봉이 닫힌 뒤 몇 시간 늦게 지난 값으로 더 싣게 된다(실계좌는
+        # 5m 걸음 · 30 분 넘으면 버림) — 재현 판은 점검 봉 축 이하로 걸어야 한다.
+        coarse = sorted(
+            {
+                board.symbol
+                for board, rule in rules
+                if timedelta(minutes=board.minutes) > interval(rule.timeframe)
+            }
+        )
+        if coarse:
+            out.append(f"점검 봉보다 굵게 걷는 판 {len(coarse)}개({', '.join(coarse[:5])})")
+        return out
 
     def run(self, start: datetime, end: datetime) -> ReplayResult:
         """`start` 다음 시간부터 `end` 까지 한 시간씩 민다.
@@ -370,6 +478,7 @@ class FundReplay:
                     if board.session.idle_advance():
                         continue
                 self._halt_if_exhausted(board, t)
+                self._inject_announcements(board, t)
                 board.session.step()
                 self._after_step(board, t)
             if on_hour and t.hour % 4 == 0:
@@ -447,6 +556,7 @@ class FundReplay:
         실계좌 `_inject_market_values` 와 같은 날 셈이다: 값의 날 = `t` 기준 마지막으로 닫힌 UTC 날.
         """
         day = market_day_of(t)
+        ranked_memo: dict[tuple[str, date], Decimal | None] = {}
         for board in self.boards:
             s = board.session
             release = brake_release_of(s.playbooks)
@@ -454,11 +564,44 @@ class FundReplay:
                 # T985 — 브레이크 풀기가 보는 시장 폭(실계좌 러너와 같은 날 셈 · 모르면 안 푼다).
                 freed = None if self._market_values is None else self._market_values(day, release)
                 s.brake_release_breadth = None if freed is None else freed[0]
+            ranked = ranked_breadth_of(s.playbooks)
+            if ranked is not None:
+                # T1045 — 실계좌 러너 `_inject_ranked_breadth` 와 같은 날들 · 같은 꼴
+                #   (못 구한 날은 칸 없음 = 모름 → 그 다리 새 진입 보류).
+                rows: dict[date, Decimal | None] = {}
+                for d in ranked_days(t):
+                    key = (ranked.table_market, d)
+                    if key not in ranked_memo:
+                        got = (
+                            None if self._market_values is None else self._market_values(d, ranked)
+                        )
+                        ranked_memo[key] = None if got is None else got[0]
+                    if ranked_memo[key] is not None:
+                        rows[d] = ranked_memo[key]
+                s.ranked_breadth = rows
             rule = washed_rule_of(s.playbooks)
             if rule is None:
                 continue
             got = None if self._market_values is None else self._market_values(day, rule)
             s.market_breadth, s.market_lag_ret = (None, None) if got is None else got
+
+    def _inject_announcements(self, board: ReplayBoard, t: datetime) -> None:
+        """그 판에 공지 사건(본 시각 ≤ `t`)을 넣는다 — 실계좌 러너 `_inject_announcements` 와 같다.
+
+        사건 다리가 없는 판은 손대지 않는다. 사건 표를 안 받았으면(`announcements` None) None =
+        모름 — 그 다리 진입 0(시작 점검이 먼저 막는다 · `allow_unknown_inputs` 일 때만 여기 온다).
+        """
+        if not announcement_kinds_of(board.session.playbooks):
+            return
+        got = self._announced.get(board.symbol)
+        if self._announcements is None:
+            board.session.announcements = None
+            return
+        if got is None:
+            board.session.announcements = ()
+            return
+        stamps, rows = got
+        board.session.announcements = tuple(rows[: bisect_right(stamps, t)])
 
     def _inject_funding(self, t: datetime) -> None:
         """가장 최근 정산 요율을 `recent_funding` 으로 — 러너가 거래소 요율을 넣는 자리."""

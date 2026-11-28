@@ -393,7 +393,9 @@ def register_breadth_job(
         run_day,
     )
 
-    params = params_of(load_playbooks())
+    books = load_playbooks()
+    register_ranked_breadth_job(scheduler, factory, books, run_soon_s=run_soon_s)
+    params = params_of(books)
     if not params:
         _logger.info("breadth_job_idle", payload={"note": "선언한 매매법이 없다"})
         return
@@ -444,3 +446,214 @@ def register_breadth_job(
         **soon,
     )
     _logger.info("job_registered", payload={"job": "market_breadth", "params": len(params)})
+
+
+RANKED_CHECK_SECOND = 45
+"""매시 정각 뒤 이 초에 순위 폭 줄이 있는지 점검한다 — 없으면 원천에서 받아 낸다(T1045).
+
+자정 정각 뒤 첫 점검이 그날 줄을 낸다(자정에 닫힌 1H 봉이 원천에 적힐 틈 ·
+`RankedJobConfig.settle_s`).
+"""
+RANKED_SOURCES = frozenset({"BINANCE"})
+"""순위 폭 작업이 받을 줄 아는 원천 — 선언의 `source` 가 이 밖이면 등록하지 않고 오류를 남긴다."""
+
+
+def register_ranked_breadth_job(
+    scheduler: AsyncIOScheduler,
+    factory: "async_sessionmaker[AsyncSession]",
+    books: Any,
+    *,
+    run_soon_s: float | None = None,
+) -> None:
+    """순위 폭 작업 — 매시 한 번 점검하고 그날 줄이 없을 때만 원천에 묻는다 (T1045).
+
+    Args:
+        scheduler: 엔진 스케줄러.
+        factory: DB 세션 팩토리.
+        books: 매매법 선언 전부(`load_playbooks()`).
+        run_soon_s: 등록 뒤 이 초 뒤에 한 번 먼저 돈다. None 이면 다음 정각까지 기다린다.
+
+    Note:
+        `entry_ranked_breadth` 를 선언한 매매법이 없으면 등록하지 않는다(할 일이 없다). 하루
+        한 번 원천의 코인 무기한 전부(바이낸스 약 550 종)를 1H 봉 한 요청씩 받는다(가중치 5 ·
+        호출 간격 0.25 초 · 약 2 ~ 3 분) — await 하며 쉬므로 이벤트 루프를 막지 않는다. 줄이 이미
+        있으면 DB 한 번 읽기로 끝난다. 실패하면 다음 정각에 다시 한다 — 그동안 러너는 "모름" 으로
+        읽고 그 문을 선언한 다리의 신규 진입을 쉰다(규칙 #8-1).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from updown.marketdata.provider import universe_source
+    from updown.orchestration.rebalancer.breadth_job import (
+        MarketCloseStore,
+        RankedJobConfig,
+        ranked_rules_of,
+        run_ranked_day,
+    )
+
+    rules = ranked_rules_of(books)
+    if not rules:
+        _logger.info("ranked_breadth_job_idle", payload={"note": "선언한 매매법이 없다"})
+        return
+    unknown = sorted({r.source for r in rules} - RANKED_SOURCES)
+    if unknown:
+        # 🔴 조용히 넘기지 않는다(규칙 #8) — 줄이 안 생기면 러너가 그 문의 다리 진입을 쉰다.
+        _logger.error(
+            "ranked_breadth_job_unsupported",
+            payload={"sources": unknown, "note": "모르는 원천 — 작업을 등록하지 않는다"},
+        )
+        return
+    store = MarketCloseStore(factory)
+    cfg = RankedJobConfig()
+
+    async def job() -> None:
+        source = universe_source()
+        try:
+            out = await run_ranked_day(store, source, rules, now=datetime.now(UTC), cfg=cfg)
+        finally:
+            await source.aclose()
+        # 못 받아 줄을 못 적은 것은 경고(그날 그 문의 다리가 새 진입을 쉰다) · 나머지는 정보.
+        bad = out.action == "skipped" and out.failed > 0
+        log = _logger.warning if bad else _logger.info
+        log(
+            "ranked_breadth_job_checked",
+            payload={
+                "days": [d.isoformat() for d in out.days],
+                "action": out.action,
+                "symbols": out.symbols,
+                "failed": out.failed,
+                "unlisted": out.unlisted,
+                "reason": out.reason,
+                "values": [list(v) for v in out.values],
+                "calls": source.calls,
+                "weight_max": source.weight_max,
+            },
+        )
+
+    soon: dict[str, Any] = {}
+    if run_soon_s is not None:
+        soon["next_run_time"] = datetime.now(UTC) + timedelta(seconds=run_soon_s)
+    scheduler.add_job(  # pyright: ignore[reportUnknownMemberType]
+        _traced("ranked_breadth", job),
+        trigger=CronTrigger(timezone="UTC", minute=0, second=RANKED_CHECK_SECOND),
+        id="ranked_breadth",
+        name="ranked_breadth",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=1800,
+        replace_existing=True,
+        **soon,
+    )
+    _logger.info("job_registered", payload={"job": "ranked_breadth", "rules": len(rules)})
+
+
+def register_announcement_job(
+    scheduler: AsyncIOScheduler,
+    factory: "async_sessionmaker[AsyncSession]",
+    *,
+    run_soon_s: float | None = 15.0,
+) -> None:
+    """거래소 공지 사건 작업 — `poll_s` 마다 갈래별 목록 첫 쪽을 받는다 (T1045).
+
+    Args:
+        scheduler: 엔진 스케줄러.
+        factory: DB 세션 팩토리.
+        run_soon_s: 등록 뒤 이 초 뒤에 한 번 먼저 돈다(처음 받기를 바로 시작). None 이면 한 간격 뒤.
+
+    Note:
+        `entry_announcement` 를 선언한 매매법이 없으면 등록하지 않는다(할 일이 없다). 처음 한 번은
+        갈래마다 목록 전체(쪽 50 · 쪽 사이 0.4 초)를 받고, 그 뒤로는 갈래마다 요청 하나(첫 쪽)다.
+        새 이름이 있을 때만 두 거래소 시세 · 계약 표를 한 번씩 읽어 계약에 짝짓는다(분기 목록과 같은
+        이름 사슬 · 가격비 확인). 걸음마다 시작 · 끝을 적지 않는다(1 분 작업이라 로그가 덮인다) —
+        새 사건 · 실패 · 처음 받기만 남긴다. 실패는 작업 안에서 표 · 경고 · 알림으로 남는다(#8).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    from updown.analysis.announcements import load_title_rules
+    from updown.analysis.playbook.select import load_playbooks
+    from updown.decision.universe import DEFAULT_CONFIG_PATH as UNIVERSE_PATH
+    from updown.decision.universe_names import load_name_chain
+    from updown.marketdata.provider import announcement_source, gate_universe_facts, universe_source
+    from updown.orchestration.rebalancer.announce_job import (
+        AnnouncementStore,
+        announcement_kinds,
+        load_announce_job_config,
+        make_event_mapper,
+        run_announcements,
+    )
+
+    kinds = announcement_kinds(load_playbooks())
+    if not kinds:
+        _logger.info("announcement_job_idle", payload={"note": "선언한 매매법이 없다"})
+        return
+    rules_all = load_title_rules()
+    missing = [k for k in kinds if k not in rules_all]
+    if missing:
+        # 🔴 조용히 넘기지 않는다(규칙 #8) — 사건이 안 생기면 그 다리는 진입이 없다.
+        _logger.error(
+            "announcement_job_unconfigured",
+            payload={"kinds": missing, "note": "선언한 공지 갈래의 제목 규칙이 없다 — 등록 안 함"},
+        )
+        return
+    rules = [rules_all[k] for k in kinds]
+    cfg = load_announce_job_config()
+    chain = load_name_chain(UNIVERSE_PATH)
+    store = AnnouncementStore(factory)
+
+    async def mapper(tokens: Any) -> Any:
+        # 새 이름이 있을 때만 두 거래소 클라이언트를 연다(평소 1 분 받기는 공지 목록 요청 하나뿐).
+        rank = universe_source()
+        order = gate_universe_facts()
+        try:
+            return await make_event_mapper(rank, order, chain)(tokens)
+        finally:
+            await rank.aclose()
+            await order.aclose()
+
+    # 목록 원천은 프로세스 수명 동안 하나(연결 풀을 1 분마다 새로 열지 않는다).
+    sources = {name: announcement_source(name) for name in sorted({r.source for r in rules})}
+
+    async def job() -> None:
+        try:
+            outcomes = await run_announcements(
+                store, sources, mapper, rules, now=datetime.now(UTC), cfg=cfg
+            )
+        except Exception as exc:  # 표를 못 읽는 등 작업 전체 실패 — 다음 간격에 다시
+            _logger.error(
+                "announcement_job_failed", payload={"error": f"{type(exc).__name__}: {exc}"[:200]}
+            )
+            return
+        for out in outcomes:
+            if out.action == "backfilled" or out.new_tokens:
+                _logger.info(
+                    "announcement_job_checked",
+                    payload={
+                        "kind": out.kind,
+                        "action": out.action,
+                        "pages": out.pages,
+                        "articles": out.articles,
+                        "new": out.new_tokens,
+                        "mapped": out.mapped,
+                        "stats": dict(out.stats),
+                    },
+                )
+
+    soon: dict[str, Any] = {}
+    if run_soon_s is not None:
+        soon["next_run_time"] = datetime.now(UTC) + timedelta(seconds=run_soon_s)
+    scheduler.add_job(  # pyright: ignore[reportUnknownMemberType]
+        job,
+        trigger=IntervalTrigger(seconds=max(1, round(cfg.poll_s)), timezone="UTC"),
+        id="announcements",
+        name="announcements",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=int(max(cfg.poll_s, 30)),
+        replace_existing=True,
+        **soon,
+    )
+    _logger.info(
+        "job_registered",
+        payload={"job": "announcements", "kinds": list(kinds), "poll_s": cfg.poll_s},
+    )

@@ -28,6 +28,7 @@ order_block + UPTREND    →  눌림목 매매
 
 from __future__ import annotations
 
+import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -38,7 +39,7 @@ from typing import Protocol
 from updown.analysis.indicators.atr import atr
 from updown.common.domain.candle import Candle
 from updown.common.domain.evidence import Family, Grade
-from updown.common.domain.instrument import MarketGroup, Timeframe
+from updown.common.domain.instrument import Market, MarketGroup, Timeframe
 from updown.common.domain.reports import TrendDirection
 
 
@@ -648,6 +649,87 @@ class WashedRule:
 
 
 @dataclass(frozen=True, slots=True)
+class RankedBreadthGate:
+    """거래대금 위 N 종목 가운데 1H 이평 위 비율이 문턱 아래인 날 신규 진입을 쉰다 (T1045).
+
+    값(날 V · UTC) = `source` 거래소 코인 무기한(결제 USDT · `exclude` 접두 제외) 가운데
+    V-`rank_days` ~ V-1 거래대금(1H 종가 x 거래량의 UTC 날 합) 위 `top` · 상장(첫 봉) 뒤
+    `min_age_days` 일 넘음 — 각 종목의 V 00:00 앞에 닫힌 마지막 1H 종가가 1H `ma_bars` 봉 단순
+    이평 위인 비율. 식은 `analysis.indicators.breadth` 의 순위 폭 함수들이다(실계좌 작업과 재현이
+    같은 함수를 쓴다).
+
+    판정 봉(진입 TF 마지막 마감 봉)의 **시작**이 든 UTC 날 V 의 값이 `below` 미만이면 그 봉엔
+    새로 안 든다. 값은 러너가 주입한다(`Session.ranked_breadth` · 표 `market_breadth_days` 의
+    `table_market` 줄).
+
+    Attributes:
+        source: 값을 내는 거래소(표의 열쇠 · 작업이 원천을 고른다).
+        top: 거래대금 순위 위 몇 종목.
+        min_age_days: 상장 뒤 이 일수를 **넘은** 종목만.
+        rank_days: 거래대금을 더하는 일수.
+        ma_bars: 1H 단순 이평 봉 수.
+        below: 문턱(0 ~ 1) — 값이 이것 **미만**이면 쉰다.
+        exclude: 종목 이름 접두 제외 목록(결제 통화 · 지수형 계약 등).
+
+    Raises:
+        ValueError: 값이 말이 안 되는 경우.
+
+    Note:
+        🔴 **모르면(줄 없음 · 일부 종목을 못 받아 줄을 안 씀) 보류한다**(규칙 #8-1). 보유 ·
+        청산 · 다른 다리에는 닿지 않는다. 시장 값 표의 열쇠는 `BreadthDays` 꼴(`breadth_ma` ·
+        `lag_days` · `lag_rank_days`)로도 읽혀 러너 · 재현의 읽개를 그대로 쓴다 — 정의 전체는
+        `table_market` 문자열에 들어 있어 다른 시장 값 줄과 섞이지 않는다.
+    """
+
+    source: str
+    top: int
+    min_age_days: int
+    rank_days: int
+    ma_bars: int
+    below: Decimal
+    exclude: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """값이 말이 되는지 — 선언 경로와 시험이 같은 검사를 지난다."""
+        if not self.source:
+            raise ValueError("순위 폭 원천 거래소가 비어 있다")
+        if min(self.top, self.rank_days, self.ma_bars) < 1:
+            raise ValueError("순위 폭의 종목 수 · 일수 · 봉 수는 1 이상")
+        if self.min_age_days < 0:
+            raise ValueError(f"상장 일수 하한은 0 이상: {self.min_age_days}")
+        if not Decimal(0) < self.below < Decimal(1):
+            raise ValueError(f"순위 폭 문턱은 0 ~ 1: {self.below}")
+
+    @property
+    def breadth_ma(self) -> int:
+        """표 열쇠 — 이평 봉 수(`BreadthDays` 꼴)."""
+        return self.ma_bars
+
+    @property
+    def lag_days(self) -> int:
+        """표 열쇠 — 이 정의에는 뒤처짐 값이 없다(0)."""
+        return 0
+
+    @property
+    def lag_rank_days(self) -> int:
+        """표 열쇠 — 거래대금 일수(`BreadthDays` 꼴)."""
+        return self.rank_days
+
+    @property
+    def table_market(self) -> str:
+        """시장 값 표의 `market` 칸 — 정의 전체를 담아 선언이 다르면 줄도 따로다."""
+        tag = zlib.crc32(",".join(sorted(self.exclude)).encode("utf-8")) & 0xFFFFFFFF
+        return (
+            f"{self.source}:rank:top{self.top}:age{self.min_age_days}:"
+            f"d{self.rank_days}:h{self.ma_bars}:x{tag:08x}"
+        )
+
+    def blocks(self, value: Decimal) -> bool:
+        """이 값이면 신규 진입을 쉬는가(값을 아는 때만 부른다)."""
+        return value < self.below
+
+
+@dataclass(frozen=True, slots=True)
 class RefDistTilt:
     """기준 종목(BTC) 일봉 종가의 SMA(`days`) 거리 % 가 정하는 크기 배수 (T783 · P0 · T772).
 
@@ -925,6 +1007,78 @@ class QuietAdd:
         """값이 더 싣기로서 말이 되는지."""
         if self.vol_ratio <= 0:
             raise ValueError(f"거래량 비 문턱은 0 보다 커야 한다: {self.vol_ratio}")
+        if not Decimal(0) < self.frac <= Decimal(1):
+            raise ValueError(f"추가 크기는 0 초과 1 이하: {self.frac}")
+
+
+@dataclass(frozen=True, slots=True)
+class AnnouncementEntry:
+    """거래소 공지 사건으로 드는 다리의 선언 (T1045).
+
+    사건 = 공지 갈래(`kind` · `config/announcements.yml`)의 **종목마다 가장 이른 공지**. 진입 시각 ·
+    손절은 탐지기 룰이 정한다 — 이 선언은 우주 점검(어느 종목 판을 언제까지 띄우나)과 러너 · 재현의
+    사건 주입(어느 갈래를 넣나)이 읽는다.
+
+    Attributes:
+        kind: 공지 갈래 이름.
+        active_hours: 진입 봉 시작 뒤 이 시간까지 그 종목을 이 다리 범위에 둔다(판을 띄워 둔다).
+            보유는 범위와 상관없이 청산까지 남는다(분기 교체의 `WIND_DOWN` · `NARROW` 와 같다).
+
+    Raises:
+        ValueError: 이름이 비었거나 시간이 1 보다 작은 경우.
+    """
+
+    kind: str
+    active_hours: int = 2
+
+    def __post_init__(self) -> None:
+        """값이 말이 되는지."""
+        if not self.kind:
+            raise ValueError("공지 갈래 이름이 비어 있다")
+        if self.active_hours < 1:
+            raise ValueError(f"범위에 두는 시간은 1 이상: {self.active_hours}")
+
+
+@dataclass(frozen=True, slots=True)
+class OpenBarAdd:
+    """다른 시장이 정규장을 여는 시각의 점검 봉 하나로 보유에 한 번 더 싣는 선언 (T1045).
+
+    점검 봉 = 달력 시장(`market`)이 정규장을 여는 날, 개장 시각(UTC)을 `timeframe` 봉 경계로
+    내린 시각에 시작하는 그 종목의 `timeframe` 봉. 그 봉이 닫힌 뒤
+    (종가 - 시가) x 매매 방향 부호 ≥ `atr_mult` x 평균 참범위(`atr_period` 봉 **단순 평균** ·
+    점검 봉 바로 앞 봉까지)이면 그 종가에 처음 명목의 `frac` 배를 더한다.
+
+    자격: 점검 봉 **시작 시각에 이미 체결돼 들고 있던** 매매 · 한 매매에 한 번(불타기와 같은 칸 —
+    이미 더한 매매는 안 본다) · 더할 때 아직 열려 있을 것. 손절 · 목표 · 시간 청산은 원 매매를
+    그대로 따른다(세션은 판정만 적고 크기는 펀드 문 · 러너가 정한다 — 불타기와 같다).
+
+    Attributes:
+        market: 개장 시각을 읽는 달력 시장(`config/market_sessions.yml`).
+        timeframe: 점검 봉 축(시간 축 — 더 잔 걸음 봉을 접어 만든다).
+        atr_period: 평균 참범위 봉 수(단순 평균).
+        atr_mult: 움직임 문턱(평균 참범위 배수 · 같으면 든다).
+        frac: 추가 크기 — 처음 명목 대비.
+
+    Raises:
+        ValueError: 값이 범위 밖인 경우.
+
+    Note:
+        🔴 **모르면 안 더한다**(규칙 #8-1) — 달력 표 밖 날짜 · 점검 봉이나 그 앞 봉이 모자람 ·
+        평균 참범위가 0 이하면 그 점검은 건너뛰고 센다(`open_add:unknown`).
+    """
+
+    market: Market
+    timeframe: Timeframe
+    atr_period: int
+    atr_mult: Decimal
+    frac: Decimal
+
+    def __post_init__(self) -> None:
+        """값이 더 싣기로서 말이 되는지."""
+        if self.atr_period < 1:
+            raise ValueError(f"평균 참범위 봉 수는 1 이상: {self.atr_period}")
+        if self.atr_mult <= 0:
+            raise ValueError(f"움직임 문턱은 0 보다 커야 한다: {self.atr_mult}")
         if not Decimal(0) < self.frac <= Decimal(1):
             raise ValueError(f"추가 크기는 0 초과 1 이하: {self.frac}")
 
@@ -1849,6 +2003,22 @@ class Playbook:
     겹치면 뒤 창 점수 -50 이라 끔. 연구 짝 = `t296_wave62.run(same_side_grps=…)`.
     ⛔ 러너가 몫 단위 주문(T320 P3)을 갖추기 전에는 실계좌 매매법에서 켜지 않는다.
     """
+    yield_to: tuple[str, ...] = ()
+    """이 다리가 들고 있는 종목에 **여기 적힌 다리**의 새 진입 후보가 오면, 그 걸음에 이 다리 보유를
+    시장가로 닫고 자리를 내준다(양보 · T1045 · 연구 `xrows` 표식 R = `t296_wave62` `yield_grps`).
+
+    Gate 무기한은 종목당 한 방향 포지션 하나라(반대 방향은 상쇄 · 같은 방향은 합쳐짐) 두 다리가 한
+    종목에 같이 들 수 없다 — 닫고 나서 연다(러너는 닫기를 먼저 옮긴다 · T852 S1). 양보는 받는 다리의
+    규칙 문(`entry_hold`) · 진입 범위 · 진입 끔 · 판 스위치가 다 열렸을 때만 한다 — 펀드 문(자리 ·
+    증거금)에 막히면 닫기만 하고 못 들 수 있다(`yield:wasted` 로 센다). 비면 동결이다(§5.6.2).
+    """
+    entry_announcement: AnnouncementEntry | None = None
+    """거래소 공지 사건으로 드는 다리(T1045) — 사건은 러너 · 재현이 넣는다(`Session.announcements`).
+
+    종목은 분기 목록이 아니라 **사건이 정한다** — 우주 점검이 사건 종목을 이 다리 범위에 넣어 판을
+    띄운다(`AnnouncementEntry.active_hours`). 🔴 사건 표를 모르면(작업이 멈춤 · 처음 받기 전) 그
+    판은 사건을 못 받아 이 다리 새 진입이 없다(규칙 #8-1). ⛔ 선언이 None 이면 동결이다(§5.6.2).
+    """
     drawdown_isolated: bool = False
     """다리로 돌 때 이 매매법의 손익을 **펀드 낙폭 브레이크에서 뺀다** (418 · 419 · 420차).
 
@@ -2047,6 +2217,11 @@ class Playbook:
     (`Session.release_schedule`). 🔴 모르면(None) 보류한다(규칙 #8-1).
     ⛔ 선언이 None 이면 동결이다 (§5.6.2).
     """
+    entry_ranked_breadth: RankedBreadthGate | None = None
+    """거래대금 위 N 종목의 1H 이평 위 비율이 문턱 아래인 날 신규 진입을 쉰다(T1045) — 값은 러너
+    주입(`Session.ranked_breadth`). 🔴 모르면 보류한다(규칙 #8-1).
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2).
+    """
     trail_after_r: TrailAfterR | None = None
     """R 배만큼 유리하게 간 뒤부터 손절을 최근 봉의 끝으로 따라 옮긴다(`TrailAfterR`).
 
@@ -2068,6 +2243,11 @@ class Playbook:
     """조용한 반등에 더 싣기(T318 · 494차) — 진입 다음 봉이 거래량 없이 거꾸로 가면.
 
     불타기와 한 칸을 쓴다.
+
+    ⛔ 선언이 None 이면 동결이다 (§5.6.2)."""
+    open_bar_add: OpenBarAdd | None = None
+    """다른 시장 개장 시각의 점검 봉으로 한 번 더 싣기(T1045) — 달력은 러너 주입
+    (`Session.calendar`). 불타기와 한 칸을 쓴다 · 모르면 안 더한다(규칙 #8-1).
 
     ⛔ 선언이 None 이면 동결이다 (§5.6.2)."""
     new_high_tilt: NewHighTilt | None = None

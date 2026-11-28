@@ -152,6 +152,8 @@ FUNNEL_GLOSSARY: dict[str, str] = {
     "early_": "조기 진입(T345)",
     "add": "불타기(T308)",
     "quiet_add:": "조용한 불타기",
+    "open_add": "개장 점검 봉 더 싣기(T1045 · miss 안 넘음 · not_held 미보유 · unknown 모름)",
+    "rank_breadth": "순위 폭 문(T1045 · unknown = 값 모름 → 보류)",
 }
 
 
@@ -267,6 +269,7 @@ GATE_ATTRS: dict[str, str] = {
     "rel_lag": "entry_rel_lag",
     "washed": "entry_washed",
     "event_window": "entry_event_window",
+    "rank_breadth": "entry_ranked_breadth",
     "funding": "funding_cap",
 }
 """보류 사유 이름 → 매매법 선언의 칸 이름. 어느 다리가 그 문을 선언했는지 여기로 찾는다."""

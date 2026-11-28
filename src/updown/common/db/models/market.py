@@ -137,3 +137,53 @@ class MarketBreadthDay(Base):
     breadth_count: Mapped[int]
     lag_count: Mapped[int]
     computed_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())
+
+
+class AnnouncementEvent(Base):
+    """거래소 공지 사건 한 줄 — 공지 갈래 · 기초 자산 이름마다 **가장 이른 공지 하나** (T1045).
+
+    Note:
+        사건 숏 다리는 종목마다 처음 뜬 공지만 쓴다(연구 정의). 그래서 한 번 본 이름은 다시
+        적지 않는다(먼저 적힌 줄이 남는다) — 처음 한 번 목록 전체를 받아(`seen_at` = 받은 시각)
+        지난 공지의 이름을 다 적어 두고, 그 뒤 새로 뜬 이름만 사건이 된다. 짝을 못 지은 이름도
+        적는다(이유와 함께) — 다음에 같은 이름의 공지가 떠도 "처음" 으로 세지 않게.
+        `contract` 는 주문 거래소 계약 이름(짝을 못 지었으면 NULL) · `reason` 은 짝짓기 결과
+        (`ok` · `history` · `no_rank` · `no_contract` · `delisting` · `price_mismatch …` 등).
+    """
+
+    __tablename__ = "announcement_events"
+    __table_args__ = (sa.Index("ix_announcement_events_contract", "contract", "announced_at"),)
+
+    kind: Mapped[str] = mapped_column(primary_key=True)
+    token: Mapped[str] = mapped_column(primary_key=True)
+    announced_at: Mapped[datetime]
+    seen_at: Mapped[datetime]
+    article_id: Mapped[str]
+    title: Mapped[str]
+    rank_symbol: Mapped[str | None]
+    contract: Mapped[str | None]
+    reason: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(server_default=sa.func.now())
+
+
+class AnnouncementFeed(Base):
+    """공지 갈래 하나의 받기 상태 — 러너가 "사건 표를 아는가" 를 여기서 읽는다 (T1045).
+
+    Note:
+        `backfilled_at` 이 없으면 처음 받기(목록 전체) 전이다 — 그동안 사건은 "모름" 이다(지난
+        공지를 다 적기 전에는 새 공지가 "처음" 인지 모른다). `ok_at` 이 오래되면(설정 `stale_s`)
+        러너가 그 갈래를 모름으로 읽고 그 다리 새 진입을 보류한다(규칙 #8-1). `stats` 는 마지막
+        받기의 관측 칸(제목은 맞는데 이름을 못 뽑은 수 · 짝 못 지은 수 등).
+    """
+
+    __tablename__ = "announcement_feeds"
+
+    kind: Mapped[str] = mapped_column(primary_key=True)
+    backfilled_at: Mapped[datetime | None]
+    ok_at: Mapped[datetime | None]
+    error_at: Mapped[datetime | None]
+    error: Mapped[str | None]
+    stats: Mapped[JsonDict] = mapped_column(default=dict, server_default="{}")
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=sa.func.now(), onupdate=sa.func.now()
+    )

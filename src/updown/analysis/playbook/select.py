@@ -28,6 +28,7 @@ from updown.analysis import plugins
 from updown.analysis.playbook import db_source
 from updown.analysis.playbook.types import (
     AddOn,
+    AnnouncementEntry,
     AtrTrailExit,
     BarTilt,
     BrakeRelease,
@@ -44,11 +45,13 @@ from updown.analysis.playbook.types import (
     EntryRiskGuard,
     EventWindow,
     NewHighTilt,
+    OpenBarAdd,
     PeerOpenBoost,
     PeerOpenCap,
     Playbook,
     PlaybookRegime,
     QuietAdd,
+    RankedBreadthGate,
     RefDistBand,
     RefDistTilt,
     RefRegimeTilt,
@@ -66,7 +69,7 @@ from updown.analysis.playbook.types import (
     WeakBarSkip,
 )
 from updown.common.domain.evidence import Family, Grade
-from updown.common.domain.instrument import MarketGroup, Timeframe
+from updown.common.domain.instrument import Market, MarketGroup, Timeframe
 from updown.common.domain.reports import TrendDirection
 from updown.common.logging.setup import get_logger
 
@@ -740,6 +743,104 @@ def _event_window(raw: object, name: str) -> EventWindow:
         raise PlaybookConfigError(f"{name}.entry_event_window — {exc}") from exc
 
 
+def ranked_breadth(raw: object, name: str) -> RankedBreadthGate:
+    """순위 폭 문 한 줄 (T1045).
+
+    꼴: `{source, top, min_age_days, rank_days, ma_bars, below, exclude: [...]}`
+    (`exclude` 는 선택).
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 칸이 빠졌거나 · 모르는 칸이 있거나 · 값이 범위 밖인 경우 — 오타로 적은
+            칸이 조용히 빠지면 선언한 문이 다른 값으로 돈다.
+    """
+    where = f"{name}.entry_ranked_breadth"
+    body = _declared_body(
+        raw,
+        where,
+        frozenset({"source", "top", "min_age_days", "rank_days", "ma_bars", "below", "exclude"}),
+    )
+    try:
+        return RankedBreadthGate(
+            source=str(body["source"]),
+            top=int(str(body["top"])),
+            min_age_days=int(str(body["min_age_days"])),
+            rank_days=int(str(body["rank_days"])),
+            ma_bars=int(str(body["ma_bars"])),
+            below=Decimal(str(body["below"])),
+            exclude=tuple(str(x) for x in _items(body.get("exclude"), f"{where}.exclude")),
+        )
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{where} — {exc}") from exc
+
+
+def announcement_entry(raw: object, name: str) -> AnnouncementEntry:
+    """공지 사건 다리 선언 한 줄 (T1045).
+
+    꼴: `{kind: <공지 갈래>, active_hours: N}`(`active_hours` 는 선택 · 기본 2).
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 칸이 빠졌거나 · 모르는 칸이 있거나 · 값이 범위 밖인 경우.
+    """
+    where = f"{name}.entry_announcement"
+    body = _declared_body(raw, where, frozenset({"kind", "active_hours"}))
+    try:
+        return AnnouncementEntry(
+            kind=str(body["kind"]),
+            active_hours=int(str(body.get("active_hours", 2))),
+        )
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{where} — {exc}") from exc
+
+
+def open_bar_add(raw: object, name: str, *, full_ride: bool = True) -> OpenBarAdd:
+    """개장 점검 봉 더 싣기 한 줄 (T1045).
+
+    꼴: `{market: NASDAQ, timeframe: 1h, atr_period, atr_mult, frac}`.
+
+    Args:
+        raw: 선언 값.
+        name: 오류 메시지에 쓸 위치.
+        full_ride: 같은 매매법이 반익 없이 끝까지 가는가.
+
+    Returns:
+        선언.
+
+    Raises:
+        PlaybookConfigError: 칸이 빠졌거나 · 모르는 칸이 있거나 · 값이 범위 밖이거나 · 반익이 있는
+            매매법인 경우(불타기와 같은 칸이라 같은 이유 — `_add_on` 주석).
+    """
+    where = f"{name}.open_bar_add"
+    if not full_ride:
+        raise PlaybookConfigError(f"{where} — 더 싣기는 반익 없는(full_ride) 매매법에만 켠다")
+    body = _declared_body(
+        raw, where, frozenset({"market", "timeframe", "atr_period", "atr_mult", "frac"})
+    )
+    try:
+        return OpenBarAdd(
+            market=_enum(Market, body["market"], f"{where}.market"),
+            timeframe=_enum(Timeframe, body["timeframe"], f"{where}.timeframe"),
+            atr_period=int(str(body["atr_period"])),
+            atr_mult=Decimal(str(body["atr_mult"])),
+            frac=Decimal(str(body["frac"])),
+        )
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise PlaybookConfigError(f"{where} — {exc}") from exc
+
+
 def _trail_after_r(raw: object, name: str) -> TrailAfterR:
     """R 배 뒤 따라가는 손절.
 
@@ -1323,6 +1424,11 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         if body.get("entry_event_window") is None
                         else _event_window(body["entry_event_window"], f"playbooks.{name}")
                     ),
+                    entry_ranked_breadth=(
+                        None
+                        if body.get("entry_ranked_breadth") is None
+                        else ranked_breadth(body["entry_ranked_breadth"], f"playbooks.{name}")
+                    ),
                     trail_after_r=(
                         None
                         if body.get("trail_after_r") is None
@@ -1357,6 +1463,15 @@ def _parse_declared(declared: object) -> list[Playbook]:
                         if body.get("quiet_add") is None
                         else quiet_add(
                             body["quiet_add"],
+                            f"playbooks.{name}",
+                            full_ride=bool(body.get("full_ride", False)),
+                        )
+                    ),
+                    open_bar_add=(
+                        None
+                        if body.get("open_bar_add") is None
+                        else open_bar_add(
+                            body["open_bar_add"],
                             f"playbooks.{name}",
                             full_ride=bool(body.get("full_ride", False)),
                         )
@@ -1432,6 +1547,12 @@ def _parse_declared(declared: object) -> list[Playbook]:
                     bundle=tuple(str(x) for x in _items(body.get("bundle"), "bundle")),
                     split_legs=_split_legs(body, f"playbooks.{name}"),
                     share_same_side=bool(body.get("share_same_side", False)),
+                    yield_to=tuple(str(x) for x in _items(body.get("yield_to"), "yield_to")),
+                    entry_announcement=(
+                        None
+                        if body.get("entry_announcement") is None
+                        else announcement_entry(body["entry_announcement"], f"playbooks.{name}")
+                    ),
                     drawdown_isolated=bool(body.get("drawdown_isolated", False)),
                     engine=None if body.get("engine") is None else str(body["engine"]),
                     engine_settings=_engine_settings(body, f"playbooks.{name}"),

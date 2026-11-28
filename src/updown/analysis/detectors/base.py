@@ -23,6 +23,7 @@ from typing import ClassVar, Protocol, runtime_checkable
 
 from updown.analysis.indicators.seasonal_volume import VolumeBaseline
 from updown.analysis.structures.bundle import StructureBundle
+from updown.common.domain.announcement import Announcement
 from updown.common.domain.candle import Candle
 from updown.common.domain.instrument import Instrument, Timeframe
 from updown.common.domain.reports import Indicators
@@ -155,6 +156,12 @@ class MarketContext:
     `venue_bars` 를 선언한 매매법의 판에만 실린다. None = 안 실었거나 못 받았거나 늦음 —
     탐지기는 **판정 불가**로 센다(없는 값으로 판정한 척하지 않는다 · 규칙 #8).
     as-of 는 탐지기가 지킨다(`as_of` 앞에 시작한 봉 중 마감한 것만 쓴다).
+    """
+    announcements: tuple[Announcement, ...] = ()
+    """그 종목의 거래소 공지 사건 — 그때까지 **본** 것만(러너 · 재현 주입 · T1045).
+
+    `entry_announcement` 를 선언한 매매법의 판에만 실린다. 비면 사건이 없거나 모르는 것이다 —
+    탐지기는 셋업을 내지 않는다. as-of 는 탐지기가 한 번 더 지킨다(`seen_at` ≤ `as_of`).
     """
 
 

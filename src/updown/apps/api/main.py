@@ -282,6 +282,7 @@ def create_app(state: ApiState | None = None) -> FastAPI:
         from updown.apps.api.leader import TradingLeader
 
         _wire_market_values(getattr(resolved_state, "session_factory", None))
+        _wire_announcements(getattr(resolved_state, "session_factory", None))
         _trade_tasks: list[asyncio.Task[None]] = []
         # 1 GB 호스트 — engine 잡(자원 비트)을 리더 api 안에서 돌린다 (`inproc_engine` 참조).
         #    플래그가 꺼져 있으면 None 이고 아무 일도 없다 (dev·paper).
@@ -645,3 +646,30 @@ def _wire_market_values(factory: Any) -> None:
         return None if got is None else (got.breadth, got.lag_ret)
 
     set_market_values_reader(read)
+
+
+def _wire_announcements(factory: Any) -> None:
+    """러너가 거래소 공지 사건(그때까지 본 것)을 읽는 길을 꽂는다 (T1045).
+
+    Args:
+        factory: DB 세션 팩토리. 없으면 꽂지 않는다(사건 모름 = 그 선언의 다리는 새로 들지 않는다).
+
+    Note:
+        표는 엔진 작업(`announcements`)이 쓰고 러너는 읽기만 한다. 갈래 받기가 `stale_s` 넘게
+        멈췄으면 모름(None)을 돌려준다 — 러너가 경고하고 그 다리 새 진입을 쉰다(#8-1).
+    """
+    from updown.orchestration.rebalancer.announce_job import (
+        AnnouncementStore,
+        load_announce_job_config,
+    )
+    from updown.orchestration.walkforward.live_runner import set_announcement_reader
+
+    if factory is None:
+        return
+    store = AnnouncementStore(factory)
+    stale_s = load_announce_job_config().stale_s
+
+    async def read(kinds: Any, symbol: str, now: Any) -> Any:
+        return await store.for_symbol(kinds, symbol, now, stale_s)
+
+    set_announcement_reader(read)

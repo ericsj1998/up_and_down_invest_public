@@ -311,11 +311,20 @@ def declared_legs(
     out: list[FundLeg] = []
     for name in wrapper.bundle:
         scope = [str(item) for item in scopes.get(name, ())]
+        announced = getattr(by_id.get(name), "entry_announcement", None) is not None
+        if not scope and announced:
+            # ⭐ T1045 — 공지 사건 다리는 종목을 사건이 정한다(우주 점검이 사건 종목 판을 띄운다) —
+            #    고정 범위가 없어도 종목 없는 다리로 만든다.
+            out.append(_leg_of(wrapper, by_id, name, ()))
+            continue
         if not scope:
             # 구성원 선언 검사가 먼저다(옛 순서) — 선언 없는 다리를 "범위 없음" 으로 말하지 않는다.
             _member_book(wrapper, by_id, name)
             raise LegError(f"{name} — 종목 범위(baskets.yml by_playbook.{name})가 없다")
         mine = tuple(symbol for symbol in members if symbol in set(scope))
+        if not mine and announced:
+            out.append(_leg_of(wrapper, by_id, name, ()))
+            continue
         if not mine:
             _member_book(wrapper, by_id, name)
             raise LegError(f"{name} — 펀드 종목 중에 이 다리의 종목이 하나도 없다")
@@ -432,6 +441,10 @@ def _leg_of(
                 )
             attrs.append(boost_book.attribution)
         boost = (tuple(attrs), spec.min, spec.mult)
+    for target in book.yield_to:
+        # T1045 — 양보 받는 다리를 오타로 적으면 양보가 조용히 안 돈다(규칙 #8).
+        if target not in wrapper.bundle or target == name:
+            raise LegError(f"{name}.yield_to {target!r} — 같은 묶음의 다른 구성원이 아니다")
     return FundLeg(
         playbook=book.playbook_id,
         attribution=book.attribution,

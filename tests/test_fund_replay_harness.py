@@ -365,3 +365,53 @@ class TestInputCheck:
     def test_no_declared_gates_walks_as_before(self) -> None:
         boards, coordinator = self._boards()
         FundReplay(boards, coordinator, ref_4h=(), seed=1).run(START, START + timedelta(hours=4))
+
+    @staticmethod
+    def _open_add_board(step: Timeframe, frames: tuple[Timeframe, ...]) -> tuple[Any, Any]:
+        from updown.analysis.playbook.types import OpenBarAdd
+        from updown.common.domain.instrument import Market
+
+        boards, coordinator = TestInputCheck._boards()
+        session = cast("Any", boards[0].session)
+        session.playbooks = [
+            SimpleNamespace(
+                entry_event_window=None,
+                entry_washed=None,
+                drawdown_brake=None,
+                open_bar_add=OpenBarAdd(Market.NYSE, Timeframe.H1, 3, Decimal(1), Decimal("0.25")),
+            )
+        ]
+        session.step_frame = step
+        session.feed = SimpleNamespace(judged=session.feed.judged, timeframes=frames)
+        return boards, coordinator
+
+    def test_ranked_breadth_needs_market_values(self) -> None:
+        # T1045 — 순위 폭 문을 선언했는데 값이 없으면 "모름 = 보류" 로 그 다리 진입이 조용히 0.
+        boards, coordinator = self._boards()
+        cast("Any", boards[0].session).playbooks = [
+            SimpleNamespace(
+                entry_event_window=None,
+                entry_washed=None,
+                drawdown_brake=None,
+                entry_ranked_breadth=SimpleNamespace(),
+            )
+        ]
+        with pytest.raises(ReplayInputError, match=r"순위 폭\(entry_ranked_breadth\)"):
+            FundReplay(boards, coordinator, ref_4h=(), seed=1)
+
+    def test_open_bar_add_needs_a_calendar(self) -> None:
+        # T1045 — 개장 점검 봉 더 싣기를 선언했는데 달력이 없으면 조용히 "안 더함" 으로 안 돈다.
+        boards, coordinator = self._open_add_board(Timeframe.H1, (Timeframe.H1, Timeframe.H4))
+        with pytest.raises(ReplayInputError, match=r"시장 달력\(open_bar_add\)"):
+            FundReplay(boards, coordinator, ref_4h=(), seed=1)
+
+    def test_open_bar_add_needs_the_check_frame_and_fine_steps(self) -> None:
+        from updown.common.domain.session import load_calendar
+
+        boards, coordinator = self._open_add_board(Timeframe.H4, (Timeframe.H4,))
+        with pytest.raises(ReplayInputError, match=r"점검 봉 축이 없는 판.*굵게 걷는 판"):
+            FundReplay(boards, coordinator, ref_4h=(), seed=1, event_calendar=load_calendar())
+        boards, coordinator = self._open_add_board(Timeframe.H1, (Timeframe.H1, Timeframe.H4))
+        replay = FundReplay(boards, coordinator, ref_4h=(), seed=1, event_calendar=load_calendar())
+        assert boards[0].session.event_calendar is not None
+        assert replay._open_add_gaps(None, None) == []  # pyright: ignore[reportPrivateUsage]
